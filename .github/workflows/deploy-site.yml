@@ -1,14 +1,23 @@
 name: Deploy exuvia site
 
-# site/ (landing page + docs portal) → the `exuvia` Cloudflare Pages
-# project, served from the root of its own host.
-#   main     → production: https://exuvia-c7l.pages.dev/
-#   branches → a preview deployment of the same project; its URL is in the
-#              job summary. Nothing public links to previews.
+# site/ (landing page + docs portal) → the `exuvia-site` Cloudflare Worker
+# (static assets, site/wrangler.jsonc) on its custom domain,
+# https://exuvia.lobster.mp/.
+#   main     → production: `wrangler deploy` makes the build live.
+#   branches → `wrangler versions upload`: a version with its own preview URL
+#              on workers.dev (in the job summary) that takes no production
+#              traffic. It needs the Worker to exist, i.e. one deploy from
+#              main first.
 # The docs pages are generated from README.md, so the README is a build
 # input: the build fails when a README section has no page mapping
 # (site/src/lib/docs.ts). This job is the site's typecheck + build check
 # as well as its deploy.
+#
+# Secrets (environments `production` and `development`):
+#   CLOUDFLARE_ACCOUNT_ID  the account that owns the lobster.mp zone
+#   CLOUDFLARE_API_TOKEN   Account › Workers Scripts: Edit, and on the
+#                          lobster.mp zone: Workers Routes: Edit, DNS: Edit
+#                          (the custom domain's DNS record)
 
 on:
   push:
@@ -34,7 +43,13 @@ jobs:
     timeout-minutes: 10
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}
     env:
-      PRODUCTION_URL: https://exuvia-c7l.pages.dev
+      PRODUCTION_URL: https://exuvia.lobster.mp
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      WRANGLER_SEND_METRICS: "false"
+    defaults:
+      run:
+        working-directory: site
     steps:
       - uses: actions/checkout@v5
 
@@ -47,29 +62,37 @@ jobs:
       # SITE_URL makes the social-card and canonical URLs absolute. Previews
       # are built without it, so they never claim the production address.
       - name: Typecheck + build
-        working-directory: site
         env:
           SITE_URL: ${{ github.ref == 'refs/heads/main' && env.PRODUCTION_URL || '' }}
         run: npm ci && npm run build
 
-      - name: Deploy to Cloudflare Pages
-        id: pages
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: 'pages deploy site/dist --project-name exuvia --branch ${{ github.ref_name }} --commit-hash ${{ github.sha }} --commit-message "exuvia site: ${{ github.sha }}"'
+      - name: Deploy to production
+        if: github.ref == 'refs/heads/main'
+        run: npx wrangler deploy --message "exuvia site ${GITHUB_SHA::7}"
 
-      - name: Report the deployment URL
-        env:
-          DEPLOYMENT_URL: ${{ steps.pages.outputs.deployment-url }}
+      # A new custom domain's certificate can take a little while to issue
+      # (curl fails the TLS handshake until it does), so retry.
+      - name: Check production
+        if: github.ref == 'refs/heads/main'
         run: |
-          echo "Deployed: $DEPLOYMENT_URL" | tee -a "$GITHUB_STEP_SUMMARY"
-          # A new deployment's hostname can take a little while to answer
-          # (curl fails the TLS handshake until it does), so retry.
+          echo "Deployed: $PRODUCTION_URL/" | tee -a "$GITHUB_STEP_SUMMARY"
           for i in $(seq 1 24); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "$DEPLOYMENT_URL/docs/getting-started/" || true)
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$PRODUCTION_URL/docs/getting-started/" || true)
             [ "$code" = "200" ] && exit 0
             sleep 5
           done
-          echo "The deployment did not answer 200 (last status $code)"; exit 1
+          echo "$PRODUCTION_URL did not answer 200 (last status $code)"; exit 1
+
+      # The alias is the branch name made DNS-safe, so each branch keeps one
+      # stable preview URL across pushes.
+      - name: Upload preview version
+        if: github.ref != 'refs/heads/main'
+        run: |
+          alias=$(echo "$GITHUB_REF_NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//' | cut -c1-40 | sed -E 's/-+$//')
+          npx wrangler versions upload --preview-alias "$alias" --message "exuvia site ${GITHUB_SHA::7} ($GITHUB_REF_NAME)" | tee upload.log
+          url=$(grep -oE 'https://[^ ]+\.workers\.dev' upload.log | tail -1)
+          if [ -n "$url" ]; then
+            echo "Preview: $url/" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Preview version uploaded; its URL is in the log above." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
