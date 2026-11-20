@@ -1,14 +1,21 @@
 name: CI
 
 # Python tests, UI build and the executor image. The website (site/) is built
-# and deployed by deploy-site.yml, so changes that touch only it skip this.
+# and deployed by deploy-site.yml, so changes that touch only it, or only
+# Markdown, skip the two heavy jobs.
+#
+# The `main` ruleset requires both heavy jobs' checks on every PR, so pull
+# requests always start this workflow (no paths filter): `changes` decides
+# whether anything besides site/ and Markdown changed, and when nothing did
+# the heavy jobs are skipped, which reports them as passing. If `changes`
+# itself fails they run anyway, so a broken filter never lets code through
+# untested. Pushes to main keep the paths filter; nothing requires checks there.
 
 on:
   push:
     branches: [main]
     paths-ignore: ["site/**", "**.md"]
   pull_request:
-    paths-ignore: ["site/**", "**.md"]
 
 permissions:
   contents: read
@@ -18,8 +25,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v5
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          code=$(git diff --name-only "$BASE...$HEAD" | grep -vE '^site/|\.md$' || true)
+          if [ -n "$code" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            printf 'Code changes:\n%s\n' "$code"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "Only site/ and Markdown changed: skipping tests and the image build."
+          fi
+
   test:
     name: Python tests + UI build
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # The record-store tests also run against Postgres (tests/test_revisions.py).
@@ -58,6 +97,8 @@ jobs:
 
   container:
     name: Executor image + remote run
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
