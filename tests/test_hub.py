@@ -226,6 +226,8 @@ def test_single_project_app_keeps_its_routes(tmp_path):
         assert [n["name"] for n in client.get("/api/project").json()["nodes"]] == ["one"]
         assert client.post("/api/run-stale").json()["targets"] == ["one"]
         assert client.get("/api/config").json()["scheduler"] in ("internal", "external")
+        health = client.get("/healthz").json()
+        assert health["ok"] is True and health["mode"] == "serve"
 
 
 def test_healthz_reports_uptime(hub):

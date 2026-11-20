@@ -1,0 +1,54 @@
+# exuvia as a headless hub: many projects behind one API, each under
+# /p/<project>/api (README "Hub"). Works with Docker Compose, Podman Compose
+# and Docker Swarm.
+#
+#   Compose:  EXUVIA_API_TOKEN=change-me docker compose -f deploy/compose.yaml up -d
+#   Swarm:    EXUVIA_API_TOKEN=change-me docker stack deploy -c deploy/compose.yaml exuvia
+#
+# Then: curl http://localhost:7420/healthz
+#       curl -H "Authorization: Bearer change-me" -X POST http://localhost:7420/api/projects \
+#            -H "Content-Type: application/json" -d '{"id": "demo"}'
+#
+# Variables (put them in a .env next to this file, or export them):
+#   EXUVIA_API_TOKEN   required: clients send `Authorization: Bearer <token>`
+#   EXUVIA_IMAGE       default ghcr.io/rlancer/exuvia:latest; to build from a
+#                      checkout instead: docker build -t exuvia:local . and set
+#                      EXUVIA_IMAGE=exuvia:local (Swarm: push it to a registry
+#                      every node can pull from)
+#   EXUVIA_PORT        host port, default 7420
+#   ANTHROPIC_API_KEY  optional: turns on the built-in agent (or OPENROUTER_API_KEY)
+#
+# For one project with the web UI instead of a hub, replace `command` with
+#   ["exuvia", "serve", "/data/project", "--host", "0.0.0.0", "--port", "7420"]
+#
+# Records (SQLite) and outputs live in the `exuvia-data` volume. Run one
+# replica: a hub owns its directory. On Swarm a local volume stays on the node
+# the task first ran on; pin the service there (placement constraint) or point
+# EXUVIA_DB at Postgres and EXUVIA_ARTIFACT_STORE at a bucket (README "Deploying").
+
+services:
+  hub:
+    image: ${EXUVIA_IMAGE:-ghcr.io/rlancer/exuvia:latest}
+    command: ["exuvia", "hub", "/data", "--host", "0.0.0.0", "--port", "7420"]
+    ports:
+      - "${EXUVIA_PORT:-7420}:7420"
+    environment:
+      EXUVIA_API_TOKEN: ${EXUVIA_API_TOKEN:?set EXUVIA_API_TOKEN}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    volumes:
+      - exuvia-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7420/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    deploy:  # Swarm only; Compose ignores it
+      replicas: 1
+      restart_policy:
+        condition: any
+
+volumes:
+  exuvia-data:

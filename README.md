@@ -454,6 +454,82 @@ FROM exuvia
 RUN uv pip install --python /opt/venv/bin/python scipy statsmodels
 ```
 
+The same image runs every role: the executor (its default command),
+`exuvia serve <dir>` (one project with the web UI) and `exuvia hub <dir>`
+(many projects behind one API, see "Hub"). Releases publish it for
+linux/amd64 and linux/arm64 as `ghcr.io/rlancer/exuvia:<version>` and
+`:latest`; `docker build -t exuvia .` builds it from a checkout.
+
+### Compose, Swarm and Kubernetes
+
+`deploy/` holds a ready hub for each: one service with a volume at `/data`,
+a `/healthz` check and `EXUVIA_API_TOKEN` auth. CI brings each one up and
+runs the end-to-end test against it.
+
+```bash
+# Docker Compose or Podman Compose
+EXUVIA_API_TOKEN=change-me docker compose -f deploy/compose.yaml up -d
+# Docker Swarm (the same file)
+EXUVIA_API_TOKEN=change-me docker stack deploy -c deploy/compose.yaml exuvia
+# Kubernetes
+kubectl create namespace exuvia
+kubectl -n exuvia create secret generic exuvia --from-literal=api-token=change-me
+kubectl -n exuvia apply -f deploy/kubernetes.yaml
+kubectl -n exuvia port-forward service/exuvia-hub 7420:7420
+
+curl http://localhost:7420/healthz
+curl -H "Authorization: Bearer change-me" -H "Content-Type: application/json" \
+     -X POST http://localhost:7420/api/projects -d '{"id": "demo"}'
+```
+
+`EXUVIA_IMAGE` (Compose and Swarm) or the Deployment's `image` picks another
+image, such as your own build pushed to a registry. A hub owns its
+directory, so run one replica; to scale out or to survive losing the volume,
+point `EXUVIA_DB` at Postgres and `EXUVIA_ARTIFACT_STORE` at a bucket (table
+below). The comments at the top of each file cover the rest: the agent's API
+key, one project with the UI instead of a hub, and Swarm volume placement.
+To check a deployment, run the end-to-end test against it from a checkout:
+`E2E_URL=http://localhost:7420 E2E_TOKEN=change-me python tests/e2e/container_e2e.py`
+creates two projects, runs the example graph, checks the outputs and deletes
+both again.
+
+### Hand it to an agent
+
+Paste this into a coding agent (Claude Code, Cursor, ...) that has access to
+your Docker host or cluster. Change the first line to the platform you want.
+
+```text
+Deploy exuvia (https://github.com/rlancer/exuvia, a file-backed DAG workbench
+with an HTTP API) as a headless hub on: Docker Compose | Docker Swarm | Kubernetes.
+
+1. Get the deploy file from the repo: deploy/compose.yaml for Compose or Swarm,
+   deploy/kubernetes.yaml for Kubernetes
+   (https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/<file>).
+   Read the comments at the top of the file; they are the instructions.
+2. Generate a random API token (e.g. `openssl rand -hex 32`). Store it as the
+   EXUVIA_API_TOKEN variable (Compose/Swarm) or as `api-token` in a secret
+   named `exuvia` (Kubernetes). Don't print it in logs or commit it.
+3. Image: ghcr.io/rlancer/exuvia:latest. If it can't be pulled, clone the repo,
+   `docker build -t <registry>/exuvia:<tag> .`, push it where the hosts can
+   pull it, and set EXUVIA_IMAGE (Compose/Swarm) or the Deployment's image.
+4. Bring it up and wait until it is healthy:
+   - Compose: `docker compose -f compose.yaml up -d --wait`
+   - Swarm:   `docker stack deploy -c compose.yaml exuvia`
+   - Kubernetes: `kubectl create namespace exuvia`, create the secret,
+     `kubectl -n exuvia apply -f kubernetes.yaml`,
+     `kubectl -n exuvia rollout status deployment/exuvia-hub`
+5. Verify: GET /healthz returns {"ok": true, "mode": "hub"}. With
+   `Authorization: Bearer <token>`: POST /api/projects {"id": "smoke"},
+   PUT /p/smoke/api/nodes/hello {"source": "select 42 as answer", "kind": "sql"},
+   POST /p/smoke/api/run {"wait": 60} returns "ok": true,
+   GET /p/smoke/api/nodes/hello/data returns the column `answer` and rows [[42]];
+   then DELETE /api/projects/smoke. (Or, from a checkout of the repo:
+   E2E_URL=<url> E2E_TOKEN=<token> python tests/e2e/container_e2e.py.)
+6. Keep one replica (the hub owns its volume). Don't expose it publicly
+   without TLS in front (an Ingress, a load balancer or a reverse proxy).
+7. Report the URL, where the token is stored, and the verification output.
+```
+
 **Hosts that sleep or scale to zero.** An in-process scheduler can't fire while
 its process is asleep. Run the control plane with `--scheduler external` and
 have something call `POST /api/schedule/tick` every minute or so: a Cloudflare
@@ -758,8 +834,11 @@ second project written node by node and deleted. It uses podman when it is
 on PATH and docker otherwise (`CONTAINER_ENGINE` picks one); on Windows and
 macOS start the podman VM first (`podman machine init` once, then
 `podman machine start`). The container is always removed, and its logs are
-printed when a step fails. CI runs the same script with docker in the
-`container` job. `pytest` does not collect it.
+printed when a step fails. With `E2E_URL` (and `E2E_TOKEN`) it tests a hub
+that is already running instead, uploading the example over HTTP and deleting
+what it created. CI runs it with docker in the `container` job, against the
+image itself and against the `deploy/` recipes brought up with Compose, as a
+Swarm stack and on a kind cluster. `pytest` does not collect it.
 
 The website (`site/`, Astro) is a landing page plus a docs portal. The docs
 pages are built from the `## ` sections of this README, so there is one copy
