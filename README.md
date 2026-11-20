@@ -906,6 +906,7 @@ mise run ui-build  # bundle the UI and the views runtime into exuvia/static
 mise run test
 cd ui && npm test  # views runtime unit tests (Vitest)
 mise run e2e       # build the container image and drive a hub in it over HTTP
+mise run lint-actions # actionlint + shellcheck over .github/workflows
 mise run site-dev   # the website on :4380
 mise run site-build # typecheck + static build into site/dist
 ```
