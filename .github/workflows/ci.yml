@@ -1,7 +1,8 @@
 name: CI
 
-# Python tests, UI build and the executor image. The website (site/) is built
-# and deployed by deploy-site.yml, so changes that touch only it, or only
+# Python tests, UI build, and the container image (remote executor run plus
+# the hub end-to-end test, tests/e2e/container_e2e.py). The website (site/) is
+# built and deployed by deploy-site.yml, so changes that touch only it, or only
 # Markdown, skip the two heavy jobs.
 #
 # The `main` ruleset requires both heavy jobs' checks on every PR, so pull
@@ -124,6 +125,13 @@ jobs:
           uv run exuvia run examples/markets
           uv run exuvia status examples/markets | tee status.txt
           ! grep -vq "fresh" status.txt
+
+      - name: Hub end-to-end (the same image, driven over HTTP)
+        env:
+          CONTAINER_ENGINE: docker
+          E2E_IMAGE: exuvia:ci
+          E2E_SKIP_BUILD: "1"
+        run: python3 tests/e2e/container_e2e.py
 
       - name: Executor logs
         if: always()

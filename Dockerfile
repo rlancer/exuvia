@@ -1,7 +1,14 @@
-# One image, two roles:
+# One image, three roles:
 #   executor (default):  docker run -p 8080:8080 -e EXUVIA_EXECUTOR_TOKEN=... exuvia
 #   control plane:       docker run -p 7420:7420 -v $PWD/my-project:/project exuvia \
 #                          exuvia serve /project --host 0.0.0.0 --port 7420
+#   headless hub:        docker run -p 7420:7420 -v exuvia-data:/data exuvia \
+#                          exuvia hub /data --host 0.0.0.0 --port 7420
+#
+# `npm run build` also builds the views runtime (exuvia/static/view-runtime/),
+# and static/ is copied in before `uv sync`, so the installed wheel ships it and
+# every role serves /api/view-runtime/runtime.js. tests/e2e/container_e2e.py
+# builds this image and drives the hub role over HTTP.
 #
 # Nodes need their own packages in the *executor* image. Extend it:
 #   FROM exuvia
@@ -28,7 +35,8 @@ COPY exuvia/ ./exuvia/
 COPY --from=ui /src/exuvia/static ./exuvia/static
 RUN uv sync --frozen --no-editable && rm -rf /root/.cache
 
-RUN useradd --create-home --uid 10001 exuvia
+# /data: a writable home for `exuvia hub /data` (mount a volume over it to keep it).
+RUN useradd --create-home --uid 10001 exuvia && mkdir /data && chown exuvia:exuvia /data
 USER exuvia
 EXPOSE 8080 7420
 CMD ["exuvia", "executor", "--host", "0.0.0.0", "--port", "8080"]
