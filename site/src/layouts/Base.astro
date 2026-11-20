@@ -5,7 +5,7 @@ import "../styles/designs/daylight.css";
 import "../styles/designs/workbench.css";
 import "../styles/designs/poster.css";
 import DesignSwitcher from "../components/DesignSwitcher.astro";
-import { DESIGN_IDS } from "../lib/designs";
+import { SWITCHES } from "../lib/designs";
 import Nav from "../components/Nav.astro";
 import Footer from "../components/Footer.astro";
 import { url } from "../lib/paths";
@@ -37,15 +37,17 @@ const card = Astro.site ? new URL(url("/og.png"), Astro.site).href : url("/og.pn
     <meta property="og:description" content={description} />
     <meta property="og:image" content={card} />
     <meta name="twitter:card" content="summary_large_image" />
-    <!-- Temporary: picks the design variation under review before first paint
-         (see DesignSwitcher.astro). -->
-    <script is:inline define:vars={{ ids: DESIGN_IDS }}>
-      let design = new URLSearchParams(location.search).get("design");
-      try {
-        if (design) localStorage.setItem("exuvia-design", design);
-        else design = localStorage.getItem("exuvia-design");
-      } catch {}
-      if (ids.includes(design)) document.documentElement.dataset.design = design;
+    <!-- Temporary: applies the design and hero art under review before first
+         paint (see DesignSwitcher.astro). -->
+    <script is:inline define:vars={{ switches: SWITCHES }}>
+      for (const { key, ids } of switches) {
+        let choice = new URLSearchParams(location.search).get(key);
+        try {
+          if (choice) localStorage.setItem("exuvia-" + key, choice);
+          else choice = localStorage.getItem("exuvia-" + key);
+        } catch {}
+        if (ids.includes(choice)) document.documentElement.dataset[key] = choice;
+      }
     </script>
   </head>
   <body>

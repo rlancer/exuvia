@@ -25,8 +25,8 @@
   --chalk: #e9e7e1;
   --chalk-2: #9b998f;
 
-  /* The accent token is amber here, as in the app. The lobster stays blue:
-     it is the app's "running" blue, near enough. */
+  /* The accent token is amber here, as in the app. The shed shells stay
+     blue: the app's "running" blue. */
   --blue: #f2b84b;
   --blue-pale: #f7cf80;
   --blue-text: #f2b84b;
@@ -123,6 +123,14 @@
   .install .copy {
     border: var(--line-thin);
     border-radius: 0.35rem;
+  }
+  .molts {
+    --shell-ink: var(--running);
+  }
+  .poly {
+    --poly-ink: var(--running);
+    --poly-shade: #1c2c5e;
+    --poly-shell: var(--ink-2);
   }
   .specimen dfn {
     font-size: 1.25rem;

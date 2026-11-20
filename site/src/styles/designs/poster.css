@@ -1,8 +1,8 @@
 /* Variation "Poster": loud, and built on the blue lobster.
    One family, Archivo, used at its two extremes: very large and fully
    condensed for headings, regular width for reading. The top of the page and
-   the closing "get started" section are a field of cobalt with the lobster
-   printed white across it. Everything between is black on white with heavy
+   the closing "get started" section are a field of cobalt, with the lobster
+   printed white on the first and run off its edge. Everything between is black on white with heavy
    square rules. */
 @import "@fontsource-variable/archivo/wdth.css";
 @import "@fontsource-variable/archivo/wdth-italic.css";
@@ -135,10 +135,17 @@
   .handoff-link {
     color: #ffffff;
   }
-  /* The lobster, printed white and run off the edge of the sheet. */
+  /* The lobster printed white, its shells in a paler blue. */
+  .molts {
+    --animal-ink: #ffffff;
+    --shell-ink: var(--cobalt-lit);
+  }
+  .poly {
+    --poly-ink: #ffffff;
+    --poly-shade: #6f83f5;
+    --poly-shell: #ffffff;
+  }
   .specimen img {
-    width: 150%;
-    max-width: none;
     filter: brightness(0) invert(1);
   }
   .specimen figcaption {
@@ -295,9 +302,14 @@
       align-items: end;
     }
   }
-  @media (max-width: 900px) {
+  /* Beside the pitch, the animal runs off the edge of the sheet. */
+  @media (min-width: 901px) {
+    .molt:last-child {
+      width: 128%;
+    }
     .specimen img {
-      width: 100%;
+      width: 150%;
+      max-width: none;
     }
   }
 }

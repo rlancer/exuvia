@@ -1,18 +1,29 @@
 ---
-// Temporary: a bar for flipping between the design variations under review
-// (src/styles/designs/). The choice is kept in localStorage and mirrored in
-// `?design=`, so a link opens the same variation. Delete this component, the
+// Temporary: a bar for flipping between the designs and the hero art under
+// review (src/lib/designs.ts). Each choice is kept in localStorage and
+// mirrored in the address (`?design=`, `?art=`), so a link opens the same one. Delete this component, the
 // script in Base.astro's <head> and the unused stylesheets once one is chosen.
-import { DESIGNS } from "../lib/designs";
+import { CHOICES } from "../lib/designs";
 ---
 
-<div class="design-switcher" role="group" aria-label="Design variation" data-design-switcher>
-  <span>Design</span>
+<div class="design-switcher" data-design-switcher>
   {
-    DESIGNS.map((d) => (
-      <button type="button" data-set-design={d.id} aria-pressed="false" title={d.note}>
-        {d.label}
-      </button>
+    CHOICES.map((choice) => (
+      <div role="group" aria-label={choice.label}>
+        <span>{choice.label}</span>
+        {choice.options.map((option, i) => (
+          <button
+            type="button"
+            data-set={choice.key}
+            data-id={option.id}
+            data-default={i === 0 ? "" : undefined}
+            aria-pressed="false"
+            title={option.note}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
     ))
   }
 </div>
@@ -26,12 +37,14 @@ import { DESIGNS } from "../lib/designs";
     bottom: 14px;
     z-index: 200;
     display: flex;
-    align-items: center;
-    gap: 2px;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0 10px;
+    width: max-content;
     max-width: calc(100vw - 16px);
     padding: 4px;
     border: 1px solid rgba(255, 255, 255, 0.22);
-    border-radius: 999px;
+    border-radius: 22px;
     background: rgba(18, 18, 20, 0.94);
     box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
     color: #fff;
@@ -39,6 +52,11 @@ import { DESIGNS } from "../lib/designs";
     letter-spacing: 0;
     transform: translateX(-50%);
     white-space: nowrap;
+  }
+  .design-switcher div {
+    display: flex;
+    align-items: center;
+    gap: 2px;
   }
   .design-switcher span {
     padding: 0 6px 0 10px;
@@ -80,25 +98,28 @@ import { DESIGNS } from "../lib/designs";
 </style>
 
 <script>
-  const KEY = "exuvia-design";
   const root = document.documentElement;
-  const buttons = [...document.querySelectorAll<HTMLButtonElement>("[data-set-design]")];
+  const buttons = [...document.querySelectorAll<HTMLButtonElement>("[data-set]")];
+  // A pressed button is the one whose choice is on <html>, or the default
+  // (the site as shipped) when nothing is.
   const show = () => {
-    const now = root.dataset.design ?? "current";
-    for (const b of buttons) b.setAttribute("aria-pressed", String(b.dataset.setDesign === now));
+    for (const b of buttons) {
+      const now = root.dataset[b.dataset.set!];
+      b.setAttribute("aria-pressed", String(now ? b.dataset.id === now : "default" in b.dataset));
+    }
   };
   for (const button of buttons) {
     button.addEventListener("click", () => {
-      const id = button.dataset.setDesign!;
-      if (id === "current") delete root.dataset.design;
-      else root.dataset.design = id;
+      const { set: key, id } = button.dataset as { set: string; id: string };
+      if ("default" in button.dataset) delete root.dataset[key];
+      else root.dataset[key] = id;
       try {
-        localStorage.setItem(KEY, id);
+        localStorage.setItem("exuvia-" + key, id);
       } catch {
         /* private mode: the choice lasts for this page only */
       }
       const here = new URL(location.href);
-      here.searchParams.set("design", id);
+      here.searchParams.set(key, id);
       history.replaceState(null, "", here);
       show();
     });

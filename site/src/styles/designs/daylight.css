@@ -2,8 +2,8 @@
    White paper, a harbour navy for text and for the reversed sections, and one
    strong blue for the thing to do next. Red Hat's three faces (Display, Text,
    Mono) carry it. Rules are hairlines, corners are rounded, and the live
-   graph is the first thing on the page: the lobster steps down to a small
-   definition under it. */
+   graph is the first thing on the page: the lobster and its shells line up
+   in one row under it, with the definition. */
 @import "@fontsource-variable/red-hat-display/wght.css";
 @import "@fontsource-variable/red-hat-text/wght.css";
 @import "@fontsource-variable/red-hat-text/wght-italic.css";
@@ -153,14 +153,28 @@
   .specimen {
     order: 3;
     display: grid;
-    grid-template-columns: 9.5rem minmax(0, 1fr);
-    gap: 1.75rem;
-    align-items: center;
-    width: min(100% - 2 * var(--gutter), 46rem);
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    gap: 1.25rem;
+    width: min(100% - 2 * var(--gutter), 60rem);
     max-width: none;
     margin-top: clamp(2.5rem, 5vw, 4rem);
+    text-align: center;
+  }
+  .specimen > div {
+    width: 100%;
+  }
+  .specimen [data-art-option="original"] {
+    max-width: 20rem;
+  }
+  .specimen [data-art-option="poly"] {
+    max-width: 38rem;
+  }
+  .poly {
+    --poly-shade: var(--coal);
   }
   .specimen figcaption {
+    max-width: 40rem;
     margin-top: 0;
     padding-top: 0;
     border-top: 0;
@@ -357,14 +371,14 @@
     border-radius: 0.6rem;
   }
 
-  @media (max-width: 560px) {
-    .specimen {
-      grid-template-columns: minmax(0, 1fr);
-      justify-items: start;
-      gap: 0.75rem;
+  /* Wide enough, the three shells and the animal stand in one line. */
+  @media (min-width: 700px) {
+    .molts {
+      grid-template-columns: 17fr 22fr 27fr 34fr;
     }
-    .specimen img {
-      width: 9.5rem;
+    .molt:last-child {
+      grid-column: auto;
+      margin-top: 0;
     }
   }
 }

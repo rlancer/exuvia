@@ -8,6 +8,17 @@
    carries the weight of an id. This is scaffolding for comparing designs, and
    goes away when the chosen one is written into the components. */
 
+/* The hero art under review: all three takes are in the page, and one shows.
+   With no choice made it is the woodcut the site ships with. */
+[data-art-option] {
+  display: none;
+}
+:root:not([data-art]) [data-art-option="original"],
+:root[data-art="shells"] [data-art-option="shells"],
+:root[data-art="poly"] [data-art-option="poly"] {
+  display: block;
+}
+
 :root[data-design] {
   /* The shipped sizes are tuned for Garamond, which sets small. The
      variations use sans faces, so the whole scale comes down one notch and

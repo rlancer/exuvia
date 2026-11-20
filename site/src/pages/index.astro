@@ -2,6 +2,8 @@
 import { Image } from "astro:assets";
 import Base from "../layouts/Base.astro";
 import HeroGraph from "../components/HeroGraph.astro";
+import Molts from "../components/Molts.astro";
+import PolyMolts from "../components/PolyMolts.astro";
 import Evolution from "../components/Evolution.astro";
 import NodeAnatomy from "../components/NodeAnatomy.astro";
 import Workbench from "../components/Workbench.astro";
@@ -123,13 +125,22 @@ const steps = [
         </p>
       </div>
       <figure class="specimen">
-        <Image
-          src={lobster}
-          alt="Woodcut print of a lobster seen from above, claws forward."
-          widths={[480, 870]}
-          sizes="(max-width: 900px) 80vw, 470px"
-          loading="eager"
-        />
+        {/* Temporary: three takes on the hero art, one shown at a time (see lib/designs.ts). */}
+        <div data-art-option="original">
+          <Image
+            src={lobster}
+            alt="Woodcut print of a lobster seen from above, claws forward."
+            widths={[480, 870]}
+            sizes="(max-width: 900px) 80vw, 470px"
+            loading="eager"
+          />
+        </div>
+        <div data-art-option="shells">
+          <Molts />
+        </div>
+        <div data-art-option="poly">
+          <PolyMolts />
+        </div>
         <figcaption>
           <dfn>exuvia</dfn>, <i>noun.</i> The shell a lobster leaves behind when it molts. Every run of a node
           leaves one too: an output you can go back to.
