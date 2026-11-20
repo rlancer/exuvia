@@ -1,0 +1,533 @@
+---
+// A working sketch of the example project (examples/markets). No Python runs
+// here: the script below applies exuvia's freshness rules to five fake nodes,
+// with the same states, reasons and log wording the real thing prints.
+const nodes = [
+  { name: "universe", kind: "py", rows: "8 rows", deps: [] as string[], ms: 380 },
+  { name: "prices", kind: "py", rows: "2,080 rows", deps: ["universe"], ms: 720, schedule: "17:00 weekdays" },
+  { name: "returns", kind: "py", rows: "2,072 rows", deps: ["prices"], ms: 520 },
+  { name: "rolling_vol", kind: "py", rows: "1,920 rows", deps: ["returns"], ms: 620 },
+  { name: "sector_summary", kind: "sql", rows: "6 rows", deps: ["universe", "rolling_vol", "returns"], ms: 480 },
+];
+
+// Which side of each card an edge leaves and enters, wide and narrow layouts.
+const edges = [
+  { from: "universe", to: "prices", wide: "top,left", narrow: "bottom,top" },
+  { from: "prices", to: "returns", wide: "right,left", narrow: "bottom,top" },
+  { from: "returns", to: "rolling_vol", wide: "right,left", narrow: "bottom,top" },
+  { from: "rolling_vol", to: "sector_summary", wide: "right,top", narrow: "bottom,top" },
+  { from: "returns", to: "sector_summary", wide: "bottom,left", narrow: "right,right", bulge: 20 },
+  { from: "universe", to: "sector_summary", wide: "right,left", narrow: "right,right", bulge: 38 },
+];
+---
+
+<figure class="tank inked" data-graph data-nodes={JSON.stringify(nodes)} data-edges={JSON.stringify(edges)}>
+  <div class="tank-bar">
+    <span class="project mono">markets demo</span>
+    <div class="controls">
+      <button type="button" class="ctl" data-act="edit">Edit returns.py</button>
+      <button type="button" class="ctl" data-act="run">Run stale nodes</button>
+      <span class="ctl-group">
+        <button type="button" class="ctl" data-act="schedule">Fire the 17:00 schedule</button>
+        <label class="newdata"><input type="checkbox" data-newdata checked /> new prices arrived</label>
+      </span>
+    </div>
+  </div>
+
+  <div class="canvas" data-canvas>
+    <svg class="edges" aria-hidden="true" focusable="false">
+      <defs>
+        <marker id="tip" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0 0.5 7.5 4 0 7.5z"></path>
+        </marker>
+      </defs>
+      {edges.map((e) => <path data-edge={`${e.from}>${e.to}`} marker-end="url(#tip)" />)}
+    </svg>
+    {
+      nodes.map((n) => (
+        <button type="button" class="gnode" data-node={n.name} data-state="new" style={`grid-area:${n.name}`}>
+          <span class="band" />
+          <span class="row1">
+            <span class="name mono">{n.name}</span>
+            <span class="kind mono">{n.kind}</span>
+          </span>
+          <span class="row2">
+            <span class="state" data-state-label>
+              new
+            </span>
+            <span>{n.rows}</span>
+          </span>
+          <span class="row3 mono" data-hash>
+            no output yet
+          </span>
+          {n.schedule && <span class="row3 sched mono">cron: {n.schedule}</span>}
+          <span class="progress" />
+        </button>
+      ))
+    }
+  </div>
+
+  <div class="log mono" role="log" aria-live="polite" aria-label="Run log" data-log>
+    <p>Loading the graph.</p>
+  </div>
+
+  <figcaption>
+    A sketch of the example project that ships with exuvia, running in your browser. Select a node to save an
+    edit to its file, then run what went stale. A solid bar is fresh, a hatched bar is stale.
+  </figcaption>
+</figure>
+
+<style>
+  .tank {
+    margin: 0;
+    background: var(--paper);
+  }
+  .tank-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.75rem 1.5rem;
+    padding: 0.8rem 1.1rem;
+    border-bottom: 2px solid var(--ink);
+  }
+  .project {
+    font-size: 1rem;
+    font-weight: 700;
+  }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .ctl-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.7rem;
+  }
+  .ctl {
+    padding: 0.3rem 0.8rem 0.35rem;
+    border: 1.5px solid var(--ink);
+    background: var(--paper);
+    font-size: 1.1rem;
+    font-weight: 600;
+    line-height: 1.25;
+    cursor: pointer;
+  }
+  .ctl:hover:not([aria-disabled="true"]) {
+    background: var(--ink);
+    color: var(--paper);
+  }
+  .ctl[aria-disabled="true"] {
+    border-style: dashed;
+    color: var(--ink-3);
+    cursor: default;
+  }
+  .newdata {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 1.05rem;
+    font-style: italic;
+    cursor: pointer;
+  }
+  .newdata input {
+    width: 1rem;
+    height: 1rem;
+    accent-color: var(--ink);
+  }
+
+  .canvas {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-areas:
+      ". prices returns rolling_vol ."
+      "universe . . . sector_summary";
+    gap: 2.25rem 2.5rem;
+    padding: 2.25rem 1.5rem;
+    background-image: radial-gradient(circle, var(--rule) 1px, transparent 1.4px);
+    background-size: 20px 20px;
+  }
+  .edges {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    pointer-events: none;
+  }
+  .edges path {
+    fill: none;
+    stroke: var(--ink);
+    stroke-width: 1.5;
+  }
+  .edges marker path {
+    fill: var(--ink);
+    stroke: none;
+  }
+  .edges :global(path[data-live]) {
+    stroke-width: 2.5;
+    stroke-dasharray: 6 5;
+    animation: flow 0.5s linear infinite;
+  }
+  @keyframes flow {
+    to {
+      stroke-dashoffset: -11;
+    }
+  }
+
+  /* A node card. The bar down its left edge carries the state twice over, by
+     pattern and by ink: empty for new, hatched ochre for stale, hatched blue
+     while it runs, solid sea for fresh. */
+  .gnode {
+    position: relative;
+    display: grid;
+    gap: 0.1rem;
+    min-width: 0;
+    padding: 0.5rem 0.65rem 0.6rem 1.3rem;
+    border: 2px solid var(--ink);
+    background: var(--paper);
+    text-align: left;
+    cursor: pointer;
+    overflow: hidden;
+  }
+  .gnode:hover {
+    background: var(--paper-2);
+  }
+  .band {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 0.7rem;
+    border-right: 2px solid var(--ink);
+  }
+  .gnode[data-state="fresh"] .band {
+    background: var(--sea);
+  }
+  .gnode[data-state="stale"] .band,
+  .gnode[data-state="running"] .band {
+    background: var(--hatch);
+    color: var(--ochre);
+  }
+  .gnode[data-state="running"] .band {
+    color: var(--blue);
+    background-size: 7.07px 7.07px;
+    animation: crawl 0.4s linear infinite;
+  }
+  @keyframes crawl {
+    to {
+      background-position: 0 7.07px;
+    }
+  }
+  .row1 {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+  .name {
+    overflow: hidden;
+    font-size: 0.95rem;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .kind {
+    margin-left: auto;
+    padding: 0 0.3rem;
+    border: 1px solid var(--ink);
+    font-size: 0.75rem;
+    line-height: 1.3;
+  }
+  .row2 {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    color: var(--ink-2);
+    font-size: 1rem;
+    line-height: 1.3;
+    white-space: nowrap;
+  }
+  .row2 .state {
+    color: var(--ink);
+    font-style: italic;
+    font-weight: 600;
+  }
+  .row3 {
+    overflow: hidden;
+    color: var(--ink-2);
+    font-size: 0.8rem;
+    line-height: 1.4;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sched {
+    color: var(--ink);
+  }
+  .progress {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    width: 100%;
+    height: 4px;
+    background: var(--blue);
+    transform: scaleX(0);
+    transform-origin: left;
+  }
+  .gnode[data-state="running"] .progress {
+    animation: fill var(--ms, 500ms) linear forwards;
+  }
+  @keyframes fill {
+    to {
+      transform: scaleX(1);
+    }
+  }
+
+  .log {
+    display: grid;
+    align-content: end;
+    gap: 0.1rem;
+    min-height: 7.4rem;
+    padding: 0.8rem 1.1rem;
+    border-top: 2px solid var(--ink);
+    background: var(--paper-2);
+    color: var(--ink-3);
+    font-size: 0.95rem;
+    line-height: 1.5;
+  }
+  .log :global(p:last-child) {
+    color: var(--ink);
+  }
+  .log :global(b) {
+    color: var(--ink);
+    font-weight: 700;
+  }
+  figcaption {
+    padding: 0.7rem 1.1rem 0.85rem;
+    border-top: 1px solid var(--rule);
+    color: var(--ink-2);
+    font-size: 1.05rem;
+    font-style: italic;
+  }
+
+  @media (max-width: 900px) {
+    .canvas {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-areas: "universe" "prices" "returns" "rolling_vol" "sector_summary";
+      gap: 1.6rem;
+      padding: 1.5rem 3.75rem 1.5rem 1rem;
+    }
+    .ctl-group {
+      flex-wrap: wrap;
+    }
+  }
+</style>
+
+<script>
+  type State = "new" | "fresh" | "stale" | "running";
+  type Spec = { name: string; deps: string[]; ms: number };
+  type Edge = { from: string; to: string; wide: string; narrow: string; bulge?: number };
+  type Live = Spec & {
+    code: number; // bumped by every saved edit
+    ranCode: number | null; // the code version the stored output came from
+    data: number; // bumped when a source pulls new data
+    out: string | null; // content hash of the stored output
+    consumed: Record<string, string | null>; // upstream hashes that output was built from
+    running: boolean;
+  };
+  type Side = "top" | "right" | "bottom" | "left";
+
+  const root = document.querySelector<HTMLElement>("[data-graph]");
+  if (root) start(root);
+
+  function start(root: HTMLElement) {
+    const specs: Spec[] = JSON.parse(root.dataset.nodes!);
+    const edges: Edge[] = JSON.parse(root.dataset.edges!);
+    const canvas = root.querySelector<HTMLElement>("[data-canvas]")!;
+    const svg = canvas.querySelector<SVGSVGElement>("svg")!;
+    const log = root.querySelector<HTMLElement>("[data-log]")!;
+    const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const narrow = matchMedia("(max-width: 900px)");
+
+    const live = new Map<string, Live>(
+      specs.map((s) => [s.name, { ...s, code: 1, ranCode: null, data: 1, out: null, consumed: {}, running: false }]),
+    );
+    const order = specs.map((s) => s.name); // already topological
+    const card = (name: string) => canvas.querySelector<HTMLElement>(`[data-node="${name}"]`)!;
+    let busy = false;
+
+    // ---- freshness, derived the way exuvia derives it -----------------------
+    function derive(): Map<string, { state: State; reason: string }> {
+      const result = new Map<string, { state: State; reason: string }>();
+      for (const name of order) {
+        const n = live.get(name)!;
+        let state: State = "fresh";
+        let reason = "";
+        if (n.running) state = "running";
+        else if (n.out === null) [state, reason] = ["new", "never run"];
+        else if (n.code !== n.ranCode) [state, reason] = ["stale", "code changed"];
+        else {
+          for (const dep of n.deps) {
+            const d = result.get(dep)!;
+            if (live.get(dep)!.out !== n.consumed[dep]) [state, reason] = ["stale", `${dep} has new output`];
+            else if (d.state === "stale" || d.state === "new") [state, reason] = ["stale", `${dep} is ${d.state}`];
+            if (state === "stale") break;
+          }
+        }
+        result.set(name, { state, reason });
+      }
+      return result;
+    }
+
+    function paint() {
+      const states = derive();
+      for (const name of order) {
+        const n = live.get(name)!;
+        const { state, reason } = states.get(name)!;
+        const el = card(name);
+        el.dataset.state = state;
+        el.style.setProperty("--ms", `${n.ms}ms`);
+        el.querySelector("[data-state-label]")!.textContent = state;
+        el.querySelector("[data-hash]")!.textContent = n.out ? `output ${n.out}` : "no output yet";
+        el.setAttribute(
+          "aria-label",
+          `${name}, ${state}${reason ? ` (${reason})` : ""}. Select to save an edit to this node.`,
+        );
+      }
+      for (const e of edges) {
+        const path = svg.querySelector<SVGPathElement>(`[data-edge="${e.from}>${e.to}"]`)!;
+        path.toggleAttribute("data-live", live.get(e.to)!.running);
+      }
+      for (const b of root.querySelectorAll<HTMLElement>("[data-act]")) b.setAttribute("aria-disabled", String(busy));
+      return states;
+    }
+
+    function say(html: string) {
+      const p = document.createElement("p");
+      p.innerHTML = html;
+      log.append(p);
+      while (log.children.length > 4) log.firstElementChild!.remove();
+    }
+
+    // ---- running ------------------------------------------------------------
+    function hash(text: string): string {
+      let h = 0x811c9dc5;
+      for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
+      return (h >>> 0).toString(16).padStart(8, "0").slice(0, 7);
+    }
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, still ? 0 : ms));
+
+    async function runNode(name: string, why: string) {
+      const n = live.get(name)!;
+      n.running = true;
+      paint();
+      await wait(n.ms);
+      const before = n.out;
+      n.consumed = Object.fromEntries(n.deps.map((d) => [d, live.get(d)!.out]));
+      // An output's hash names its content: same code and same inputs, same hash.
+      n.out = hash([name, n.code, n.data, ...n.deps.map((d) => n.consumed[d])].join("|"));
+      n.ranCode = n.code;
+      n.running = false;
+      if (before === n.out) say(`<b>${name}</b> ran (${why}). Output unchanged, so nothing downstream needs to run.`);
+      else say(`<b>${name}</b> ran (${why}). New output ${n.out}.`);
+      paint();
+    }
+
+    /** Runs `forced` first, then anything left stale, level by level in parallel. */
+    async function run(forced: string[], why: string, cascadeWhy = why) {
+      busy = true;
+      let pending = new Set(forced);
+      for (;;) {
+        const states = derive();
+        const ready = order.filter((name) => {
+          const s = states.get(name)!.state;
+          const wanted = pending.has(name) || s === "stale" || s === "new";
+          return wanted && live.get(name)!.deps.every((d) => states.get(d)!.state === "fresh");
+        });
+        if (!ready.length) break;
+        await Promise.all(ready.map((name) => runNode(name, pending.has(name) ? why : cascadeWhy)));
+        pending = new Set([...pending].filter((n) => !ready.includes(n)));
+      }
+      busy = false;
+      paint();
+    }
+
+    function edit(name: string) {
+      if (busy) return;
+      const n = live.get(name)!;
+      if (n.out === null) return;
+      n.code += 1;
+      const states = paint();
+      const downstream = order.filter((o) => o !== name && states.get(o)!.state === "stale").length;
+      const file = `${name}.${name === "sector_summary" ? "sql" : "py"}`;
+      say(
+        `Saved <b>${file}</b>. ${name} is stale (code changed)` +
+          (downstream ? `, and so ${downstream === 1 ? "is 1 node" : `are ${downstream} nodes`} downstream.` : "."),
+      );
+    }
+
+    root.addEventListener("click", async (event) => {
+      const target = event.target as HTMLElement;
+      const node = target.closest<HTMLElement>("[data-node]");
+      if (node) return edit(node.dataset.node!);
+      const act = target.closest<HTMLElement>("[data-act]")?.dataset.act;
+      if (!act || busy) return;
+      if (act === "edit") edit("returns");
+      if (act === "run") {
+        const stale = [...derive().values()].some((s) => s.state !== "fresh");
+        if (!stale) return say("Everything is fresh. Nothing to run.");
+        await run([], "manual");
+      }
+      if (act === "schedule") {
+        const prices = live.get("prices")!;
+        if (root.querySelector<HTMLInputElement>("[data-newdata]")!.checked) prices.data += 1;
+        await run(["prices"], "schedule", "cascade");
+      }
+    });
+
+    // ---- edges, measured from the laid-out cards ----------------------------
+    function anchor(rect: DOMRect, side: Side, origin: DOMRect): [number, number, number, number] {
+      const x = rect.left - origin.left;
+      const y = rect.top - origin.top;
+      if (side === "top") return [x + rect.width / 2, y, 0, -1];
+      if (side === "bottom") return [x + rect.width / 2, y + rect.height, 0, 1];
+      if (side === "left") return [x, y + rect.height / 2, -1, 0];
+      return [x + rect.width, y + rect.height / 2, 1, 0];
+    }
+
+    function drawEdges() {
+      const origin = canvas.getBoundingClientRect();
+      svg.setAttribute("viewBox", `0 0 ${origin.width} ${origin.height}`);
+      for (const e of edges) {
+        const [a, b] = (narrow.matches ? e.narrow : e.wide).split(",") as [Side, Side];
+        const [x1, y1, nx1, ny1] = anchor(card(e.from).getBoundingClientRect(), a, origin);
+        const [x2, y2, nx2, ny2] = anchor(card(e.to).getBoundingClientRect(), b, origin);
+        const loop = a === b; // out and back on the same side: bulge into the gutter
+        const reach = loop ? (e.bulge ?? 24) * 1.35 : Math.min(120, Math.max(18, Math.hypot(x2 - x1, y2 - y1) * 0.45));
+        const tip = 3; // stop short so the arrowhead meets the card edge
+        const d = `M${x1},${y1} C${x1 + nx1 * reach},${y1 + ny1 * reach} ${x2 + nx2 * reach},${y2 + ny2 * reach} ${x2 + nx2 * tip},${y2 + ny2 * tip}`;
+        svg.querySelector(`[data-edge="${e.from}>${e.to}"]`)!.setAttribute("d", d);
+      }
+    }
+
+    new ResizeObserver(drawEdges).observe(canvas);
+    document.fonts?.ready.then(drawEdges);
+    drawEdges();
+    paint();
+
+    // The one moment of unprompted motion on the page: the first run. It
+    // waits until the graph is on screen, so it is seen rather than missed.
+    log.replaceChildren();
+    say("First run: every node is new.");
+    const seen = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((e) => e.isIntersecting)) return;
+        seen.disconnect();
+        setTimeout(() => run([], "first run"), still ? 0 : 500);
+      },
+      { threshold: 0.3 },
+    );
+    seen.observe(canvas);
+  }
+</script>

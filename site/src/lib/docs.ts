@@ -1,0 +1,276 @@
+/**
+ * The docs portal is built from the root `README.md`, the same file PyPI shows.
+ *
+ * Each `## ` section listed in PAGES becomes one page. A section that is in
+ * neither PAGES nor OMITTED fails the build, so a section added to the README
+ * is published or left out on purpose, never dropped by accident. The one page
+ * that is not a README section is the tutorial in `src/docs/getting-started.md`.
+ */
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { Marked, type Tokens } from "marked";
+import { codeFigure, escapeHtml, getHighlighter } from "./highlight";
+import { url } from "./paths";
+
+type PageSpec = {
+  slug: string;
+  group: string;
+  /** README `## ` heading this page is cut from, or a file under src/docs/. */
+  source: { heading: string } | { file: string };
+  /** Shorter name for the sidebar and the page title. Defaults to the heading. */
+  title?: string;
+  summary: string;
+};
+
+const PAGES: PageSpec[] = [
+  {
+    slug: "getting-started",
+    group: "Start",
+    source: { file: "getting-started.md" },
+    title: "Getting started",
+    summary: "Install exuvia, build a three-node graph, put a view on it, and turn on the agent.",
+  },
+  {
+    slug: "nodes",
+    group: "Build",
+    source: { heading: "Nodes" },
+    summary: "Python and SQL node files, how dependencies are read, and shared helpers.",
+  },
+  {
+    slug: "run-parameters",
+    group: "Build",
+    source: { heading: "Run parameters and replays" },
+    summary: "Declare run parameters, keep one output per value, and replay date ranges.",
+  },
+  {
+    slug: "views",
+    group: "Build",
+    source: { heading: "Views" },
+    summary: "Your own interface over node outputs, written as front-end code: React and TypeScript files, sandboxed and read-only.",
+  },
+  {
+    slug: "agent",
+    group: "Build",
+    source: { heading: "The agent" },
+    summary: "The agent's tools, model providers, project notes and sessions.",
+  },
+  {
+    slug: "execution-model",
+    group: "Run",
+    source: { heading: "Execution model" },
+    summary: "Content-addressed outputs, derived freshness, schedules, cascade and revisions.",
+  },
+  {
+    slug: "command-line",
+    group: "Run",
+    source: { heading: "Headless" },
+    title: "Command line",
+    summary: "Run and inspect a project without the UI, in CI or from cron.",
+  },
+  {
+    slug: "architecture",
+    group: "Run",
+    source: { heading: "Architecture: control plane + executors" },
+    title: "Architecture",
+    summary: "The stateful control plane, stateless executors, and the executor protocol.",
+  },
+  {
+    slug: "deploying",
+    group: "Run",
+    source: { heading: "Deploying" },
+    summary: "The executor image, external schedulers, auth, and every environment variable.",
+  },
+  {
+    slug: "records",
+    group: "Run",
+    source: { heading: "Records: SQLite, Postgres, or your own adapter" },
+    title: "Records",
+    summary: "Where run history, schedules, sessions and code revisions are stored.",
+  },
+  {
+    slug: "hub",
+    group: "Run",
+    source: { heading: "Hub: many projects from one process" },
+    title: "Hub",
+    summary: "Serve every project under one directory from a single process.",
+  },
+  {
+    slug: "http-api",
+    group: "Integrate",
+    source: { heading: "Embedding / using it inside another app" },
+    title: "HTTP API",
+    summary: "Every route the UI uses, plus Arrow streams and stored Parquet files.",
+  },
+  {
+    slug: "status",
+    group: "Project",
+    source: { heading: "Status" },
+    summary: "What exuvia does not do yet.",
+  },
+];
+
+/** README sections that are deliberately not published, and why. */
+const OMITTED: Record<string, string> = {
+  Why: "covered by the landing page",
+  "Quick start": "replaced by the Getting started tutorial; it serves examples/ from the repo",
+  Development: "contributor notes for a checkout of the repo",
+  Releasing: "maintainer notes",
+  License: "shown in the site footer",
+};
+
+export const GROUPS = ["Start", "Build", "Run", "Integrate", "Project"] as const;
+
+export type TocEntry = { id: string; text: string; depth: number };
+
+export type DocPage = {
+  slug: string;
+  group: string;
+  title: string;
+  summary: string;
+  html: string;
+  toc: TocEntry[];
+  /** Plain text for the search index. */
+  text: string;
+};
+
+const SITE_ROOT = process.cwd();
+
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, "")
+    .trim()
+    .replace(/\s+/g, "-");
+}
+
+/** Splits the README into its `## ` sections, ignoring `##` inside code fences. */
+function readmeSections(): Map<string, string> {
+  const lines = readFileSync(path.join(SITE_ROOT, "..", "README.md"), "utf8").split("\n");
+  const sections = new Map<string, string>();
+  let heading: string | null = null;
+  let body: string[] = [];
+  let fenced = false;
+  const flush = () => {
+    if (heading !== null) sections.set(heading, body.join("\n").trim());
+  };
+  for (const line of lines) {
+    if (line.trimStart().startsWith("```")) fenced = !fenced;
+    const m = !fenced && /^## (.+?)\s*$/.exec(line);
+    if (m) {
+      flush();
+      heading = m[1];
+      body = [];
+    } else if (heading !== null) {
+      body.push(line);
+    }
+  }
+  flush();
+  return sections;
+}
+
+function inlineText(tokens: Tokens.Generic[] | undefined): string {
+  return (tokens ?? [])
+    .map((t) => ("tokens" in t && t.tokens ? inlineText(t.tokens as Tokens.Generic[]) : "text" in t ? String(t.text) : ""))
+    .join("");
+}
+
+let cache: Promise<DocPage[]> | undefined;
+
+export function getDocs(): Promise<DocPage[]> {
+  cache ??= build();
+  return cache;
+}
+
+async function build(): Promise<DocPage[]> {
+  const sections = readmeSections();
+  const used = new Set(PAGES.flatMap((p) => ("heading" in p.source ? [p.source.heading] : [])));
+
+  for (const heading of sections.keys()) {
+    if (!used.has(heading) && !(heading in OMITTED)) {
+      throw new Error(
+        `README.md has a "## ${heading}" section the docs site does not know about. ` +
+          `Add it to PAGES or OMITTED in site/src/lib/docs.ts.`,
+      );
+    }
+  }
+  for (const heading of [...used, ...Object.keys(OMITTED)]) {
+    if (!sections.has(heading)) {
+      throw new Error(`site/src/lib/docs.ts names a README section that no longer exists: "## ${heading}".`);
+    }
+  }
+
+  // README links are `#anchor` within one long file. Here each section is a
+  // page, so resolve an anchor to the page that now holds that heading.
+  const anchors = new Map<string, string>();
+  const sources = PAGES.map((spec) => {
+    const markdown =
+      "heading" in spec.source
+        ? sections.get(spec.source.heading)!
+        : readFileSync(path.join(SITE_ROOT, "src", "docs", spec.source.file), "utf8");
+    if ("heading" in spec.source) anchors.set(slugify(spec.source.heading), `/docs/${spec.slug}/`);
+    for (const m of markdown.matchAll(/^#{2,4} (.+?)\s*$/gm)) {
+      const id = slugify(m[1].replace(/`/g, ""));
+      if (!anchors.has(id)) anchors.set(id, `/docs/${spec.slug}/#${id}`);
+    }
+    return { spec, markdown };
+  });
+
+  const highlighter = await getHighlighter();
+
+  return sources.map(({ spec, markdown }) => {
+    const toc: TocEntry[] = [];
+    const marked = new Marked({
+      gfm: true,
+      renderer: {
+        heading(token) {
+          const text = inlineText(token.tokens as Tokens.Generic[]);
+          const id = slugify(text);
+          // README sections start at h3 (their h2 is the page title); the
+          // tutorial is its own file and starts at h2.
+          if (token.depth <= 3) toc.push({ id, text, depth: token.depth });
+          const inner = this.parser.parseInline(token.tokens);
+          return `<h${token.depth} id="${id}"><a class="anchor" href="#${id}">${inner}</a></h${token.depth}>\n`;
+        },
+        code(token) {
+          const [lang, ...meta] = (token.lang ?? "").split(/\s+/);
+          const file = meta.find((m) => m.startsWith("file="))?.slice(5);
+          return codeFigure(highlighter, token.text, lang, file);
+        },
+        link(token) {
+          let href = token.href;
+          if (href.startsWith("#")) {
+            const target = anchors.get(href.slice(1));
+            if (!target) {
+              throw new Error(`"${spec.slug}" links to ${href}, which is not on any published docs page.`);
+            }
+            href = target.startsWith(`/docs/${spec.slug}/#`) ? target.slice(target.indexOf("#")) : url(target);
+          }
+          const external = /^https?:/.test(href);
+          const inner = this.parser.parseInline(token.tokens);
+          return `<a href="${escapeHtml(href)}"${external ? ' rel="noopener"' : ""}>${inner}</a>`;
+        },
+        table(token) {
+          const cell = (c: Tokens.TableCell, tag: string) => `<${tag}>${this.parser.parseInline(c.tokens)}</${tag}>`;
+          // A table whose header row is empty (`| | |`) is a key/value list.
+          const hasHead = token.header.some((c) => c.text.trim() !== "");
+          const head = hasHead ? `<thead><tr>${token.header.map((c) => cell(c, "th")).join("")}</tr></thead>` : "";
+          const rows = token.rows.map((r) => `<tr>${r.map((c) => cell(c, "td")).join("")}</tr>`).join("");
+          return `<div class="table-scroll" tabindex="0"><table>${head}<tbody>${rows}</tbody></table></div>\n`;
+        },
+      },
+    });
+    const html = marked.parse(markdown, { async: false });
+    const title = spec.title ?? ("heading" in spec.source ? spec.source.heading : spec.slug);
+    const text = html
+      .replace(/<button[^>]*>.*?<\/button>/g, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, "&")
+      .replace(/\s+/g, " ")
+      .trim();
+    return { slug: spec.slug, group: spec.group, title, summary: spec.summary, html, toc, text };
+  });
+}

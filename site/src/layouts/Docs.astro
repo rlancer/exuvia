@@ -1,0 +1,518 @@
+---
+import Base from "./Base.astro";
+import { GROUPS, getDocs, type DocPage } from "../lib/docs";
+import { url } from "../lib/paths";
+
+interface Props {
+  title: string;
+  description: string;
+  /** The page being shown, or undefined on the docs home. */
+  page?: DocPage;
+}
+
+const { title, description, page } = Astro.props;
+const docs = await getDocs();
+const index = page ? docs.findIndex((d) => d.slug === page.slug) : -1;
+const prev = index > 0 ? docs[index - 1] : undefined;
+const next = index >= 0 && index < docs.length - 1 ? docs[index + 1] : undefined;
+const toc = page?.toc ?? [];
+const top = toc.length ? Math.min(...toc.map((t) => t.depth)) : 0;
+---
+
+<Base title={`${title} | exuvia docs`} description={description} current="docs">
+  <div class="wrap shell">
+    <aside class="side">
+      <div class="search" data-search data-index={url("/docs/search.json")}>
+        <label class="sr-only" for="docs-search">Search the docs</label>
+        <input id="docs-search" type="search" placeholder="Search the docs" autocomplete="off" spellcheck="false" />
+        <kbd aria-hidden="true">/</kbd>
+        <ol class="results" data-results hidden></ol>
+      </div>
+      <details class="menu" open>
+        <summary>Docs menu</summary>
+        <nav aria-label="Docs">
+          <a class="home" href={url("/docs/")} aria-current={page ? undefined : "page"}>Overview</a>
+          {
+            GROUPS.map((group) => (
+              <section>
+                <h2>{group}</h2>
+                {docs
+                  .filter((d) => d.group === group)
+                  .map((d) => (
+                    <a href={url(`/docs/${d.slug}/`)} aria-current={d.slug === page?.slug ? "page" : undefined}>
+                      {d.title}
+                    </a>
+                  ))}
+              </section>
+            ))
+          }
+        </nav>
+      </details>
+    </aside>
+
+    <article class="doc">
+      <slot name="header">
+        <p class="crumb">{page?.group}</p>
+        <h1>{title}</h1>
+      </slot>
+      <div class="prose">
+        <slot />
+      </div>
+      {
+        (prev || next) && (
+          <nav class="pager" aria-label="Previous and next page">
+            {prev ? (
+              <a href={url(`/docs/${prev.slug}/`)}>
+                <span>Previous</span>
+                {prev.title}
+              </a>
+            ) : (
+              <span />
+            )}
+            {next && (
+              <a class="fwd" href={url(`/docs/${next.slug}/`)}>
+                <span>Next</span>
+                {next.title}
+              </a>
+            )}
+          </nav>
+        )
+      }
+    </article>
+
+    <aside class="toc">
+      {
+        toc.length > 1 && (
+          <nav aria-label="On this page">
+            <h2>On this page</h2>
+            {toc.map((t) => (
+              <a href={`#${t.id}`} class:list={{ sub: t.depth > top }}>
+                {t.text}
+              </a>
+            ))}
+          </nav>
+        )
+      }
+    </aside>
+  </div>
+</Base>
+
+<style>
+  .shell {
+    display: grid;
+    grid-template-columns: 14rem minmax(0, 1fr) 13rem;
+    gap: clamp(1.5rem, 4vw, 3.5rem);
+    align-items: start;
+    padding-block: 2.5rem 5rem;
+  }
+  .side,
+  .toc {
+    position: sticky;
+    top: 5.5rem;
+    max-height: calc(100vh - 6.5rem);
+    overflow-y: auto;
+    font-size: 1.1rem;
+    line-height: 1.35;
+  }
+  /* Room for the focus ring inside the scrolling column. */
+  .side {
+    padding: 3px;
+    margin: -3px;
+  }
+
+  /* search */
+  .search {
+    position: relative;
+    margin-bottom: 1.5rem;
+  }
+  .search input {
+    width: 100%;
+    padding: 0.45rem 2rem 0.5rem 0.7rem;
+    border: 1.5px solid var(--ink);
+    border-radius: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: inherit;
+    appearance: none;
+  }
+  .search input::placeholder {
+    color: var(--ink-2);
+    font-style: italic;
+  }
+  .search kbd {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    padding: 0 0.4rem;
+    border: 1px solid var(--ink-3);
+    color: var(--ink-2);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    pointer-events: none;
+  }
+  .results {
+    display: grid;
+    margin: 0.4rem 0 0;
+    padding: 0;
+    border: 1.5px solid var(--ink);
+    background: var(--paper);
+    list-style: none;
+  }
+  .results[hidden] {
+    display: none;
+  }
+  .results :global(li + li) {
+    border-top: 1px solid var(--rule);
+  }
+  .results :global(a) {
+    display: block;
+    padding: 0.45rem 0.6rem;
+    text-decoration: none;
+  }
+  .results :global(a:hover),
+  .results :global(a:focus-visible) {
+    background: var(--ink);
+    color: var(--paper);
+  }
+  .results :global(b) {
+    display: block;
+    font-weight: 600;
+  }
+  .results :global(span) {
+    display: block;
+    color: var(--ink-2);
+    font-size: 0.95rem;
+    line-height: 1.35;
+  }
+  .results :global(a:hover span),
+  .results :global(a:focus-visible span) {
+    color: var(--chalk-2);
+  }
+  .results :global(mark) {
+    background: transparent;
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+  }
+  .results :global(.none) {
+    padding: 0.45rem 0.6rem;
+    color: var(--ink-2);
+    font-style: italic;
+  }
+
+  /* sidebar */
+  .menu summary {
+    display: none;
+  }
+  .side nav {
+    display: grid;
+    gap: 1.25rem;
+  }
+  .side section {
+    display: grid;
+  }
+  .side h2 {
+    margin-bottom: 0.3rem;
+    padding-bottom: 0.2rem;
+    border-bottom: 1px solid var(--ink);
+    font-family: var(--serif);
+    font-size: 1.05rem;
+    font-style: italic;
+    font-weight: 500;
+    letter-spacing: 0;
+  }
+  .side nav a {
+    padding: 0.22rem 0 0.22rem 0.7rem;
+    border-left: 3px solid transparent;
+    text-decoration: none;
+  }
+  .side nav a.home {
+    padding-left: 0;
+    border-left: 0;
+    font-weight: 600;
+  }
+  .side nav a:hover {
+    text-decoration: underline;
+  }
+  .side nav a[aria-current="page"] {
+    border-left-color: var(--blue);
+    font-weight: 700;
+  }
+  .side nav a.home[aria-current="page"] {
+    text-decoration: underline;
+    text-decoration-color: var(--blue);
+    text-decoration-thickness: 2px;
+  }
+
+  /* article */
+  .doc {
+    min-width: 0;
+    max-width: 46rem;
+  }
+  .crumb {
+    color: var(--blue-text);
+    font-style: italic;
+  }
+  h1 {
+    margin-top: 0.15rem;
+    font-size: var(--step-3);
+  }
+  .prose {
+    margin-top: 1.75rem;
+  }
+  .prose :global(> * + *) {
+    margin-top: 1.1rem;
+  }
+  .prose :global(h2),
+  .prose :global(h3),
+  .prose :global(h4) {
+    margin-top: 2.5rem;
+    scroll-margin-top: 5.5rem;
+  }
+  .prose :global(h2) {
+    padding-top: 1.1rem;
+    border-top: 2px solid var(--ink);
+    font-size: var(--step-2);
+  }
+  .prose :global(h3) {
+    font-size: 1.6rem;
+  }
+  .prose :global(h4) {
+    font-family: var(--serif);
+    font-size: var(--step-0);
+    font-style: italic;
+    font-weight: 600;
+    letter-spacing: 0;
+  }
+  .prose :global(.anchor) {
+    text-decoration: none;
+  }
+  .prose :global(.anchor:hover) {
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+  }
+  /* Links written in the docs' Markdown carry no class. */
+  .prose :global(a:not([class])) {
+    font-weight: 500;
+    text-decoration-color: var(--blue);
+    text-decoration-thickness: 2px;
+  }
+  .prose :global(a:not([class]):hover) {
+    color: var(--blue-text);
+  }
+  .prose :global(:not(pre) > code) {
+    padding: 0.08em 0.3em;
+    background: var(--paper-2);
+    overflow-wrap: anywhere;
+  }
+  .prose :global(ul),
+  .prose :global(ol) {
+    padding-left: 1.3rem;
+  }
+  .prose :global(li + li) {
+    margin-top: 0.4rem;
+  }
+  .prose :global(li > ul) {
+    margin-top: 0.4rem;
+  }
+  .prose :global(blockquote) {
+    margin-inline: 0;
+    padding-left: 1rem;
+    border-left: 3px solid var(--ochre);
+    color: var(--ink-2);
+    font-style: italic;
+  }
+  .prose :global(.table-scroll) {
+    overflow-x: auto;
+  }
+  .prose :global(table) {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 1.1rem;
+    line-height: 1.4;
+  }
+  .prose :global(th),
+  .prose :global(td) {
+    padding: 0.5rem 0.9rem 0.5rem 0;
+    border-bottom: 1px solid var(--rule);
+    text-align: left;
+    vertical-align: top;
+  }
+  .prose :global(thead th) {
+    border-bottom: 2px solid var(--ink);
+    font-style: italic;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .prose :global(td:first-child) {
+    min-width: 9rem;
+  }
+
+  .pager {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin-top: 4rem;
+    padding-top: 1.1rem;
+    border-top: 2px solid var(--ink);
+  }
+  .pager a {
+    font-family: var(--display);
+    font-size: 1.6rem;
+    line-height: 1.15;
+    text-decoration: none;
+  }
+  .pager a:hover {
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+  }
+  .pager a span {
+    display: block;
+    color: var(--ink-2);
+    font-family: var(--serif);
+    font-size: 1.05rem;
+    font-style: italic;
+  }
+  .pager .fwd {
+    text-align: right;
+  }
+
+  /* on this page */
+  .toc nav {
+    display: grid;
+    gap: 0.4rem;
+    padding-left: 1rem;
+    border-left: 1px solid var(--ink);
+  }
+  .toc h2 {
+    margin-bottom: 0.2rem;
+    font-family: var(--serif);
+    font-size: 1.05rem;
+    font-style: italic;
+    font-weight: 500;
+    letter-spacing: 0;
+  }
+  .toc a {
+    color: var(--ink-2);
+    font-size: 1rem;
+    line-height: 1.3;
+    text-decoration: none;
+  }
+  .toc a:hover {
+    color: var(--ink);
+    text-decoration: underline;
+  }
+  .toc a.sub {
+    padding-left: 0.8rem;
+  }
+
+  @media (max-width: 1100px) {
+    .shell {
+      grid-template-columns: 13rem minmax(0, 1fr);
+    }
+    .toc {
+      display: none;
+    }
+  }
+  @media (max-width: 760px) {
+    .shell {
+      grid-template-columns: minmax(0, 1fr);
+      padding-top: 1.25rem;
+    }
+    .side {
+      position: static;
+      max-height: none;
+    }
+    .menu summary {
+      display: block;
+      padding: 0.45rem 0.7rem;
+      border: 1.5px solid var(--ink);
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .menu nav {
+      margin-top: 1rem;
+    }
+  }
+</style>
+
+<script>
+  type Entry = { url: string; title: string; group: string; headings: { id: string; text: string }[]; text: string };
+
+  const box = document.querySelector<HTMLElement>("[data-search]");
+  if (box) {
+    const input = box.querySelector("input")!;
+    const list = box.querySelector<HTMLElement>("[data-results]")!;
+    let index: Promise<Entry[]> | undefined;
+    const load = () => (index ??= fetch(box.dataset.index!).then((r) => r.json()));
+
+    const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+    const mark = (text: string, q: string) => {
+      const i = text.toLowerCase().indexOf(q);
+      return i < 0 ? esc(text) : `${esc(text.slice(0, i))}<mark>${esc(text.slice(i, i + q.length))}</mark>${esc(text.slice(i + q.length))}`;
+    };
+
+    async function search() {
+      const q = input.value.trim().toLowerCase();
+      if (q.length < 2) return void (list.hidden = true);
+      const hits: { score: number; url: string; title: string; detail: string }[] = [];
+      for (const page of await load()) {
+        if (page.title.toLowerCase().includes(q)) {
+          hits.push({ score: 3, url: page.url, title: mark(page.title, q), detail: esc(page.group) });
+        }
+        for (const h of page.headings) {
+          if (h.text.toLowerCase().includes(q)) {
+            hits.push({ score: 2, url: `${page.url}#${h.id}`, title: mark(h.text, q), detail: esc(page.title) });
+          }
+        }
+        const at = page.text.toLowerCase().indexOf(q);
+        if (at >= 0) {
+          const from = Math.max(0, at - 40);
+          const snippet = (from ? "…" : "") + page.text.slice(from, at + q.length + 60).trim() + "…";
+          hits.push({ score: 1, url: page.url, title: esc(page.title), detail: mark(snippet, q) });
+        }
+      }
+      hits.sort((a, b) => b.score - a.score);
+      list.innerHTML = hits.length
+        ? hits
+            .slice(0, 8)
+            .map((h) => `<li><a href="${h.url}"><b>${h.title}</b><span>${h.detail}</span></a></li>`)
+            .join("")
+        : `<li class="none">Nothing matches "${esc(input.value.trim())}".</li>`;
+      list.hidden = false;
+    }
+
+    input.addEventListener("focus", load, { once: true });
+    input.addEventListener("input", search);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        input.value = "";
+        list.hidden = true;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        list.querySelector("a")?.focus();
+      }
+    });
+    list.addEventListener("keydown", (e) => {
+      const links = [...list.querySelectorAll("a")];
+      const i = links.indexOf(document.activeElement as HTMLAnchorElement);
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const to = i + (e.key === "ArrowDown" ? 1 : -1);
+        (to < 0 ? input : links[Math.min(to, links.length - 1)]).focus();
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target as HTMLElement).tagName);
+      if (e.key === "/" && !typing && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        input.focus();
+      }
+    });
+  }
+
+  // On a phone the docs menu starts closed so the page content comes first.
+  const menu = document.querySelector<HTMLDetailsElement>(".menu");
+  if (menu && matchMedia("(max-width: 760px)").matches) menu.open = false;
+</script>

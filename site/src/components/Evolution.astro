@@ -1,0 +1,374 @@
+---
+import { Image } from "astro:assets";
+import small from "../assets/growth-1.png";
+import medium from "../assets/growth-2.png";
+import large from "../assets/growth-3.png";
+
+// The same five steps of one analysis, drawn the way each tool holds them.
+const steps = ["universe", "prices", "returns", "rolling_vol", "summary"];
+const cellY = (i: number) => 52 + i * 44;
+// Jupyter execution counters, deliberately out of order: `universe` was
+// re-run after `prices` read it, and `summary` ran before `rolling_vol` did.
+const counters = [7, 2, 3, 9, 4];
+
+// marimo: dependency arcs down the right-hand side of the cells.
+const arcs = [
+  { from: 0, to: 1, reach: 24 },
+  { from: 1, to: 2, reach: 24 },
+  { from: 2, to: 3, reach: 24 },
+  { from: 3, to: 4, reach: 24 },
+  { from: 0, to: 4, reach: 78 },
+];
+
+// exuvia: the steps as nodes on a canvas.
+const W = 120;
+const H = 34;
+const placed: Record<string, [number, number]> = {
+  universe: [16, 58],
+  prices: [178, 58],
+  returns: [178, 128],
+  rolling_vol: [178, 198],
+  summary: [16, 198],
+};
+const wires = [
+  "M136,75 L175,75", // universe -> prices
+  "M238,92 L238,125", // prices -> returns
+  "M238,162 L238,195", // returns -> rolling_vol
+  "M178,215 L139,215", // rolling_vol -> summary
+  "M76,92 L76,195", // universe -> summary
+];
+
+// One animal, three sizes: a lobster only grows by leaving a shell behind.
+// Widths keep the three woodcuts at one scale.
+const animals = [
+  { image: small, width: "44%" },
+  { image: medium, width: "57%" },
+  { image: large, width: "79%" },
+];
+---
+
+<section class="evolution" id="evolution">
+  <div class="wrap">
+    <header>
+      <h2>From a list of cells to a graph of files</h2>
+      <p>
+        A lobster grows by leaving its old shell behind. Data tools have grown the same way: each generation
+        kept what worked and shed what hurt. Here is one five-step analysis in all three.
+      </p>
+    </header>
+
+    <ol class="stages">
+      <li>
+        <div class="animal" style={`--w:${animals[0].width}`}>
+          <Image src={animals[0].image} alt="" widths={[200, 322]} sizes="170px" loading="lazy" />
+        </div>
+        <svg viewBox="0 0 320 284" role="img" aria-labelledby="ev-jupyter">
+          <title id="ev-jupyter">
+            A Jupyter notebook: five cells in one file, with execution counters out of order and their state held
+            in a separate kernel.
+          </title>
+          <g class="tab">
+            <rect x="12" y="10" width="138" height="24"></rect>
+            <text x="20" y="27">analysis.ipynb</text>
+          </g>
+          {
+            steps.map((s, i) => (
+              <g>
+                <text class="count" x="12" y={cellY(i) + 21}>{`[${counters[i]}]`}</text>
+                <rect class="cell" x="46" y={cellY(i)} width="158" height="32" />
+                <text class="code" x="56" y={cellY(i) + 21}>{`${s} = …`}</text>
+                <path class="thread" d={`M204,${cellY(i) + 16} L246,${96 + i * 22}`} />
+              </g>
+            ))
+          }
+          <rect class="kernel" x="246" y="78" width="62" height="124"></rect>
+          <text class="note" x="277" y="222" text-anchor="middle">kernel</text>
+          {steps.map((_, i) => <circle class="var" cx="277" cy={96 + i * 22} r="4" />)}
+        </svg>
+        <h3>Jupyter</h3>
+        <p class="what">Code, output and prose in one document.</p>
+        <p>
+          You can try an idea in seconds. But cells run in whatever order you run them, and the kernel remembers
+          every result, so the file on disk and the state in memory drift apart.
+        </p>
+      </li>
+
+      <li>
+        <div class="animal" style={`--w:${animals[1].width}`}>
+          <Image src={animals[1].image} alt="" widths={[260, 414]} sizes="220px" loading="lazy" />
+        </div>
+        <svg viewBox="0 0 320 284" role="img" aria-labelledby="ev-marimo">
+          <title id="ev-marimo">
+            A marimo notebook: the same five cells in one Python file, joined by arrows that show which cell depends
+            on which.
+          </title>
+          <defs>
+            <marker id="ev-tip" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6.5" markerHeight="6.5" orient="auto">
+              <path d="M0 0.5 7.5 4 0 7.5z"></path>
+            </marker>
+          </defs>
+          <g class="tab">
+            <rect x="12" y="10" width="112" height="24"></rect>
+            <text x="20" y="27">analysis.py</text>
+          </g>
+          {
+            steps.map((s, i) => (
+              <g>
+                <rect class="cell" x="12" y={cellY(i)} width="192" height="32" />
+                <text class="code" x="22" y={cellY(i) + 21}>{`${s} = …`}</text>
+              </g>
+            ))
+          }
+          {
+            arcs.map((a) => {
+              const y1 = cellY(a.from) + (a.to - a.from > 1 ? 10 : 22);
+              const y2 = cellY(a.to) + (a.to - a.from > 1 ? 22 : 10);
+              return (
+                <path
+                  class="arc"
+                  marker-end="url(#ev-tip)"
+                  d={`M204,${y1} C${204 + a.reach * 1.3},${y1} ${204 + a.reach * 1.3},${y2} 208,${y2}`}
+                />
+              );
+            })
+          }
+        </svg>
+        <h3>marimo</h3>
+        <p class="what">The notebook becomes a reactive graph.</p>
+        <p>
+          marimo reads which cells depend on which, re-runs the dependents when something changes, and saves the
+          notebook as a plain Python file. The hidden state is gone, and the notebook fits in git.
+        </p>
+      </li>
+
+      <li class="now">
+        <div class="animal" style={`--w:${animals[2].width}`}>
+          <Image src={animals[2].image} alt="" widths={[360, 574]} sizes="300px" loading="lazy" />
+        </div>
+        <svg viewBox="0 0 320 284" role="img" aria-labelledby="ev-exuvia">
+          <title id="ev-exuvia">
+            An exuvia project: five node files laid out as a graph, each keeping its earlier outputs, one with its own
+            schedule, and an agent working on one of them.
+          </title>
+          <defs>
+            <marker id="ev-tip-now" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6.5" markerHeight="6.5" orient="auto">
+              <path d="M0 0.5 7.5 4 0 7.5z"></path>
+            </marker>
+          </defs>
+          <g class="tab">
+            <rect x="12" y="10" width="190" height="24"></rect>
+            <text x="20" y="27">five files in nodes/</text>
+          </g>
+          {wires.map((d) => <path class="arc" marker-end="url(#ev-tip-now)" d={d} />)}
+          {
+            steps.map((s) => {
+              const [x, y] = placed[s];
+              return (
+                <g>
+                  <rect class="shed" x={x + 6} y={y + 6} width={W} height={H} />
+                  <rect class="shed" x={x + 3} y={y + 3} width={W} height={H} />
+                  <rect class="cell" x={x} y={y} width={W} height={H} />
+                  <rect class="state" x={x} y={y} width="6" height={H} />
+                  <text class="code" x={x + 14} y={y + 22}>{s === "summary" ? "summary.sql" : `${s}.py`}</text>
+                </g>
+              );
+            })
+          }
+          <g class="clock" transform="translate(296 58)">
+            <circle r="10"></circle>
+            <path d="M0,-5 V0 L3.5,2.2"></path>
+          </g>
+          <g class="agent" transform="translate(96 148)">
+            <path d="M22,24 L16,50"></path>
+            <rect x="0" y="0" width="64" height="24"></rect>
+            <text x="32" y="17" text-anchor="middle">agent</text>
+          </g>
+        </svg>
+        <h3>exuvia</h3>
+        <p class="what">The graph becomes the interface.</p>
+        <p>
+          Each node is its own file with its own schedule, and every run leaves a stored output behind. An AI agent
+          reads, writes, runs and debugs nodes on the same canvas you work on.
+        </p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<style>
+  .evolution {
+    padding: clamp(4rem, 9vw, 7rem) 0;
+    border-top: 2px solid var(--ink);
+  }
+  header {
+    max-width: 46rem;
+  }
+  h2 {
+    font-size: var(--step-3);
+  }
+  header p {
+    margin-top: 1.1rem;
+    color: var(--ink-2);
+    font-size: var(--step-1);
+    line-height: 1.4;
+  }
+  .stages {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1.75rem;
+    margin: 2rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto 1fr;
+    align-content: start;
+  }
+  /* Every column reserves the height of the largest animal, so the three
+     stand on one line and the diagrams below line up. */
+  .animal {
+    display: flex;
+    align-items: flex-end;
+    aspect-ratio: 370 / 202;
+    padding-bottom: 1rem;
+  }
+  .animal :global(img) {
+    display: block;
+    width: var(--w);
+    height: auto;
+  }
+  svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 2px solid var(--ink);
+    background: var(--paper);
+  }
+  h3 {
+    margin-top: 1.25rem;
+    font-size: var(--step-2);
+  }
+  .what {
+    margin-top: 0.25rem;
+    font-style: italic;
+    font-weight: 500;
+  }
+  li > p:last-child {
+    margin-top: 0.5rem;
+    color: var(--ink-2);
+  }
+
+  text {
+    font-family: var(--mono);
+    font-size: 12px;
+    fill: var(--ink);
+  }
+  .tab rect {
+    fill: var(--ink);
+  }
+  .tab text {
+    fill: var(--paper);
+    font-weight: 700;
+  }
+  .cell {
+    fill: var(--paper);
+    stroke: var(--ink);
+    stroke-width: 1.5;
+  }
+  .count {
+    font-weight: 700;
+  }
+  .kernel {
+    fill: none;
+    stroke: var(--ink);
+    stroke-width: 1.5;
+    stroke-dasharray: 4 4;
+  }
+  .thread {
+    fill: none;
+    stroke: var(--ink-3);
+    stroke-width: 1.2;
+    stroke-dasharray: 2 3;
+  }
+  .var {
+    fill: var(--ink);
+  }
+  .arc {
+    fill: none;
+    stroke: var(--ink);
+    stroke-width: 1.5;
+  }
+  marker path {
+    fill: var(--ink);
+  }
+
+  /* The third panel is the destination, so it is printed in reverse. */
+  .now svg {
+    border-color: var(--coal);
+    background: var(--coal);
+  }
+  .now text {
+    fill: var(--chalk);
+  }
+  .now .tab rect {
+    fill: var(--chalk);
+  }
+  .now .tab text {
+    fill: var(--ink);
+  }
+  .now .cell {
+    fill: var(--coal);
+    stroke: var(--chalk);
+  }
+  .now .shed {
+    fill: none;
+    stroke: var(--coal-rule);
+    stroke-width: 1.2;
+  }
+  .now .state {
+    fill: var(--sea-lit);
+  }
+  .now .arc {
+    stroke: var(--chalk);
+  }
+  .now marker path {
+    fill: var(--chalk);
+  }
+  .clock circle {
+    fill: var(--coal);
+    stroke: var(--ochre-lit);
+    stroke-width: 1.5;
+  }
+  .clock path {
+    fill: none;
+    stroke: var(--ochre-lit);
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .agent rect {
+    fill: var(--blue);
+  }
+  .now .agent text {
+    fill: var(--ink);
+    font-weight: 700;
+  }
+  .agent path {
+    stroke: var(--blue);
+    stroke-width: 1.5;
+  }
+
+  @media (max-width: 900px) {
+    .stages {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 2.5rem;
+      max-width: 30rem;
+    }
+    .animal {
+      aspect-ratio: auto;
+      padding-top: 0.5rem;
+    }
+  }
+</style>

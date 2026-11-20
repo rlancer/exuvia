@@ -1,0 +1,202 @@
+---
+// An annotated listing: source files on the left, notes on the right. The
+// letters in the code are a key to the notes; pointing at either one lights
+// up the other. Code is passed as HTML, with keyed spans written as
+// `<mark data-ref="a">` (helpers in src/lib/anatomy.ts).
+interface Props {
+  id: string;
+  title: string;
+  /** HTML. */
+  lede: string;
+  /** `ref` keys the file name itself to a note. `html` is the highlighted source. */
+  files: { name: string; ref?: string; html: string }[];
+  /** `body` is HTML. */
+  notes: { id: string; title: string; body: string }[];
+}
+const { id, title, lede, files, notes } = Astro.props;
+---
+
+<section class="anatomy" id={id}>
+  <div class="wrap">
+    <header>
+      <h2>{title}</h2>
+      <p set:html={lede} />
+    </header>
+
+    <div class="split" data-anatomy>
+      <div class="sources">
+        {
+          files.map((file) => (
+            <div class="code">
+              <div class="code-file">
+                {file.ref ? (
+                  <mark data-ref={file.ref} class="mono">
+                    {file.name}
+                  </mark>
+                ) : (
+                  <span class="mono">{file.name}</span>
+                )}
+              </div>
+              <pre tabindex="0"><code set:html={file.html} /></pre>
+            </div>
+          ))
+        }
+      </div>
+
+      <ol class="notes">
+        {
+          notes.map((note) => (
+            <li data-note={note.id}>
+              <span class="key mono" aria-hidden="true">
+                {note.id}
+              </span>
+              <div>
+                <h3>{note.title}</h3>
+                <p set:html={note.body} />
+              </div>
+            </li>
+          ))
+        }
+      </ol>
+    </div>
+
+    <slot />
+  </div>
+</section>
+
+<style>
+  .anatomy {
+    padding: clamp(4rem, 9vw, 7rem) 0;
+    border-top: 2px solid var(--ink);
+    background: var(--paper-2);
+  }
+  header {
+    max-width: 46rem;
+  }
+  h2 {
+    font-size: var(--step-3);
+  }
+  header p {
+    margin-top: 1.1rem;
+    color: var(--ink-2);
+    font-size: var(--step-1);
+    line-height: 1.4;
+  }
+  .split {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    gap: clamp(1.5rem, 4vw, 3.5rem);
+    align-items: start;
+    margin-top: 3rem;
+  }
+  .sources {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+    position: sticky;
+    top: 6rem;
+  }
+  .code :global(.k) {
+    color: #fff;
+    font-weight: 700;
+  }
+  .code :global(.f) {
+    color: var(--sea-lit);
+  }
+  .code :global(.s) {
+    color: var(--ochre-lit);
+  }
+  .code :global(.c) {
+    color: #99978f;
+    font-style: italic;
+  }
+  /* A keyed span: outlined, with its letter in a blue box after it. */
+  .code :global(mark) {
+    padding: 0.05em 0.25em;
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--chalk);
+    color: inherit;
+  }
+  .code :global(mark::after) {
+    content: attr(data-ref);
+    margin-left: 0.45em;
+    padding: 0 0.35em;
+    background: var(--blue);
+    color: var(--ink);
+    font-style: normal;
+    font-weight: 700;
+  }
+  .code :global(mark.on) {
+    background: var(--chalk);
+    color: var(--ink);
+  }
+  .code :global(mark.on *) {
+    color: var(--ink);
+  }
+
+  .notes {
+    display: grid;
+    gap: 0.25rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .notes li {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 1rem;
+    padding: 0.8rem 0.9rem 0.95rem;
+    border-left: 2px solid transparent;
+  }
+  .notes :global(li.on) {
+    border-left-color: var(--blue);
+    background: var(--paper);
+  }
+  .key {
+    display: grid;
+    place-items: center;
+    width: 1.7rem;
+    height: 1.7rem;
+    margin-top: 0.15rem;
+    background: var(--blue);
+    color: var(--ink);
+    font-size: 1rem;
+    font-weight: 700;
+    line-height: 1;
+  }
+  h3 {
+    font-size: 1.6rem;
+  }
+  .notes p {
+    margin-top: 0.3rem;
+    color: var(--ink-2);
+  }
+  .notes :global(code) {
+    color: var(--ink);
+  }
+
+  @media (max-width: 900px) {
+    .split {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .sources {
+      position: static;
+    }
+  }
+</style>
+
+<script>
+  // Pointing at a note lights its place in the code, and the other way round.
+  for (const scope of document.querySelectorAll<HTMLElement>("[data-anatomy]")) {
+    const light = (id: string | undefined, on: boolean) => {
+      if (!id) return;
+      scope.querySelectorAll(`[data-ref="${id}"], [data-note="${id}"]`).forEach((el) => el.classList.toggle("on", on));
+    };
+    const idOf = (target: EventTarget | null) => {
+      const el = (target as HTMLElement).closest<HTMLElement>("[data-ref], [data-note]");
+      return el?.dataset.ref ?? el?.dataset.note;
+    };
+    scope.addEventListener("pointerover", (e) => light(idOf(e.target), true));
+    scope.addEventListener("pointerout", (e) => light(idOf(e.target), false));
+  }
+</script>

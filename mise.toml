@@ -1,0 +1,37 @@
+[tools]
+node = "24.12.0"
+python = "3.12.11"
+uv = "latest"
+
+[env]
+PYTHONUNBUFFERED = "1"
+
+# NOTE: mise on Windows only executes the first line of a multi-line `run`,
+# so multi-step tasks are chained on one line with `&&`.
+[tasks.sync]
+description = "Install Python (uv) and UI (npm) dependencies"
+run = "uv sync --extra dev && cd ui && npm install"
+
+[tasks.ui-build]
+description = "Build the UI into exuvia/static (served by `exuvia serve`)"
+run = "cd ui && npm run build"
+
+[tasks.ui-dev]
+description = "Vite dev server on :5180, proxying /api to exuvia on :7420"
+run = "cd ui && npm run dev"
+
+[tasks.site-dev]
+description = "Website (landing page + docs) dev server on :4380"
+run = "cd site && npm install && npm run dev"
+
+[tasks.site-build]
+description = "Typecheck and build the website into site/dist"
+run = "cd site && npm install && npm run build"
+
+[tasks.demo]
+description = "Serve the example markets project on http://127.0.0.1:7420"
+run = "uv run exuvia serve examples/markets"
+
+[tasks.test]
+description = "Run the Python test suite"
+run = "uv run pytest -q"

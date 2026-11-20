@@ -1,0 +1,88 @@
+---
+import Mark from "./Mark.astro";
+import { url } from "../lib/paths";
+---
+
+<footer class="reverse">
+  <div class="wrap grid">
+    <div class="about">
+      <a class="brand" href={url("/")}><Mark size={24} /><span>exuvia</span></a>
+      <p>
+        An open-source workbench for data work that is a graph of files. Released under the Apache-2.0
+        license.
+      </p>
+    </div>
+    <nav aria-label="Docs">
+      <h2>Learn</h2>
+      <a href={url("/docs/getting-started/")}>Getting started</a>
+      <a href={url("/docs/nodes/")}>Nodes</a>
+      <a href={url("/docs/agent/")}>The agent</a>
+      <a href={url("/docs/views/")}>Views</a>
+    </nav>
+    <nav aria-label="Operate">
+      <h2>Run</h2>
+      <a href={url("/docs/execution-model/")}>Execution model</a>
+      <a href={url("/docs/deploying/")}>Deploying</a>
+      <a href={url("/docs/http-api/")}>HTTP API</a>
+      <a href={url("/docs/status/")}>Status</a>
+    </nav>
+    <nav aria-label="Project">
+      <h2>Project</h2>
+      <a href="https://pypi.org/project/exuvia/" rel="noopener">exuvia on PyPI</a>
+      <a href="https://www.apache.org/licenses/LICENSE-2.0" rel="noopener">Apache-2.0 license</a>
+    </nav>
+  </div>
+</footer>
+
+<style>
+  footer {
+    padding: 3.5rem 0 4rem;
+    border-top: 1px solid var(--coal-rule);
+    color: var(--chalk-2);
+    font-size: 1.1rem;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) repeat(3, minmax(0, 1fr));
+    gap: 2.5rem;
+  }
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    color: var(--chalk);
+    font-family: var(--display);
+    font-size: 1.6rem;
+    line-height: 1;
+    text-decoration: none;
+  }
+  .about p {
+    max-width: 32ch;
+    margin-top: 0.9rem;
+  }
+  nav {
+    display: grid;
+    align-content: start;
+    gap: 0.4rem;
+  }
+  h2 {
+    margin-bottom: 0.35rem;
+    color: var(--chalk);
+    font-size: 1.35rem;
+  }
+  nav a {
+    text-decoration: none;
+  }
+  nav a:hover {
+    color: var(--chalk);
+    text-decoration: underline;
+  }
+  @media (max-width: 760px) {
+    .grid {
+      grid-template-columns: 1fr 1fr;
+    }
+    .about {
+      grid-column: 1 / -1;
+    }
+  }
+</style>

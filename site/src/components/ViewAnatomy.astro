@@ -1,0 +1,132 @@
+---
+// The example project's view, annotated: the one in the Workbench screenshots.
+import Anatomy from "./Anatomy.astro";
+import { c, f, k, ref, s, x } from "../lib/anatomy";
+
+const manifest = [
+  `{`,
+  `  ${s(`"title"`)}: ${s(`"Volatility board"`)},`,
+  `  ${ref("f", `${s(`"runtime"`)}: ${s(`"react"`)}`)},`,
+  `  ${s(`"entry"`)}: ${s(`"App.tsx"`)},`,
+  `  ${ref("b", `${s(`"reads"`)}: [${s(`"sector_summary"`)}, ${s(`"rolling_vol"`)}, ${s(`"universe"`)}]`)}`,
+  `}`,
+].join("\n");
+
+const app = [
+  `${k("import")} { useState } ${k("from")} ${s(`"react"`)};`,
+  `${k("import")} { rows, useQuery, useTable } ${k("from")} ${s(`"exuvia"`)};`,
+  `${ref("e", `${k("import")} { VolChart } ${k("from")} ${s(`"./VolChart"`)};`)}`,
+  `${k("import")} ${s(`"./styles.css"`)};`,
+  ``,
+  `${k("export default function")} ${f("App")}() {`,
+  `  ${k("const")} sectors = ${ref("c", `${f("useTable")}(${s(`"sector_summary"`)})`)};`,
+  `  ${k("const")} latest = ${ref("d", `${f("useQuery")}(\``)}`,
+  s(`    select v.ticker, u.sector, v.vol_20d`),
+  s(`    from rolling_vol v join universe u using (ticker)`),
+  s(`    qualify row_number() over (`),
+  s(`      partition by v.ticker order by v.date desc) = 1`) + `\`);`,
+  `  ${k("const")} [picked, setPicked] = ${f("useState")}${x("<string | null>")}(${k("null")});`,
+  `  ${k("const")} bySector = ${f("rows")}${x("<Sector>")}(sectors.data);`,
+  `  ${k("const")} sector = picked ?? bySector[0]?.sector ?? ${k("null")};`,
+  `  ${c("// …")}`,
+  `  ${k("return")} (`,
+  `    ${x(`<main className="board">`)}`,
+  `      {bySector.${f("map")}((s) ${x("=>")} (`,
+  `        ${x(`<tr key={s.sector} onClick={() => `)}${f("setPicked")}${x(`(s.sector)}>`)}`,
+  `          ${c("{/* … */}")}`,
+  `        ${x(`</tr>`)}`,
+  `      ))}`,
+  `      {sector ${x("&&")} ${x(`<VolChart sector={sector} />`)}}`,
+  `    ${x(`</main>`)}`,
+  `  );`,
+  `}`,
+].join("\n");
+
+const notes = [
+  {
+    id: "a",
+    title: "A folder of front-end files",
+    body: "A view lives in <code>views/</code>, beside <code>nodes/</code>: a manifest, an entry component, and whatever else it needs. Every file is versioned like a node file, and diffs like one.",
+  },
+  {
+    id: "b",
+    title: "The reads list is all it can see",
+    body: "The view gets the outputs of the nodes it names and nothing else. The same list draws its edges on the graph and tells you when it is ready, stale, or missing an output.",
+  },
+  {
+    id: "c",
+    title: "Data arrives typed",
+    body: "<code>useTable</code> returns a node's output as an Arrow table, with real column types. Nothing is rendered to HTML in Python and passed along as text.",
+  },
+  {
+    id: "d",
+    title: "SQL over what it reads",
+    body: "<code>useQuery</code> runs DuckDB SQL over the nodes the view reads. When a run replaces one of those outputs, the hooks reload by themselves. A view never starts a run.",
+  },
+  {
+    id: "e",
+    title: "Components, state and CSS as usual",
+    body: "Split the view into files, keep state in React, style it with a stylesheet. React, Vega-Lite and Arrow ship with exuvia, and the files compile in the browser, so there is no build step and no install.",
+  },
+  {
+    id: "f",
+    title: "Sandboxed by default",
+    body: "A view runs in a frame with no network, no cookies and no API token. Its only way to data is asking the page, which answers for the nodes in <code>reads</code>.",
+  },
+];
+---
+
+<Anatomy
+  id="views"
+  title="The interface is front-end code, not Python"
+  lede="In a notebook the UI is assembled from Python: widget calls, or HTML and JavaScript held in strings. In exuvia, Python and SQL compute, and the interface is a <b>view</b>: TypeScript, React and CSS in files of their own. This is the view in the screenshot above."
+  files={[
+    { name: "views/vol_board/view.json", ref: "a", html: manifest },
+    { name: "views/vol_board/App.tsx (shortened)", html: app },
+  ]}
+  notes={notes}
+>
+  <div class="beyond">
+    <p>
+      <b>Ask the agent for one.</b> It writes views with the same kind of tools it has for nodes, and what it writes
+      runs in the same sandbox.
+    </p>
+    <p>
+      <b>Not a React app?</b> Outside the workbench the same outputs are plain HTTP: Arrow streams and Parquet
+      files, for an app in any language.
+    </p>
+    <p class="links">
+      <a href="/docs/views/">How views work</a>
+      <a href="/docs/http-api/#binary-data-arrow-and-parquet">Reading outputs over HTTP</a>
+    </p>
+  </div>
+</Anatomy>
+
+<style>
+  .beyond {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem clamp(1.5rem, 4vw, 3.5rem);
+    margin-top: 3rem;
+    padding-top: 1.5rem;
+    border-top: 2px solid var(--ink);
+  }
+  .beyond p {
+    color: var(--ink-2);
+  }
+  .beyond b {
+    color: var(--ink);
+  }
+  .links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 2rem;
+    grid-column: 1 / -1;
+    font-weight: 600;
+  }
+  @media (max-width: 900px) {
+    .beyond {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

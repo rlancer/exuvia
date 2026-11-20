@@ -1,0 +1,235 @@
+import { ARROW_STREAM, arrowMeta, isArrow, readArrow, toGrid } from "./arrow";
+
+export type State = "fresh" | "stale" | "new" | "failed" | "error" | "queued" | "running";
+
+export interface Column {
+  name: string;
+  type: string;
+}
+
+export interface RunRow {
+  id: string;
+  node: string;
+  batch_id?: string;
+  trigger: string;
+  status: string;
+  queued_at: number;
+  started_at?: number | null;
+  finished_at?: number | null;
+  rows?: number | null;
+  error?: string | null;
+  log?: string;
+  artifact_id?: string | null;
+}
+
+export interface GraphNode {
+  name: string;
+  kind: "python" | "sql";
+  path: string;
+  deps: string[];
+  description: string;
+  cascade: boolean;
+  chart: Record<string, unknown> | null;
+  tags: string[];
+  parse_error: string | null;
+  line: number;
+  state: State;
+  reason: string | null;
+  rows: number | null;
+  schema: Column[] | null;
+  output_kind: "table" | "json" | "pickle" | "none" | null;
+  artifact_id: string | null;
+  code_hash: string;
+  finished_at: number | null;
+  last_run: RunRow | null;
+  schedule: { cron: string; paused: boolean; next: number | null } | null;
+}
+
+/** A view's state for one parameter set, derived from the nodes it reads. */
+export type ViewState = "ready" | "missing" | "stale" | "error";
+
+/** One node a view reads, and the output the view would show now. */
+export interface ViewOutput {
+  node: string;
+  state: State;
+  artifact_id: string | null;
+  kind: GraphNode["output_kind"];
+}
+
+/** A folder under views/: custom UI that only reads node outputs. */
+export interface ProjectView {
+  name: string;
+  path: string;
+  title: string;
+  description: string;
+  runtime: "react";
+  entry: string;
+  reads: string[];
+  files: string[];
+  hash: string;
+  parse_error: string | null;
+  state: ViewState;
+  reason: string | null;
+  outputs: ViewOutput[];
+}
+
+/** A declared run parameter and its value in the requested parameter set. */
+export interface ProjectParam {
+  name: string;
+  type: "date" | "string" | "number" | "boolean";
+  default: unknown;
+  description?: string;
+  value: unknown;
+}
+
+export interface Project {
+  name: string;
+  root: string;
+  params: ProjectParam[];
+  nodes: GraphNode[];
+  views: ProjectView[];
+}
+
+/** `GET /api/views/{name}`: a view with every file's source. */
+export interface ViewSources extends ProjectView {
+  manifest: Record<string, unknown> | null;
+  sources: { path: string; source: string }[];
+}
+
+/** A node's output as a view reads it: Arrow bytes of a table, or a JSON value. */
+export type ViewData = { kind: "table"; arrow: ArrayBuffer } | { kind: "json"; value: unknown } | { kind: null };
+
+export interface Preview {
+  kind: "table" | "json" | "pickle" | "none" | null;
+  columns?: Column[];
+  rows?: unknown[][];
+  total?: number | null;
+  value?: unknown;
+}
+
+/** Send one request; an error answer is thrown with the server's own message. */
+async function send(method: string, url: string, body?: unknown, accept?: string): Promise<Response> {
+  const headers: Record<string, string> = {};
+  if (accept) headers.Accept = accept;
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const res = await fetch(url, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
+  if (!res.ok) {
+    let msg = res.statusText;
+    try {
+      msg = (await res.json()).detail ?? msg;
+    } catch {
+      /* not json */
+    }
+    throw new Error(msg);
+  }
+  return res;
+}
+
+async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
+  return (await send(method, url, body)).json() as Promise<T>;
+}
+
+/** A node's output: the first `limit` rows of a table (read as Arrow), or its JSON value. */
+async function nodeData(name: string, limit: number): Promise<Preview> {
+  const res = await send("GET", `/api/nodes/${name}/data?limit=${limit}`, undefined, `${ARROW_STREAM}, application/json`);
+  if (!isArrow(res)) return res.json() as Promise<Preview>;
+  const table = await readArrow(res);
+  return { kind: "table", total: arrowMeta(table).total ?? table.numRows, ...toGrid(table) };
+}
+
+/** DuckDB SQL over every output; the first `limit` rows of the result (read as Arrow). */
+async function queryRows(sql: string, limit = 500): Promise<{ columns: Column[]; rows: unknown[][] }> {
+  return toGrid(await readArrow(await send("POST", "/api/query", { sql, limit }, ARROW_STREAM)));
+}
+
+const paramsQuery = (params?: Record<string, unknown>) =>
+  params && Object.keys(params).length ? `?params=${encodeURIComponent(JSON.stringify(params))}` : "";
+
+/** A node's output through the view-scoped route (403 unless the view reads it). */
+async function viewData(view: string, node: string, params?: Record<string, unknown>): Promise<ViewData> {
+  const url = `/api/views/${view}/data/${encodeURIComponent(node)}${paramsQuery(params)}`;
+  const res = await send("GET", url, undefined, `${ARROW_STREAM}, application/json`);
+  if (isArrow(res)) return { kind: "table", arrow: await res.arrayBuffer() };
+  const body = (await res.json()) as Preview;
+  if (body.kind === "json") return { kind: "json", value: body.value };
+  if (body.kind === "table") throw new Error("expected an Arrow answer");
+  return { kind: null };
+}
+
+export const api = {
+  config: () => req<{ ai_enabled: boolean; model: string; project: string }>("GET", "/api/config"),
+  project: (params?: Record<string, unknown>) => req<Project>("GET", `/api/project${paramsQuery(params)}`),
+  view: (name: string) => req<ViewSources>("GET", `/api/views/${name}`),
+  viewData,
+  /** DuckDB SQL that sees only the view's `reads`; the whole result as Arrow bytes. */
+  viewQuery: async (view: string, sql: string, params?: Record<string, unknown>) =>
+    (await send("POST", `/api/views/${view}/query`, { sql, params: params ?? null }, ARROW_STREAM)).arrayBuffer(),
+  node: (name: string) => req<{ name: string; source: string }>("GET", `/api/nodes/${name}`),
+  save: (name: string, source: string) => req<Project>("PUT", `/api/nodes/${name}`, { source }),
+  create: (b: { name: string; kind: string; deps: string[]; description: string }) =>
+    req<Project>("POST", "/api/nodes", b),
+  remove: (name: string) => req<Project>("DELETE", `/api/nodes/${name}`),
+  run: (name: string, force = true) => req("POST", `/api/nodes/${name}/run`, { force }),
+  /** Bring `targets` up to date (stale ancestors included) for one parameter set. */
+  runWith: (targets: string[], params: Record<string, unknown>) =>
+    req("POST", "/api/run", { targets, force: false, params: Object.keys(params).length ? params : null }),
+  runStale: () => req<{ targets: string[] }>("POST", "/api/run-stale"),
+  pause: (name: string, paused: boolean) => req("POST", `/api/nodes/${name}/schedule`, { paused }),
+  data: (name: string, limit = 200) => nodeData(name, limit),
+  runs: (name: string) => req<RunRow[]>("GET", `/api/nodes/${name}/runs`),
+  recentRuns: () => req<RunRow[]>("GET", "/api/runs"),
+  runDetail: (id: string) => req<RunRow>("GET", `/api/runs/${id}`),
+  cancel: (id: string) => req("POST", `/api/runs/${id}/cancel`),
+  query: (sql: string) => queryRows(sql),
+  resetAgent: (id: string) => req("DELETE", `/api/agent/${id}`),
+};
+
+export type AgentEvent =
+  | { type: "session"; session_id: string }
+  | { type: "thinking" }
+  | { type: "text"; text: string }
+  | { type: "tool_start"; id: string; name: string }
+  | { type: "tool"; id: string; name: string; input: Record<string, unknown> }
+  | { type: "tool_result"; id: string; name: string; ok: boolean; summary: string; node?: string }
+  | { type: "error"; error: string }
+  | { type: "done" };
+
+/** POST + read an SSE body (EventSource only does GET). */
+export async function streamAgent(
+  body: { message: string; session_id: string | null; selected: string | null },
+  onEvent: (e: AgentEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const res = await fetch("/api/agent", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    let msg = res.statusText;
+    try {
+      msg = (await res.json()).detail ?? msg;
+    } catch {
+      /* ignore */
+    }
+    onEvent({ type: "error", error: msg });
+    return;
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const chunk = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      for (const line of chunk.split("\n")) {
+        if (line.startsWith("data: ")) onEvent(JSON.parse(line.slice(6)));
+      }
+    }
+  }
+}

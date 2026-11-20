@@ -1,0 +1,89 @@
+name: CI
+
+# Python tests, UI build and the executor image. The website (site/) is built
+# and deployed by deploy-site.yml, so changes that touch only it skip this.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["site/**", "**.md"]
+  pull_request:
+    paths-ignore: ["site/**", "**.md"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python tests + UI build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The record-store tests also run against Postgres (tests/test_revisions.py).
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Python tests
+        env:
+          EXUVIA_TEST_POSTGRES_URL: postgresql://postgres:ci@127.0.0.1:5432/postgres
+        run: uv sync --extra dev --extra postgres --python 3.12 && uv run pytest -q
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: UI typecheck + build
+        run: cd ui && npm ci && npm run build
+
+      - name: Views runtime unit tests
+        run: cd ui && npm test
+
+      - name: CLI smoke (run example DAG headless)
+        run: uv run exuvia run examples/markets && uv run exuvia status examples/markets
+
+  container:
+    name: Executor image + remote run
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Build image
+        run: docker build -t exuvia:ci .
+
+      - name: Start executor container
+        run: |
+          docker run -d --name exuvia-exec -p 8080:8080 -e EXUVIA_EXECUTOR_TOKEN=ci-token exuvia:ci
+          for i in $(seq 1 60); do curl -fs http://127.0.0.1:8080/healthz && exit 0; sleep 1; done
+          docker logs exuvia-exec; exit 1
+
+      - name: Run the example DAG on the container
+        env:
+          EXUVIA_EXECUTOR_URL: http://127.0.0.1:8080
+          EXUVIA_EXECUTOR_TOKEN: ci-token
+        run: |
+          uv sync --python 3.12
+          uv run exuvia run examples/markets
+          uv run exuvia status examples/markets | tee status.txt
+          ! grep -vq "fresh" status.txt
+
+      - name: Executor logs
+        if: always()
+        run: docker logs exuvia-exec || true

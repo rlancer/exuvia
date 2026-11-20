@@ -1,0 +1,10 @@
+.venv
+.exuvia
+**/.exuvia
+**/__pycache__
+ui/node_modules
+site
+exuvia/static
+tests
+examples
+.pytest_cache

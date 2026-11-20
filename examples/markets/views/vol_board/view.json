@@ -1,0 +1,7 @@
+{
+  "title": "Volatility board",
+  "description": "Latest 20-day volatility by sector and ticker, with each sector's vol history.",
+  "runtime": "react",
+  "entry": "App.tsx",
+  "reads": ["sector_summary", "rolling_vol", "universe"]
+}

@@ -1,0 +1,134 @@
+---
+import Docs from "../../layouts/Docs.astro";
+import { GROUPS, getDocs } from "../../lib/docs";
+import { url } from "../../lib/paths";
+
+const docs = await getDocs();
+const start = docs[0];
+const about: Record<string, string> = {
+  Build: "What goes in a project: nodes, parameters, views and the agent.",
+  Run: "How exuvia decides what to run, and where it runs and stores things.",
+  Integrate: "Drive exuvia from another app.",
+  Project: "Where the project stands.",
+};
+---
+
+<Docs title="Documentation" description="Guides and reference for exuvia: nodes, schedules, the agent, views, deployment and the HTTP API.">
+  <Fragment slot="header">
+    <h1>exuvia documentation</h1>
+    <p class="lede">
+      exuvia is a workbench for data work that is a graph of plain Python and SQL files. Start with the tutorial,
+      then use the rest as reference.
+    </p>
+  </Fragment>
+
+  <a class="first" href={url(`/docs/${start.slug}/`)}>
+    <span>
+      <b>{start.title}</b>
+      {start.summary} About ten minutes.
+    </span>
+    <span class="go">Start the tutorial</span>
+  </a>
+
+  {
+    GROUPS.filter((g) => g !== "Start").map((group) => (
+      <section class="group">
+        <h2>{group}</h2>
+        <p class="about">{about[group]}</p>
+        <ul>
+          {docs
+            .filter((d) => d.group === group)
+            .map((d) => (
+              <li>
+                <a href={url(`/docs/${d.slug}/`)}>{d.title}</a>
+                <span>{d.summary}</span>
+              </li>
+            ))}
+        </ul>
+      </section>
+    ))
+  }
+</Docs>
+
+<style>
+  .lede {
+    margin-top: 0.9rem;
+    color: var(--ink-2);
+    font-size: var(--step-1);
+    line-height: 1.4;
+  }
+  /* The tutorial is the one thing to do first, so it is printed in reverse. */
+  .first {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem 2rem;
+    padding: 1.3rem 1.5rem 1.4rem;
+    background: var(--coal);
+    color: var(--chalk-2);
+    text-decoration: none;
+  }
+  .first span:first-child {
+    flex: 1 1 18rem;
+  }
+  .first b {
+    display: block;
+    color: var(--chalk);
+    font-family: var(--display);
+    font-size: var(--step-2);
+    font-weight: 400;
+    line-height: 1.1;
+  }
+  .go {
+    padding: 0.5rem 1rem 0.55rem;
+    background: var(--blue);
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .first:hover .go {
+    background: var(--blue-pale);
+  }
+  .group {
+    margin-top: 2.75rem;
+  }
+  .group h2 {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+    font-size: var(--step-2);
+  }
+  .about {
+    margin-top: 0.3rem;
+    color: var(--ink-2);
+    font-style: italic;
+  }
+  .group ul {
+    margin: 1rem 0 0;
+    padding: 0;
+    border-top: 2px solid var(--ink);
+    list-style: none;
+  }
+  .group li {
+    display: grid;
+    grid-template-columns: 11rem minmax(0, 1fr);
+    gap: 0.25rem 1.5rem;
+    margin: 0;
+    padding: 0.6rem 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .group li a {
+    color: var(--ink);
+    font-weight: 600;
+    text-decoration-color: var(--blue);
+    text-decoration-thickness: 2px;
+  }
+  .group li span {
+    color: var(--ink-2);
+  }
+  @media (max-width: 560px) {
+    .group li {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

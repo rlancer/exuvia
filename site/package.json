@@ -1,0 +1,29 @@
+{
+  "name": "exuvia-site",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro check && astro build",
+    "preview": "astro preview",
+    "typecheck": "astro check",
+    "capture": "node tools/capture.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/eb-garamond": "^5.3.0",
+    "@fontsource/courier-prime": "^5.3.0",
+    "@fontsource/im-fell-double-pica": "^5.3.0",
+    "@fontsource/im-fell-english": "^5.3.0",
+    "astro": "^7.4.13",
+    "marked": "^18.2.1",
+    "shiki": "^4.6.0"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.12",
+    "@types/node": "^24.19.2",
+    "playwright-core": "^1.65.1",
+    "sharp": "^0.35.5",
+    "typescript": "^5.6.3"
+  }
+}

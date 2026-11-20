@@ -1,0 +1,57 @@
+name: Publish
+
+# Releases exuvia to PyPI with trusted publishing (OIDC) — no stored token.
+# PyPI side: project exuvia → Publishing → GitHub publisher with
+#   owner rlancer, repo exuvia, workflow publish.yml, environment pypi.
+# Release: bump `version` in pyproject.toml, merge, then
+#   git tag v<version> && git push origin v<version>
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build + publish to PyPI
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: pypi
+      url: https://pypi.org/project/exuvia/
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Tag matches pyproject version
+        run: |
+          version=$(uv version --short)
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match pyproject.toml version ${version}"; exit 1
+          fi
+
+      - name: Tests
+        run: uv sync --extra dev --python 3.12 && uv run pytest -q
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Build UI into the package
+        run: cd ui && npm ci && npm run build
+
+      - name: Build sdist + wheel
+        run: |
+          rm -rf dist && uv build
+          unzip -l dist/*.whl | grep -q "exuvia/static/index.html" || { echo "wheel is missing the UI"; exit 1; }
+
+      - name: Publish
+        run: uv publish --trusted-publishing always

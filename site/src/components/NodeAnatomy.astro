@@ -1,0 +1,73 @@
+---
+// One real node, annotated.
+import Anatomy from "./Anatomy.astro";
+import { c, f, k, ref, s } from "../lib/anatomy";
+
+const python = [
+  s(`"""20-day annualized realized volatility per ticker."""`),
+  `${k("import")} exuvia`,
+  ``,
+  `@exuvia.node(`,
+  `    ${ref("b", `schedule=${s(`"0 18 * * 1-5"`)}`)},`,
+  `    ${ref("c", `cascade=True`)},`,
+  `)`,
+  `${k("def")} ${f("rolling_vol")}(${ref("d", "returns")}):`,
+  `    out = returns.sort_values(${s(`"date"`)}).copy()`,
+  `    out[${s(`"vol_20d"`)}] = out.groupby(${s(`"ticker"`)})[${s(`"ret"`)}].transform(`,
+  `        ${k("lambda")} s: s.rolling(20).std() * 252**0.5`,
+  `    )`,
+  `    ${ref("e", `${k("return")} out.dropna()`)}`,
+].join("\n");
+
+const sql = [
+  c("-- Latest vol by sector."),
+  c("-- schedule: */30 9-16 * * 1-5"),
+  `${k("select")} u.sector, ${f("avg")}(v.vol_20d) ${k("as")} avg_vol`,
+  `${k("from")} ${ref("f", "universe")} u ${k("join")} ${ref("f", "rolling_vol")} v ${k("using")} (ticker)`,
+  `${k("group by")} 1`,
+].join("\n");
+
+const notes = [
+  {
+    id: "a",
+    title: "The file is the node",
+    body: "One file in <code>nodes/</code>, named after the node. It diffs, reviews and merges like the rest of your code.",
+  },
+  {
+    id: "b",
+    title: "A schedule of its own",
+    body: "A cron on this node, not on the whole graph. You can pause it from the UI without touching the file.",
+  },
+  {
+    id: "c",
+    title: "Cascade, until nothing changes",
+    body: "When an upstream output changes, this node re-runs. When its own output comes out identical, the cascade stops here.",
+  },
+  {
+    id: "d",
+    title: "A parameter is an edge",
+    body: "<code>returns</code> is the node upstream. exuvia reads the graph from the source without running it, so a broken node still appears, with its error.",
+  },
+  {
+    id: "e",
+    title: "The return value is kept",
+    body: "It is stored as Parquet under a hash of its content. Same code and same inputs is a cache hit, and earlier outputs stay readable.",
+  },
+  {
+    id: "f",
+    title: "In SQL, upstream nodes are tables",
+    body: "A SQL node runs in DuckDB and names its upstream nodes in <code>from</code> and <code>join</code>. Schedules and charts go in header comments.",
+  },
+];
+---
+
+<Anatomy
+  id="node"
+  title="A node is a function in a file"
+  lede="There is no project format to learn and no graph to declare. You write ordinary Python and SQL, and exuvia reads the rest from it."
+  files={[
+    { name: "nodes/rolling_vol.py", ref: "a", html: python },
+    { name: "nodes/sector_summary.sql", html: sql },
+  ]}
+  notes={notes}
+/>

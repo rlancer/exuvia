@@ -1,0 +1,717 @@
+"""The exuvia agent: Claude with tools over the live graph.
+
+The agent edits the same node files a human edits, runs nodes through the same
+executor, and inspects real outputs before answering. Every tool call is
+streamed to the UI so the analyst sees exactly what changed.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+import uuid
+from importlib import metadata
+from typing import Any, AsyncIterator
+
+from .llm import Provider, resolve_provider
+from .project import NODE_NAME, coerce_param
+from .report import node_report
+from .workspace import Workspace, acting_as
+
+MAX_TURNS = 30
+
+TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "list_nodes",
+        "description": "List every node in the graph with its kind, upstream deps, description, schedule, freshness state, and output schema (columns + dtypes) and row count when it has run.",
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "read_node",
+        "description": "Return the full source code of one node file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "write_node",
+        "description": (
+            "Create or overwrite a node file. `source` is the complete file contents. "
+            "Returns the parsed deps or a parse error. Writing does not run the node; call run_node after."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "snake_case node name; also the file name"},
+                "kind": {"type": "string", "enum": ["python", "sql"]},
+                "source": {"type": "string"},
+            },
+            "required": ["name", "kind", "source"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "delete_node",
+        "description": "Delete a node file. Only do this when the user asked for it.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_files",
+        "description": (
+            "List the project's shared helper modules (`lib/**/*.py`) with their size and the nodes that import each."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "read_file",
+        "description": "Return the source of one helper module, e.g. `lib/stats.py`, and the nodes that import it.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string", "description": "lib/<name>.py or lib/<package>/<name>.py"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "write_file",
+        "description": (
+            "Create or overwrite a helper module under `lib/` (Python only; nodes import it as "
+            "`from lib.stats import weighted_corr`). `source` is the complete file. Returns the nodes that "
+            "import it: they are now stale, so re-run them. Use helpers for code several nodes share "
+            "instead of copying it into each node."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "lib/<name>.py or lib/<package>/<name>.py"},
+                "source": {"type": "string"},
+            },
+            "required": ["path", "source"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "delete_file",
+        "description": "Delete a helper module under `lib/`. Only when the user asked for it or no node imports it any more.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_revisions",
+        "description": (
+            "List the saved versions of one node's code (`name`), or of every file of one view (`view`), newest "
+            "first: path, hash, who saved it (agent, api, file, template, restore, ...), when, and whether it is "
+            "the current code. Read an old version with read_revision; bring it back with restore_node or "
+            "restore_view_file."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "a node name"},
+                "view": {"type": "string", "description": "a view name, instead of `name`"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "read_revision",
+        "description": "Return the full source of a saved version, by the hash list_revisions gave.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"hash": {"type": "string"}},
+            "required": ["hash"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "restore_node",
+        "description": (
+            "Make a saved version of a node its current code again (also brings back a deleted node). "
+            "The restore is itself saved as a new version, so it can be undone the same way."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}, "hash": {"type": "string"}},
+            "required": ["name", "hash"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_views",
+        "description": (
+            "List the project's views (custom UI under `views/<name>/`) with their title, the nodes each reads, "
+            "its files, and its state for the default parameters: ready, missing (a read node has no output), "
+            "stale (one is out of date) or error (with the reason)."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "read_view",
+        "description": "Return one view's state and the full source of each of its files, view.json first.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "write_view",
+        "description": (
+            "Create a view or replace its manifest (`views/<name>/view.json`). `reads` lists the nodes whose "
+            "outputs the view may read, and nothing else is readable from it. The entry file (default App.tsx) "
+            "is written separately with write_view_file. Returns the view's state."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "snake_case view name; also the folder name"},
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "reads": {"type": "array", "items": {"type": "string"}, "description": "node names"},
+                "entry": {"type": "string", "description": "the component file, default App.tsx"},
+                "runtime": {"type": "string", "enum": ["react"]},
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "write_view_file",
+        "description": (
+            "Create or overwrite one file of a view, e.g. `App.tsx` or `components/Chart.tsx` (paths are "
+            "relative to the view folder; .tsx .ts .jsx .js .css .json .html .md .svg, at most 512 KB). "
+            "`source` is the complete file."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "the view"},
+                "path": {"type": "string"},
+                "source": {"type": "string"},
+            },
+            "required": ["name", "path", "source"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "delete_view_file",
+        "description": "Delete one file of a view.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}, "path": {"type": "string"}},
+            "required": ["name", "path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "delete_view",
+        "description": "Delete a whole view folder. Only when the user asked for it.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "restore_view_file",
+        "description": (
+            "Make a saved version of one view file its current content again (also brings back a deleted file "
+            "or view). `path` is relative to the view folder; the hash comes from list_revisions with `view`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}, "path": {"type": "string"}, "hash": {"type": "string"}},
+            "required": ["name", "path", "hash"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "run_node",
+        "description": (
+            "Run a node (and any stale upstream nodes). Returns status, error + log tail on failure, "
+            "and on success the output schema, row count, and the first rows. `params` overrides run "
+            "parameters for this run (e.g. {\"as_of\": \"2026-03-02\"} to replay a past date); omitted "
+            "parameters use their defaults."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}, "params": {"type": "object"}},
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "query_data",
+        "description": (
+            "Run read-only DuckDB SQL over the current outputs of all table nodes; each node is a view "
+            "named after the node. Use it to inspect data before writing or after running nodes. Max 50 rows returned. "
+            "`params` picks which parameter set the views show (defaults otherwise). For nodes that depend on "
+            "parameters, `<node>__runs` unions every parameter set that has run, with a `_<param>` column each — "
+            "use it to compare runs across dates."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"sql": {"type": "string"}, "params": {"type": "object"}},
+            "required": ["sql"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "define_param",
+        "description": (
+            "Declare or change a project run parameter (stored in exuvia.json). Nodes that list it in `params` "
+            "get one output per value. Use a `date` parameter named `as_of` with default `today` when results "
+            "should be reproducible as of a past date."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "snake_case parameter name"},
+                "type": {"type": "string", "enum": ["date", "string", "number", "boolean"]},
+                "default": {"description": "default value; for a date, `today` means the run date"},
+                "description": {"type": "string"},
+            },
+            "required": ["name", "type"],
+            "additionalProperties": False,
+        },
+    },
+]
+
+
+VIEW_TOOLS = {
+    "list_views", "read_view", "write_view", "write_view_file", "delete_view_file", "delete_view", "restore_view_file",
+}
+
+
+def _available_packages() -> str:
+    wanted = [
+        "pandas", "numpy", "duckdb", "pyarrow", "polars", "scipy", "statsmodels",
+        "scikit-learn", "requests", "httpx", "yfinance", "matplotlib",
+    ]
+    have = []
+    for pkg in wanted:
+        try:
+            have.append(f"{pkg} {metadata.version(pkg)}")
+        except metadata.PackageNotFoundError:
+            pass
+    return ", ".join(have)
+
+
+SYSTEM = """You are the agent inside exuvia, a DAG workbench for analysts and data scientists. You build and maintain data pipelines by editing node files and running them.
+
+## How exuvia works
+- A project is a folder of node files in `nodes/`. One file = one node. File name (snake_case) = node name.
+- Python node: a module with exactly one function decorated `@exuvia.node(...)`. Its parameter names ARE its upstream dependencies; exuvia passes each upstream's output (table outputs arrive as pandas DataFrames). Return a DataFrame (preferred), a dict/list/scalar (stored as JSON; numpy values and dates are converted), or None. Any other object (a fitted model, a custom class) fails the run: return the numbers you need from it instead. Put the description in the function docstring.
+- Decorator keywords (must be literals): `schedule="<cron>"` (local time; re-runs this node on that cadence), `cascade=True|False` (auto re-run when upstream output changes; default True), `chart={...}` a Vega-Lite spec WITHOUT a `data` key — the UI injects the node's output rows, `tags=[...]`.
+- SQL node (`.sql`): DuckDB SQL; reference upstream nodes by name as tables. Header comments: first `--` lines are the description; `-- schedule: <cron>`, `-- cascade: false`, `-- chart: {json}`.
+- Run parameters make results reproducible over time. A project declares them (see "Run parameters" below; add one with define_param). A node that reads one must declare it: `@exuvia.node(params=["as_of"])` then `exuvia.param("as_of")` (dates arrive as "YYYY-MM-DD" strings); in SQL, `-- params: as_of` then `$as_of`. A node's output is stored per value of the parameters it or its upstream nodes declare, so each date has its own output and history, and nodes without parameters are computed once and shared. A node that reads `as_of` must compute "as of that date": filter source data to rows known on or before it, and never call "now"/"today" yourself.
+- Outputs are content-hashed. Unchanged output stops a cascade. Each node runs in its own subprocess with the project root as the working directory and on sys.path.
+- Shared helpers: code several nodes need (a formula, an interpolation, a cleaning step) goes in a helper module under `lib/` instead of being copied into each node. Write it with write_file (e.g. `lib/stats.py`; packages like `lib/vol/surface.py` work too, no `__init__.py` needed) and import it in the node with a plain import statement: `from lib.stats import weighted_corr`. Helpers are Python only and are not nodes: no `@exuvia.node`, no outputs. A node's code hash covers every helper it imports (directly or through other helpers), so editing a helper makes those nodes stale; write_file returns them in `used_by` — re-run them. Imports built at runtime (importlib, `__import__`) are not tracked.
+- Secrets come from environment variables (os.environ); never hardcode credentials.
+
+## Example Python node
+```python
+import exuvia
+
+
+@exuvia.node(schedule="0 18 * * 1-5", chart={"mark": "line", "encoding": {"x": {"field": "date", "type": "temporal"}, "y": {"field": "vol_20d", "type": "quantitative"}, "color": {"field": "ticker"}}})
+def rolling_vol(returns):
+    \"\"\"20-day annualized volatility per ticker.\"\"\"
+    out = returns.sort_values("date").copy()
+    out["vol_20d"] = out.groupby("ticker")["ret"].transform(lambda s: s.rolling(20).std() * 252 ** 0.5)
+    return out.dropna(subset=["vol_20d"])[["date", "ticker", "vol_20d"]]
+```
+
+## Working style
+- Look before you write: list_nodes, read the nodes you depend on, and query_data to learn real column names and types.
+- Prefer small, single-purpose nodes with clear names over one big node. Reuse existing nodes as inputs instead of recomputing.
+- After writing a node, run it. If it fails, read the error, fix it, and re-run. Do not hand back a node you have not seen succeed unless the user asked you not to run it.
+- Add a `chart` when a node's output is naturally visual (time series, distributions, rankings).
+- Imports go inside the function or at module top; available packages: {packages}. Do not pip install.
+- Only delete or rename nodes when asked. Keep edits minimal when changing an existing node.
+- Finish with a short summary of what you changed and what the data shows — a few sentences, not a report. Describe findings factually; you are a research tool and do not give investment advice.
+
+## Views
+- A view is custom UI over node outputs, kept apart from the pipeline: a folder `views/<name>/` holding a `view.json` manifest (`title`, `description`, `runtime` (only "react"), `entry` (default `App.tsx`), `reads`) and its source files (.tsx .ts .jsx .js .css .json .html .md .svg). Create one with write_view, then write its files with write_view_file.
+- A view only reads. It sees the outputs of the nodes listed in `reads` and nothing else, and it never runs anything. Computation belongs in nodes: when a view needs data no node produces, add or change a node and list it in `reads`.
+- A view's state follows the nodes it reads, for a parameter set: ready, missing (a read node has no output yet), stale (one is out of date), or error (broken manifest, missing entry file, unknown node).
+- The user sees views in the Views mode of the exuvia UI, rendered in a sandboxed iframe with no network access. The entry file's `export default` is a React component. Imports: the view's own files by relative path (`./Chart`, `./styles.css`, `./data.json`), and only these packages: `react`, `react-dom`, `apache-arrow`, `vega-embed`, `exuvia`. Nothing else is installed and nothing can be fetched.
+- Data comes from `exuvia`: `useTable(node)` / `useJson(node)` (a read node's current output), `useQuery(sql)` (DuckDB over the read nodes only, `<node>__runs` for history), each `{data, error, loading}` and reloading when an output changes; `rows(table)` turns an Arrow table into plain objects; `useParams()` gives `[values, setParams, declared]` (setting parameters changes what is shown, it never runs nodes); `useDark()`. Style with the page's CSS variables (`var(--text)`, `--muted`, `--line`, `--panel`, `--accent`, `--mono`), which follow light and dark mode.
+- Only write views when the user asks for one.
+
+## Run parameters
+{params}{notes}"""
+
+
+def _validate(name: str, args: Any) -> str | None:
+    """Tool inputs are model output; validate before running (eager streaming and
+    OpenAI-compatible endpoints do no server-side schema validation)."""
+    tool = next((t for t in TOOLS if t["name"] == name), None)
+    if tool is None:
+        return f"unknown tool {name}"
+    if not isinstance(args, dict):
+        return "tool input must be an object"
+    schema = tool["input_schema"]
+    for key in schema.get("required", []):
+        if not isinstance(args.get(key), str) or not args[key]:
+            return f"missing or invalid `{key}`"
+    for key, prop in schema["properties"].items():
+        if "enum" in prop and key in args and args[key] not in prop["enum"]:
+            return f"`{key}` must be one of {prop['enum']}"
+        if prop.get("type") == "object" and args.get(key) is not None and not isinstance(args[key], dict):
+            return f"`{key}` must be an object"
+        if prop.get("type") == "string" and key in args and not isinstance(args[key], str):
+            return f"`{key}` must be a string"
+    extra = set(args) - set(schema["properties"])
+    if extra:
+        return f"unexpected field(s): {', '.join(sorted(extra))}"
+    return None
+
+
+class Agent:
+    def __init__(self, ws: Workspace):
+        self.ws = ws
+        self.sessions: dict[str, list[Any]] = {}
+        self.transcripts: dict[str, list[dict[str, Any]]] = {}
+        self.active = 0  # chats in flight (a host must not stop the server mid-turn)
+        self.running: dict[str, asyncio.Task[None]] = {}  # session -> background turn
+        self.provider: Provider | None = resolve_provider()
+
+    @property
+    def enabled(self) -> bool:
+        return self.provider is not None
+
+    @property
+    def label(self) -> str:
+        return self.provider.label if self.provider else ""
+
+    # -- tools ---------------------------------------------------------------
+    async def _call(self, name: str, args: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
+        """Returns (ok, text-for-model, ui-extra). Code the agent changes is
+        recorded as the agent's."""
+        with acting_as("agent"):
+            return await self._dispatch(name, args)
+
+    async def _dispatch(self, name: str, args: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        if name == "list_nodes":
+            snap = ws.snapshot()
+            nodes = [
+                {
+                    k: n.get(k)
+                    for k in (
+                        "name", "kind", "deps", "helpers", "description", "schedule", "cascade", "params", "run_params",
+                        "state", "reason", "rows", "schema",
+                    )
+                    if n.get(k) not in (None, [], "")
+                }
+                for n in snap["nodes"]
+            ]
+            return True, json.dumps(nodes, default=str), {}
+        if name == "read_node":
+            try:
+                return True, ws.project.source(args["name"]), {"node": args["name"]}
+            except KeyError:
+                return False, f"no node named {args['name']}", {}
+        if name == "write_node":
+            with ws.editing():
+                ws.project.write_node(args["name"], args["source"], args["kind"])
+                ws.reload()
+            node = ws.graph.nodes.get(args["name"])
+            if node is None:
+                return False, "file written but node not found after reload", {}
+            if node.parse_error:
+                return False, f"written, but it does not parse: {node.parse_error}", {"node": node.name}
+            return True, json.dumps({"written": node.name, "deps": node.deps, "schedule": node.schedule}), {"node": node.name}
+        if name == "delete_node":
+            with ws.editing():
+                try:
+                    ws.project.delete_node(args["name"])
+                except KeyError:
+                    return False, f"no node named {args['name']}", {}
+                ws.reload()
+            return True, f"deleted {args['name']}", {}
+        if name == "read_revision":
+            source = ws.code_source(args["hash"])
+            if source is None:
+                return False, f"no saved version {args['hash']}", {}
+            return True, source, {}
+        if name == "list_revisions":
+            view, node = args.get("view"), args.get("name")
+            if bool(view) == bool(node):
+                return False, "give either `name` (a node) or `view`", {}
+            revs = ws.code_revisions(node=node, view=view, limit=50)
+            if not revs:
+                return False, f"no saved versions of {view or node}", {}
+            return True, json.dumps(revs, default=str), {"view": view} if view else {"node": node}
+        if name in VIEW_TOOLS:
+            return self._view_tool(name, args)
+        if name == "restore_node":
+            try:
+                ws.restore_node(args["name"], args["hash"])
+            except KeyError as e:
+                return False, str(e.args[0]), {}
+            return True, f"restored {args['name']} to version {args['hash']}", {"node": args["name"]}
+
+        if name == "list_files":
+            return True, json.dumps(ws.helpers()), {}
+        if name in ("read_file", "write_file", "delete_file"):
+            path = args["path"]
+            try:
+                if name == "read_file":
+                    info = ws.read_helper(path)
+                    used = f"# used by: {', '.join(info['used_by']) or 'no node yet'}\n"
+                    return True, used + info["source"], {"file": path}
+                if name == "delete_file":
+                    return True, json.dumps(ws.delete_helper(path)), {}
+                result = ws.write_helper(path, args["source"])
+            except ValueError as e:
+                return False, str(e), {}
+            except KeyError:
+                return False, f"no file {path}", {}
+            if result["parse_error"]:
+                return False, f"written, but it does not parse: {result['parse_error']}", {"file": path}
+            return True, json.dumps(result), {"file": path}
+        if name == "run_node":
+            target = args["name"]
+            if target not in ws.graph.nodes:
+                return False, f"no node named {target}", {}
+            try:
+                params = ws.resolve_params(args.get("params"))
+            except ValueError as e:
+                return False, str(e), {}
+            finals = await ws.run([target], params=params, force={target}, trigger="agent")
+            ok, report = await node_report(ws, target, params, finals)
+            return ok, json.dumps(report, default=str)[:12000], {"node": target}
+        if name == "query_data":
+            try:
+                res = await asyncio.to_thread(ws.query, args["sql"], limit=50, params=args.get("params"))
+            except Exception as e:  # duckdb errors go back to the model
+                return False, f"{type(e).__name__}: {e}", {}
+            cols = [c["name"] for c in res["columns"]]
+            return True, json.dumps([dict(zip(cols, r)) for r in res["rows"]], default=str)[:12000], {}
+        if name == "define_param":
+            if not NODE_NAME.match(args["name"]):
+                return False, "parameter names must be snake_case identifiers", {}
+            spec = {"type": args["type"], "default": args.get("default"), "description": args.get("description") or ""}
+            try:
+                coerce_param(args["name"], spec["type"], spec["default"], ws.project.today)
+            except ValueError as e:
+                return False, str(e), {}
+            ws.set_param(args["name"], spec)
+            return True, json.dumps({"defined": args["name"], **spec, "value_now": ws.resolve_params()[args["name"]]}), {}
+        return False, f"unknown tool {name}", {}
+
+    def _view_tool(self, name: str, args: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        if name == "list_views":
+            keys = ("name", "title", "description", "reads", "files", "state", "reason")
+            return True, json.dumps([{k: v[k] for k in keys} for v in ws.views()]), {}
+        view = args["name"]
+        extra = {"view": view}
+        try:
+            if name == "read_view":
+                info = ws.read_view(view)
+                head = f"view {view}: {info['state']}" + (f" ({info['reason']})" if info["reason"] else "")
+                order = sorted(info["sources"], key=lambda f: (f["path"] != "view.json", f["path"]))
+                return True, "\n\n".join([head, *(f"--- {f['path']} ---\n{f['source']}" for f in order)]), extra
+            if name == "delete_view":
+                return True, json.dumps(ws.delete_view(view)), {}
+            if name == "write_view":
+                keys = ("title", "description", "reads", "entry", "runtime")
+                info = ws.write_view_manifest(view, {k: args[k] for k in keys if k in args})
+            elif name == "write_view_file":
+                info = ws.write_view_file(view, args["path"], args["source"])
+            elif name == "delete_view_file":
+                info = ws.delete_view_file(view, args["path"])
+            else:  # restore_view_file
+                info = ws.restore_view_file(view, args["path"], args["hash"])
+        except ValueError as e:
+            return False, str(e), {}
+        except KeyError as e:
+            return False, f"not found: {e.args[0]}", {}
+        # A view is often written in pieces (manifest, then entry), so a view
+        # that is not complete yet is reported, not treated as a failure.
+        summary = {k: info[k] for k in ("name", "reads", "files", "state", "reason")}
+        return True, json.dumps(summary), extra
+
+    # -- loop ----------------------------------------------------------------
+    async def chat(self, session_id: str | None, message: str, selected: str | None) -> AsyncIterator[dict[str, Any]]:
+        assert self.provider is not None
+        provider = self.provider
+        session_id = session_id or uuid.uuid4().hex[:12]
+        history, transcript = self._load(session_id)
+        yield {"type": "session", "session_id": session_id}
+        transcript.append({"type": "user", "text": message, "at": time.time()})
+        self.active += 1
+        try:
+            async for ev in self._loop(provider, history, message, selected):
+                _record(transcript, ev)
+                yield ev
+        finally:
+            self.active -= 1
+            # Conversations are part of the project: they survive restarts.
+            self.ws.store.save_agent_session(session_id, history, transcript)
+            self.ws.bus.publish({"type": "agent", "session_id": session_id})
+        yield {"type": "done"}
+
+    def start(
+        self, session_id: str | None, message: str, selected: str | None
+    ) -> tuple[str, "asyncio.Queue[dict[str, Any] | None]"]:
+        """Run a turn in the background and return a queue of its events
+        (``None`` marks the end). The turn keeps going if the caller stops
+        listening, and every event is also published on the workspace bus as
+        ``agent_event`` so any client can follow or re-attach to it."""
+        session_id = session_id or uuid.uuid4().hex[:12]
+        if session_id in self.running:
+            raise RuntimeError("the agent is already working in this conversation")
+        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+
+        async def work() -> None:
+            try:
+                async for ev in self.chat(session_id, message, selected):
+                    self.ws.bus.publish({"type": "agent_event", "session_id": session_id, "event": ev})
+                    queue.put_nowait(ev)
+            except asyncio.CancelledError:
+                stopped = {"type": "error", "error": "Stopped."}
+                self.ws.bus.publish({"type": "agent_event", "session_id": session_id, "event": stopped})
+                queue.put_nowait(stopped)
+            except Exception as e:  # never leave a listener hanging
+                failed = {"type": "error", "error": f"{type(e).__name__}: {e}"}
+                self.ws.bus.publish({"type": "agent_event", "session_id": session_id, "event": failed})
+                queue.put_nowait(failed)
+            finally:
+                self.running.pop(session_id, None)
+                done = {"type": "done"}
+                self.ws.bus.publish({"type": "agent_event", "session_id": session_id, "event": done})
+                queue.put_nowait(None)
+
+        self.running[session_id] = asyncio.create_task(work())
+        return session_id, queue
+
+    def cancel(self, session_id: str) -> bool:
+        task = self.running.get(session_id)
+        if task is None:
+            return False
+        task.cancel()
+        return True
+
+    def _load(self, session_id: str) -> tuple[list[Any], list[dict[str, Any]]]:
+        if session_id not in self.sessions:
+            saved = self.ws.store.agent_session(session_id)
+            self.sessions[session_id] = saved["history"] if saved else []
+            self.transcripts[session_id] = saved["events"] if saved else []
+        return self.sessions[session_id], self.transcripts[session_id]
+
+    def transcript(self, session_id: str) -> list[dict[str, Any]]:
+        """What the UI showed for this conversation, for replay after a reload."""
+        return list(self._load(session_id)[1])
+
+    def instructions(self) -> str:
+        """The system prompt: how exuvia works, this project's parameters and its
+        notes. Also served at `GET /guide` for agents that drive exuvia over HTTP."""
+        ws = self.ws
+        specs = ws.project.params
+        if specs:
+            now = ws.resolve_params()
+            lines = [
+                f"- `{n}` ({s['type']}, default {s['default']!r}, currently {now.get(n)!r})"
+                + (f": {s['description']}" if s["description"] else "")
+                for n, s in specs.items()
+            ]
+            params = "This project declares:\n" + "\n".join(lines)
+        else:
+            params = "This project declares none yet."
+        notes = ws.project.instructions()
+        return (
+            SYSTEM.replace("{packages}", _available_packages())
+            .replace("{params}", params)
+            .replace("{notes}", f"\n\n## Project notes\n{notes}" if notes else "")
+        )
+
+    async def _loop(
+        self, provider: Provider, history: list[Any], message: str, selected: str | None
+    ) -> AsyncIterator[dict[str, Any]]:
+
+        context = ""
+        if selected and selected in self.ws.graph.nodes:
+            st = self.ws.status().get(selected, {})
+            context = f"\n\n<ui_context>The user has node `{selected}` selected (state: {st.get('state')}"
+            if st.get("reason") and st.get("state") in ("failed", "error"):
+                context += f"; error: {st['reason']}"
+            context += ").</ui_context>"
+        provider.add_user(history, message + context)
+        system = self.instructions()
+
+        for _ in range(MAX_TURNS):
+            turn = None
+            async for ev in provider.turn(system, TOOLS, history):
+                if ev["type"] == "turn_end":
+                    turn = ev["turn"]
+                else:
+                    yield ev
+            if turn is None or turn.status in ("end", "fatal"):
+                break
+            if turn.status == "retry":
+                continue
+
+            results = []
+            for call in turn.calls:
+                args = call.args or {}
+                yield {"type": "tool", "id": call.id, "name": call.name, "input": _ui_input(call.name, args)}
+                problem = call.parse_error or _validate(call.name, call.args)
+                if problem:
+                    ok, text, extra = False, f"INVALID_INPUT: {problem}", {}
+                else:
+                    try:
+                        ok, text, extra = await self._call(call.name, args)
+                    except Exception as e:  # surface tool crashes to the model, not the user
+                        ok, text, extra = False, f"{type(e).__name__}: {e}", {}
+                yield {"type": "tool_result", "id": call.id, "name": call.name, "ok": ok, "summary": text[:400], **extra}
+                results.append((call.id, text, not ok))
+            provider.add_tool_results(history, results)
+
+    def reset(self, session_id: str) -> None:
+        self.sessions.pop(session_id, None)
+        self.transcripts.pop(session_id, None)
+        self.ws.store.delete_agent_session(session_id)
+
+
+def _record(transcript: list[dict[str, Any]], ev: dict[str, Any]) -> None:
+    """Append a UI event to the saved transcript, merging streamed text."""
+    kind = ev.get("type")
+    if kind == "text":
+        if transcript and transcript[-1].get("type") == "text":
+            transcript[-1]["text"] += ev.get("text", "")
+        else:
+            transcript.append({"type": "text", "text": ev.get("text", "")})
+    elif kind in ("tool", "tool_result", "error"):
+        transcript.append(dict(ev))
+
+
+def _ui_input(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    if name == "write_node":
+        src = args.get("source") or ""
+        return {"name": args.get("name"), "kind": args.get("kind"), "lines": src.count("\n") + 1}
+    if name == "write_file":
+        src = args.get("source") or ""
+        return {"path": args.get("path"), "lines": src.count("\n") + 1}
+    if name == "write_view_file":
+        src = args.get("source") or ""
+        return {"name": args.get("name"), "path": args.get("path"), "lines": src.count("\n") + 1}
+    return args

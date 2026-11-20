@@ -1,0 +1,17 @@
+---
+import Docs from "../../layouts/Docs.astro";
+import { getDocs, type DocPage } from "../../lib/docs";
+
+export async function getStaticPaths() {
+  return (await getDocs()).map((page) => ({ params: { slug: page.slug }, props: { page } }));
+}
+
+interface Props {
+  page: DocPage;
+}
+const { page } = Astro.props;
+---
+
+<Docs title={page.title} description={page.summary} page={page}>
+  <Fragment set:html={page.html} />
+</Docs>

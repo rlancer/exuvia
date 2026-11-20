@@ -1,0 +1,75 @@
+name: Deploy exuvia site
+
+# site/ (landing page + docs portal) → the `exuvia` Cloudflare Pages
+# project, served from the root of its own host.
+#   main     → production: https://exuvia-c7l.pages.dev/
+#   branches → a preview deployment of the same project; its URL is in the
+#              job summary. Nothing public links to previews.
+# The docs pages are generated from README.md, so the README is a build
+# input: the build fails when a README section has no page mapping
+# (site/src/lib/docs.ts). This job is the site's typecheck + build check
+# as well as its deploy.
+
+on:
+  push:
+    paths:
+      - site/**
+      - README.md
+      - .github/workflows/deploy-site.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: exuvia-site-${{ github.ref }}
+  # A newer branch push replaces an older preview build; a production deploy
+  # always runs to the end.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  deploy:
+    name: Build + deploy exuvia site
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}
+    env:
+      PRODUCTION_URL: https://exuvia-c7l.pages.dev
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      # SITE_URL makes the social-card and canonical URLs absolute. Previews
+      # are built without it, so they never claim the production address.
+      - name: Typecheck + build
+        working-directory: site
+        env:
+          SITE_URL: ${{ github.ref == 'refs/heads/main' && env.PRODUCTION_URL || '' }}
+        run: npm ci && npm run build
+
+      - name: Deploy to Cloudflare Pages
+        id: pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: 'pages deploy site/dist --project-name exuvia --branch ${{ github.ref_name }} --commit-hash ${{ github.sha }} --commit-message "exuvia site: ${{ github.sha }}"'
+
+      - name: Report the deployment URL
+        env:
+          DEPLOYMENT_URL: ${{ steps.pages.outputs.deployment-url }}
+        run: |
+          echo "Deployed: $DEPLOYMENT_URL" | tee -a "$GITHUB_STEP_SUMMARY"
+          # A new deployment's hostname can take a little while to answer
+          # (curl fails the TLS handshake until it does), so retry.
+          for i in $(seq 1 24); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$DEPLOYMENT_URL/docs/getting-started/" || true)
+            [ "$code" = "200" ] && exit 0
+            sleep 5
+          done
+          echo "The deployment did not answer 200 (last status $code)"; exit 1

@@ -1,0 +1,172 @@
+---
+import { Image } from "astro:assets";
+import workbench from "../assets/shots/workbench.png";
+import views from "../assets/shots/views.png";
+import agent from "../assets/shots/agent.png";
+
+// Real screenshots of `exuvia serve` on the example project (tools/capture.mjs),
+// shown in the app's own colours.
+const tabs = [
+  {
+    id: "graph",
+    label: "Graph and outputs",
+    image: workbench,
+    alt: "The exuvia workbench. On the left a graph of five nodes, all fresh. On the right the selected node, rolling_vol, with its chart of 20-day volatility for eight tickers.",
+    caption:
+      "The canvas is the project. Select a node to see its code, its data, its chart and every run it has had.",
+  },
+  {
+    id: "agent",
+    label: "The agent at work",
+    image: agent,
+    alt: "The workbench after an agent turn. The agent panel lists its steps: looked at the graph, read prices, wrote drawdown, ran drawdown. A new drawdown node sits on the canvas under prices.",
+    caption:
+      "Asked for a drawdown node, the agent read the graph and the upstream code, wrote a new file, ran it, and reported what it made. The new node is on the canvas.",
+  },
+  {
+    id: "views",
+    label: "Views",
+    image: views,
+    alt: "A view named Volatility board: three summary tiles, a table of sectors ranked by average volatility, and a line chart for the selected sector.",
+    caption:
+      "A view is your own React UI over node outputs. It runs in a sandboxed frame and can read only the nodes it names.",
+  },
+];
+---
+
+<section class="workbench reverse" id="workbench">
+  <div class="wrap">
+    <header>
+      <h2>One command opens the workbench</h2>
+      <p>
+        <code>exuvia serve</code> starts the UI, the API and the scheduler on your machine. These are screenshots of
+        it running the example project.
+      </p>
+    </header>
+
+    <div class="viewer" data-tabs>
+      <div class="tablist" role="tablist" aria-label="Screenshots">
+        {
+          tabs.map((tab, i) => (
+            <button
+              type="button"
+              role="tab"
+              id={`tab-${tab.id}`}
+              aria-controls={`panel-${tab.id}`}
+              aria-selected={i === 0 ? "true" : "false"}
+              tabindex={i === 0 ? 0 : -1}
+            >
+              {tab.label}
+            </button>
+          ))
+        }
+      </div>
+      {
+        tabs.map((tab, i) => (
+          <figure role="tabpanel" id={`panel-${tab.id}`} aria-labelledby={`tab-${tab.id}`} hidden={i !== 0}>
+            <div class="frame">
+              <Image
+                src={tab.image}
+                alt={tab.alt}
+                widths={[720, 1200, 1800, 2400]}
+                sizes="(max-width: 1240px) 94vw, 1168px"
+                loading="lazy"
+                quality={82}
+              />
+            </div>
+            <figcaption>{tab.caption}</figcaption>
+          </figure>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .workbench {
+    padding: clamp(4rem, 9vw, 7rem) 0;
+  }
+  header {
+    max-width: 46rem;
+  }
+  h2 {
+    font-size: var(--step-3);
+  }
+  header p {
+    margin-top: 1.1rem;
+    color: var(--chalk-2);
+    font-size: var(--step-1);
+    line-height: 1.4;
+  }
+  header code {
+    color: var(--chalk);
+  }
+  .viewer {
+    margin-top: 2.5rem;
+  }
+  .tablist {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  [role="tab"] {
+    padding: 0.35rem 1rem 0.4rem;
+    border: 1.5px solid var(--chalk);
+    background: transparent;
+    color: var(--chalk);
+    font-size: 1.15rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  [role="tab"]:hover {
+    background: var(--coal-2);
+  }
+  [role="tab"][aria-selected="true"] {
+    background: var(--chalk);
+    color: var(--ink);
+  }
+  figure {
+    margin: 1rem 0 0;
+  }
+  .frame {
+    border: 2px solid var(--chalk);
+    overflow: hidden;
+    background: var(--coal);
+  }
+  .frame :global(img) {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  figcaption {
+    max-width: 46rem;
+    margin-top: 0.9rem;
+    color: var(--chalk-2);
+    font-style: italic;
+  }
+</style>
+
+<script>
+  // Standard tabs: click or arrow keys move the selection, one panel shows.
+  for (const root of document.querySelectorAll<HTMLElement>("[data-tabs]")) {
+    const tabs = [...root.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    const select = (tab: HTMLButtonElement, focus = false) => {
+      for (const t of tabs) {
+        const on = t === tab;
+        t.setAttribute("aria-selected", String(on));
+        t.tabIndex = on ? 0 : -1;
+        document.getElementById(t.getAttribute("aria-controls")!)!.hidden = !on;
+      }
+      if (focus) tab.focus();
+    };
+    tabs.forEach((tab, i) => {
+      tab.addEventListener("click", () => select(tab));
+      tab.addEventListener("keydown", (e) => {
+        const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+        if (!step) return;
+        e.preventDefault();
+        select(tabs[(i + step + tabs.length) % tabs.length], true);
+      });
+    });
+  }
+</script>

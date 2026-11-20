@@ -1,0 +1,80 @@
+---
+import Mark from "./Mark.astro";
+import { url } from "../lib/paths";
+
+interface Props {
+  current?: "home" | "docs";
+}
+const { current } = Astro.props;
+---
+
+<header class="nav">
+  <div class="wrap bar">
+    <a class="brand" href={url("/")} aria-label="exuvia home">
+      <Mark />
+      <span>exuvia</span>
+    </a>
+    <nav aria-label="Site">
+      <a href={url("/#evolution")}>Why a graph</a>
+      <a href={url("/#node")}>How it works</a>
+      <a class="docs-link" href={url("/docs/")} aria-current={current === "docs" ? "page" : undefined}>Docs</a>
+      <a href="https://pypi.org/project/exuvia/" rel="noopener">PyPI</a>
+    </nav>
+    <a class="btn btn-primary start" href={url("/docs/getting-started/")}>Get started</a>
+  </div>
+</header>
+
+<style>
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    border-bottom: 2px solid var(--ink);
+    background: var(--paper);
+  }
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: 1.75rem;
+    min-height: 4.25rem;
+  }
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-family: var(--display);
+    font-size: 1.75rem;
+    line-height: 1;
+    text-decoration: none;
+  }
+  .brand span {
+    padding-bottom: 0.15em;
+  }
+  nav {
+    display: flex;
+    gap: 1.6rem;
+    margin-left: auto;
+    font-size: 1.15rem;
+    font-weight: 500;
+  }
+  nav a {
+    text-decoration: none;
+  }
+  nav a:hover,
+  nav a[aria-current="page"] {
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+  }
+  .start {
+    padding: 0.4rem 0.95rem 0.45rem;
+    font-size: 1.1rem;
+  }
+  @media (max-width: 760px) {
+    .bar {
+      gap: 1rem;
+    }
+    nav a:not(.docs-link) {
+      display: none;
+    }
+  }
+</style>

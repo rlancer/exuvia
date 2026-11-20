@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+.exuvia/
+.env
+node_modules/
+exuvia/static/
+dist/
+*.egg-info/
+.pytest_cache/

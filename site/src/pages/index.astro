@@ -1,0 +1,608 @@
+---
+import { Image } from "astro:assets";
+import Base from "../layouts/Base.astro";
+import HeroGraph from "../components/HeroGraph.astro";
+import Evolution from "../components/Evolution.astro";
+import NodeAnatomy from "../components/NodeAnatomy.astro";
+import Workbench from "../components/Workbench.astro";
+import ViewAnatomy from "../components/ViewAnatomy.astro";
+import lobster from "../assets/lobster.png";
+import agentPanel from "../assets/shots/agent-panel.png";
+import { codeFigure, getHighlighter } from "../lib/highlight";
+import { url } from "../lib/paths";
+
+const h = await getHighlighter();
+
+const providers = [
+  { name: "Claude", set: ["ANTHROPIC_API_KEY"] },
+  { name: "Any model on OpenRouter", set: ["OPENROUTER_API_KEY"] },
+  { name: "A local or self-hosted model", set: ["EXUVIA_BASE_URL", "EXUVIA_MODEL"] },
+];
+
+const comparison = [
+  ["Unit of work", "A cell", "A task or an asset", "A node file"],
+  ["Dependencies", "Hidden state, or reactive cells", "Declared in code", "Function parameters and SQL table names"],
+  ["Scheduling", "None", "The whole DAG, or asset jobs", "Per node, by cron, cascading downstream"],
+  ["Iteration loop", "Fast", "Slow: deploy first", "Fast: edit, run, see the data"],
+  [
+    "Custom UI",
+    "Widgets and HTML built from Python",
+    "None: you build a separate app",
+    "Views: TypeScript, React and CSS in files of their own",
+  ],
+  ["On disk", "Notebook JSON", "A Python package", "One plain file per node"],
+];
+
+const more = [
+  {
+    title: "Run parameters and replays",
+    href: "/docs/run-parameters/",
+    body: "Run the graph for a date and keep one output per date. Replay a range, and query every run of a node as one table.",
+  },
+  {
+    title: "Many projects, one process",
+    href: "/docs/hub/",
+    body: "Serve every project under one directory from a single process.",
+  },
+  {
+    title: "Remote executors",
+    href: "/docs/architecture/",
+    body: "Keep the control plane on your laptop and run nodes in a container on Cloud Run, Fly, Kubernetes or Cloudflare.",
+  },
+  {
+    title: "Your storage",
+    href: "/docs/records/",
+    body: "Outputs go to disk or any S3-compatible bucket. Run history goes to SQLite or Postgres.",
+  },
+  {
+    title: "Headless runs",
+    href: "/docs/command-line/",
+    body: "<code>exuvia run</code> brings a project up to date and exits non-zero when a node fails, so it fits CI and cron.",
+  },
+  {
+    title: "An HTTP API",
+    href: "/docs/http-api/",
+    body: "Everything the UI does is a plain HTTP call, with Arrow streams and Parquet files when you want the data itself.",
+  },
+];
+
+const steps = [
+  {
+    title: "Install it",
+    body: "exuvia is one Python package with the web UI inside. It needs Python 3.11 or newer.",
+    code: codeFigure(h, "pip install exuvia", "bash"),
+  },
+  {
+    title: "Create a project and open it",
+    body: "A project is a folder. This makes one with a first node, then serves the workbench at 127.0.0.1:7420.",
+    code: codeFigure(h, "exuvia init my-research\nexuvia serve my-research", "bash"),
+  },
+  {
+    title: "Add a node",
+    body: "Save a file in nodes/. The parameter name is the dependency. The canvas picks the file up by itself.",
+    code: codeFigure(
+      h,
+      `import exuvia\n\n\n@exuvia.node()\ndef squares(hello):\n    return hello[hello["y"] > 1]`,
+      "python",
+      "nodes/squares.py",
+    ),
+  },
+  {
+    title: "Turn on the agent",
+    body: "Put a model key in the project's .env and restart. Then ask for a node, a fix or a chart.",
+    code: codeFigure(h, `echo "ANTHROPIC_API_KEY=sk-ant-..." >> my-research/.env`, "bash"),
+  },
+];
+---
+
+<Base
+  title="exuvia: a data workbench where the graph is the interface"
+  description="exuvia turns an analysis into a graph of plain Python and SQL files, with per-node schedules, stored outputs and an AI agent that works on the graph with you."
+  current="home"
+>
+  <section class="hero">
+    <div class="wrap hero-top">
+      <div class="pitch">
+        <h1>A data workbench where the graph is the interface</h1>
+        <p class="lede">
+          exuvia turns an analysis into a graph of plain Python and SQL files. Schedule any node on its own, keep
+          every output it produces, and work with an AI agent that reads, writes, runs and debugs the graph
+          alongside you.
+        </p>
+        <div class="actions">
+          <a class="btn btn-primary" href={url("/docs/getting-started/")}>Get started</a>
+          <div class="install" data-code>
+            <pre class="mono"><span aria-hidden="true">$ </span>pip install exuvia</pre>
+            <button class="copy" type="button" data-copy="pip install exuvia">Copy</button>
+          </div>
+        </div>
+      </div>
+      <figure class="specimen">
+        <Image
+          src={lobster}
+          alt="Woodcut print of a lobster seen from above, claws forward."
+          widths={[480, 870]}
+          sizes="(max-width: 900px) 80vw, 470px"
+          loading="eager"
+        />
+        <figcaption>
+          <dfn>exuvia</dfn>, <i>noun.</i> The shell a lobster leaves behind when it molts. Every run of a node
+          leaves one too: an output you can go back to.
+        </figcaption>
+      </figure>
+    </div>
+    <div class="wrap">
+      <HeroGraph />
+    </div>
+  </section>
+
+  <Evolution />
+  <NodeAnatomy />
+  <Workbench />
+  <ViewAnatomy />
+
+  <section class="agent" id="agent">
+    <div class="wrap agent-grid">
+      <div>
+        <h2>An agent with tools over the graph</h2>
+        <p class="intro">
+          The agent is not a chat box beside your work. It has the same handles you do: it lists and reads nodes,
+          writes them, runs them, and queries their outputs with DuckDB.
+        </p>
+        <ul class="habits">
+          <li>It looks at the real column names before it writes a line.</li>
+          <li>It runs what it writes, and reads the traceback when a run fails.</li>
+          <li>Every tool call shows in the conversation, and the nodes it touches flash on the canvas.</li>
+          <li>What it leaves behind are ordinary files, with every earlier version kept and restorable.</li>
+        </ul>
+
+        <h3>Bring your own model</h3>
+        <table class="providers">
+          <thead>
+            <tr><th scope="col">Model</th><th scope="col">Set</th></tr>
+          </thead>
+          <tbody>
+            {
+              providers.map((p) => (
+                <tr>
+                  <th scope="row">{p.name}</th>
+                  <td>
+                    {p.set.map((name, i) => (
+                      <>
+                        {i > 0 && " and "}
+                        <code>{name}</code>
+                      </>
+                    ))}
+                  </td>
+                </tr>
+              ))
+            }
+          </tbody>
+        </table>
+        <p class="aside">
+          The model needs to support function calling. <a href={url("/docs/agent/")}>Providers, project notes and sessions</a>
+        </p>
+      </div>
+
+      <figure class="transcript">
+        <div class="clip">
+          <Image
+            src={agentPanel}
+            alt="An agent conversation. The request: add a drawdown node per ticker with a chart. Its steps: looked at the graph, read prices, wrote drawdown in 20 lines, ran drawdown for 2,080 rows. Then a summary of the new node."
+            widths={[340, 678]}
+            sizes="340px"
+            loading="lazy"
+          />
+        </div>
+        <figcaption>A real turn on the example project, with DeepSeek through OpenRouter.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="between" id="compare">
+    <div class="wrap">
+      <header>
+        <h2>Between a notebook and an orchestrator</h2>
+        <p>
+          Notebooks are quick to work in and awkward to run every day. Orchestrators run every day and are slow to
+          work in. exuvia keeps the notebook's loop and gives each node the orchestrator's schedule.
+        </p>
+      </header>
+      <div class="table-scroll" tabindex="0" role="region" aria-label="Comparison table">
+        <table class="compare">
+          <thead>
+            <tr>
+              <td></td>
+              <th scope="col">Notebooks</th>
+              <th scope="col">Orchestrators</th>
+              <th scope="col" class="us">exuvia</th>
+            </tr>
+          </thead>
+          <tbody>
+            {
+              comparison.map(([label, a, b, c]) => (
+                <tr>
+                  <th scope="row">{label}</th>
+                  <td>{a}</td>
+                  <td>{b}</td>
+                  <td class="us">{c}</td>
+                </tr>
+              ))
+            }
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="more-title">When the project outgrows your laptop</h3>
+      <dl class="more">
+        {
+          more.map((item) => (
+            <div>
+              <dt>
+                <a href={url(item.href)}>{item.title}</a>
+              </dt>
+              <dd set:html={item.body} />
+            </div>
+          ))
+        }
+      </dl>
+    </div>
+  </section>
+
+  <section class="start reverse" id="get-started">
+    <div class="wrap">
+      <header>
+        <h2>Running in four steps</h2>
+        <p>From an empty folder to a graph with an agent on it.</p>
+      </header>
+      <ol class="steps">
+        {
+          steps.map((step) => (
+            <li>
+              <div class="step-text">
+                <h3>{step.title}</h3>
+                <p>{step.body}</p>
+              </div>
+              <Fragment set:html={step.code} />
+            </li>
+          ))
+        }
+      </ol>
+      <div class="next">
+        <a class="btn btn-primary" href={url("/docs/getting-started/")}>Follow the full tutorial</a>
+        <p>
+          exuvia is an early release. <a href={url("/docs/status/")}>See what it does not do yet.</a>
+        </p>
+      </div>
+    </div>
+  </section>
+</Base>
+
+<style>
+  /* ---- hero --------------------------------------------------------------- */
+  .hero {
+    padding: clamp(2rem, 5vw, 3.75rem) 0 clamp(3.5rem, 7vw, 5.5rem);
+  }
+  .hero-top {
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    gap: clamp(1.5rem, 5vw, 4rem);
+    align-items: center;
+    margin-bottom: clamp(2.5rem, 5vw, 3.5rem);
+  }
+  h1 {
+    font-size: var(--step-4);
+    line-height: 0.96;
+    letter-spacing: -0.02em;
+  }
+  .lede {
+    max-width: 36rem;
+    margin-top: 1.6rem;
+    color: var(--ink-2);
+    font-size: var(--step-1);
+    line-height: 1.4;
+  }
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 0.9rem;
+    margin-top: 2rem;
+  }
+  .install {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.9rem;
+    padding: 0 0.5rem 0 1rem;
+    border: 1.5px solid var(--ink);
+  }
+  .install pre {
+    margin: 0;
+    font-size: 1.05rem;
+    font-weight: 700;
+  }
+  .install pre span {
+    color: var(--blue-text);
+  }
+  .install .copy {
+    border-color: var(--ink);
+    background: transparent;
+    color: var(--ink);
+  }
+  .install .copy:hover {
+    background: var(--ink);
+    color: var(--paper);
+  }
+  .specimen {
+    margin: 0;
+  }
+  .specimen :global(img) {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  .specimen figcaption {
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 2px solid var(--ink);
+    color: var(--ink-2);
+    line-height: 1.4;
+  }
+  .specimen dfn {
+    color: var(--blue-text);
+    font-family: var(--display);
+    font-size: 1.5rem;
+    font-style: normal;
+  }
+
+  /* ---- shared section headers -------------------------------------------- */
+  section > .wrap > header,
+  .agent h2 {
+    max-width: 46rem;
+  }
+  h2 {
+    font-size: var(--step-3);
+  }
+  section > .wrap > header p {
+    margin-top: 1.1rem;
+    font-size: var(--step-1);
+    line-height: 1.4;
+  }
+
+  /* ---- agent -------------------------------------------------------------- */
+  .agent {
+    padding: clamp(4rem, 9vw, 7rem) 0;
+  }
+  .agent-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    gap: clamp(2rem, 6vw, 5rem);
+    align-items: start;
+  }
+  .intro {
+    max-width: 38rem;
+    margin-top: 1.1rem;
+    color: var(--ink-2);
+    font-size: var(--step-1);
+    line-height: 1.4;
+  }
+  .habits {
+    display: grid;
+    gap: 0.5rem;
+    max-width: 38rem;
+    margin: 1.75rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .habits li {
+    padding-left: 1.6rem;
+    background: linear-gradient(var(--blue), var(--blue)) 0 0.7em / 0.9rem 2px no-repeat;
+  }
+  .agent h3 {
+    margin-top: 2.75rem;
+    font-size: var(--step-2);
+  }
+  .providers {
+    width: 100%;
+    max-width: 38rem;
+    margin-top: 0.75rem;
+    border-collapse: collapse;
+    text-align: left;
+  }
+  .providers th,
+  .providers td {
+    padding: 0.55rem 0;
+    border-bottom: 1px solid var(--rule);
+    font-weight: 400;
+  }
+  .providers thead th {
+    border-bottom: 2px solid var(--ink);
+    font-style: italic;
+  }
+  .providers td,
+  .providers thead th:last-child {
+    text-align: right;
+  }
+  .aside {
+    max-width: 38rem;
+    margin-top: 0.9rem;
+    color: var(--ink-2);
+  }
+  .transcript {
+    margin: 0;
+  }
+  .clip {
+    max-height: 572px;
+    border: 2px solid var(--ink);
+    overflow: hidden;
+    background: var(--coal);
+  }
+  .clip :global(img) {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  .transcript figcaption {
+    margin-top: 0.75rem;
+    color: var(--ink-2);
+    font-style: italic;
+  }
+
+  /* ---- comparison --------------------------------------------------------- */
+  .between {
+    padding: clamp(4rem, 9vw, 7rem) 0;
+    border-top: 2px solid var(--ink);
+    background: var(--paper-2);
+  }
+  .between header p {
+    color: var(--ink-2);
+  }
+  .table-scroll {
+    margin-top: 2.5rem;
+    overflow-x: auto;
+  }
+  .compare {
+    width: 100%;
+    min-width: 44rem;
+    border-collapse: collapse;
+    text-align: left;
+  }
+  .compare th,
+  .compare td {
+    padding: 0.75rem 1.1rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  .compare thead th {
+    border-bottom: 2px solid var(--ink);
+    font-family: var(--display);
+    font-size: 1.6rem;
+    font-weight: 400;
+  }
+  .compare thead td {
+    border-bottom: 2px solid var(--ink);
+  }
+  .compare tbody th {
+    width: 11rem;
+    padding-left: 0;
+    font-style: italic;
+    font-weight: 500;
+  }
+  .compare td {
+    color: var(--ink-2);
+  }
+  /* The exuvia column is printed in reverse. */
+  .compare .us {
+    border-bottom-color: var(--coal-rule);
+    background: var(--coal);
+    color: var(--chalk);
+  }
+  .compare thead .us {
+    border-bottom-color: var(--blue);
+    color: var(--blue);
+  }
+  .compare tbody tr:last-child .us {
+    border-bottom: 0;
+  }
+  .more-title {
+    margin-top: clamp(3rem, 6vw, 4.5rem);
+    font-size: var(--step-2);
+  }
+  .more {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0 2.5rem;
+    margin: 1.25rem 0 0;
+  }
+  .more div {
+    padding: 0.9rem 0 1.2rem;
+    border-top: 2px solid var(--ink);
+  }
+  .more dt {
+    font-size: 1.3rem;
+    font-weight: 600;
+  }
+  .more a {
+    text-decoration-color: var(--blue);
+    text-decoration-thickness: 2px;
+  }
+  .more dd {
+    margin: 0.25rem 0 0;
+    color: var(--ink-2);
+  }
+
+  /* ---- get started -------------------------------------------------------- */
+  .start {
+    padding: clamp(4rem, 9vw, 7rem) 0;
+  }
+  .start header p {
+    color: var(--chalk-2);
+  }
+  .steps {
+    display: grid;
+    margin: 2.5rem 0 0;
+    padding: 0;
+    list-style: none;
+    counter-reset: step;
+  }
+  .steps li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+    gap: 1rem 3rem;
+    align-items: center;
+    padding: 1.5rem 0;
+    border-top: 1px solid var(--coal-rule);
+    counter-increment: step;
+  }
+  .step-text {
+    display: grid;
+    grid-template-columns: 3.5rem minmax(0, 1fr);
+  }
+  .step-text::before {
+    content: counter(step);
+    grid-row: span 2;
+    color: var(--blue);
+    font-family: var(--display);
+    font-size: 3.5rem;
+    line-height: 0.9;
+  }
+  .steps h3 {
+    font-size: 1.75rem;
+  }
+  .steps p {
+    margin-top: 0.3rem;
+    color: var(--chalk-2);
+  }
+  .steps :global(.code) {
+    border: 1.5px solid var(--chalk);
+  }
+  .next {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 1rem 1.75rem;
+    margin-top: 2.5rem;
+    color: var(--chalk-2);
+  }
+
+  @media (max-width: 900px) {
+    .hero-top {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .specimen {
+      max-width: 28rem;
+    }
+    .agent-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .transcript {
+      max-width: 340px;
+    }
+    .more {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .steps li {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>
