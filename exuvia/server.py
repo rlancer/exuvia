@@ -761,6 +761,11 @@ def create_app(root: str | Path) -> FastAPI:
     app.state.ws = ws
     app.include_router(project_router(lambda: ctx), prefix="/api")
 
+    # Liveness for container platforms (no auth, like the hub's and the executor's).
+    @app.get("/healthz")
+    def healthz() -> dict[str, Any]:
+        return {"ok": True, "version": __version__, "mode": "serve", "uptime_s": round(_time.monotonic() - _STARTED, 3)}
+
     # A headless install may ship only the views runtime (static/view-runtime/).
     if (STATIC / "index.html").is_file():
         app.mount("/assets", StaticFiles(directory=STATIC / "assets"), name="assets")

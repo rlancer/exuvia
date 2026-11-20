@@ -101,7 +101,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v5
 
@@ -132,6 +132,48 @@ jobs:
           E2E_IMAGE: exuvia:ci
           E2E_SKIP_BUILD: "1"
         run: python3 tests/e2e/container_e2e.py
+
+      # The deploy/ recipes, each brought up with the image built above and
+      # tested with the same script in URL mode.
+      - name: Deploy with Compose (deploy/compose.yaml)
+        env:
+          EXUVIA_IMAGE: exuvia:ci
+          EXUVIA_API_TOKEN: ci-token
+          EXUVIA_PORT: "7420"
+          E2E_URL: http://127.0.0.1:7420
+          E2E_TOKEN: ci-token
+        run: |
+          docker compose -f deploy/compose.yaml up -d --wait --wait-timeout 120
+          python3 tests/e2e/container_e2e.py || { docker compose -f deploy/compose.yaml logs; exit 1; }
+          docker compose -f deploy/compose.yaml down -v
+
+      - name: Deploy as a Swarm stack (deploy/compose.yaml)
+        env:
+          EXUVIA_IMAGE: exuvia:ci
+          EXUVIA_API_TOKEN: ci-token
+          EXUVIA_PORT: "7421"
+          E2E_URL: http://127.0.0.1:7421
+          E2E_TOKEN: ci-token
+        run: |
+          docker swarm init
+          docker stack deploy -c deploy/compose.yaml --resolve-image never --detach=false exuvia
+          python3 tests/e2e/container_e2e.py || { docker service ps --no-trunc exuvia_hub; docker service logs exuvia_hub; exit 1; }
+          docker stack rm exuvia
+
+      - name: Deploy to Kubernetes on kind (deploy/kubernetes.yaml)
+        env:
+          E2E_URL: http://127.0.0.1:7422
+          E2E_TOKEN: ci-token
+        run: |
+          kind create cluster --name exuvia --wait 120s
+          kind load docker-image exuvia:ci --name exuvia
+          kubectl create namespace exuvia
+          kubectl -n exuvia create secret generic exuvia --from-literal=api-token=ci-token
+          sed 's#ghcr.io/rlancer/exuvia:latest#exuvia:ci#' deploy/kubernetes.yaml | kubectl -n exuvia apply -f -
+          diagnose() { kubectl -n exuvia get all,pvc; kubectl -n exuvia describe pods; kubectl -n exuvia logs deployment/exuvia-hub --all-containers || true; }
+          kubectl -n exuvia rollout status deployment/exuvia-hub --timeout=180s || { diagnose; exit 1; }
+          kubectl -n exuvia port-forward service/exuvia-hub 7422:7420 >/tmp/port-forward.log 2>&1 &
+          python3 tests/e2e/container_e2e.py || { diagnose; cat /tmp/port-forward.log; exit 1; }
 
       - name: Executor logs
         if: always()

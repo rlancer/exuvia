@@ -8,3 +8,4 @@ exuvia/static
 tests
 examples
 .pytest_cache
+deploy

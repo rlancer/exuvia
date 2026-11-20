@@ -14,7 +14,9 @@
 #   FROM exuvia
 #   RUN uv pip install --python /opt/venv/bin/python scipy statsmodels yfinance
 
-FROM node:24-slim AS ui
+# The UI bundle is the same on every platform, so it builds natively even in a
+# multi-arch build (see .github/workflows/image.yml).
+FROM --platform=$BUILDPLATFORM node:24-slim AS ui
 WORKDIR /src/ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci --no-audit --no-fund
