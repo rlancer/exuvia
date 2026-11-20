@@ -113,7 +113,7 @@ jobs:
       - name: Start executor container
         run: |
           docker run -d --name exuvia-exec -p 8080:8080 -e EXUVIA_EXECUTOR_TOKEN=ci-token exuvia:ci
-          for i in $(seq 1 60); do curl -fs http://127.0.0.1:8080/healthz && exit 0; sleep 1; done
+          for _ in $(seq 1 60); do curl -fs http://127.0.0.1:8080/healthz && exit 0; sleep 1; done
           docker logs exuvia-exec; exit 1
 
       - name: Run the example DAG on the container

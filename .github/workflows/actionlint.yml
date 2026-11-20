@@ -1,0 +1,42 @@
+name: Lint workflows
+
+# actionlint (https://github.com/rhysd/actionlint) over .github/workflows/,
+# with shellcheck on the `run:` scripts: the same check as `mise run
+# lint-actions`, with the versions pinned in mise.toml. It runs only when a
+# workflow or mise.toml changes. The check is not required by the `main`
+# ruleset (ci.yml's two heavy jobs are), so a pull request that does not
+# touch workflows never waits on it.
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/**
+      - mise.toml
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/**
+      - mise.toml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: actionlint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      # Only the two linters, not the rest of mise.toml's tools.
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          install_args: actionlint shellcheck
+
+      - name: actionlint
+        run: actionlint

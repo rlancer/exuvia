@@ -2,6 +2,10 @@
 node = "24.12.0"
 python = "3.12.11"
 uv = "latest"
+# Lints .github/workflows (`mise run lint-actions`); actionlint runs
+# shellcheck over `run:` scripts when it is on PATH.
+actionlint = "1.7.12"
+shellcheck = "0.11.0"
 
 [env]
 PYTHONUNBUFFERED = "1"
@@ -44,6 +48,10 @@ run = "uv run exuvia serve examples/markets"
 [tasks.test]
 description = "Run the Python test suite"
 run = "uv run pytest -q"
+
+[tasks.lint-actions]
+description = "Lint the GitHub Actions workflows with actionlint (and shellcheck)"
+run = "actionlint"
 
 [tasks.e2e]
 description = "Build the container image and drive a hub in it over HTTP (podman, else docker; CONTAINER_ENGINE overrides)"
