@@ -118,6 +118,18 @@ def test_a_deleted_node_is_recorded_and_can_come_back(backend, tmp_path):
     assert "nums" in ws.graph.nodes and ws.project.source("nums") == V1
 
 
+def test_revisions_saved_in_the_same_instant_read_back_in_the_order_written(backend, tmp_path):
+    # time.time() can return the same value twice (15.6 ms steps on Windows
+    # before Python 3.13), so saved_at ties; the newest write must still win.
+    ws = Workspace(tmp_path / "p")
+    path = "nodes/nums.py"
+    for i in range(20):
+        ws.store.record_code([(path, "nums", None, f"h{i}", f"v{i}")], "api", now=1000.0)
+        assert ws.store.latest_code()[path] == f"h{i}"
+    revs = ws.store.code_revisions(path=path)
+    assert [r["hash"] for r in revs] == [f"h{i}" for i in reversed(range(20))]
+
+
 def test_config_changes_are_versioned(backend, tmp_path):
     ws = Workspace(tmp_path / "p")
     with acting_as("ui"):

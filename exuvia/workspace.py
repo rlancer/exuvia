@@ -101,6 +101,7 @@ class Workspace:
         self._slots = asyncio.Semaphore(MAX_PARALLEL)
         self._inflight: dict[tuple[str, str], str] = {}  # (node, params_key) -> run_id
         self._tasks: list[asyncio.Task[Any]] = []
+        self._stop_watching: asyncio.Event | None = None
         self._backfill: dict[str, Any] | None = None
         self.executor = make_executor(self.project.root, MAX_PARALLEL)
 
@@ -110,15 +111,24 @@ class Workspace:
         self.executor.start()
         # A fresh context: a change the watcher sees was made by editing files,
         # not by whichever request happened to load the project.
-        self._tasks = [asyncio.create_task(self._watch_files(), context=Context())]
+        self._stop_watching = asyncio.Event()
+        self._tasks = [asyncio.create_task(self._watch_files(self._stop_watching), context=Context())]
         if artifact_store() is not None:
             self._tasks.append(asyncio.create_task(self._sync_artifacts()))
         if SCHEDULER == "internal":
             self._tasks.append(asyncio.create_task(self._schedule_loop()))
 
     async def stop(self) -> None:
+        """Stop the background tasks and wait for them to finish. Once this
+        returns the file watcher has no project file open, so the caller may
+        replace or delete the project's files (on Windows a file another
+        thread is reading cannot be deleted; see Hub.apply_template)."""
+        if self._stop_watching is not None:
+            self._stop_watching.set()  # the watch thread checks it every 50 ms
         for t in self._tasks:
             t.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks = []
         self.executor.close()
 
     @contextmanager
@@ -242,15 +252,24 @@ class Workspace:
                 self.reload()
         return self.view_info(name)
 
-    async def _watch_files(self) -> None:
+    async def _watch_files(self, stop: asyncio.Event) -> None:
         from watchfiles import awatch
 
         # Helpers count too: an edit in lib/ changes the code hash of every
         # node that imports it.
         # Views too: their files are versioned like node files.
-        async for _ in awatch(self.project.nodes_dir, self.project.lib_dir, self.project.views_dir, debounce=200):
-            # In a thread: it may wait for an API or agent edit to finish.
-            await asyncio.to_thread(self.reload)
+        dirs = (self.project.nodes_dir, self.project.lib_dir, self.project.views_dir)
+        async for _ in awatch(*dirs, debounce=200, stop_event=stop):
+            # In a thread: it may wait for an API or agent edit to finish. A
+            # thread cannot be cancelled, so when the workspace stops mid-reload
+            # this waits for the reload to finish instead of leaving it reading
+            # files that the caller of stop() is about to delete.
+            reload = asyncio.ensure_future(asyncio.to_thread(self.reload))
+            try:
+                await asyncio.shield(reload)
+            except asyncio.CancelledError:
+                await reload
+                raise
 
     @property
     def busy(self) -> bool:

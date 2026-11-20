@@ -11,6 +11,7 @@ import os
 import sqlite3
 import tarfile
 import textwrap
+import threading
 import time
 from pathlib import Path
 
@@ -447,6 +448,35 @@ def test_editing_view_files_on_disk_is_seen(tmp_path):
     assert revs[0]["origin"] == "file" and revs[0]["path"] == "views/board/App.tsx"
     assert "fresh" in ws.graph.views
     assert [r["origin"] for r in ws.code_revisions(view="fresh")] == ["file"]
+
+
+def test_stopping_waits_for_a_reload_the_watcher_started(tmp_path):
+    # Hub.apply_template deletes views/ right after stop(); on Windows a file
+    # that the watcher's reload still has open cannot be deleted.
+    root = project(tmp_path, {"board": {"view.json": manifest(), "App.tsx": APP}})
+    ws = Workspace(root)
+    started, finished = threading.Event(), threading.Event()
+    real_reload = ws.reload
+
+    def slow_reload():
+        started.set()
+        time.sleep(0.5)
+        real_reload()
+        finished.set()
+
+    ws.reload = slow_reload
+
+    async def go():
+        await ws.start()
+        try:
+            await asyncio.sleep(0.5)  # let the watcher start
+            (root / "views" / "board" / "App.tsx").write_text(APP.replace("hello", "edited"), encoding="utf-8")
+            assert await asyncio.to_thread(started.wait, 15)
+        finally:
+            await ws.stop()
+        return finished.is_set()
+
+    assert asyncio.run(go())
 
 
 # -- hub -------------------------------------------------------------------------------------
