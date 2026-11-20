@@ -1,5 +1,11 @@
 ---
 import "../styles/global.css";
+import "../styles/designs/shared.css";
+import "../styles/designs/daylight.css";
+import "../styles/designs/workbench.css";
+import "../styles/designs/poster.css";
+import DesignSwitcher from "../components/DesignSwitcher.astro";
+import { DESIGN_IDS } from "../lib/designs";
 import Nav from "../components/Nav.astro";
 import Footer from "../components/Footer.astro";
 import { url } from "../lib/paths";
@@ -31,6 +37,16 @@ const card = Astro.site ? new URL(url("/og.png"), Astro.site).href : url("/og.pn
     <meta property="og:description" content={description} />
     <meta property="og:image" content={card} />
     <meta name="twitter:card" content="summary_large_image" />
+    <!-- Temporary: picks the design variation under review before first paint
+         (see DesignSwitcher.astro). -->
+    <script is:inline define:vars={{ ids: DESIGN_IDS }}>
+      let design = new URLSearchParams(location.search).get("design");
+      try {
+        if (design) localStorage.setItem("exuvia-design", design);
+        else design = localStorage.getItem("exuvia-design");
+      } catch {}
+      if (ids.includes(design)) document.documentElement.dataset.design = design;
+    </script>
   </head>
   <body>
     <!-- The hand-inked edge used by .inked and .btn (see global.css). -->
@@ -47,6 +63,7 @@ const card = Astro.site ? new URL(url("/og.png"), Astro.site).href : url("/og.pn
       <slot />
     </main>
     <Footer />
+    <DesignSwitcher />
     <script>
       // Copy buttons on code blocks: the button says what happened.
       document.addEventListener("click", async (event) => {

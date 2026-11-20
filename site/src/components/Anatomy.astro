@@ -67,7 +67,7 @@ const { id, title, lede, files, notes } = Astro.props;
 <style>
   .anatomy {
     padding: clamp(4rem, 9vw, 7rem) 0;
-    border-top: 2px solid var(--ink);
+    border-top: var(--line);
     background: var(--paper-2);
   }
   header {
@@ -122,16 +122,16 @@ const { id, title, lede, files, notes } = Astro.props;
     margin-left: 0.45em;
     padding: 0 0.35em;
     background: var(--blue);
-    color: var(--ink);
+    color: var(--on-accent);
     font-style: normal;
     font-weight: 700;
   }
   .code :global(mark.on) {
     background: var(--chalk);
-    color: var(--ink);
+    color: var(--coal);
   }
   .code :global(mark.on *) {
-    color: var(--ink);
+    color: var(--coal);
   }
 
   .notes {
@@ -159,7 +159,7 @@ const { id, title, lede, files, notes } = Astro.props;
     height: 1.7rem;
     margin-top: 0.15rem;
     background: var(--blue);
-    color: var(--ink);
+    color: var(--on-accent);
     font-size: 1rem;
     font-weight: 700;
     line-height: 1;

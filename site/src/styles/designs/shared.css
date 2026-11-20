@@ -1,0 +1,39 @@
+/* Temporary: what the three design variations under review have in common.
+   Each variation is a skin over the shipped markup: it redefines the tokens
+   in global.css and then overrides what tokens cannot reach.
+
+   Component styles are scoped by Astro, which adds an attribute to every
+   compound selector, so a plain override would lose to them. The overrides
+   are nested under `:not(#_)` to outrank them: it matches every element and
+   carries the weight of an id. This is scaffolding for comparing designs, and
+   goes away when the chosen one is written into the components. */
+
+:root[data-design] {
+  /* The shipped sizes are tuned for Garamond, which sets small. The
+     variations use sans faces, so the whole scale comes down one notch and
+     the page width goes back up to match. */
+  font-size: 87.5%;
+}
+
+:root[data-design]:not(#_) {
+  body {
+    background-image: none;
+    font-variant-numeric: normal;
+  }
+
+  /* No hand-inked wobble. */
+  .inked::after,
+  .btn::before {
+    filter: none;
+  }
+
+  /* Italic was the print shop's second voice. Here it is kept for words that
+     are italic in the text itself. */
+  body :not(em, i, cite, em *, i *) {
+    font-style: normal;
+  }
+
+  code {
+    font-size: 0.9em;
+  }
+}

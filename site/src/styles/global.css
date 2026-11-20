@@ -41,6 +41,15 @@
   --sea-lit: #7fc0c1;
   --ochre: #c28a1e;
   --ochre-lit: #e4b85a;
+  /* Whatever is set on a block of the blue. */
+  --on-accent: var(--ink);
+
+  /* Rules: the heavy one that boxes and divides, and a lighter one for
+     controls. The -rev pair is the same two on black. */
+  --line: 2px solid var(--ink);
+  --line-thin: 1.5px solid var(--ink);
+  --line-rev: 2px solid var(--chalk);
+  --line-rev-thin: 1.5px solid var(--chalk);
 
   --display: "IM Fell Double Pica", "IM Fell English", Georgia, serif;
   --serif: "EB Garamond Variable", Georgia, "Times New Roman", serif;
@@ -138,7 +147,7 @@ button {
 
 ::selection {
   background: var(--blue);
-  color: var(--ink);
+  color: var(--on-accent);
 }
 
 .wrap {
@@ -153,7 +162,7 @@ button {
 }
 .reverse ::selection {
   background: var(--blue);
-  color: var(--ink);
+  color: var(--on-accent);
 }
 
 .skip {
@@ -219,11 +228,11 @@ button {
   position: absolute;
   inset: 0;
   z-index: -1;
-  border: 2px solid var(--ink);
+  border: var(--line);
   filter: url(#rough);
 }
 .btn-primary {
-  color: var(--ink);
+  color: var(--on-accent);
 }
 .btn-primary::before {
   background: var(--blue);

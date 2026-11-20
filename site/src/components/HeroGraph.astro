@@ -89,7 +89,7 @@ const edges = [
     flex-wrap: wrap;
     gap: 0.75rem 1.5rem;
     padding: 0.8rem 1.1rem;
-    border-bottom: 2px solid var(--ink);
+    border-bottom: var(--line);
   }
   .project {
     font-size: 1rem;
@@ -108,7 +108,7 @@ const edges = [
   }
   .ctl {
     padding: 0.3rem 0.8rem 0.35rem;
-    border: 1.5px solid var(--ink);
+    border: var(--line-thin);
     background: var(--paper);
     font-size: 1.1rem;
     font-weight: 600;
@@ -187,7 +187,7 @@ const edges = [
     gap: 0.1rem;
     min-width: 0;
     padding: 0.5rem 0.65rem 0.6rem 1.3rem;
-    border: 2px solid var(--ink);
+    border: var(--line);
     background: var(--paper);
     text-align: left;
     cursor: pointer;
@@ -200,7 +200,7 @@ const edges = [
     position: absolute;
     inset: 0 auto 0 0;
     width: 0.7rem;
-    border-right: 2px solid var(--ink);
+    border-right: var(--line);
   }
   .gnode[data-state="fresh"] .band {
     background: var(--sea);
@@ -290,7 +290,7 @@ const edges = [
     gap: 0.1rem;
     min-height: 7.4rem;
     padding: 0.8rem 1.1rem;
-    border-top: 2px solid var(--ink);
+    border-top: var(--line);
     background: var(--paper-2);
     color: var(--ink-3);
     font-size: 0.95rem;
@@ -511,7 +511,11 @@ const edges = [
       }
     }
 
-    new ResizeObserver(drawEdges).observe(canvas);
+    // The edges hang off the cards, so a card that changes size (a font
+    // arriving, a restyle) moves them as surely as the canvas does.
+    const resized = new ResizeObserver(drawEdges);
+    resized.observe(canvas);
+    for (const name of order) resized.observe(card(name));
     document.fonts?.ready.then(drawEdges);
     drawEdges();
     paint();

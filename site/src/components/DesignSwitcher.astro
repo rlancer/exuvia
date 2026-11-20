@@ -1,0 +1,107 @@
+---
+// Temporary: a bar for flipping between the design variations under review
+// (src/styles/designs/). The choice is kept in localStorage and mirrored in
+// `?design=`, so a link opens the same variation. Delete this component, the
+// script in Base.astro's <head> and the unused stylesheets once one is chosen.
+import { DESIGNS } from "../lib/designs";
+---
+
+<div class="design-switcher" role="group" aria-label="Design variation" data-design-switcher>
+  <span>Design</span>
+  {
+    DESIGNS.map((d) => (
+      <button type="button" data-set-design={d.id} aria-pressed="false" title={d.note}>
+        {d.label}
+      </button>
+    ))
+  }
+</div>
+
+<style is:global>
+  /* Sized in px and set in the system font on purpose: the bar must look the
+     same whichever variation is showing. */
+  .design-switcher {
+    position: fixed;
+    left: 50%;
+    bottom: 14px;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    max-width: calc(100vw - 16px);
+    padding: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 999px;
+    background: rgba(18, 18, 20, 0.94);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+    color: #fff;
+    font: 500 13px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+    letter-spacing: 0;
+    transform: translateX(-50%);
+    white-space: nowrap;
+  }
+  .design-switcher span {
+    padding: 0 6px 0 10px;
+    color: rgba(255, 255, 255, 0.6);
+  }
+  .design-switcher button {
+    padding: 8px 12px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: #fff;
+    font: inherit;
+    cursor: pointer;
+  }
+  .design-switcher button:hover {
+    background: rgba(255, 255, 255, 0.14);
+  }
+  .design-switcher button[aria-pressed="true"] {
+    background: #fff;
+    color: #121214;
+  }
+  .design-switcher button:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+  }
+  @media (max-width: 520px) {
+    .design-switcher span {
+      display: none;
+    }
+    .design-switcher button {
+      padding: 8px 10px;
+    }
+  }
+  @media print {
+    .design-switcher {
+      display: none;
+    }
+  }
+</style>
+
+<script>
+  const KEY = "exuvia-design";
+  const root = document.documentElement;
+  const buttons = [...document.querySelectorAll<HTMLButtonElement>("[data-set-design]")];
+  const show = () => {
+    const now = root.dataset.design ?? "current";
+    for (const b of buttons) b.setAttribute("aria-pressed", String(b.dataset.setDesign === now));
+  };
+  for (const button of buttons) {
+    button.addEventListener("click", () => {
+      const id = button.dataset.setDesign!;
+      if (id === "current") delete root.dataset.design;
+      else root.dataset.design = id;
+      try {
+        localStorage.setItem(KEY, id);
+      } catch {
+        /* private mode: the choice lasts for this page only */
+      }
+      const here = new URL(location.href);
+      here.searchParams.set("design", id);
+      history.replaceState(null, "", here);
+      show();
+    });
+  }
+  show();
+</script>
