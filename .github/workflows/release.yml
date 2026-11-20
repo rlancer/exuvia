@@ -1,0 +1,66 @@
+name: Release
+
+# Releases a new version when it reaches main: if `version` in pyproject.toml
+# has no `v<version>` tag yet, this tags the merged commit and starts the two
+# release workflows on that tag:
+#   publish.yml  → PyPI
+#   image.yml    → ghcr.io/rlancer/exuvia
+# So a release is one merged pull request that bumps the version. Every other
+# push to main finds the tag already there and does nothing.
+#
+# The workflows are started with `gh workflow run` because a tag pushed with
+# the workflow's own token does not trigger `on: push: tags` (GitHub starts no
+# runs from GITHUB_TOKEN pushes; workflow_dispatch is the exception). A tag
+# pushed by hand still triggers both directly, as before.
+#
+# The `release tags` ruleset forbids moving or deleting a `v*` tag, and PyPI
+# never takes the same version twice: a release cannot be redone, only
+# followed by the next version. If this job tagged but failed to start a
+# workflow, start that workflow by hand on the tag (Actions → Publish or
+# Image → Run workflow → pick the tag), or: gh workflow run publish.yml --ref v<version>
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag a new version and start its release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # push the tag
+      actions: write # start publish.yml and image.yml on it
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Tag v<version> if it is new, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([a-z0-9.+-]*)$'; then
+            echo "could not read a version from pyproject.toml (got '${version}')"; exit 1
+          fi
+          tag="v${version}"
+          existing=$(git ls-remote --tags origin "refs/tags/${tag}")
+          if [ -n "$existing" ]; then
+            echo "${tag} is already released: nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git tag "$tag" "$GITHUB_SHA"
+          git push origin "refs/tags/${tag}"
+          gh workflow run publish.yml --ref "$tag"
+          gh workflow run image.yml --ref "$tag"
+          {
+            echo "Tagged \`${tag}\` at ${GITHUB_SHA} and started its release:"
+            echo "- [Publish](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/publish.yml) → PyPI"
+            echo "- [Image](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/image.yml) → ghcr.io/${GITHUB_REPOSITORY}"
+          } | tee -a "$GITHUB_STEP_SUMMARY"

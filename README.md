@@ -885,16 +885,30 @@ site/           the website: landing page + docs portal (Astro, static)
 
 ## Releasing
 
-PyPI releases go through `.github/workflows/publish.yml` with trusted
-publishing, so no token is stored anywhere. Bump `version` in `pyproject.toml`,
-merge, then push a matching tag:
+A release is one merged pull request that bumps the version: set `version`
+in `pyproject.toml` and `__version__` in `exuvia/__init__.py`, run `uv lock`,
+and merge. Nothing else is done by hand.
 
-```bash
-git tag vX.Y.Z && git push origin vX.Y.Z
-```
+On every push to `main`, `.github/workflows/release.yml` looks for a
+`v<version>` tag. When there is none, it tags the merged commit and starts
+two workflows on that tag:
 
-The workflow checks the tag matches the version, runs the tests, bundles the
-UI into the wheel, and publishes.
+- `publish.yml` checks the tag matches the version, runs the tests, bundles
+  the UI into the wheel and publishes to PyPI. It uses trusted publishing, so
+  no token is stored anywhere.
+- `image.yml` builds the container image for linux/amd64 and linux/arm64 and
+  pushes it to `ghcr.io/rlancer/exuvia` as `<version>`, `<major>.<minor>` and
+  `latest`.
+
+A push that does not change the version finds its tag already there and
+releases nothing. Pushing a `vX.Y.Z` tag by hand still starts both workflows,
+and each can be started on an existing tag from the Actions tab, which is how
+to retry one that failed. A version cannot be released twice: `v*` tags
+cannot be moved or deleted, and PyPI refuses a version it already has, so a
+bad release is fixed by the next version.
+
+GHCR creates a new package as private. After the first image is pushed, set
+the package to public once (package settings → Change visibility).
 
 ## Status
 
