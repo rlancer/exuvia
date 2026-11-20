@@ -22,7 +22,7 @@ from __future__ import annotations
 import time as _time
 from typing import Any, Callable
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # When this process imported exuvia (monotonic). The server reports the time
 # since then as `uptime_s` on /healthz, so a host that starts it can tell its

@@ -1,6 +1,6 @@
 [project]
 name = "exuvia"
-version = "0.2.0"
+version = "0.3.0"
 description = "An AI-first, file-backed DAG workbench for analysts: Python/SQL nodes, per-node schedules, a live graph UI, and a Claude agent that builds pipelines with you."
 readme = "README.md"
 license = "Apache-2.0"
