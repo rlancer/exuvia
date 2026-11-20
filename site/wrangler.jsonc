@@ -1,0 +1,28 @@
+// The exuvia website as a Cloudflare Worker with static assets, served at
+// https://exuvia.lobster.mp/ (a Workers custom domain: wrangler creates its
+// DNS record and certificate on deploy). The site is built for the root of
+// that host, so the assets directory is Astro's output as it is.
+//
+// Deploy with `mise run site-deploy` (build + deploy); CI deploys from
+// .github/workflows/deploy-site.yml. The account comes from
+// CLOUDFLARE_ACCOUNT_ID (CI) or the logged-in wrangler session, so it is not
+// named here.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "exuvia-site",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./dist",
+    // /docs → /docs/, matching Astro's trailingSlash: "always".
+    "html_handling": "auto-trailing-slash",
+    // A miss gets the site's own 404.html, with status 404.
+    "not_found_handling": "404-page"
+  },
+  "routes": [{ "pattern": "exuvia.lobster.mp", "custom_domain": true }],
+  // Production is exuvia.lobster.mp only. Branch builds upload a version with
+  // a preview URL on workers.dev (`wrangler versions upload --preview-alias`)
+  // that never takes production traffic.
+  "workers_dev": false,
+  "preview_urls": true,
+  "observability": { "enabled": true }
+}

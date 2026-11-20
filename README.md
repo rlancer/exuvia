@@ -716,10 +716,14 @@ root of its host unless `SITE_BASE` (for example `/exuvia`) names a sub-path
 to serve it from; every link, asset and the search index follow that base.
 `SITE_URL` (the origin only) makes the canonical and social-card URLs
 absolute.
-`.github/workflows/deploy-site.yml` builds it on every push that
-touches `site/` or this README and deploys it to the `exuvia` Cloudflare
-Pages project: `main` goes to production (https://exuvia-c7l.pages.dev/),
-other branches get a preview deployment whose URL is in the job summary.
+The public site is https://exuvia.lobster.mp/: the `exuvia-site`
+Cloudflare Worker (static assets from `site/dist`, `site/wrangler.jsonc`)
+on that custom domain. `.github/workflows/deploy-site.yml` builds it on
+every push that touches `site/` or this README: `main` deploys to
+production, other branches upload a preview version whose workers.dev URL is
+in the job summary. By hand, with `wrangler login` done: `mise run
+site-deploy`, or `mise run site-cf-dev` to serve the build locally with
+wrangler (http://localhost:8787/).
 
 Layout:
 

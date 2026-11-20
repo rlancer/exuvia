@@ -28,6 +28,15 @@ run = "cd site && npm install && npm run dev"
 description = "Typecheck and build the website into site/dist"
 run = "cd site && npm install && npm run build"
 
+[tasks.site-cf-dev]
+description = "Build the website and serve it with wrangler on :8787"
+run = "cd site && npm install && npm run build && npm run cf:dev"
+
+[tasks.site-deploy]
+description = "Build the website and deploy it to https://exuvia.lobster.mp/ (needs `wrangler login`)"
+env = { SITE_URL = "https://exuvia.lobster.mp" }
+run = "cd site && npm ci && npm run build && npm run deploy"
+
 [tasks.demo]
 description = "Serve the example markets project on http://127.0.0.1:7420"
 run = "uv run exuvia serve examples/markets"
