@@ -85,25 +85,33 @@ Set up exuvia for me. It is a data workbench where
 each step of an analysis is a Python or SQL file in
 a graph: https://github.com/rlancer/exuvia
 
-1. Check that `uvx` runs. If it does not and `pipx` is
-   installed, run `pipx install "exuvia[mcp]"` and leave the
-   `uvx` and `uvx --from "exuvia[mcp]"` prefixes off the
+1. Check that `uvx --version` runs. If it does not and `pipx`
+   is installed, run `pipx install "exuvia[mcp]"` and leave
+   the `uvx` and `uvx --from "exuvia[mcp]"` prefixes off the
    commands below. If neither is installed, install uv:
    https://docs.astral.sh/uv/getting-started/installation/
-2. Create a project: `uvx exuvia init my-research`
+2. Create a project in this folder:
+   `uvx exuvia init my-research`
 3. Start the workbench in the background and leave it running:
    `uvx exuvia serve my-research`
    Its address is http://127.0.0.1:7420. If that port is
-   taken, add `--port <n>`. Tell me the address to open.
-4. GET <address>/api/guide. Its `instructions` say how to
-   write nodes and views in this project: follow them. Each
-   entry in `tools` runs with POST <address>/api/tools/<name>
-   and the tool's input as the JSON body. Use these tools to
-   change and run the project, so I see each step in the
-   workbench.
-5. Add exuvia to your own MCP servers, so you have the same
-   tools natively from your next session on. The command:
+   already in use, add `--port <n>`. It is ready when
+   GET <address>/api/guide answers. Tell me the address to
+   open.
+4. Read GET <address>/api/guide. Its `instructions` say how
+   to write nodes and views in this project: follow them.
+   Each entry in `tools` runs with
+   POST <address>/api/tools/<name> and the tool's input as
+   the JSON body. The answer is `{"ok", "text"}`: `text` is
+   the result, and `ok: false` means the tool failed. From
+   here on, change and run the project through these tools,
+   so I see each step in the workbench.
+5. Add an MCP server named `exuvia` to your own configuration,
+   so you have the same tools natively from your next session
+   on. Its command:
    `uvx --from "exuvia[mcp]" exuvia mcp --url <address>`
+   It relays to the workbench, so tell me that the workbench
+   from step 3 has to be running whenever I use it.
 6. Run the `hello` node with the `run_node` tool to check the
    setup, then ask me what I want to build.
 ```
