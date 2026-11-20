@@ -457,6 +457,19 @@ class Store:
             r["view"] = r.pop("view_name")
         return rows
 
+    def code_revisions_after(self, cursor: tuple[float, str] | None, limit: int = 500) -> list[dict[str, Any]]:
+        """Revisions oldest first, after ``cursor`` (the ``(saved_at, id)`` of
+        one already seen; None: from the start)."""
+        where, args = "project=?", [self.scope]
+        if cursor is not None:
+            where += " and (saved_at > ? or (saved_at = ? and id > ?))"
+            args += [cursor[0], cursor[0], cursor[1]]
+        return self._q(
+            f"select id, path, node, view_name, hash, origin, saved_at from code_revisions where {where} "
+            "order by saved_at, id limit ?",
+            (*args, limit),
+        )
+
     def code_source(self, digest: str) -> str | None:
         """The text with this content hash, if any revision recorded it."""
         rows = self._q("select source from code_blobs where project=? and hash=?", (self.scope, digest))

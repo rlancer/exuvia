@@ -171,7 +171,7 @@ def wait_healthy(http: Http, alive: Callable[[], bool] = lambda: True, timeout: 
     raise RuntimeError(f"/healthz did not answer within {timeout:.0f}s (last: {last})")
 
 
-def exercise(http: Http, demo: str, scratch: str, from_template: bool) -> None:
+def exercise(http: Http, demo: str, scratch: str, from_template: bool, need_fossil: bool = False) -> None:
     listing = http.json("GET", "/api/projects")
     log(f"ok: the project list answers ({len(listing['projects'])} projects)")
 
@@ -240,6 +240,16 @@ def exercise(http: Http, demo: str, scratch: str, from_template: bool) -> None:
     run = http.json("POST", f"/p/{scratch}/api/nodes/total/run", {"wait": RUN_TIMEOUT}, timeout=RUN_TIMEOUT + 30)
     check(run["ok"] is True and run["head"] == [{"total": 285}], "running a node runs its upstream and returns its head", run)
 
+    # -- the Fossil mirror of the code revisions (the image ships fossil) ------
+    fossil = http.json("GET", f"/p/{scratch}/api/config").get("fossil")
+    if need_fossil:
+        check(fossil is True, "the image mirrors code into Fossil", fossil)
+    if fossil:
+        status, _, body = http.request("GET", f"/p/{scratch}/api/fossil/timeline")
+        text = body.decode(errors="replace")
+        check(status == 200 and "api: nodes/squares.py" in text and "api: nodes/total.sql" in text,
+              "the Fossil timeline shows each save", status)
+
     http.json("DELETE", f"/api/projects/{scratch}")
     http.json("GET", f"/p/{scratch}/api/project", expect=404)
     ids = [p["id"] for p in http.json("GET", "/api/projects")["projects"]]
@@ -304,7 +314,7 @@ def run_in_container() -> bool:
             return sh(eng, "inspect", "-f", "{{.State.Running}}", name, capture=True, check=False).strip() != "false"
 
         check_health(wait_healthy(http, alive))
-        exercise(http, "demo", "scratch", from_template=True)
+        exercise(http, "demo", "scratch", from_template=True, need_fossil=True)
         ok = True
     except Exception as e:  # noqa: BLE001 -- report any failure, then clean up
         log(f"FAILED: {type(e).__name__}: {e}")

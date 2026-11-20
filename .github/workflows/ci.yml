@@ -76,6 +76,10 @@ jobs:
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
+      # tests/test_fossil.py skips itself without it.
+      - name: Install fossil
+        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends fossil && fossil version
+
       - name: Python tests
         env:
           EXUVIA_TEST_POSTGRES_URL: postgresql://postgres:ci@127.0.0.1:5432/postgres

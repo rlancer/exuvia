@@ -13,9 +13,12 @@ Two shapes, one set of project routes:
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hmac
 import json
 import os
+import re
 import time as _time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -25,12 +28,13 @@ from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import _STARTED, __version__
 from .agent import TOOLS, Agent
+from .fossil import FossilError
 from .arrowstream import MEDIA_TYPE as ARROW_STREAM, ArrowStream, wants_arrow
 from .project import NODE_NAME, PARAM_TYPES, coerce_param
 from .report import graph_report, node_report
@@ -38,6 +42,7 @@ from .store import clean_origin
 from .workspace import SCHEDULER, Workspace, acting_as
 
 STATIC = Path(__file__).parent / "static"
+FOSSIL_PATH = re.compile(r"^(/p/[^/]+)?/api/fossil(/|$)")
 BACKFILL_MAX = 400
 RUN_WAIT_MAX = 300.0
 # Stored output files by extension (see runner.save_artifact), and how each is served.
@@ -221,6 +226,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
             "project": ctx.ws.project.name,
             "executor": type(ctx.ws.executor).__name__,
             "scheduler": SCHEDULER,
+            "fossil": ctx.ws.fossil is not None,
             "version": __version__,
         }
 
@@ -622,6 +628,32 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
             raise HTTPException(404, "no saved version with that hash")
         return {"hash": digest, "source": source}
 
+    # -- the Fossil mirror of the code revisions (fossil.py) ---------------------
+    @r.api_route("/fossil", methods=["GET", "POST"], response_model=None)
+    @r.api_route("/fossil/{path:path}", methods=["GET", "POST"], response_model=None)
+    async def fossil(request: Request, path: str = "", ctx: Ctx = Depends(get_ctx)) -> Response:
+        """The project's Fossil repository through ``fossil http``: its web UI
+        (timeline, diffs, annotate) and the sync protocol, so
+        ``fossil clone <this url>`` works. Read-only: the repository mirrors
+        the code revisions, so pushes are refused."""
+        mirror = ctx.ws.fossil
+        if mirror is None:
+            raise HTTPException(404, "no Fossil mirror: install fossil (https://fossil-scm.org/) and restart")
+        full = request.url.path
+        prefix = full[: -(len(path) + 1)] if path and full.endswith("/" + path) else full.rstrip("/")
+        base = f"{request.url.scheme}://{request.url.netloc}{prefix}"
+        body = await request.body()
+        try:
+            status, headers, content = await asyncio.to_thread(
+                mirror.http, request.method, "/" + path, request.url.query, dict(request.headers), body, base
+            )
+        except FossilError as e:
+            raise HTTPException(503, str(e)) from e
+        resp = Response(content, status_code=status)
+        for name, value in headers:
+            resp.headers.append(name, value)
+        return resp
+
     @r.post("/nodes/{name}/restore")
     def restore_node(name: str, body: NodeRestore, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         """Make a saved version of ``name`` its current code (a deleted node
@@ -732,7 +764,8 @@ def _install_common(app: FastAPI) -> None:
 
     # API clients send `Authorization: Bearer <token>`; browsers open
     # `/?token=<token>` once and get an HttpOnly cookie (EventSource can't
-    # send headers).
+    # send headers). HTTP Basic with the token as the password works too, for
+    # clients that only speak Basic (`fossil clone -B exuvia:<token> <url>`).
     api_token = os.environ.get("EXUVIA_API_TOKEN")
     if not api_token:
         return
@@ -755,10 +788,25 @@ def _install_common(app: FastAPI) -> None:
             header = request.headers.get("authorization", "")
             cookie = request.cookies.get("exuvia_token", "")
             ok = hmac.compare_digest(header.encode(), f"Bearer {api_token}".encode()) or \
-                hmac.compare_digest(cookie.encode(), api_token.encode())
+                hmac.compare_digest(cookie.encode(), api_token.encode()) or \
+                hmac.compare_digest(_basic_password(header).encode(), api_token.encode())
             if not ok:
-                return JSONResponse({"detail": "unauthorized"}, status_code=401)
+                # A browser opening the Fossil UI asks for the token (as the password).
+                challenge = {"WWW-Authenticate": 'Basic realm="exuvia"'} if FOSSIL_PATH.match(path) else None
+                return JSONResponse({"detail": "unauthorized"}, status_code=401, headers=challenge)
         return await call_next(request)
+
+
+def _basic_password(header: str) -> str:
+    """The password of an ``Authorization: Basic`` header ("" for anything else)."""
+    scheme, _, value = header.partition(" ")
+    if scheme.lower() != "basic":
+        return ""
+    try:
+        decoded = base64.b64decode(value.strip(), validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError):
+        return ""
+    return decoded.partition(":")[2]
 
 
 def create_app(root: str | Path) -> FastAPI:

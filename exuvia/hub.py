@@ -37,6 +37,7 @@ from .store import Store, project_scope, stored_paths_at
 PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 SKIP_DIRS = {"__pycache__", "node_modules"}
 DB_REL = ".exuvia/exuvia.db"
+FOSSIL_REL = ".exuvia/fossil/"
 
 
 class Hub:
@@ -241,6 +242,8 @@ class Hub:
                     posix = rel.as_posix()
                     if posix.startswith(DB_REL):
                         continue  # the live database (and its -wal/-shm) is copied above
+                    if posix.startswith(FOSSIL_REL):
+                        continue  # the Fossil mirror is rebuilt from the records (fossil.py)
                     if rel.name.endswith((".tmp", ".part")):
                         continue  # half-written artifacts
                     if posix in stored:

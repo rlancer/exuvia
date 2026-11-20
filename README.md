@@ -461,6 +461,36 @@ out, `ATTACH` a file or `INSTALL` anything.
   restore is itself a revision). The agent has `list_revisions`,
   `read_revision`, `restore_node` and `restore_view_file`.
 
+### Fossil: the code history as a repository
+
+When [Fossil](https://fossil-scm.org/) is installed (`fossil` on PATH; the
+image ships it), each project's code revisions are also mirrored into a
+Fossil repository. Every save becomes one check-in, by its origin (`agent`,
+`api`, `file`, ...) at the time it was saved, so the history can be browsed,
+cloned and exported with ordinary version-control tools:
+
+The timeline, diffs and annotate are at `/p/<project>/api/fossil/timeline` in
+a hub (`/api/fossil/timeline` under `exuvia serve`); with `EXUVIA_API_TOKEN`
+set, the browser asks for a password and the token is it.
+
+```bash
+# a clone of the whole history
+fossil clone -B exuvia:$EXUVIA_API_TOKEN http://localhost:7420/p/demo/api/fossil demo.fossil
+# and from there, into git
+fossil git export ../demo-git -R demo.fossil
+```
+
+The code revisions stay the record and the repository is derived from them.
+It lives in `.exuvia/fossil/` (exuvia commits from a check-out there, never
+in the project directory, so a project that is a git or Fossil check-out of
+its own is left alone) and is rebuilt from the revisions whenever it is
+missing: on a host whose disk does not last, point `EXUVIA_DB` at Postgres and
+the repository comes back, with the same check-in hashes, on the next start.
+It is read-only from outside: a push is refused, since the history is
+exuvia's to write. Hub exports leave it out for the same reason.
+`EXUVIA_FOSSIL=off` turns the mirror off; `EXUVIA_FOSSIL=/path/to/fossil`
+picks the binary.
+
 ## Records: SQLite, Postgres, or your own adapter
 
 Run history, schedules, agent sessions and code revisions are small rows; node
@@ -642,6 +672,7 @@ an HttpOnly cookie. Always set `EXUVIA_EXECUTOR_TOKEN` on a networked executor
 | `EXUVIA_EFFORT` | `medium` | Claude effort level |
 | `EXUVIA_BASE_URL` | OpenRouter | base URL for the `openai` provider (Ollama, vLLM, LiteLLM, …) |
 | `EXUVIA_DB` | per-project SQLite | where run history, schedules, sessions and code revisions live: `sqlite:///<path>` or `postgresql://…` |
+| `EXUVIA_FOSSIL` | auto | mirror code revisions into a Fossil repository when `fossil` is on PATH; `off`, or the path of the binary (see "Fossil") |
 | `EXUVIA_DB_SCOPE` | — | prefix for project scopes in a shared `EXUVIA_DB` (e.g. a user id) |
 | `EXUVIA_ARTIFACT_STORE` | local disk | `s3://bucket/prefix`: keep node outputs in an S3-compatible bucket, keyed `<prefix>/<project>/<node>/<sha>.<ext>` |
 | `EXUVIA_S3_ENDPOINT` | AWS | e.g. `https://<account>.r2.cloudflarestorage.com` or a MinIO URL |
@@ -829,6 +860,7 @@ headlessly or iframe the UI:
 | `GET /api/code/blobs/{hash}` | the text of one saved version |
 | `POST /api/nodes/{name}/restore` | make a saved version (`{hash}`) current again; brings back a deleted node |
 | `GET /api/runs/{run_id}/source` | the exact code a run executed |
+| `GET/POST /api/fossil/...` | the project's Fossil repository (see "Fossil"): its web UI, and the sync protocol for `fossil clone`; 404 when fossil is not installed. `GET /api/config` says whether it is on (`fossil`) |
 | `POST /api/query` | DuckDB SQL over all outputs (`{sql, limit, params}`): JSON rows, or an Arrow stream (see "Binary data") |
 | `POST /api/nodes/{name}/schedule` | set, clear, pause or resume a schedule |
 | `POST /api/schedule/tick` | evaluate schedules now (for external schedulers) |

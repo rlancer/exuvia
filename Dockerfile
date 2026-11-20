@@ -24,6 +24,10 @@ COPY ui/ ./
 RUN npm run build   # writes ../exuvia/static
 
 FROM python:3.12-slim
+# fossil: the control plane and hub mirror each project's code revisions into a
+# Fossil repository served at /api/fossil (exuvia/fossil.py). One binary, no
+# dependencies; EXUVIA_FOSSIL=off turns the mirror off.
+RUN apt-get update && apt-get install -y --no-install-recommends fossil && rm -rf /var/lib/apt/lists/*
 COPY --from=ghcr.io/astral-sh/uv:0.9.2 /uv /usr/local/bin/uv
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_COMPILE_BYTECODE=1 \

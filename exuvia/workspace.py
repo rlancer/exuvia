@@ -48,6 +48,7 @@ from .arrowstream import ArrowStream
 from .artifacts import artifact_key, artifact_store
 from .events import EventBus
 from .executor import ExecRequest, make_executor
+from .fossil import FossilMirror, fossil_binary
 from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Project, View, _hash, _validate_cron
 from .store import CodeChange, clean_origin, open_store
 
@@ -94,6 +95,11 @@ class Workspace:
         self._edit_lock = threading.RLock()
         self.store = open_store(self.project)
         self.store.fail_interrupted()
+        # A Fossil repository mirroring the code revisions, when fossil is
+        # installed (see fossil.py). It commits in a thread of its own once
+        # start() runs; until then revisions wait for it in the store.
+        binary = fossil_binary()
+        self.fossil = FossilMirror(self.store, self.project.state_dir, self.project.name, binary) if binary else None
         self.bus = EventBus()
         self.graph: Graph = self.project.load()
         self.record_code(origin)
@@ -109,6 +115,8 @@ class Workspace:
     async def start(self) -> None:
         self.bus.bind(asyncio.get_running_loop())
         self.executor.start()
+        if self.fossil is not None:
+            self.fossil.start()
         # A fresh context: a change the watcher sees was made by editing files,
         # not by whichever request happened to load the project.
         self._stop_watching = asyncio.Event()
@@ -130,6 +138,8 @@ class Workspace:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks = []
         self.executor.close()
+        if self.fossil is not None:
+            await asyncio.to_thread(self.fossil.stop)
 
     @contextmanager
     def editing(self) -> Iterator[None]:
@@ -188,6 +198,8 @@ class Workspace:
         n = self.store.record_code(changes, origin)
         if n:
             self.bus.touch()
+            if self.fossil is not None:
+                self.fossil.notify()
         return n
 
     def code_revisions(
