@@ -10,7 +10,7 @@ PYTHONUNBUFFERED = "1"
 # so multi-step tasks are chained on one line with `&&`.
 [tasks.sync]
 description = "Install Python (uv) and UI (npm) dependencies"
-run = "uv sync --extra dev && cd ui && npm install"
+run = "uv sync --extra dev --extra mcp && cd ui && npm install"
 
 [tasks.ui-build]
 description = "Build the UI into exuvia/static (served by `exuvia serve`)"

@@ -79,7 +79,7 @@ jobs:
       - name: Python tests
         env:
           EXUVIA_TEST_POSTGRES_URL: postgresql://postgres:ci@127.0.0.1:5432/postgres
-        run: uv sync --extra dev --extra postgres --python 3.12 && uv run pytest -q
+        run: uv sync --extra dev --extra postgres --extra mcp --python 3.12 && uv run pytest -q
 
       - uses: actions/setup-node@v5
         with:

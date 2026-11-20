@@ -34,6 +34,7 @@ from .agent import TOOLS, Agent
 from .arrowstream import MEDIA_TYPE as ARROW_STREAM, ArrowStream, wants_arrow
 from .project import NODE_NAME, PARAM_TYPES, coerce_param
 from .report import graph_report, node_report
+from .store import clean_origin
 from .workspace import SCHEDULER, Workspace, acting_as
 
 STATIC = Path(__file__).parent / "static"
@@ -234,9 +235,23 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
     def guide(ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         """How to write this project's nodes: the built-in agent's own
         instructions (exuvia conventions, parameters, project notes) and its
-        tool list, for an outside agent that edits the project over HTTP."""
-        tools = [{"name": t["name"], "description": t["description"]} for t in TOOLS]
+        tool list, for an outside agent that edits the project over HTTP
+        (each tool runs at ``POST /tools/{name}``)."""
+        tools = [{"name": t["name"], "description": t["description"], "input_schema": t["input_schema"]} for t in TOOLS]
         return {"instructions": ctx.agent.instructions(), "tools": tools}
+
+    @r.post("/tools/{name}")
+    async def tool_call(name: str, request: Request, args: Any = Body(default=None), ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """Run one of the agent's tools (``/guide`` lists them) with ``args``
+        as its input; ``exuvia mcp --url`` relays MCP tool calls here. A tool
+        that fails, or an input it rejects, is still a 200 with ``ok: false``
+        and ``text`` saying why, for the calling model to read. Changes and
+        runs are recorded as ``X-Exuvia-Origin``'s (default ``api``)."""
+        if not any(t["name"] == name for t in TOOLS):
+            raise HTTPException(404, f"no tool {name}")
+        origin = clean_origin(request.headers.get("x-exuvia-origin"), "api")
+        ok, text, extra = await ctx.agent.call_tool(name, {} if args is None else args, origin)
+        return {"ok": ok, "text": text, **extra}
 
     @r.get("/project")
     def project(params: str | None = None, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:

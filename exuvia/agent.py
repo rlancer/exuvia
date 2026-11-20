@@ -401,13 +401,27 @@ class Agent:
         return self.provider.label if self.provider else ""
 
     # -- tools ---------------------------------------------------------------
-    async def _call(self, name: str, args: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
-        """Returns (ok, text-for-model, ui-extra). Code the agent changes is
-        recorded as the agent's."""
-        with acting_as("agent"):
-            return await self._dispatch(name, args)
+    async def call_tool(self, name: str, args: Any, origin: str = "agent") -> tuple[bool, str, dict[str, Any]]:
+        """Run one tool for any caller: this agent's loop, an MCP client
+        (``exuvia mcp``) or ``POST /api/tools/{name}``. Inputs are validated
+        first, and a bad input or a crash comes back as a failed result, so
+        the caller's model can read it and try again. Code changed and nodes
+        run are recorded as ``origin``'s."""
+        problem = _validate(name, args)
+        if problem:
+            return False, f"INVALID_INPUT: {problem}", {}
+        try:
+            return await self._call(name, args, origin)
+        except Exception as e:  # surface tool crashes to the model, not the user
+            return False, f"{type(e).__name__}: {e}", {}
 
-    async def _dispatch(self, name: str, args: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
+    async def _call(self, name: str, args: dict[str, Any], origin: str = "agent") -> tuple[bool, str, dict[str, Any]]:
+        """Returns (ok, text-for-model, ui-extra). Code the tool changes is
+        recorded as ``origin``'s."""
+        with acting_as(origin):
+            return await self._dispatch(name, args, origin)
+
+    async def _dispatch(self, name: str, args: dict[str, Any], origin: str = "agent") -> tuple[bool, str, dict[str, Any]]:
         ws = self.ws
         if name == "list_nodes":
             snap = ws.snapshot()
@@ -495,7 +509,7 @@ class Agent:
                 params = ws.resolve_params(args.get("params"))
             except ValueError as e:
                 return False, str(e), {}
-            finals = await ws.run([target], params=params, force={target}, trigger="agent")
+            finals = await ws.run([target], params=params, force={target}, trigger=origin)
             ok, report = await node_report(ws, target, params, finals)
             return ok, json.dumps(report, default=str)[:12000], {"node": target}
         if name == "query_data":
@@ -674,14 +688,10 @@ class Agent:
             for call in turn.calls:
                 args = call.args or {}
                 yield {"type": "tool", "id": call.id, "name": call.name, "input": _ui_input(call.name, args)}
-                problem = call.parse_error or _validate(call.name, call.args)
-                if problem:
-                    ok, text, extra = False, f"INVALID_INPUT: {problem}", {}
+                if call.parse_error:
+                    ok, text, extra = False, f"INVALID_INPUT: {call.parse_error}", {}
                 else:
-                    try:
-                        ok, text, extra = await self._call(call.name, args)
-                    except Exception as e:  # surface tool crashes to the model, not the user
-                        ok, text, extra = False, f"{type(e).__name__}: {e}", {}
+                    ok, text, extra = await self.call_tool(call.name, call.args)
                 yield {"type": "tool_result", "id": call.id, "name": call.name, "ok": ok, "summary": text[:400], **extra}
                 results.append((call.id, text, not ok))
             provider.add_tool_results(history, results)
