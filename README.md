@@ -16,7 +16,8 @@ universe ──► prices (cron 17:00 weekdays) ──► returns ──► roll
     └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-> Run every command below from the repository root.
+> Commands that name `examples/`, `deploy/` or the `Dockerfile` run from a
+> clone of this repository. The rest work anywhere.
 
 ## Why
 
@@ -32,22 +33,107 @@ universe ──► prices (cron 17:00 weekdays) ──► returns ──► roll
 
 ## Quick start
 
+With [uv](https://docs.astral.sh/uv/) there is nothing to install first:
+`uvx` downloads exuvia into its cache and runs it.
+
 ```bash
-pip install exuvia          # in this repo: uv sync
-exuvia serve examples/markets
+uvx exuvia init my-research     # a project folder with a first node
+uvx exuvia serve my-research
 # → http://127.0.0.1:7420
+```
+
+To have an `exuvia` command on your PATH, install it once. Any of these
+works; the first two give exuvia an environment of its own:
+
+```bash
+uv tool install exuvia
+pipx install exuvia
+pip install exuvia         # into the active virtual environment
+```
+
+pipx can also run it without installing, like `uvx`:
+`pipx run exuvia serve my-research`.
+
+exuvia needs Python 3.11 or newer; uv downloads one when yours is older.
+The example project in this repo opens the same way, from a clone:
+`uvx exuvia serve examples/markets`.
+
+**Packages your nodes import.** A node runs in the Python environment exuvia
+is installed in, so that is where its packages go:
+
+```bash
+uvx --with scipy --with yfinance exuvia serve my-research   # uvx
+uv tool install exuvia --with scipy --with yfinance         # uv tool
+pipx inject exuvia scipy yfinance                           # pipx
 ```
 
 Set `ANTHROPIC_API_KEY` (Claude) or `OPENROUTER_API_KEY` (DeepSeek and any
 other OpenRouter model) in the environment or the project's `.env` to turn on
-the agent. See [The agent](#the-agent) for providers.
+the built-in agent. See [The agent](#the-agent) for providers. Or let the
+coding agent you already use do the setup and the building: see the next
+section.
 
-Start a fresh project:
+## Set up with your agent
 
-```bash
-exuvia init my-research
-exuvia serve my-research
+A coding agent that has a terminal (Claude Code, Cursor, Codex, ...) can do
+the whole setup: install exuvia, create a project, start the workbench and
+connect itself to the graph. Open the agent in the folder the project should
+live in and paste this:
+
+```text
+Set up exuvia for me. It is a data workbench where
+each step of an analysis is a Python or SQL file in
+a graph: https://github.com/rlancer/exuvia
+
+1. Check that `uvx --version` runs. If it does not and `pipx`
+   is installed, run `pipx install "exuvia[mcp]"` and leave
+   the `uvx` and `uvx --from "exuvia[mcp]"` prefixes off the
+   commands below. If neither is installed, install uv:
+   https://docs.astral.sh/uv/getting-started/installation/
+2. Create a project in this folder:
+   `uvx exuvia init my-research`
+3. Start the workbench in the background and leave it running:
+   `uvx exuvia serve my-research`
+   Its address is http://127.0.0.1:7420. If that port is
+   already in use, add `--port <n>`. It is ready when
+   GET <address>/api/guide answers. Tell me the address to
+   open.
+4. Read GET <address>/api/guide. Its `instructions` say how
+   to write nodes and views in this project: follow them.
+   Each entry in `tools` runs with
+   POST <address>/api/tools/<name> and the tool's input as
+   the JSON body. The answer is `{"ok", "text"}`: `text` is
+   the result, and `ok: false` means the tool failed. From
+   here on, change and run the project through these tools,
+   so I see each step in the workbench.
+5. Add an MCP server named `exuvia` to your own configuration,
+   so you have the same tools natively from your next session
+   on. Its command:
+   `uvx --from "exuvia[mcp]" exuvia mcp --url <address>`
+   It relays to the workbench, so tell me that the workbench
+   from step 3 has to be running whenever I use it.
+6. Run the `hello` node with the `run_node` tool to check the
+   setup, then ask me what I want to build.
 ```
+
+What you end up with:
+
+- **A project and a running workbench.** `my-research/` holds the node
+  files, and the canvas at http://127.0.0.1:7420 shows every node the agent
+  writes and every run it starts, as it happens.
+- **Your agent, working through exuvia's tools.** It reads the same
+  instructions the built-in agent gets and calls the same tools, over HTTP
+  for now (`GET /api/guide`, `POST /api/tools/{name}`) and over MCP from its
+  next session. exuvia needs no model key for this: the model is the one
+  your agent already runs on.
+- **An MCP server that relays to the workbench.** In later sessions start
+  `exuvia serve my-research` before the agent, or the `exuvia` MCP server
+  has nothing to connect to. [MCP](#mcp-the-agents-tools-in-your-own-agent)
+  has the other mode, which opens the project without a running server.
+
+To put exuvia on a server instead of your machine, the prompt under
+[Hand it to an agent](#hand-it-to-an-agent) deploys a hub with Docker
+Compose, Swarm or Kubernetes.
 
 ## Nodes
 
@@ -654,6 +740,11 @@ claude mcp add exuvia -- uvx --from "exuvia[mcp]" exuvia mcp /path/to/my-project
 ```json
 {"mcpServers": {"exuvia": {"command": "uvx", "args": ["--from", "exuvia[mcp]", "exuvia", "mcp", "/path/to/my-project"]}}}
 ```
+
+With pipx the command is `pipx run --spec "exuvia[mcp]" exuvia mcp ...`, or
+plain `exuvia mcp ...` after `pipx install "exuvia[mcp]"`. To have your agent
+install exuvia and add the server itself, see
+[Set up with your agent](#set-up-with-your-agent).
 
 **Which mode.** With a directory, `exuvia mcp` opens the project itself and
 needs nothing else running; its schedules don't fire (that is `exuvia serve`'s

@@ -22,6 +22,9 @@ type PageSpec = {
   summary: string;
 };
 
+/** The README section whose first ```text block is the prompt the landing page offers to copy. */
+const AGENT_SETUP = "Set up with your agent";
+
 const PAGES: PageSpec[] = [
   {
     slug: "getting-started",
@@ -29,6 +32,12 @@ const PAGES: PageSpec[] = [
     source: { file: "getting-started.md" },
     title: "Getting started",
     summary: "Install exuvia, build a three-node graph, put a view on it, and turn on the agent.",
+  },
+  {
+    slug: "agent-setup",
+    group: "Start",
+    source: { heading: AGENT_SETUP },
+    summary: "A prompt to paste into Claude Code, Cursor or any coding agent: it installs exuvia, starts the workbench and connects itself to the graph.",
   },
   {
     slug: "nodes",
@@ -119,7 +128,7 @@ const PAGES: PageSpec[] = [
 /** README sections that are deliberately not published, and why. */
 const OMITTED: Record<string, string> = {
   Why: "covered by the landing page",
-  "Quick start": "replaced by the Getting started tutorial; it serves examples/ from the repo",
+  "Quick start": "replaced by the Getting started tutorial, which has the same install commands",
   Development: "contributor notes for a checkout of the repo",
   Releasing: "maintainer notes",
   License: "shown in the site footer",
@@ -173,6 +182,17 @@ function readmeSections(): Map<string, string> {
   }
   flush();
   return sections;
+}
+
+/**
+ * The setup prompt people paste into their coding agent, read from the README
+ * so the landing page and the docs page show one text.
+ */
+export function agentSetupPrompt(): string {
+  const section = readmeSections().get(AGENT_SETUP);
+  const block = section && /^```text\n([\s\S]*?)\n```$/m.exec(section.replace(/\r\n/g, "\n"));
+  if (!block) throw new Error(`README.md "## ${AGENT_SETUP}" has no \`\`\`text block for the landing page to show.`);
+  return block[1];
 }
 
 function inlineText(tokens: Tokens.Generic[] | undefined): string {
