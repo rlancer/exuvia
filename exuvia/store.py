@@ -19,6 +19,7 @@ content hash in ``code_blobs``, keyed by the same hash runs record in
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
 import weakref
@@ -137,6 +138,26 @@ ORIGIN_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789_-")
 def clean_origin(origin: str | None, default: str) -> str:
     o = (origin or "").strip().lower()[:32]
     return o if o and set(o) <= ORIGIN_CHARS else default
+
+
+_revision_lock = threading.Lock()
+_last_revision_ns = 0
+
+
+def revision_id() -> str:
+    """A unique id that sorts after every id this process made before it.
+
+    Revisions are read newest first by ``saved_at``, and two saves can share a
+    ``saved_at``: the clock does not tick between them (``time.time()`` moves
+    in 15.6 ms steps on Windows before Python 3.13) or one change records
+    several files. The id breaks such ties in the order the revisions were
+    written: 16 hex digits of a strictly increasing nanosecond counter, then
+    16 random ones so ids from different processes cannot collide."""
+    global _last_revision_ns
+    with _revision_lock:
+        _last_revision_ns = max(time.time_ns(), _last_revision_ns + 1)
+        ns = _last_revision_ns
+    return f"{ns:016x}{uuid.uuid4().hex[:16]}"
 
 
 _prepared: "weakref.WeakSet[Any]" = weakref.WeakSet()
@@ -413,7 +434,7 @@ class Store:
                 self._q(
                     "insert into code_revisions(project, id, path, node, view_name, hash, origin, saved_at) "
                     "values(?,?,?,?,?,?,?,?)",
-                    (self.scope, uuid.uuid4().hex, path, node, view, digest, origin, saved_at),
+                    (self.scope, revision_id(), path, node, view, digest, origin, saved_at),
                 )
         return len(changes)
 
