@@ -44,3 +44,7 @@ run = "uv run exuvia serve examples/markets"
 [tasks.test]
 description = "Run the Python test suite"
 run = "uv run pytest -q"
+
+[tasks.e2e]
+description = "Build the container image and drive a hub in it over HTTP (podman, else docker; CONTAINER_ENGINE overrides)"
+run = "python tests/e2e/container_e2e.py"

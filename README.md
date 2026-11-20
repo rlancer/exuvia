@@ -692,6 +692,7 @@ mise run demo      # exuvia serve examples/markets
 mise run ui-build  # bundle the UI and the views runtime into exuvia/static
 mise run test
 cd ui && npm test  # views runtime unit tests (Vitest)
+mise run e2e       # build the container image and drive a hub in it over HTTP
 mise run site-dev   # the website on :4380
 mise run site-build # typecheck + static build into site/dist
 ```
@@ -702,6 +703,17 @@ the frame loads nothing itself. `exuvia serve` (and every hub project) serves
 it at `/api/view-runtime/runtime.js`, so a page that embeds a headless exuvia
 gets the runtime matching the server it talks to. Build once before using
 views from the dev server.
+
+`mise run e2e` (`tests/e2e/container_e2e.py`, standard library only) builds
+the `Dockerfile` image, starts it as `exuvia hub /data`, and works through it
+over HTTP: a project from the `examples/markets` template, every node run,
+an output and its Parquet artifact read, the views runtime fetched, and a
+second project written node by node and deleted. It uses podman when it is
+on PATH and docker otherwise (`CONTAINER_ENGINE` picks one); on Windows and
+macOS start the podman VM first (`podman machine init` once, then
+`podman machine start`). The container is always removed, and its logs are
+printed when a step fails. CI runs the same script with docker in the
+`container` job. `pytest` does not collect it.
 
 The website (`site/`, Astro) is a landing page plus a docs portal. The docs
 pages are built from the `## ` sections of this README, so there is one copy
