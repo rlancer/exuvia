@@ -1,18 +1,14 @@
 /**
  * Turns a generated woodcut (black ink on white paper) into a transparent
- * PNG of pure ink in one of the site's inks, so the page can print it on
- * paper. The colours here match --ink and --blue in src/styles/global.css.
+ * PNG of pure ink, so the page can set it on any ground. These are the three
+ * lobsters above "From a list of cells to a graph of files"
+ * (src/components/Evolution.astro): two in black, which the page lifts to
+ * grey, and the last in the lobster's blue.
  *
- *   node tools/ink.mjs lobster <generated.png>   -> src/assets/lobster.png
- *   node tools/ink.mjs growth  <generated.png>   -> src/assets/growth-{1,2,3}.png (one per animal)
- *   node tools/ink.mjs shell                     -> src/assets/lobster-shell.png, from lobster.png
+ *   node tools/ink.mjs growth <generated.png>   -> src/assets/growth-{1,2,3}.png (one per animal)
  *
- * The sources came from OpenRouter (google/gemini-3-pro-image) through
- * marketing/trailer/tools/or-media.mjs, with the prompts in ART below.
- *
- * `shell` takes no source: it reprints lobster.png without the marks the edge
- * of the block left around it, for the small shells in the hero
- * (src/components/Molts.astro), where those marks read as dirt.
+ * The source came from OpenRouter (google/gemini-3-pro-image) through
+ * marketing/trailer/tools/or-media.mjs, with the prompt in ART below.
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,16 +24,6 @@ const BLACK = [17, 17, 16];
 const BLUE = [109, 156, 254];
 
 export const ART = {
-  lobster: {
-    inks: [BLUE],
-    aspect: "4:3",
-    prompt:
-      `${STYLE} Subject: a lobster exuvia, the complete, empty, molted shell of a lobster, claws, antennae and ` +
-      "every leg segment intact but hollow. Viewed from above, the whole specimen centred with generous empty " +
-      "white margin on all sides, nothing cropped.",
-    // The model drew the print photographed on a sheet; keep the block, drop the sheet's edges.
-    crop: { left: 0.125, top: 0.195, width: 0.755, height: 0.61 },
-  },
   growth: {
     // The first two generations in black, the one that is exuvia in blue.
     inks: [BLACK, BLACK, BLUE],
@@ -50,12 +36,8 @@ export const ART = {
 };
 
 const [name, source] = process.argv.slice(2);
-if (name === "shell") {
-  await shell();
-  process.exit(0);
-}
 if (!ART[name] || !source) {
-  console.error("usage: node tools/ink.mjs <lobster|growth> <generated.png> | shell");
+  console.error("usage: node tools/ink.mjs growth <generated.png>");
   process.exit(2);
 }
 
@@ -125,48 +107,4 @@ if (name !== "growth") {
     await save(print(part, width, info.height, ART[name].inks[i]).trim(), file);
     console.log("wrote", file);
   }
-}
-
-/**
- * lobster.png without the block's edge. A mark belongs to the edge when the
- * whole patch of ink it is part of stays inside a band along the border; the
- * animal's own claws and tail reach the band too, but from the middle.
- */
-async function shell() {
-  const assets = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/assets");
-  const { data, info } = await sharp(path.join(assets, "lobster.png")).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  const { width, height } = info;
-  const band = Math.round(Math.min(width, height) * 0.07);
-  const inked = (i) => data[i * 4 + 3] > 24;
-  const seen = new Uint8Array(width * height);
-  let removed = 0;
-  for (let start = 0; start < seen.length; start++) {
-    if (seen[start] || !inked(start)) continue;
-    // Flood one patch of touching ink, noting whether it leaves the band.
-    const patch = [start];
-    seen[start] = 1;
-    let inside = false;
-    for (let n = 0; n < patch.length; n++) {
-      const x = patch[n] % width;
-      const y = (patch[n] - x) / width;
-      if (x >= band && x < width - band && y >= band && y < height - band) inside = true;
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const [nx, ny] = [x + dx, y + dy];
-          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-          const next = ny * width + nx;
-          if (!seen[next] && inked(next)) {
-            seen[next] = 1;
-            patch.push(next);
-          }
-        }
-      }
-    }
-    if (inside) continue;
-    for (const i of patch) data[i * 4 + 3] = 0;
-    removed++;
-  }
-  const out = path.join(assets, "lobster-shell.png");
-  await sharp(data, { raw: { width, height, channels: 4 } }).trim().png({ compressionLevel: 9, palette: true, colours: 16 }).toFile(out);
-  console.log("wrote", out, "without", removed, "edge marks");
 }

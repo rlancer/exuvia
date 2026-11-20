@@ -1,11 +1,5 @@
 ---
 import "../styles/global.css";
-import "../styles/designs/shared.css";
-import "../styles/designs/daylight.css";
-import "../styles/designs/workbench.css";
-import "../styles/designs/poster.css";
-import DesignSwitcher from "../components/DesignSwitcher.astro";
-import { SWITCHES } from "../lib/designs";
 import Nav from "../components/Nav.astro";
 import Footer from "../components/Footer.astro";
 import { url } from "../lib/paths";
@@ -31,41 +25,20 @@ const card = Astro.site ? new URL(url("/og.png"), Astro.site).href : url("/og.pn
     <meta name="description" content={description} />
     {canonical && <link rel="canonical" href={canonical} />}
     <link rel="icon" href={url("/favicon.svg")} type="image/svg+xml" />
-    <meta name="theme-color" content="#f3f0e6" />
+    <meta name="theme-color" content="#111214" />
     <meta property="og:type" content="website" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:image" content={card} />
     <meta name="twitter:card" content="summary_large_image" />
-    <!-- Temporary: applies the design and hero art under review before first
-         paint (see DesignSwitcher.astro). -->
-    <script is:inline define:vars={{ switches: SWITCHES }}>
-      for (const { key, ids } of switches) {
-        let choice = new URLSearchParams(location.search).get(key);
-        try {
-          if (choice) localStorage.setItem("exuvia-" + key, choice);
-          else choice = localStorage.getItem("exuvia-" + key);
-        } catch {}
-        if (ids.includes(choice)) document.documentElement.dataset[key] = choice;
-      }
-    </script>
   </head>
   <body>
-    <!-- The hand-inked edge used by .inked and .btn (see global.css). -->
-    <svg class="sr-only" aria-hidden="true" focusable="false">
-      <filter id="rough" x="-5%" y="-20%" width="110%" height="140%">
-        <feTurbulence type="fractalNoise" baseFrequency="0.035" numOctaves="3" seed="7" result="noise"></feTurbulence>
-        <feDisplacementMap in="SourceGraphic" in2="noise" scale="3.2" xChannelSelector="R" yChannelSelector="G"
-        ></feDisplacementMap>
-      </filter>
-    </svg>
     <a class="skip" href="#main">Skip to content</a>
     <Nav current={current} />
     <main id="main">
       <slot />
     </main>
     <Footer />
-    <DesignSwitcher />
     <script>
       // Copy buttons on code blocks: the button says what happened.
       document.addEventListener("click", async (event) => {

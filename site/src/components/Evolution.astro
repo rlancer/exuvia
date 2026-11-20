@@ -198,7 +198,7 @@ const animals = [
 <style>
   .evolution {
     padding: clamp(4rem, 9vw, 7rem) 0;
-    border-top: var(--line);
+    border-top: var(--border);
   }
   header {
     max-width: 46rem;
@@ -207,8 +207,9 @@ const animals = [
     font-size: var(--step-3);
   }
   header p {
+    max-width: 44rem;
     margin-top: 1.1rem;
-    color: var(--ink-2);
+    color: var(--muted);
     font-size: var(--step-1);
     line-height: 1.4;
   }
@@ -239,42 +240,46 @@ const animals = [
     width: var(--w);
     height: auto;
   }
+  /* The two earlier animals are printed in black: lift them to grey. */
+  li:not(.now) .animal :global(img) {
+    filter: brightness(0) invert(0.6);
+  }
   svg {
     display: block;
     width: 100%;
     height: auto;
-    border: var(--line);
-    background: var(--paper);
+    border: var(--border);
+    border-radius: 0.6rem;
+    background: var(--panel);
   }
   h3 {
     margin-top: 1.25rem;
-    font-size: var(--step-2);
+    font-size: 1.75rem;
   }
   .what {
     margin-top: 0.25rem;
-    font-style: italic;
-    font-weight: 500;
+    font-weight: 600;
   }
   li > p:last-child {
     margin-top: 0.5rem;
-    color: var(--ink-2);
+    color: var(--muted);
   }
 
   text {
     font-family: var(--mono);
     font-size: 12px;
-    fill: var(--ink);
+    fill: var(--text);
   }
   .tab rect {
-    fill: var(--ink);
+    fill: var(--text);
   }
   .tab text {
-    fill: var(--paper);
+    fill: var(--bg);
     font-weight: 700;
   }
   .cell {
-    fill: var(--paper);
-    stroke: var(--ink);
+    fill: var(--bg);
+    stroke: var(--text);
     stroke-width: 1.5;
   }
   .count {
@@ -282,81 +287,68 @@ const animals = [
   }
   .kernel {
     fill: none;
-    stroke: var(--ink);
+    stroke: var(--text);
     stroke-width: 1.5;
     stroke-dasharray: 4 4;
   }
   .thread {
     fill: none;
-    stroke: var(--ink-3);
+    stroke: var(--faint);
     stroke-width: 1.2;
     stroke-dasharray: 2 3;
   }
   .var {
-    fill: var(--ink);
+    fill: var(--text);
   }
   .arc {
     fill: none;
-    stroke: var(--ink);
+    stroke: var(--text);
     stroke-width: 1.5;
   }
   marker path {
-    fill: var(--ink);
+    fill: var(--text);
   }
 
-  /* The third panel is the destination, so it is printed in reverse. */
+  /* The third panel is the destination: a darker ground and an amber edge. */
   .now svg {
-    border-color: var(--coal);
-    background: var(--coal);
-  }
-  .now text {
-    fill: var(--chalk);
-  }
-  .now .tab rect {
-    fill: var(--chalk);
+    border-color: var(--accent);
+    background: var(--bg-deep);
   }
   .now .tab text {
-    fill: var(--coal);
+    fill: var(--bg-deep);
   }
   .now .cell {
-    fill: var(--coal);
-    stroke: var(--chalk);
+    fill: var(--panel);
   }
   .now .shed {
     fill: none;
-    stroke: var(--coal-rule);
+    stroke: var(--line);
     stroke-width: 1.2;
   }
   .now .state {
-    fill: var(--sea-lit);
-  }
-  .now .arc {
-    stroke: var(--chalk);
-  }
-  .now marker path {
-    fill: var(--chalk);
+    fill: var(--fresh);
   }
   .clock circle {
-    fill: var(--coal);
-    stroke: var(--ochre-lit);
+    fill: var(--bg-deep);
+    stroke: var(--stale);
     stroke-width: 1.5;
   }
   .clock path {
     fill: none;
-    stroke: var(--ochre-lit);
+    stroke: var(--stale);
     stroke-width: 1.5;
     stroke-linecap: round;
     stroke-linejoin: round;
   }
   .agent rect {
-    fill: var(--blue);
+    fill: var(--accent);
   }
   .now .agent text {
-    fill: var(--on-accent);
+    fill: var(--accent-ink);
     font-weight: 700;
   }
   .agent path {
-    stroke: var(--blue);
+    stroke: var(--accent);
     stroke-width: 1.5;
   }
 

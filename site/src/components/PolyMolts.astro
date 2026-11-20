@@ -1,5 +1,5 @@
 ---
-// The hero's print as a low-poly model: the lobster, and four of the animals
+// The hero's art, a low-poly model: the lobster, and four of the animals
 // that wore a shell like it long before there were lobsters. They are loose
 // sketches of real fossils, oldest first, chosen for how the body changes:
 //
@@ -33,11 +33,11 @@
 
 <style>
   .poly {
-    /* The animal's ink, the ink its facets fall to in shadow, and the line
+    /* The animal's colour, the colour of its facets in shadow, and the line
        of an empty shell. */
-    --poly-ink: var(--blue);
-    --poly-shade: var(--blue-text);
-    --poly-shell: var(--ink-2);
+    --poly-ink: var(--running);
+    --poly-shade: #1c2c5e;
+    --poly-shell: var(--muted);
     display: block;
     width: 100%;
     padding: 0;
@@ -347,19 +347,14 @@
     const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
     const mono = getComputedStyle(root).getPropertyValue("--mono") || "monospace";
 
-    // Inks come from the page's tokens, so every design prints its own.
-    let ink = [109, 156, 254];
-    let shade = [47, 95, 214];
-    let shell = "rgb(74, 73, 68)";
-    function readInks() {
-      const rgb = (name: string) => {
-        const text = getComputedStyle(root.querySelector<HTMLElement>(`[data-${name}]`)!).color;
-        return (text.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
-      };
-      ink = rgb("ink");
-      shade = rgb("shade");
-      shell = `rgb(${rgb("shell").join(",")})`;
-    }
+    // Colours come from the page's tokens, read off the probe elements.
+    const rgb = (name: string) => {
+      const text = getComputedStyle(root.querySelector<HTMLElement>(`[data-${name}]`)!).color;
+      return (text.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+    };
+    const ink = rgb("ink");
+    const shade = rgb("shade");
+    const shell = `rgb(${rgb("shell").join(",")})`;
 
     /** Turns a mesh to the view and lays it on the canvas, `unit` pixels to one model unit. */
     function project(v: Float32Array, yaw: number, unit: number, cx: number, cy: number) {
@@ -438,7 +433,7 @@
       return box;
     });
 
-    /** One frame, `t` seconds into the sequence and `life` seconds since the print first showed. */
+    /** One frame, `t` seconds into the sequence and `life` seconds since the model first showed. */
     function draw(t: number, life: number) {
       const width = canvas.clientWidth;
       const height = canvas.clientHeight;
@@ -485,8 +480,8 @@
     }
 
     const END = HOLD_FIRST + (STAGES.length - 1) * (MORPH + HOLD);
-    let began = 0; // when the molts last started
-    let born = 0; // when the print first showed
+    let began = 0; // when the sequence last started
+    let born = 0; // when the model first showed
     let frame = 0;
     function tick(now: number) {
       if (!born) born = began = now;
@@ -498,21 +493,17 @@
       frame = 0;
     };
 
-    readInks();
     if (still) {
-      // No motion: the last frame, redrawn when the print changes size or ink.
-      const settle = () => draw(END + 1, 0);
-      new ResizeObserver(settle).observe(canvas);
-      new MutationObserver(() => (readInks(), settle())).observe(document.documentElement, { attributes: true });
+      // No motion: the last frame, redrawn when the canvas changes size.
+      new ResizeObserver(() => draw(END + 1, 0)).observe(canvas);
       return;
     }
-    // Runs only while the print is on screen.
+    // Runs only while the model is on screen.
     new IntersectionObserver((entries) => {
       const visible = entries.some((e) => e.isIntersecting);
       if (visible && !frame) frame = requestAnimationFrame(tick);
       if (!visible) stop();
     }).observe(canvas);
-    new MutationObserver(readInks).observe(document.documentElement, { attributes: true });
     root.addEventListener("click", () => (began = performance.now()));
   }
 

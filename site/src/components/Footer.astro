@@ -37,8 +37,8 @@ import { url } from "../lib/paths";
 <style>
   footer {
     padding: 3.5rem 0 4rem;
-    border-top: 1px solid var(--coal-rule);
-    color: var(--chalk-2);
+    border-top: 1px solid var(--line);
+    color: var(--muted);
     font-size: 1.1rem;
   }
   .grid {
@@ -50,10 +50,12 @@ import { url } from "../lib/paths";
     display: inline-flex;
     align-items: center;
     gap: 0.55rem;
-    color: var(--chalk);
-    font-family: var(--display);
-    font-size: 1.6rem;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 1.3rem;
+    font-weight: 700;
     line-height: 1;
+    letter-spacing: -0.04em;
     text-decoration: none;
   }
   .about p {
@@ -67,14 +69,15 @@ import { url } from "../lib/paths";
   }
   h2 {
     margin-bottom: 0.35rem;
-    color: var(--chalk);
-    font-size: 1.35rem;
+    color: var(--text);
+    font-size: 1rem;
+    letter-spacing: -0.02em;
   }
   nav a {
     text-decoration: none;
   }
   nav a:hover {
-    color: var(--chalk);
+    color: var(--text);
     text-decoration: underline;
   }
   @media (max-width: 760px) {

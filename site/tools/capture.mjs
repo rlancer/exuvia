@@ -8,19 +8,22 @@
  *   # in exuvia/site/
  *   node tools/capture.mjs app http://127.0.0.1:7431    -> src/assets/shots/{workbench,views,agent,agent-panel}.png
  *   node tools/capture.mjs card                         -> public/og.png
+ *   # with the site itself running (npm run dev)
+ *   node tools/capture.mjs art http://localhost:4321    -> tools/card-art.png, the hero's model for the card
  *
  * The agent shot sends one real prompt, so it changes the project it runs
  * against (the agent writes a node) and spends a few cents of model credit.
  * Pass --no-agent to skip it.
  */
+import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "playwright-core";
 
 const SITE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const [mode, base, ...flags] = process.argv.slice(2);
-if (!["app", "card"].includes(mode) || (mode === "app" && !base)) {
-  console.error("usage: node tools/capture.mjs app <exuvia url> [--no-agent] | card");
+if (!["app", "card", "art"].includes(mode) || (mode !== "card" && !base)) {
+  console.error("usage: node tools/capture.mjs app <exuvia url> [--no-agent] | card | art <site url>");
   process.exit(2);
 }
 
@@ -38,6 +41,7 @@ async function launch() {
 const browser = await launch();
 try {
   if (mode === "app") await app();
+  else if (mode === "art") await art();
   else await card();
 } finally {
   await browser.close();
@@ -89,6 +93,22 @@ async function app() {
   await shot("agent");
   await page.locator(".agent").screenshot({ path: path.join(SITE, "src/assets/shots/agent-panel.png") });
   console.log("wrote agent.png, agent-panel.png");
+}
+
+/** Saves the hero's canvas at its last frame: the lobster, with the older shells above it. */
+async function art() {
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+    deviceScaleFactor: 2,
+    reducedMotion: "reduce",
+  });
+  const page = await context.newPage();
+  await page.goto(base);
+  await page.evaluate(() => document.fonts.ready);
+  await page.waitForTimeout(500);
+  const png = await page.locator("[data-poly] canvas").evaluate((canvas) => canvas.toDataURL("image/png"));
+  await fs.writeFile(path.join(SITE, "tools/card-art.png"), Buffer.from(png.split(",")[1], "base64"));
+  console.log("wrote card-art.png");
 }
 
 async function card() {

@@ -1,24 +1,21 @@
 <!doctype html>
 <!-- The social card (public/og.png). Rendered by `node tools/capture.mjs card`
      straight from this file, so it needs no dev server. Colours and fonts
-     match src/styles/global.css. -->
+     match src/styles/global.css. The art (card-art.png) is the hero's canvas,
+     saved by `node tools/capture.mjs art <site url>`. -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <style>
       @font-face {
-        font-family: "IM Fell Double Pica";
-        src: url("../node_modules/@fontsource/im-fell-double-pica/files/im-fell-double-pica-latin-400-normal.woff2");
+        font-family: "Inter";
+        font-weight: 100 900;
+        src: url("../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2");
       }
       @font-face {
-        font-family: "EB Garamond";
-        font-weight: 400 800;
-        src: url("../node_modules/@fontsource-variable/eb-garamond/files/eb-garamond-latin-wght-normal.woff2");
-      }
-      @font-face {
-        font-family: "Courier Prime";
-        font-weight: 700;
-        src: url("../node_modules/@fontsource/courier-prime/files/courier-prime-latin-700-normal.woff2");
+        font-family: "JetBrains Mono";
+        font-weight: 100 800;
+        src: url("../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2");
       }
       * {
         box-sizing: border-box;
@@ -29,34 +26,34 @@
         grid-template-rows: auto 1fr auto;
         width: 1200px;
         height: 630px;
-        padding: 52px 64px 44px;
-        background: #f3f0e6;
-        color: #111110;
-        font-family: "EB Garamond", serif;
+        padding: 48px 64px 40px;
+        background: #111214 radial-gradient(circle, #26282d 1px, transparent 1.4px) 0 0 / 20px 20px;
+        color: #e9e7e1;
+        font-family: "Inter", sans-serif;
       }
       .brand {
         display: flex;
         align-items: center;
-        gap: 16px;
-        font-family: "IM Fell Double Pica", serif;
-        font-size: 46px;
+        gap: 14px;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 38px;
+        font-weight: 700;
         line-height: 1;
-      }
-      .brand span {
-        padding-bottom: 6px;
+        letter-spacing: -0.04em;
       }
       .body {
         display: grid;
-        grid-template-columns: 1.15fr 1fr;
-        gap: 40px;
+        grid-template-columns: 1.1fr 1fr;
+        gap: 32px;
         align-items: center;
       }
       h1 {
-        font-family: "IM Fell Double Pica", serif;
-        font-size: 78px;
-        font-weight: 400;
-        line-height: 0.98;
-        letter-spacing: -0.02em;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 60px;
+        font-weight: 700;
+        line-height: 1.08;
+        letter-spacing: -0.045em;
+        word-spacing: -0.22em;
         text-wrap: balance;
       }
       img {
@@ -68,27 +65,28 @@
         align-items: baseline;
         justify-content: space-between;
         padding-top: 18px;
-        border-top: 3px solid #111110;
-        font-size: 26px;
+        border-top: 1px solid #3a3d44;
+        color: #a8a69c;
+        font-size: 23px;
         white-space: nowrap;
       }
       .foot b {
-        font-family: "Courier Prime", monospace;
-        font-size: 24px;
+        color: #e9e7e1;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 22px;
       }
       .foot b i {
-        color: #2f5fd6;
+        color: #f2b84b;
         font-style: normal;
       }
     </style>
   </head>
   <body>
     <div class="brand">
-      <svg width="46" height="46" viewBox="0 0 32 32">
-        <rect width="32" height="32" fill="#6d9cfe" />
+      <svg width="40" height="40" viewBox="0 0 32 32">
         <path
           d="M7 9c8 0 10 14 18 14M7 23c8 0 10-14 18-14"
-          stroke="#111110"
+          stroke="#f2b84b"
           stroke-width="3"
           fill="none"
           stroke-linecap="square"
@@ -98,7 +96,7 @@
     </div>
     <div class="body">
       <h1>A data workbench where the graph is the interface</h1>
-      <img src="../src/assets/lobster.png" alt="" />
+      <img src="card-art.png" alt="" />
     </div>
     <div class="foot">
       <span>Plain Python and SQL files, per-node schedules, an agent on the graph.</span>

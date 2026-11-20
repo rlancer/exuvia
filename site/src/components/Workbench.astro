@@ -93,13 +93,14 @@ const tabs = [
     font-size: var(--step-3);
   }
   header p {
+    max-width: 44rem;
     margin-top: 1.1rem;
-    color: var(--chalk-2);
+    color: var(--muted);
     font-size: var(--step-1);
     line-height: 1.4;
   }
   header code {
-    color: var(--chalk);
+    color: var(--text);
   }
   .viewer {
     margin-top: 2.5rem;
@@ -109,29 +110,33 @@ const tabs = [
     flex-wrap: wrap;
     gap: 0.5rem;
   }
+  /* Tabs as the app's segmented control: the selected one is amber. */
   [role="tab"] {
     padding: 0.35rem 1rem 0.4rem;
-    border: var(--line-rev-thin);
+    border: var(--border-strong);
+    border-radius: 0.45rem;
     background: transparent;
-    color: var(--chalk);
-    font-size: 1.15rem;
+    color: var(--text);
+    font-size: 1.05rem;
     font-weight: 600;
     cursor: pointer;
   }
   [role="tab"]:hover {
-    background: var(--coal-2);
+    background: var(--panel);
   }
   [role="tab"][aria-selected="true"] {
-    background: var(--chalk);
-    color: var(--coal);
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-ink);
   }
   figure {
     margin: 1rem 0 0;
   }
   .frame {
-    border: var(--line-rev);
+    border: var(--border-strong);
+    border-radius: 0.6rem;
     overflow: hidden;
-    background: var(--coal);
+    background: var(--bg-deep);
   }
   .frame :global(img) {
     display: block;
@@ -141,8 +146,7 @@ const tabs = [
   figcaption {
     max-width: 46rem;
     margin-top: 0.9rem;
-    color: var(--chalk-2);
-    font-style: italic;
+    color: var(--muted);
   }
 </style>
 
