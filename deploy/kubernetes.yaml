@@ -3,14 +3,15 @@
 #
 #   kubectl create namespace exuvia
 #   kubectl -n exuvia create secret generic exuvia --from-literal=api-token=change-me
-#   kubectl -n exuvia apply -f deploy/kubernetes.yaml
+#   kubectl -n exuvia apply -f https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/kubernetes.yaml
 #   kubectl -n exuvia rollout status deployment/exuvia-hub
 #   kubectl -n exuvia port-forward service/exuvia-hub 7420:7420
 #   curl http://localhost:7420/healthz
 #
-# The image defaults to ghcr.io/rlancer/exuvia:latest; for your own build, push
-# it to a registry the cluster can pull from and change `image` below (or
-# `kubectl -n exuvia set image deployment/exuvia-hub hub=<your image>`).
+# The image defaults to ghcr.io/rlancer/exuvia:latest (public, no login). To pin
+# a release (ghcr.io/rlancer/exuvia:0.3) or use an image with your nodes'
+# packages, change `image` below (or `kubectl -n exuvia set image
+# deployment/exuvia-hub hub=<image>`); the cluster must be able to pull it.
 #
 # To turn on the built-in agent, add `anthropic-api-key` to the secret and
 # uncomment ANTHROPIC_API_KEY below. For one project with the web UI instead of

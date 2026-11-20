@@ -10,9 +10,12 @@
 # every role serves /api/view-runtime/runtime.js. tests/e2e/container_e2e.py
 # builds this image and drives the hub role over HTTP.
 #
-# Nodes need their own packages in the *executor* image. Extend it:
-#   FROM exuvia
+# Nodes need their own packages in the *executor* image. Extend it (the venv
+# belongs to root, so install as root and switch back):
+#   FROM ghcr.io/rlancer/exuvia:0.3
+#   USER root
 #   RUN uv pip install --python /opt/venv/bin/python scipy statsmodels yfinance
+#   USER exuvia
 
 # The UI bundle is the same on every platform, so it builds natively even in a
 # multi-arch build (see .github/workflows/image.yml).

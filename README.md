@@ -16,8 +16,9 @@ universe ──► prices (cron 17:00 weekdays) ──► returns ──► roll
     └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-> Commands that name `examples/`, `deploy/` or the `Dockerfile` run from a
-> clone of this repository. The rest work anywhere.
+> Everything here runs from the published package (PyPI) and image (GHCR),
+> with no clone. The exceptions are the commands that open `examples/` and
+> [Contributing](#contributing), which is about working on exuvia itself.
 
 ## Why
 
@@ -525,42 +526,29 @@ Executor protocol (bearer `EXUVIA_EXECUTOR_TOKEN`):
 
 ## Deploying
 
-```bash
-docker build -t exuvia .
-# executor (default command)
-docker run -p 8080:8080 -e EXUVIA_EXECUTOR_TOKEN=change-me exuvia
-# control plane on your machine, nodes running in the container
-EXUVIA_EXECUTOR_TOKEN=change-me exuvia serve my-project --executor http://localhost:8080
-```
-
-Nodes need their packages in the executor image — extend it:
-
-```dockerfile
-FROM exuvia
-RUN uv pip install --python /opt/venv/bin/python scipy statsmodels
-```
-
-The same image runs every role: the executor (its default command),
-`exuvia serve <dir>` (one project with the web UI) and `exuvia hub <dir>`
-(many projects behind one API, see "Hub"). Releases publish it for
-linux/amd64 and linux/arm64 as `ghcr.io/rlancer/exuvia:<version>` and
-`:latest`; `docker build -t exuvia .` builds it from a checkout.
+Every release publishes the image to `ghcr.io/rlancer/exuvia` for
+linux/amd64 and linux/arm64, tagged with its version (`0.3.0`), its minor
+line (`0.3`) and `latest`. It is public: pull it, with no login and nothing
+to build. The one image runs every role: `exuvia hub <dir>` (many projects
+behind one API, see "Hub"), `exuvia serve <dir>` (one project with the web
+UI) and an executor (its default command, see "Architecture").
 
 ### Compose, Swarm and Kubernetes
 
 `deploy/` holds a ready hub for each: one service with a volume at `/data`,
 a `/healthz` check and `EXUVIA_API_TOKEN` auth. CI brings each one up and
-runs the end-to-end test against it.
+runs the end-to-end test against it. You need the one file, not the repo:
 
 ```bash
 # Docker Compose or Podman Compose
-EXUVIA_API_TOKEN=change-me docker compose -f deploy/compose.yaml up -d
+curl -O https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/compose.yaml
+EXUVIA_API_TOKEN=change-me docker compose up -d
 # Docker Swarm (the same file)
-EXUVIA_API_TOKEN=change-me docker stack deploy -c deploy/compose.yaml exuvia
+EXUVIA_API_TOKEN=change-me docker stack deploy -c compose.yaml exuvia
 # Kubernetes
 kubectl create namespace exuvia
 kubectl -n exuvia create secret generic exuvia --from-literal=api-token=change-me
-kubectl -n exuvia apply -f deploy/kubernetes.yaml
+kubectl -n exuvia apply -f https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/kubernetes.yaml
 kubectl -n exuvia port-forward service/exuvia-hub 7420:7420
 
 curl http://localhost:7420/healthz
@@ -569,15 +557,13 @@ curl -H "Authorization: Bearer change-me" -H "Content-Type: application/json" \
 ```
 
 `EXUVIA_IMAGE` (Compose and Swarm) or the Deployment's `image` picks another
-image, such as your own build pushed to a registry. A hub owns its
-directory, so run one replica; to scale out or to survive losing the volume,
-point `EXUVIA_DB` at Postgres and `EXUVIA_ARTIFACT_STORE` at a bucket (table
-below). The comments at the top of each file cover the rest: the agent's API
-key, one project with the UI instead of a hub, and Swarm volume placement.
-To check a deployment, run the end-to-end test against it from a checkout:
-`E2E_URL=http://localhost:7420 E2E_TOKEN=change-me python tests/e2e/container_e2e.py`
-creates two projects, runs the example graph, checks the outputs and deletes
-both again.
+image: a pinned release such as `ghcr.io/rlancer/exuvia:0.3`, a copy in your
+own registry, or an image with your nodes' packages (see below). A hub owns
+its directory, so run one replica; to scale out or to survive losing the
+volume, point `EXUVIA_DB` at Postgres and `EXUVIA_ARTIFACT_STORE` at a bucket
+(table below). The comments at the top of each file cover the rest: the
+agent's API key, one project with the UI instead of a hub, and Swarm volume
+placement.
 
 ### Hand it to an agent
 
@@ -595,9 +581,9 @@ with an HTTP API) as a headless hub on: Docker Compose | Docker Swarm | Kubernet
 2. Generate a random API token (e.g. `openssl rand -hex 32`). Store it as the
    EXUVIA_API_TOKEN variable (Compose/Swarm) or as `api-token` in a secret
    named `exuvia` (Kubernetes). Don't print it in logs or commit it.
-3. Image: ghcr.io/rlancer/exuvia:latest. If it can't be pulled, clone the repo,
-   `docker build -t <registry>/exuvia:<tag> .`, push it where the hosts can
-   pull it, and set EXUVIA_IMAGE (Compose/Swarm) or the Deployment's image.
+3. Image: ghcr.io/rlancer/exuvia:latest, public, no login needed. If the hosts
+   can't reach ghcr.io, copy it to a registry they can reach (docker pull, tag,
+   push) and set EXUVIA_IMAGE (Compose/Swarm) or the Deployment's image.
 4. Bring it up and wait until it is healthy:
    - Compose: `docker compose -f compose.yaml up -d --wait`
    - Swarm:   `docker stack deploy -c compose.yaml exuvia`
@@ -609,12 +595,45 @@ with an HTTP API) as a headless hub on: Docker Compose | Docker Swarm | Kubernet
    PUT /p/smoke/api/nodes/hello {"source": "select 42 as answer", "kind": "sql"},
    POST /p/smoke/api/run {"wait": 60} returns "ok": true,
    GET /p/smoke/api/nodes/hello/data returns the column `answer` and rows [[42]];
-   then DELETE /api/projects/smoke. (Or, from a checkout of the repo:
-   E2E_URL=<url> E2E_TOKEN=<token> python tests/e2e/container_e2e.py.)
+   then DELETE /api/projects/smoke.
 6. Keep one replica (the hub owns its volume). Don't expose it publicly
    without TLS in front (an Ingress, a load balancer or a reverse proxy).
 7. Report the URL, where the token is stored, and the verification output.
 ```
+
+### One container with docker run
+
+```bash
+# one project with the web UI, from a folder on this machine
+docker run -p 7420:7420 --user "$(id -u):$(id -g)" -v "$PWD/my-research:/project" \
+  ghcr.io/rlancer/exuvia exuvia serve /project --host 0.0.0.0
+# an executor: the control plane stays on your machine, nodes run in the container
+docker run -p 8080:8080 -e EXUVIA_EXECUTOR_TOKEN=change-me ghcr.io/rlancer/exuvia
+EXUVIA_EXECUTOR_TOKEN=change-me exuvia serve my-research --executor http://localhost:8080
+```
+
+`--user` runs the container as you, so the files it writes into
+`my-research` are yours. Without it the image runs as its own `exuvia` user
+(uid 10001).
+
+### Packages your nodes import
+
+Nodes run in the image's Python environment, so their packages go into the
+image. Put this in a `Dockerfile` of your own:
+
+```dockerfile
+FROM ghcr.io/rlancer/exuvia:0.3
+USER root
+RUN uv pip install --python /opt/venv/bin/python scipy statsmodels
+USER exuvia
+```
+
+`docker build -t my-exuvia .` builds it. Use it in place of the published
+image: in `docker run`, or as `EXUVIA_IMAGE` or the Deployment's `image`
+(Swarm and Kubernetes pull it from a registry, so push it to one first).
+With a remote executor, the executor is the one that needs the packages.
+
+### Schedules, auth and settings
 
 **Hosts that sleep or scale to zero.** An in-process scheduler can't fire while
 its process is asleep. Run the control plane with `--scheduler external` and
@@ -896,9 +915,15 @@ queries the Lobster lake from any node (`LOBSTER_API` for the base URL;
 `LOBSTER_TOKEN` is sent as a bearer token when set and omitted otherwise, for
 hosts that attach credentials at the network edge).
 
-## Development
+## Contributing
+
+This section is for working on exuvia itself: everything in it runs from a
+clone. [mise](https://mise.jdx.dev/) supplies the tools (uv, Python, Node,
+actionlint) from `mise.toml`.
 
 ```bash
+git clone https://github.com/rlancer/exuvia
+cd exuvia
 mise run sync      # uv sync + npm install
 mise run ui-dev    # Vite on :5180 proxying /api → :7420
 mise run demo      # exuvia serve examples/markets
@@ -918,6 +943,20 @@ it at `/api/view-runtime/runtime.js`, so a page that embeds a headless exuvia
 gets the runtime matching the server it talks to. Build once before using
 views from the dev server.
 
+### Building the image
+
+Releases publish the image (see Releasing), so you only build one to try a
+change to it:
+
+```bash
+docker build -t exuvia:local .
+EXUVIA_IMAGE=exuvia:local EXUVIA_API_TOKEN=change-me docker compose -f deploy/compose.yaml up -d
+```
+
+Swarm and Kubernetes nodes pull their image from a registry, so push the
+build to one they can reach, then set `EXUVIA_IMAGE` or the Deployment's
+`image` to it.
+
 `mise run e2e` (`tests/e2e/container_e2e.py`, standard library only) builds
 the `Dockerfile` image, starts it as `exuvia hub /data`, and works through it
 over HTTP: a project from the `examples/markets` template, every node run,
@@ -930,7 +969,13 @@ printed when a step fails. With `E2E_URL` (and `E2E_TOKEN`) it tests a hub
 that is already running instead, uploading the example over HTTP and deleting
 what it created. CI runs it with docker in the `container` job, against the
 image itself and against the `deploy/` recipes brought up with Compose, as a
-Swarm stack and on a kind cluster. `pytest` does not collect it.
+Swarm stack and on a kind cluster. `pytest` does not collect it. To check
+a deployment of your own:
+`E2E_URL=http://localhost:7420 E2E_TOKEN=change-me python tests/e2e/container_e2e.py`
+creates two projects, runs the example graph, checks the outputs and deletes
+both again.
+
+### The website
 
 The website (`site/`, Astro) is a landing page plus a docs portal. The docs
 pages are built from the `## ` sections of this README, so there is one copy
@@ -954,7 +999,7 @@ in the job summary. By hand, with `wrangler login` done: `mise run
 site-deploy`, or `mise run site-cf-dev` to serve the build locally with
 wrangler (http://localhost:8787/).
 
-Layout:
+### Layout
 
 ```
 exuvia/
@@ -975,7 +1020,7 @@ examples/       demo projects
 site/           the website: landing page + docs portal (Astro, static)
 ```
 
-## Releasing
+### Releasing
 
 A release is one merged pull request that bumps the version: set `version`
 in `pyproject.toml` and `__version__` in `exuvia/__init__.py`, run `uv lock`,
