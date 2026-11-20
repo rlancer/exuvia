@@ -8,10 +8,12 @@ import Workbench from "../components/Workbench.astro";
 import ViewAnatomy from "../components/ViewAnatomy.astro";
 import lobster from "../assets/lobster.png";
 import agentPanel from "../assets/shots/agent-panel.png";
+import { agentSetupPrompt } from "../lib/docs";
 import { codeFigure, getHighlighter } from "../lib/highlight";
 import { url } from "../lib/paths";
 
 const h = await getHighlighter();
+const setupPrompt = codeFigure(h, agentSetupPrompt(), "text");
 
 const providers = [
   { name: "Claude", set: ["ANTHROPIC_API_KEY"] },
@@ -69,8 +71,8 @@ const more = [
 const steps = [
   {
     title: "Install it",
-    body: "exuvia is one Python package with the web UI inside. It needs Python 3.11 or newer.",
-    code: codeFigure(h, "pip install exuvia", "bash"),
+    body: "exuvia is one Python package with the web UI inside. uv and pipx give it an environment of its own, and pip works too.",
+    code: codeFigure(h, "uv tool install exuvia    # or: pipx install exuvia", "bash"),
   },
   {
     title: "Create a project and open it",
@@ -116,6 +118,9 @@ const steps = [
             <button class="copy" type="button" data-copy="pip install exuvia">Copy</button>
           </div>
         </div>
+        <p class="handoff-link">
+          Or <a href="#agent-setup">paste one prompt into your coding agent</a> and let it do the setup.
+        </p>
       </div>
       <figure class="specimen">
         <Image
@@ -268,6 +273,18 @@ const steps = [
           ))
         }
       </ol>
+      <div class="handoff" id="agent-setup">
+        <div class="handoff-text">
+          <h3>Or hand the setup to your agent</h3>
+          <p>
+            Paste this into Claude Code, Cursor, Codex or any coding agent with a terminal. It installs exuvia,
+            creates a project, starts the workbench and connects itself to the graph. No model key is needed: the
+            model is the one your agent already runs on.
+          </p>
+          <a href={url("/docs/agent-setup/")}>What the prompt does</a>
+        </div>
+        <Fragment set:html={setupPrompt} />
+      </div>
       <div class="next">
         <a class="btn btn-primary" href={url("/docs/getting-started/")}>Follow the full tutorial</a>
         <p>
@@ -332,6 +349,14 @@ const steps = [
   .install .copy:hover {
     background: var(--ink);
     color: var(--paper);
+  }
+  .handoff-link {
+    margin-top: 1.1rem;
+    color: var(--ink-2);
+  }
+  .handoff-link a {
+    text-decoration-color: var(--blue);
+    text-decoration-thickness: 2px;
   }
   .specimen {
     margin: 0;
@@ -576,6 +601,31 @@ const steps = [
   .steps :global(.code) {
     border: 1.5px solid var(--chalk);
   }
+  .handoff {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+    gap: 1.5rem 3rem;
+    align-items: start;
+    padding: 2rem 0 0.5rem;
+    border-top: 2px solid var(--chalk);
+    scroll-margin-top: 5rem;
+  }
+  .handoff h3 {
+    font-size: var(--step-2);
+  }
+  .handoff p {
+    margin-top: 0.5rem;
+    color: var(--chalk-2);
+  }
+  .handoff a {
+    display: inline-block;
+    margin-top: 0.75rem;
+    text-decoration-color: var(--blue);
+    text-decoration-thickness: 2px;
+  }
+  .handoff :global(.code) {
+    border: 1.5px solid var(--chalk);
+  }
   .next {
     display: flex;
     flex-wrap: wrap;
@@ -601,7 +651,8 @@ const steps = [
     .more {
       grid-template-columns: minmax(0, 1fr);
     }
-    .steps li {
+    .steps li,
+    .handoff {
       grid-template-columns: minmax(0, 1fr);
     }
   }

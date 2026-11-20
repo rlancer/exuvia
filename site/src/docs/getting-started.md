@@ -4,13 +4,40 @@ the agent. It takes about ten minutes.
 
 ## Install
 
-exuvia is a Python package. It needs Python 3.11 or newer.
+exuvia is a Python package with the web UI inside, so it is the only thing
+to install. Any of these puts an `exuvia` command on your PATH:
 
 ```bash
-pip install exuvia
+uv tool install exuvia
+pipx install exuvia
+pip install exuvia         # into the active virtual environment
 ```
 
-The package includes the web UI, so there is nothing else to install.
+It needs Python 3.11 or newer. [uv](https://docs.astral.sh/uv/) downloads one
+when yours is older.
+
+To try exuvia without installing it, put `uvx` (or `pipx run`) in front of
+any command on this page. uv downloads the package into its cache on the
+first run:
+
+```bash
+uvx exuvia init my-research
+uvx exuvia serve my-research
+```
+
+Nodes run in the Python environment exuvia is installed in, so the packages
+they import go there too:
+
+```bash
+uv tool install exuvia --with scipy          # uv tool
+pipx inject exuvia scipy                     # pipx
+uvx --with scipy exuvia serve my-research    # uvx
+```
+
+Would you rather have your coding agent do all of this?
+[Set up with your agent](#set-up-with-your-agent) has a prompt to paste into
+Claude Code, Cursor or any agent with a terminal. It installs exuvia, starts
+the workbench and connects itself to the project.
 
 ## Create a project
 
