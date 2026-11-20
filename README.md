@@ -549,6 +549,51 @@ Things to ask it:
 - "Schedule `prices` every 30 minutes during market hours"
 - "Chart the drawdown for each ticker"
 
+## MCP: the agent's tools in your own agent
+
+`exuvia mcp` serves a project's agent tools over the Model Context Protocol,
+so Claude Code, Claude Desktop, Cursor or any other MCP client can build and
+run pipelines with the model you already use; exuvia needs no API key of its
+own. The client gets the same tools as the built-in agent (see "The agent",
+plus `list_revisions`, `read_revision`, `restore_node` and
+`restore_view_file`) and a `guide` tool. The agent's instructions (how exuvia
+works, this project's parameters and `AGENTS.md`) are the server's
+instructions, and `guide` returns them for clients that don't pass those on.
+It needs the `mcp` extra.
+
+```bash
+pip install "exuvia[mcp]"
+exuvia mcp my-project                                # open the project in this process
+exuvia mcp --url http://127.0.0.1:7420               # relay to a running `exuvia serve`
+exuvia mcp --url http://127.0.0.1:7420/p/my-project  # ...or to one project of a hub
+```
+
+Add it to Claude Code (or any client's MCP config) with `uvx`, so nothing
+has to be installed first:
+
+```bash
+claude mcp add exuvia -- uvx --from "exuvia[mcp]" exuvia mcp /path/to/my-project
+```
+
+```json
+{"mcpServers": {"exuvia": {"command": "uvx", "args": ["--from", "exuvia[mcp]", "exuvia", "mcp", "/path/to/my-project"]}}}
+```
+
+**Which mode.** With a directory, `exuvia mcp` opens the project itself and
+needs nothing else running; its schedules don't fire (that is `exuvia serve`'s
+job; set `EXUVIA_SCHEDULER=internal` to have them fire anyway), and
+`--executor` runs nodes remotely as with `serve`. The directory must already
+be a project (`exuvia init` makes one). While `exuvia serve` has the project
+open, use `--url` instead: the server stays the only process that owns the
+project, its UI shows every change and run as it happens, and the tools reach
+it through `POST /api/tools/{name}`. `EXUVIA_API_TOKEN` is sent as a bearer
+token when set.
+
+Code the client changes is recorded with the origin `mcp`, and nodes it runs
+with the trigger `mcp`, so the history shows which changes came from your
+agent. A tool that fails returns its error (a traceback's last lines, an
+invalid input) as the tool result, for the model to read and fix.
+
 ## Headless
 
 ```bash
@@ -606,7 +651,8 @@ headlessly or iframe the UI:
 | `POST /api/nodes` | create from a template |
 | `POST /api/nodes/{name}/run` | run a node; `{"wait": seconds}` waits and returns the same report the agent's `run_node` gets (status, error + log tail, or schema, rows and first rows; `running: true` if still going) |
 | `POST /api/run` | bring the graph (or named nodes) up to date for a parameter set (`wait` as above: per-node status and each failure's error + log tail) |
-| `GET /api/guide` | the agent's instructions for this project (conventions, parameters, project notes) and its tool list, for an outside agent writing nodes over HTTP |
+| `GET /api/guide` | the agent's instructions for this project (conventions, parameters, project notes) and its tools with their input schemas, for an outside agent writing nodes over HTTP |
+| `POST /api/tools/{name}` | run one of those tools with the body as its input, as the agent would: `{"ok", "text", ...}`. A failed tool or a rejected input is still a 200 with `ok: false` and `text` saying why; an unknown tool is a 404. `exuvia mcp --url` relays MCP tool calls here (see "MCP") |
 | `POST /api/run-stale` | refresh everything stale |
 | `POST/GET/DELETE /api/backfill` | replay a list or date range of parameter values |
 | `GET /api/nodes/{name}/data` | a node's output (`?params=` or `?run_id=`, `?limit=`, `?offset=`): JSON rows, or an Arrow stream (see "Binary data") |

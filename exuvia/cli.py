@@ -6,6 +6,7 @@
     exuvia run [dir] [node...]   run nodes headlessly (CI / cron friendly);
                                  --param as_of=2026-03-02 replays a parameter set
     exuvia status [dir]          print node freshness
+    exuvia mcp [dir | --url URL] the agent's tools for MCP clients (Claude Code, Cursor, ...)
     exuvia executor              run nodes for a remote control plane (HTTP service)
 """
 
@@ -144,6 +145,21 @@ def cmd_status(args: argparse.Namespace) -> None:
         print(f"{s['state']:>8}  {name}" + (f"  ({s['reason']})" if s.get("reason") else ""))
 
 
+def cmd_mcp(args: argparse.Namespace) -> None:
+    import os
+
+    if not args.url:
+        root = Path(args.dir or ".").resolve()
+        _load_dotenv(root)
+        if args.executor:
+            os.environ["EXUVIA_EXECUTOR_URL"] = args.executor
+        # Schedules belong to `exuvia serve`; an MCP session only edits and runs.
+        os.environ.setdefault("EXUVIA_SCHEDULER", "external")
+    from .mcp_server import main as mcp_main
+
+    mcp_main(args.dir, args.url)
+
+
 def cmd_executor(args: argparse.Namespace) -> None:
     import os
 
@@ -197,6 +213,14 @@ def main() -> None:
     p.add_argument("--json", action="store_true")
     p.add_argument("--param", action="append", metavar="NAME=VALUE", help="status for this parameter set")
     p.set_defaults(fn=cmd_status)
+
+    p = sub.add_parser("mcp", help="serve a project's agent tools to MCP clients over stdio (needs exuvia[mcp])")
+    p.add_argument("dir", nargs="?", help="project to open in this process (default: .)")
+    p.add_argument("--url", metavar="URL",
+                   help="relay to a running `exuvia serve` (its address) or hub project (<hub>/p/<project>) instead; "
+                        "sends EXUVIA_API_TOKEN when set")
+    p.add_argument("--executor", metavar="URL", help="run nodes on a remote `exuvia executor` (env EXUVIA_EXECUTOR_URL)")
+    p.set_defaults(fn=cmd_mcp)
 
     p = sub.add_parser("executor", help="serve node execution over HTTP")
     p.add_argument("--host", default="127.0.0.1")

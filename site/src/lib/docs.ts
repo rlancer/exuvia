@@ -102,6 +102,13 @@ const PAGES: PageSpec[] = [
     summary: "Every route the UI uses, plus Arrow streams and stored Parquet files.",
   },
   {
+    slug: "mcp",
+    group: "Integrate",
+    source: { heading: "MCP: the agent's tools in your own agent" },
+    title: "MCP",
+    summary: "Give Claude Code, Cursor or any MCP client the agent's tools: list, write and run nodes from your own agent.",
+  },
+  {
     slug: "status",
     group: "Project",
     source: { heading: "Status" },

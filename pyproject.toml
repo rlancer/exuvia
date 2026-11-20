@@ -23,6 +23,9 @@ dependencies = [
 dev = ["pytest>=8"]
 # EXUVIA_DB=postgresql://... (see exuvia/db.py)
 postgres = ["psycopg[binary]>=3.2"]
+mcp = [
+    "mcp>=2.3,<3",  # the 2.x server API (exuvia/mcp_server.py)
+]
 
 [project.scripts]
 exuvia = "exuvia.cli:main"
