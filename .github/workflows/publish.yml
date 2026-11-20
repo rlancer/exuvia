@@ -3,12 +3,16 @@ name: Publish
 # Releases exuvia to PyPI with trusted publishing (OIDC) — no stored token.
 # PyPI side: project exuvia → Publishing → GitHub publisher with
 #   owner rlancer, repo exuvia, workflow publish.yml, environment pypi.
-# Release: bump `version` in pyproject.toml, merge, then
-#   git tag v<version> && git push origin v<version>
+# Release: bump `version` in pyproject.toml and merge. release.yml tags the
+# merged commit `v<version>` and starts this workflow on the tag
+# (workflow_dispatch); a tag pushed by hand starts it too (push). Either way
+# it only publishes from a tag that matches the version: started on a branch,
+# the first step fails.
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
