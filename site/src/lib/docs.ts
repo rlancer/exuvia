@@ -87,7 +87,7 @@ const PAGES: PageSpec[] = [
     slug: "deploying",
     group: "Run",
     source: { heading: "Deploying" },
-    summary: "The executor image, external schedulers, auth, and every environment variable.",
+    summary: "The published image, ready hubs for Compose, Swarm and Kubernetes, auth, and every environment variable.",
   },
   {
     slug: "records",
@@ -129,8 +129,7 @@ const PAGES: PageSpec[] = [
 const OMITTED: Record<string, string> = {
   Why: "covered by the landing page",
   "Quick start": "replaced by the Getting started tutorial, which has the same install commands",
-  Development: "contributor notes for a checkout of the repo",
-  Releasing: "maintainer notes",
+  Contributing: "notes for working on exuvia from a clone: dev tasks, building the image, the site, releasing",
   License: "shown in the site footer",
 };
 

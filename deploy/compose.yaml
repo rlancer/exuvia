@@ -2,8 +2,11 @@
 # /p/<project>/api (README "Hub"). Works with Docker Compose, Podman Compose
 # and Docker Swarm.
 #
-#   Compose:  EXUVIA_API_TOKEN=change-me docker compose -f deploy/compose.yaml up -d
-#   Swarm:    EXUVIA_API_TOKEN=change-me docker stack deploy -c deploy/compose.yaml exuvia
+# This file is all you need, no clone:
+#   curl -O https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/compose.yaml
+#
+#   Compose:  EXUVIA_API_TOKEN=change-me docker compose up -d
+#   Swarm:    EXUVIA_API_TOKEN=change-me docker stack deploy -c compose.yaml exuvia
 #
 # Then: curl http://localhost:7420/healthz
 #       curl -H "Authorization: Bearer change-me" -X POST http://localhost:7420/api/projects \
@@ -11,10 +14,10 @@
 #
 # Variables (put them in a .env next to this file, or export them):
 #   EXUVIA_API_TOKEN   required: clients send `Authorization: Bearer <token>`
-#   EXUVIA_IMAGE       default ghcr.io/rlancer/exuvia:latest; to build from a
-#                      checkout instead: docker build -t exuvia:local . and set
-#                      EXUVIA_IMAGE=exuvia:local (Swarm: push it to a registry
-#                      every node can pull from)
+#   EXUVIA_IMAGE       default ghcr.io/rlancer/exuvia:latest (public, no login);
+#                      pin a release with ghcr.io/rlancer/exuvia:0.3, or name an
+#                      image with your nodes' packages (README "Deploying").
+#                      Swarm: it must be in a registry every node can pull from
 #   EXUVIA_PORT        host port, default 7420
 #   ANTHROPIC_API_KEY  optional: turns on the built-in agent (or OPENROUTER_API_KEY)
 #
