@@ -2,11 +2,11 @@
 import { Image } from "astro:assets";
 import Base from "../layouts/Base.astro";
 import HeroGraph from "../components/HeroGraph.astro";
+import PolyMolts from "../components/PolyMolts.astro";
 import Evolution from "../components/Evolution.astro";
 import NodeAnatomy from "../components/NodeAnatomy.astro";
 import Workbench from "../components/Workbench.astro";
 import ViewAnatomy from "../components/ViewAnatomy.astro";
-import lobster from "../assets/lobster.png";
 import agentPanel from "../assets/shots/agent-panel.png";
 import { agentSetupPrompt } from "../lib/docs";
 import { codeFigure, getHighlighter } from "../lib/highlight";
@@ -123,13 +123,7 @@ const steps = [
         </p>
       </div>
       <figure class="specimen">
-        <Image
-          src={lobster}
-          alt="Woodcut print of a lobster seen from above, claws forward."
-          widths={[480, 870]}
-          sizes="(max-width: 900px) 80vw, 470px"
-          loading="eager"
-        />
+        <PolyMolts />
         <figcaption>
           <dfn>exuvia</dfn>, <i>noun.</i> The shell a lobster leaves behind when it molts. Every run of a node
           leaves one too: an output you can go back to.
@@ -309,13 +303,12 @@ const steps = [
   }
   h1 {
     font-size: var(--step-4);
-    line-height: 0.96;
-    letter-spacing: -0.02em;
+    line-height: 1.06;
   }
   .lede {
     max-width: 36rem;
     margin-top: 1.6rem;
-    color: var(--ink-2);
+    color: var(--muted);
     font-size: var(--step-1);
     line-height: 1.4;
   }
@@ -331,7 +324,9 @@ const steps = [
     align-items: center;
     gap: 0.9rem;
     padding: 0 0.5rem 0 1rem;
-    border: 1.5px solid var(--ink);
+    border: var(--border-strong);
+    border-radius: 0.5rem;
+    background: var(--panel);
   }
   .install pre {
     margin: 0;
@@ -339,45 +334,42 @@ const steps = [
     font-weight: 700;
   }
   .install pre span {
-    color: var(--blue-text);
+    color: var(--accent);
   }
   .install .copy {
-    border-color: var(--ink);
+    border-color: var(--line-strong);
     background: transparent;
-    color: var(--ink);
+    color: var(--text);
   }
   .install .copy:hover {
-    background: var(--ink);
-    color: var(--paper);
+    background: var(--text);
+    color: var(--bg);
   }
   .handoff-link {
     margin-top: 1.1rem;
-    color: var(--ink-2);
+    color: var(--muted);
   }
   .handoff-link a {
-    text-decoration-color: var(--blue);
+    text-decoration-color: var(--accent);
     text-decoration-thickness: 2px;
   }
   .specimen {
     margin: 0;
   }
-  .specimen :global(img) {
-    display: block;
-    width: 100%;
-    height: auto;
-  }
   .specimen figcaption {
     margin-top: 1rem;
     padding-top: 0.75rem;
-    border-top: 2px solid var(--ink);
-    color: var(--ink-2);
+    border-top: var(--border);
+    color: var(--muted);
     line-height: 1.4;
   }
   .specimen dfn {
-    color: var(--blue-text);
-    font-family: var(--display);
-    font-size: 1.5rem;
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 1.25rem;
     font-style: normal;
+    font-weight: 700;
+    letter-spacing: -0.04em;
   }
 
   /* ---- shared section headers -------------------------------------------- */
@@ -389,6 +381,7 @@ const steps = [
     font-size: var(--step-3);
   }
   section > .wrap > header p {
+    max-width: 44rem;
     margin-top: 1.1rem;
     font-size: var(--step-1);
     line-height: 1.4;
@@ -407,7 +400,7 @@ const steps = [
   .intro {
     max-width: 38rem;
     margin-top: 1.1rem;
-    color: var(--ink-2);
+    color: var(--muted);
     font-size: var(--step-1);
     line-height: 1.4;
   }
@@ -421,11 +414,11 @@ const steps = [
   }
   .habits li {
     padding-left: 1.6rem;
-    background: linear-gradient(var(--blue), var(--blue)) 0 0.7em / 0.9rem 2px no-repeat;
+    background: linear-gradient(var(--accent), var(--accent)) 0 0.7em / 0.9rem 2px no-repeat;
   }
   .agent h3 {
     margin-top: 2.75rem;
-    font-size: var(--step-2);
+    font-size: 1.5rem;
   }
   .providers {
     width: 100%;
@@ -437,12 +430,16 @@ const steps = [
   .providers th,
   .providers td {
     padding: 0.55rem 0;
-    border-bottom: 1px solid var(--rule);
+    border-bottom: 1px solid var(--line);
     font-weight: 400;
   }
   .providers thead th {
-    border-bottom: 2px solid var(--ink);
-    font-style: italic;
+    border-bottom: var(--border);
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .providers td {
+    padding-left: 1rem;
   }
   .providers td,
   .providers thead th:last-child {
@@ -451,16 +448,17 @@ const steps = [
   .aside {
     max-width: 38rem;
     margin-top: 0.9rem;
-    color: var(--ink-2);
+    color: var(--muted);
   }
   .transcript {
     margin: 0;
   }
   .clip {
     max-height: 572px;
-    border: 2px solid var(--ink);
+    border: var(--border-strong);
+    border-radius: 0.6rem;
     overflow: hidden;
-    background: var(--coal);
+    background: var(--bg-deep);
   }
   .clip :global(img) {
     display: block;
@@ -469,18 +467,17 @@ const steps = [
   }
   .transcript figcaption {
     margin-top: 0.75rem;
-    color: var(--ink-2);
-    font-style: italic;
+    color: var(--muted);
   }
 
   /* ---- comparison --------------------------------------------------------- */
   .between {
     padding: clamp(4rem, 9vw, 7rem) 0;
-    border-top: 2px solid var(--ink);
-    background: var(--paper-2);
+    border-top: var(--border);
+    background: var(--panel);
   }
   .between header p {
-    color: var(--ink-2);
+    color: var(--muted);
   }
   .table-scroll {
     margin-top: 2.5rem;
@@ -495,43 +492,44 @@ const steps = [
   .compare th,
   .compare td {
     padding: 0.75rem 1.1rem;
-    border-bottom: 1px solid var(--rule);
+    border-bottom: 1px solid var(--line);
     vertical-align: top;
   }
   .compare thead th {
-    border-bottom: 2px solid var(--ink);
-    font-family: var(--display);
-    font-size: 1.6rem;
-    font-weight: 400;
+    border-bottom: var(--border);
+    font-family: var(--mono);
+    font-size: 1.3rem;
+    font-weight: 700;
   }
   .compare thead td {
-    border-bottom: 2px solid var(--ink);
+    border-bottom: var(--border);
   }
   .compare tbody th {
     width: 11rem;
     padding-left: 0;
-    font-style: italic;
-    font-weight: 500;
+    font-weight: 600;
   }
   .compare td {
-    color: var(--ink-2);
+    color: var(--muted);
   }
-  /* The exuvia column is printed in reverse. */
+  /* The exuvia column stands out as one dark panel. */
   .compare .us {
-    border-bottom-color: var(--coal-rule);
-    background: var(--coal);
-    color: var(--chalk);
+    border-bottom-color: var(--line);
+    background: var(--bg-deep);
+    color: var(--text);
   }
   .compare thead .us {
-    border-bottom-color: var(--blue);
-    color: var(--blue);
+    border-bottom-color: var(--accent);
+    border-radius: 0.6rem 0.6rem 0 0;
+    color: var(--accent);
   }
   .compare tbody tr:last-child .us {
     border-bottom: 0;
+    border-radius: 0 0 0.6rem 0.6rem;
   }
   .more-title {
     margin-top: clamp(3rem, 6vw, 4.5rem);
-    font-size: var(--step-2);
+    font-size: 1.5rem;
   }
   .more {
     display: grid;
@@ -541,19 +539,19 @@ const steps = [
   }
   .more div {
     padding: 0.9rem 0 1.2rem;
-    border-top: 2px solid var(--ink);
+    border-top: var(--border);
   }
   .more dt {
-    font-size: 1.3rem;
+    font-size: 1.15rem;
     font-weight: 600;
   }
   .more a {
-    text-decoration-color: var(--blue);
+    text-decoration-color: var(--accent);
     text-decoration-thickness: 2px;
   }
   .more dd {
     margin: 0.25rem 0 0;
-    color: var(--ink-2);
+    color: var(--muted);
   }
 
   /* ---- get started -------------------------------------------------------- */
@@ -561,7 +559,7 @@ const steps = [
     padding: clamp(4rem, 9vw, 7rem) 0;
   }
   .start header p {
-    color: var(--chalk-2);
+    color: var(--muted);
   }
   .steps {
     display: grid;
@@ -576,7 +574,7 @@ const steps = [
     gap: 1rem 3rem;
     align-items: center;
     padding: 1.5rem 0;
-    border-top: 1px solid var(--coal-rule);
+    border-top: 1px solid var(--line);
     counter-increment: step;
   }
   .step-text {
@@ -586,20 +584,18 @@ const steps = [
   .step-text::before {
     content: counter(step);
     grid-row: span 2;
-    color: var(--blue);
-    font-family: var(--display);
-    font-size: 3.5rem;
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 2.6rem;
+    font-weight: 700;
     line-height: 0.9;
   }
   .steps h3 {
-    font-size: 1.75rem;
+    font-size: 1.3rem;
   }
   .steps p {
     margin-top: 0.3rem;
-    color: var(--chalk-2);
-  }
-  .steps :global(.code) {
-    border: 1.5px solid var(--chalk);
+    color: var(--muted);
   }
   .handoff {
     display: grid;
@@ -607,24 +603,21 @@ const steps = [
     gap: 1.5rem 3rem;
     align-items: start;
     padding: 2rem 0 0.5rem;
-    border-top: 2px solid var(--chalk);
+    border-top: var(--border-strong);
     scroll-margin-top: 5rem;
   }
   .handoff h3 {
-    font-size: var(--step-2);
+    font-size: 1.5rem;
   }
   .handoff p {
     margin-top: 0.5rem;
-    color: var(--chalk-2);
+    color: var(--muted);
   }
   .handoff a {
     display: inline-block;
     margin-top: 0.75rem;
-    text-decoration-color: var(--blue);
+    text-decoration-color: var(--accent);
     text-decoration-thickness: 2px;
-  }
-  .handoff :global(.code) {
-    border: 1.5px solid var(--chalk);
   }
   .next {
     display: flex;
@@ -632,7 +625,7 @@ const steps = [
     align-items: center;
     gap: 1rem 1.75rem;
     margin-top: 2.5rem;
-    color: var(--chalk-2);
+    color: var(--muted);
   }
 
   @media (max-width: 900px) {

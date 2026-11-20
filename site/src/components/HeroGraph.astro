@@ -21,7 +21,7 @@ const edges = [
 ];
 ---
 
-<figure class="tank inked" data-graph data-nodes={JSON.stringify(nodes)} data-edges={JSON.stringify(edges)}>
+<figure class="tank" data-graph data-nodes={JSON.stringify(nodes)} data-edges={JSON.stringify(edges)}>
   <div class="tank-bar">
     <span class="project mono">markets demo</span>
     <div class="controls">
@@ -80,7 +80,10 @@ const edges = [
 <style>
   .tank {
     margin: 0;
-    background: var(--paper);
+    border: var(--border-strong);
+    border-radius: 0.75rem;
+    overflow: hidden;
+    background: var(--bg);
   }
   .tank-bar {
     display: flex;
@@ -89,7 +92,7 @@ const edges = [
     flex-wrap: wrap;
     gap: 0.75rem 1.5rem;
     padding: 0.8rem 1.1rem;
-    border-bottom: 2px solid var(--ink);
+    border-bottom: var(--border);
   }
   .project {
     font-size: 1rem;
@@ -108,34 +111,34 @@ const edges = [
   }
   .ctl {
     padding: 0.3rem 0.8rem 0.35rem;
-    border: 1.5px solid var(--ink);
-    background: var(--paper);
-    font-size: 1.1rem;
+    border: var(--border-strong);
+    border-radius: 0.45rem;
+    background: var(--panel);
+    font-size: 1rem;
     font-weight: 600;
     line-height: 1.25;
     cursor: pointer;
   }
   .ctl:hover:not([aria-disabled="true"]) {
-    background: var(--ink);
-    color: var(--paper);
+    border-color: var(--faint);
+    background: var(--panel-2);
   }
   .ctl[aria-disabled="true"] {
     border-style: dashed;
-    color: var(--ink-3);
+    color: var(--faint);
     cursor: default;
   }
   .newdata {
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
-    font-size: 1.05rem;
-    font-style: italic;
+    font-size: 1rem;
     cursor: pointer;
   }
   .newdata input {
     width: 1rem;
     height: 1rem;
-    accent-color: var(--ink);
+    accent-color: var(--accent);
   }
 
   .canvas {
@@ -147,7 +150,7 @@ const edges = [
       "universe . . . sector_summary";
     gap: 2.25rem 2.5rem;
     padding: 2.25rem 1.5rem;
-    background-image: radial-gradient(circle, var(--rule) 1px, transparent 1.4px);
+    background-image: radial-gradient(circle, var(--line) 1px, transparent 1.4px);
     background-size: 20px 20px;
   }
   .edges {
@@ -160,14 +163,15 @@ const edges = [
   }
   .edges path {
     fill: none;
-    stroke: var(--ink);
+    stroke: #55585f;
     stroke-width: 1.5;
   }
   .edges marker path {
-    fill: var(--ink);
+    fill: #55585f;
     stroke: none;
   }
   .edges :global(path[data-live]) {
+    stroke: var(--running);
     stroke-width: 2.5;
     stroke-dasharray: 6 5;
     animation: flow 0.5s linear infinite;
@@ -178,40 +182,42 @@ const edges = [
     }
   }
 
-  /* A node card. The bar down its left edge carries the state twice over, by
-     pattern and by ink: empty for new, hatched ochre for stale, hatched blue
-     while it runs, solid sea for fresh. */
+  /* A node card, as the app draws one. The bar down its left edge carries the
+     state twice over, by pattern and by colour: empty for new, hatched amber
+     for stale, hatched blue while it runs, solid green for fresh. */
   .gnode {
     position: relative;
     display: grid;
     gap: 0.1rem;
     min-width: 0;
-    padding: 0.5rem 0.65rem 0.6rem 1.3rem;
-    border: 2px solid var(--ink);
-    background: var(--paper);
+    padding: 0.5rem 0.65rem 0.6rem 1rem;
+    border: var(--border);
+    border-radius: 0.6rem;
+    background: var(--panel);
+    box-shadow: 0 8px 18px -12px #000;
     text-align: left;
     cursor: pointer;
     overflow: hidden;
   }
   .gnode:hover {
-    background: var(--paper-2);
+    border-color: var(--line-strong);
+    background: var(--panel-2);
   }
   .band {
     position: absolute;
     inset: 0 auto 0 0;
-    width: 0.7rem;
-    border-right: 2px solid var(--ink);
+    width: 3px;
   }
   .gnode[data-state="fresh"] .band {
-    background: var(--sea);
+    background: var(--fresh);
   }
   .gnode[data-state="stale"] .band,
   .gnode[data-state="running"] .band {
     background: var(--hatch);
-    color: var(--ochre);
+    color: var(--stale);
   }
   .gnode[data-state="running"] .band {
-    color: var(--blue);
+    color: var(--running);
     background-size: 7.07px 7.07px;
     animation: crawl 0.4s linear infinite;
   }
@@ -235,35 +241,46 @@ const edges = [
   }
   .kind {
     margin-left: auto;
-    padding: 0 0.3rem;
-    border: 1px solid var(--ink);
-    font-size: 0.75rem;
+    padding: 0.1rem 0.35rem;
+    border-radius: 0.25rem;
+    background: var(--panel-2);
+    color: var(--muted);
+    font-size: 0.7rem;
     line-height: 1.3;
+    text-transform: uppercase;
   }
   .row2 {
     display: flex;
     justify-content: space-between;
     gap: 0.5rem;
-    color: var(--ink-2);
+    color: var(--muted);
     font-size: 1rem;
     line-height: 1.3;
     white-space: nowrap;
   }
   .row2 .state {
-    color: var(--ink);
-    font-style: italic;
+    color: var(--text);
     font-weight: 600;
+  }
+  .gnode[data-state="fresh"] .state {
+    color: var(--fresh);
+  }
+  .gnode[data-state="stale"] .state {
+    color: var(--stale);
+  }
+  .gnode[data-state="running"] .state {
+    color: var(--running);
   }
   .row3 {
     overflow: hidden;
-    color: var(--ink-2);
+    color: var(--muted);
     font-size: 0.8rem;
     line-height: 1.4;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .sched {
-    color: var(--ink);
+    color: var(--text);
   }
   .progress {
     position: absolute;
@@ -271,7 +288,7 @@ const edges = [
     bottom: 0;
     width: 100%;
     height: 4px;
-    background: var(--blue);
+    background: var(--running);
     transform: scaleX(0);
     transform-origin: left;
   }
@@ -290,25 +307,24 @@ const edges = [
     gap: 0.1rem;
     min-height: 7.4rem;
     padding: 0.8rem 1.1rem;
-    border-top: 2px solid var(--ink);
-    background: var(--paper-2);
-    color: var(--ink-3);
+    border-top: var(--border);
+    background: var(--bg-deep);
+    color: var(--faint);
     font-size: 0.95rem;
     line-height: 1.5;
   }
   .log :global(p:last-child) {
-    color: var(--ink);
+    color: var(--text);
   }
   .log :global(b) {
-    color: var(--ink);
+    color: var(--text);
     font-weight: 700;
   }
   figcaption {
     padding: 0.7rem 1.1rem 0.85rem;
-    border-top: 1px solid var(--rule);
-    color: var(--ink-2);
-    font-size: 1.05rem;
-    font-style: italic;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 1rem;
   }
 
   @media (max-width: 900px) {
@@ -511,7 +527,11 @@ const edges = [
       }
     }
 
-    new ResizeObserver(drawEdges).observe(canvas);
+    // The edges hang off the cards, so a card that changes size (a font
+    // arriving, a restyle) moves them as surely as the canvas does.
+    const resized = new ResizeObserver(drawEdges);
+    resized.observe(canvas);
+    for (const name of order) resized.observe(card(name));
     document.fonts?.ready.then(drawEdges);
     drawEdges();
     paint();

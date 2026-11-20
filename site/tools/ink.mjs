@@ -1,13 +1,14 @@
 /**
  * Turns a generated woodcut (black ink on white paper) into a transparent
- * PNG of pure ink in one of the site's inks, so the page can print it on
- * paper. The colours here match --ink and --blue in src/styles/global.css.
+ * PNG of pure ink, so the page can set it on any ground. These are the three
+ * lobsters above "From a list of cells to a graph of files"
+ * (src/components/Evolution.astro): two in black, which the page lifts to
+ * grey, and the last in the lobster's blue.
  *
- *   node tools/ink.mjs lobster <generated.png>   -> src/assets/lobster.png
- *   node tools/ink.mjs growth  <generated.png>   -> src/assets/growth-{1,2,3}.png (one per animal)
+ *   node tools/ink.mjs growth <generated.png>   -> src/assets/growth-{1,2,3}.png (one per animal)
  *
- * The sources came from OpenRouter (google/gemini-3-pro-image) through
- * marketing/trailer/tools/or-media.mjs, with the prompts in ART below.
+ * The source came from OpenRouter (google/gemini-3-pro-image) through
+ * marketing/trailer/tools/or-media.mjs, with the prompt in ART below.
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,16 +24,6 @@ const BLACK = [17, 17, 16];
 const BLUE = [109, 156, 254];
 
 export const ART = {
-  lobster: {
-    inks: [BLUE],
-    aspect: "4:3",
-    prompt:
-      `${STYLE} Subject: a lobster exuvia, the complete, empty, molted shell of a lobster, claws, antennae and ` +
-      "every leg segment intact but hollow. Viewed from above, the whole specimen centred with generous empty " +
-      "white margin on all sides, nothing cropped.",
-    // The model drew the print photographed on a sheet; keep the block, drop the sheet's edges.
-    crop: { left: 0.125, top: 0.195, width: 0.755, height: 0.61 },
-  },
   growth: {
     // The first two generations in black, the one that is exuvia in blue.
     inks: [BLACK, BLACK, BLUE],
@@ -46,7 +37,7 @@ export const ART = {
 
 const [name, source] = process.argv.slice(2);
 if (!ART[name] || !source) {
-  console.error("usage: node tools/ink.mjs <lobster|growth> <generated.png>");
+  console.error("usage: node tools/ink.mjs growth <generated.png>");
   process.exit(2);
 }
 

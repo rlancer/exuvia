@@ -67,8 +67,8 @@ const { id, title, lede, files, notes } = Astro.props;
 <style>
   .anatomy {
     padding: clamp(4rem, 9vw, 7rem) 0;
-    border-top: 2px solid var(--ink);
-    background: var(--paper-2);
+    border-top: var(--border);
+    background: var(--panel);
   }
   header {
     max-width: 46rem;
@@ -77,8 +77,9 @@ const { id, title, lede, files, notes } = Astro.props;
     font-size: var(--step-3);
   }
   header p {
+    max-width: 44rem;
     margin-top: 1.1rem;
-    color: var(--ink-2);
+    color: var(--muted);
     font-size: var(--step-1);
     line-height: 1.4;
   }
@@ -101,37 +102,37 @@ const { id, title, lede, files, notes } = Astro.props;
     font-weight: 700;
   }
   .code :global(.f) {
-    color: var(--sea-lit);
+    color: var(--fresh);
   }
   .code :global(.s) {
-    color: var(--ochre-lit);
+    color: var(--stale);
   }
   .code :global(.c) {
     color: #99978f;
-    font-style: italic;
   }
-  /* A keyed span: outlined, with its letter in a blue box after it. */
+  /* A keyed span: outlined, with its letter in an amber box after it. */
   .code :global(mark) {
     padding: 0.05em 0.25em;
+    border-radius: 0.25rem;
     background: transparent;
-    box-shadow: inset 0 0 0 1.5px var(--chalk);
+    box-shadow: inset 0 0 0 1px var(--faint);
     color: inherit;
   }
   .code :global(mark::after) {
     content: attr(data-ref);
     margin-left: 0.45em;
     padding: 0 0.35em;
-    background: var(--blue);
-    color: var(--ink);
-    font-style: normal;
+    border-radius: 0.2rem;
+    background: var(--accent);
+    color: var(--accent-ink);
     font-weight: 700;
   }
   .code :global(mark.on) {
-    background: var(--chalk);
-    color: var(--ink);
+    background: var(--text);
+    color: var(--bg-deep);
   }
   .code :global(mark.on *) {
-    color: var(--ink);
+    color: var(--bg-deep);
   }
 
   .notes {
@@ -147,10 +148,11 @@ const { id, title, lede, files, notes } = Astro.props;
     gap: 1rem;
     padding: 0.8rem 0.9rem 0.95rem;
     border-left: 2px solid transparent;
+    border-radius: 0 0.5rem 0.5rem 0;
   }
   .notes :global(li.on) {
-    border-left-color: var(--blue);
-    background: var(--paper);
+    border-left-color: var(--accent);
+    background: var(--panel-2);
   }
   .key {
     display: grid;
@@ -158,21 +160,22 @@ const { id, title, lede, files, notes } = Astro.props;
     width: 1.7rem;
     height: 1.7rem;
     margin-top: 0.15rem;
-    background: var(--blue);
-    color: var(--ink);
+    border-radius: 0.35rem;
+    background: var(--accent);
+    color: var(--accent-ink);
     font-size: 1rem;
     font-weight: 700;
     line-height: 1;
   }
   h3 {
-    font-size: 1.6rem;
+    font-size: 1.3rem;
   }
   .notes p {
     margin-top: 0.3rem;
-    color: var(--ink-2);
+    color: var(--muted);
   }
   .notes :global(code) {
-    color: var(--ink);
+    color: var(--text);
   }
 
   @media (max-width: 900px) {
