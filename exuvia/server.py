@@ -835,9 +835,18 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
     def healthz() -> dict[str, Any]:
         return {"ok": True, "version": __version__, "mode": "hub", "uptime_s": round(_time.monotonic() - _STARTED, 3)}
 
+    @app.get("/api/tools")
+    def hub_tools() -> dict[str, Any]:
+        """The project tools (each runs at ``POST /p/{project}/api/tools/{name}``),
+        for ``exuvia mcp --url <hub>`` to offer before a project exists."""
+        from .agent import TOOLS
+
+        return {"tools": [{"name": t["name"], "description": t["description"], "input_schema": t["input_schema"]} for t in TOOLS]}
+
     @app.get("/api/projects")
     def projects() -> dict[str, Any]:
-        return {"projects": hub.list(), "templates": hub.templates()}
+        # `auth`: whether clients need the API token (the home page's MCP setup says so).
+        return {"projects": hub.list(), "templates": hub.templates(), "auth": bool(os.environ.get("EXUVIA_API_TOKEN"))}
 
     @app.post("/api/projects")
     async def project_create(body: ProjectCreate) -> dict[str, Any]:

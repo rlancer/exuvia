@@ -40,7 +40,8 @@ SECRET_ENV = (
 
 def load_secret_files(environ: dict[str, str] | None = None) -> None:
     """Set each ``SECRET_ENV`` name whose ``<NAME>_FILE`` is set from that
-    file's contents (surrounding whitespace dropped). Setting both to
+    file's contents (surrounding whitespace dropped; ``~`` in the path is the
+    home directory, for MCP client configs no shell expands). Setting both to
     different values is an error, as is a missing or empty file."""
     import os
 
@@ -50,7 +51,7 @@ def load_secret_files(environ: dict[str, str] | None = None) -> None:
         if not path:
             continue
         try:
-            value = Path(path).read_text(encoding="utf-8").strip()
+            value = Path(path).expanduser().read_text(encoding="utf-8").strip()
         except OSError as e:
             raise SystemExit(f"{name}_FILE: cannot read {path}: {e.strerror or e}") from e
         if not value:

@@ -54,7 +54,7 @@ def hub(tmp_path):
 
 
 def test_create_from_template_list_delete(hub):
-    assert hub.get("/api/projects").json() == {"projects": [], "templates": ["dated"]}
+    assert hub.get("/api/projects").json() == {"projects": [], "templates": ["dated"], "auth": False}
     r = hub.post("/api/projects", json={"id": "wf_1", "name": "Put selling", "template": "dated"})
     assert r.status_code == 200 and r.json() == {"id": "wf_1", "name": "Put selling"}
     assert hub.post("/api/projects", json={"id": "wf_1"}).status_code == 409
@@ -347,7 +347,9 @@ def test_hub_serves_the_workbench_per_project(tmp_path, monkeypatch):
         assert home.status_code == 200 and home.headers["content-type"].startswith("text/html")
         assert HUB_HOME_META in home.text and "workbench" in home.text
         hub.post("/api/projects", json={"id": "wf", "name": "Put <selling>", "template": "dated"})
-        assert [(p["id"], p["name"]) for p in hub.get("/api/projects").json()["projects"]] == [("wf", "Put <selling>")]
+        listing = hub.get("/api/projects").json()
+        assert [(p["id"], p["name"]) for p in listing["projects"]] == [("wf", "Put <selling>")]
+        assert listing["auth"] is False  # no EXUVIA_API_TOKEN: MCP clients need no token
 
         page = hub.get("/p/wf/")
         assert page.status_code == 200 and "workbench" in page.text
@@ -381,7 +383,8 @@ def test_hub_workbench_with_a_token(tmp_path, monkeypatch):
         assert r.status_code in (302, 307) and r.headers["location"] == "/p/wf/"
         assert hub.cookies.get("exuvia_token") == "s3cret"
         assert hub.get("/p/wf/api/project").status_code == 200
-        assert [p["id"] for p in hub.get("/api/projects").json()["projects"]] == ["wf"]
+        listing = hub.get("/api/projects").json()
+        assert [p["id"] for p in listing["projects"]] == ["wf"] and listing["auth"] is True
         # The home page's sign-in: /?token= keeps the token and goes back to /.
         hub.cookies.clear()
         r = hub.get("/?token=s3cret", follow_redirects=False)

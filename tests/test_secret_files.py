@@ -37,3 +37,13 @@ def test_a_missing_or_empty_file_is_an_error(tmp_path):
     (tmp_path / "empty").write_text("\n", encoding="utf-8")
     with pytest.raises(SystemExit, match="is empty"):
         load_secret_files({"EXUVIA_EXECUTOR_TOKEN_FILE": str(tmp_path / "empty")})
+
+
+def test_a_path_under_the_home_directory(tmp_path, monkeypatch):
+    """MCP clients pass env values unexpanded: `~/...` is the home directory."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".config" / "exuvia").mkdir(parents=True)
+    (tmp_path / ".config" / "exuvia" / "hub.token").write_text("s3cret\n")
+    env = {"EXUVIA_API_TOKEN_FILE": "~/.config/exuvia/hub.token"}
+    load_secret_files(env)
+    assert env["EXUVIA_API_TOKEN"] == "s3cret"

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, hubApi, PROJECT_ID, type HubProject } from "./api";
+import { mcpSetup } from "./mcp";
 import { useTheme } from "./theme";
 
 const workbench = (id: string) => `/p/${encodeURIComponent(id)}/`;
@@ -14,7 +15,7 @@ export const toProjectId = (s: string) =>
 /** The id a project name suggests: "Market research" → "market-research". */
 export const idFromName = (name: string) => toProjectId(name.trim().toLowerCase()).replace(/[-_]+$/, "");
 
-type Listing = { projects: HubProject[]; templates: string[] };
+type Listing = { projects: HubProject[]; templates: string[]; auth: boolean };
 
 /**
  * The hub's home page, at `/` of `exuvia hub`: every project, with a button
@@ -27,6 +28,7 @@ export default function Hub() {
   const [err, setErr] = useState<string | null>(null);
   const [newOpen, setNewOpen] = useState(false);
   const [deleting, setDeleting] = useState<HubProject | null>(null);
+  const [connecting, setConnecting] = useState(false);
   const [dark, toggleTheme] = useTheme();
 
   const load = useCallback(
@@ -66,7 +68,12 @@ export default function Hub() {
         </div>
         <span className="spacer" />
         {listing && (
-          <button className="btn primary" onClick={() => setNewOpen(true)}>+ Project</button>
+          <>
+            <button className="btn" onClick={() => setConnecting(true)} title="Connect a coding agent to every project on this hub over MCP">
+              Connect agent
+            </button>
+            <button className="btn primary" onClick={() => setNewOpen(true)}>+ Project</button>
+          </>
         )}
         <button className="btn ghost icon-btn" onClick={toggleTheme} title="Toggle theme">{dark ? "☀" : "☾"}</button>
       </header>
@@ -119,6 +126,7 @@ export default function Hub() {
           onCreated={(id) => location.assign(workbench(id))}
         />
       )}
+      {connecting && listing && <ConnectDialog auth={listing.auth} onClose={() => setConnecting(false)} />}
       {deleting && (
         <DeleteDialog
           project={deleting}
@@ -277,6 +285,88 @@ function DeleteDialog(props: { project: HubProject; onClose: () => void; onDelet
           <button type="submit" className="btn danger" disabled={typed !== id || busy}>Delete</button>
         </div>
       </form>
+    </div>
+  );
+}
+
+type Client = "prompt" | "claude" | "codex" | "json";
+const CLIENTS: { id: Client; label: string; hint: string }[] = [
+  { id: "prompt", label: "Ask your agent", hint: "Paste this into Claude Code, Cursor, Codex, Grok or any coding agent with a terminal: it adds the server itself." },
+  { id: "claude", label: "Claude Code", hint: "Run this in a terminal. The tools are there from your next session." },
+  { id: "codex", label: "Codex", hint: "Run this in a terminal. The tools are there from your next session." },
+  { id: "json", label: "JSON config", hint: "Add this under mcpServers in your client's MCP config (Cursor, Claude Desktop, Windsurf, ...)." },
+];
+
+/** The MCP setup for the hub: a token file, then one client's command. */
+function ConnectDialog(props: { auth: boolean; onClose: () => void }) {
+  const [client, setClient] = useState<Client>("prompt");
+  const setup = mcpSetup({ origin: location.origin, host: location.host, auth: props.auth });
+  const current = CLIENTS.find((c) => c.id === client)!;
+
+  return (
+    <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && props.onClose()}>
+      <div className="dialog connect-dialog" role="dialog" aria-label="Connect an agent to this hub">
+        <h3>Connect an agent to this hub</h3>
+        <p className="hub-muted">
+          Over MCP, your coding agent works in every project here: it lists and creates projects, and reads, writes and
+          runs their nodes, and you see each change in the workbench as it happens. One connection covers the whole
+          hub. It needs <a href="https://docs.astral.sh/uv/" target="_blank" rel="noreferrer">uv</a>{" "}
+          (or pipx) on its machine.
+        </p>
+        {setup.saveToken && (
+          <div className="connect-step">
+            <div className="connect-label">1. Save the hub's API token in a file only you can read</div>
+            <Code text={setup.saveToken} />
+            <div className="hub-muted connect-note">Run it, paste the token, press Enter, then Ctrl-D. Agents read the token from this file; it never goes into their config.</div>
+          </div>
+        )}
+        <div className="connect-step">
+          <div className="connect-label">{setup.saveToken ? "2. " : ""}Add the MCP server</div>
+          <div className="seg connect-tabs" role="tablist">
+            {CLIENTS.map((c) => (
+              <button key={c.id} type="button" role="tab" aria-selected={client === c.id} className={client === c.id ? "on" : ""} onClick={() => setClient(c.id)}>
+                {c.label}
+              </button>
+            ))}
+          </div>
+          <Code text={setup[client]} wrap={client === "prompt"} />
+          <div className="hub-muted connect-note">{current.hint}</div>
+        </div>
+        <div className="actions">
+          <button type="button" className="btn" onClick={props.onClose}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** A block of text to copy, with a button that copies it. */
+function Code(props: { text: string; wrap?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(props.text);
+    } catch {
+      // No clipboard API (plain http on another host): copy through a selection.
+      const t = document.createElement("textarea");
+      t.value = props.text;
+      document.body.appendChild(t);
+      t.select();
+      document.execCommand("copy");
+      t.remove();
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <div className="code-copy">
+      <pre className={props.wrap ? "wrap" : ""}>
+        {props.wrap
+          ? props.text
+          : // Lines break only at spaces: a browser would also break after `-`, splitting `--url`.
+            props.text.split(/( )/).map((part, i) => (part === " " ? " " : <span key={i} className="tok">{part}</span>))}
+      </pre>
+      <button type="button" className="btn sm" onClick={copy}>{copied ? "Copied" : "Copy"}</button>
     </div>
   );
 }
