@@ -657,6 +657,8 @@ there is no separate frontend to build or deploy.
      the secret, `kubectl -n exuvia apply -f kubernetes.yaml`,
      `kubectl -n exuvia rollout status deployment/exuvia-hub`
 5. Verify: GET /healthz returns {"ok": true, "mode": "hub"}.
+   GET /api/projects without the token returns 401; if it
+   doesn't, the hub has no auth: take it down and stop.
    With `Authorization: Bearer <token>`:
    POST /api/projects {"id": "smoke"},
    PUT /p/smoke/api/nodes/hello
