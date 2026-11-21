@@ -1,13 +1,13 @@
 # exuvia as a hub: many projects, each with its API under /p/<project>/api
 # and the web UI at /p/<project>/ (README "Hub"). The UI is built into the
 # image, so this one service is the whole deployment: there is no separate
-# frontend. Works with Docker Compose, Podman Compose and Docker Swarm.
+# frontend. For Docker Compose and Podman Compose on one host; on a Docker
+# Swarm use swarm.yaml (Swarm secrets, placement, stop-first updates).
 #
 # This file is all you need, no clone:
 #   curl -O https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/compose.yaml
 #
-#   Compose:  EXUVIA_API_TOKEN=change-me docker compose up -d
-#   Swarm:    EXUVIA_API_TOKEN=change-me docker stack deploy -c compose.yaml exuvia
+#   EXUVIA_API_TOKEN=change-me docker compose up -d --wait
 #
 # Then: curl http://localhost:7420/healthz
 #       curl -H "Authorization: Bearer change-me" -X POST http://localhost:7420/api/projects \
@@ -19,8 +19,7 @@
 #   EXUVIA_API_TOKEN   required: clients send `Authorization: Bearer <token>`
 #   EXUVIA_IMAGE       default ghcr.io/rlancer/exuvia:latest (public, no login);
 #                      pin a release with ghcr.io/rlancer/exuvia:0.3, or name an
-#                      image with your nodes' packages (README "Deploying").
-#                      Swarm: it must be in a registry every node can pull from
+#                      image with your nodes' packages (README "Deploying")
 #   EXUVIA_PORT        host port, default 7420
 #   ANTHROPIC_API_KEY  optional: turns on the built-in agent (or OPENROUTER_API_KEY)
 #
@@ -28,8 +27,7 @@
 #   ["exuvia", "serve", "/data/project", "--host", "0.0.0.0", "--port", "7420"]
 #
 # Records (SQLite) and outputs live in the `exuvia-data` volume. Run one
-# replica: a hub owns its directory. On Swarm a local volume stays on the node
-# the task first ran on; pin the service there (placement constraint) or point
+# replica: a hub owns its directory. To survive losing the volume, point
 # EXUVIA_DB at Postgres and EXUVIA_ARTIFACT_STORE at a bucket (README "Deploying").
 #
 # EXUVIA_ARTIFACT_STORE can share an existing bucket: exuvia only touches keys
@@ -57,10 +55,6 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
-    deploy:  # Swarm only; Compose ignores it
-      replicas: 1
-      restart_policy:
-        condition: any
 
 volumes:
   exuvia-data:

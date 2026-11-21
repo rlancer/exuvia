@@ -153,16 +153,17 @@ jobs:
           python3 tests/e2e/container_e2e.py || { docker compose -f deploy/compose.yaml logs; exit 1; }
           docker compose -f deploy/compose.yaml down -v
 
-      - name: Deploy as a Swarm stack (deploy/compose.yaml)
+      - name: Deploy as a Swarm stack (deploy/swarm.yaml)
         env:
           EXUVIA_IMAGE: exuvia:ci
-          EXUVIA_API_TOKEN: ci-token
           EXUVIA_PORT: "7421"
           E2E_URL: http://127.0.0.1:7421
           E2E_TOKEN: ci-token
         run: |
           docker swarm init
-          docker stack deploy -c deploy/compose.yaml --resolve-image never --detach=false exuvia
+          docker node update --label-add exuvia=true "$(docker node ls -q)"
+          printf ci-token | docker secret create exuvia_api_token -
+          docker stack deploy -c deploy/swarm.yaml --resolve-image never --detach=false exuvia
           python3 tests/e2e/container_e2e.py || { docker service ps --no-trunc exuvia_hub; docker service logs exuvia_hub; exit 1; }
           docker stack rm exuvia
 
