@@ -22,8 +22,10 @@ type PageSpec = {
   summary: string;
 };
 
-/** The README section whose first ```text block is the prompt the landing page offers to copy. */
+/** README sections (and, within one, the `### ` subsection) whose first ```text
+ * block is a prompt the landing page offers to copy. */
 const AGENT_SETUP = "Set up with your agent";
+const DEPLOY = { heading: "Deploying", subheading: "Hand it to an agent" };
 
 const PAGES: PageSpec[] = [
   {
@@ -185,15 +187,30 @@ function readmeSections(): Map<string, string> {
   return sections;
 }
 
+/** The first ```text block of a README section, or of one `### ` subsection of it. */
+function textBlock(heading: string, subheading?: string): string {
+  const where = subheading ? `"## ${heading}" > "### ${subheading}"` : `"## ${heading}"`;
+  let text = (readmeSections().get(heading) ?? "").replace(/\r\n/g, "\n");
+  if (subheading) {
+    const start = text.split("\n").findIndex((line) => line.trimEnd() === `### ${subheading}`);
+    text = start < 0 ? "" : text.split("\n").slice(start + 1).join("\n").split(/^### /m)[0];
+  }
+  const block = /^```text\n([\s\S]*?)\n```$/m.exec(text);
+  if (!block) throw new Error(`README.md ${where} has no \`\`\`text block for the landing page to show.`);
+  return block[1];
+}
+
 /**
  * The setup prompt people paste into their coding agent, read from the README
  * so the landing page and the docs page show one text.
  */
 export function agentSetupPrompt(): string {
-  const section = readmeSections().get(AGENT_SETUP);
-  const block = section && /^```text\n([\s\S]*?)\n```$/m.exec(section.replace(/\r\n/g, "\n"));
-  if (!block) throw new Error(`README.md "## ${AGENT_SETUP}" has no \`\`\`text block for the landing page to show.`);
-  return block[1];
+  return textBlock(AGENT_SETUP);
+}
+
+/** The prompt that has an agent deploy a hub to a server or cluster, read from the README. */
+export function agentDeployPrompt(): string {
+  return textBlock(DEPLOY.heading, DEPLOY.subheading);
 }
 
 /**

@@ -9,12 +9,27 @@ import NodeAnatomy from "../components/NodeAnatomy.astro";
 import Workbench from "../components/Workbench.astro";
 import ViewAnatomy from "../components/ViewAnatomy.astro";
 import agentPanel from "../assets/shots/agent-panel.png";
-import { agentSetupPrompt } from "../lib/docs";
+import { agentDeployPrompt, agentSetupPrompt } from "../lib/docs";
 import { codeFigure, copyButton, getHighlighter } from "../lib/highlight";
 import { url } from "../lib/paths";
 
 const h = await getHighlighter();
-const setupPrompt = codeFigure(h, agentSetupPrompt(), "text");
+const handoffs = [
+  {
+    id: "local",
+    label: "On your machine",
+    body: "Paste this into Claude Code, Cursor, Codex, Grok or any coding agent with a terminal. It installs exuvia, creates a project, starts the workbench and connects itself to the graph. No model key is needed: the model is the one your agent already runs on.",
+    href: "/docs/agent-setup/",
+    prompt: codeFigure(h, agentSetupPrompt(), "text"),
+  },
+  {
+    id: "server",
+    label: "On a server",
+    body: "Paste this into an agent that can reach your Docker host or Kubernetes cluster, a cloud VM or GKE, EKS or AKS, and change the first line to your platform. It deploys a hub from the published image behind a generated API token, checks it end to end, then creates a project and connects itself to it.",
+    href: "/docs/deploying/#hand-it-to-an-agent",
+    prompt: codeFigure(h, agentDeployPrompt(), "text"),
+  },
+];
 
 const providers = [
   { name: "Claude", set: ["ANTHROPIC_API_KEY"] },
@@ -121,7 +136,8 @@ const steps = [
           </div>
         </div>
         <p class="handoff-link">
-          Or <a href="#agent-setup">paste one prompt into your coding agent</a> and let it do the setup.
+          Or <a href="#agent-setup">paste one prompt into your coding agent</a> and let it do the setup, on your
+          machine or on a server.
         </p>
       </div>
       <figure class="specimen">
@@ -269,17 +285,43 @@ const steps = [
           ))
         }
       </ol>
-      <div class="handoff" id="agent-setup">
-        <div class="handoff-text">
+      <div class="handoff" id="agent-setup" data-tabs>
+        <div class="handoff-head">
           <h3>Or hand the setup to your agent</h3>
-          <p>
-            Paste this into Claude Code, Cursor, Codex, Grok or any coding agent with a terminal. It installs exuvia,
-            creates a project, starts the workbench and connects itself to the graph. No model key is needed: the
-            model is the one your agent already runs on.
-          </p>
-          <a href={url("/docs/agent-setup/")}>What the prompt does</a>
+          <div class="tablist" role="tablist" aria-label="Where to set up exuvia">
+            {
+              handoffs.map((item, i) => (
+                <button
+                  type="button"
+                  role="tab"
+                  id={`handoff-tab-${item.id}`}
+                  aria-controls={`handoff-${item.id}`}
+                  aria-selected={i === 0 ? "true" : "false"}
+                  tabindex={i === 0 ? 0 : -1}
+                >
+                  {item.label}
+                </button>
+              ))
+            }
+          </div>
         </div>
-        <Fragment set:html={setupPrompt} />
+        {
+          handoffs.map((item, i) => (
+            <div
+              class="handoff-panel"
+              role="tabpanel"
+              id={`handoff-${item.id}`}
+              aria-labelledby={`handoff-tab-${item.id}`}
+              hidden={i !== 0}
+            >
+              <div class="handoff-text">
+                <p>{item.body}</p>
+                <a href={url(item.href)}>What the prompt does</a>
+              </div>
+              <Fragment set:html={item.prompt} />
+            </div>
+          ))
+        }
       </div>
       <div class="next">
         <a class="btn btn-primary" href={url("/docs/getting-started/")}>Follow the full tutorial</a>
@@ -603,16 +645,53 @@ const steps = [
     color: var(--muted);
   }
   .handoff {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
-    gap: 1.5rem 3rem;
-    align-items: start;
     padding: 2rem 0 0.5rem;
     border-top: var(--border-strong);
     scroll-margin-top: 5rem;
   }
+  .handoff-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem 2rem;
+    margin-bottom: 1.25rem;
+  }
   .handoff h3 {
     font-size: 1.5rem;
+  }
+  .handoff-panel {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+    gap: 1.5rem 3rem;
+    align-items: start;
+  }
+  .handoff-panel[hidden] {
+    display: none;
+  }
+  .tablist {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  /* The same segmented control as the workbench screenshots. */
+  [role="tab"] {
+    padding: 0.3rem 0.9rem 0.35rem;
+    border: var(--border-strong);
+    border-radius: 0.45rem;
+    background: transparent;
+    color: var(--text);
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  [role="tab"]:hover {
+    background: var(--panel);
+  }
+  [role="tab"][aria-selected="true"] {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-ink);
   }
   .handoff p {
     margin-top: 0.5rem;
@@ -650,7 +729,7 @@ const steps = [
       grid-template-columns: minmax(0, 1fr);
     }
     .steps li,
-    .handoff {
+    .handoff-panel {
       grid-template-columns: minmax(0, 1fr);
     }
   }
