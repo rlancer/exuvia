@@ -6,6 +6,11 @@ interface Props {
   current?: "home" | "docs";
 }
 const { current } = Astro.props;
+
+// On a page with the sea behind it (src/components/Sea.astro) the bar is the
+// top of the water: blue glass at the surface that darkens on the way down,
+// with a gauge that reads how deep the page has been scrolled. Anywhere else
+// it is the plain dark bar, and the gauge is not shown.
 ---
 
 <header class="nav">
@@ -14,9 +19,13 @@ const { current } = Astro.props;
       <Mark />
       <span>exuvia</span>
     </a>
+    <span class="gauge" aria-hidden="true" data-gauge>
+      <svg viewBox="0 0 10 10" width="10" height="10"><path d="M1 2.5h8L5 8.5z"></path></svg>
+      <span>surface</span>
+    </span>
     <nav aria-label="Site">
-      <a href={url("/#evolution")}>Why a graph</a>
-      <a href={url("/#node")}>How it works</a>
+      <a href={url("/#evolution")} data-covers="evolution">Why a graph</a>
+      <a href={url("/#node")} data-covers="node workbench views">How it works</a>
       <a class="docs-link" href={url("/docs/")} aria-current={current === "docs" ? "page" : undefined}>Docs</a>
       <a href="https://pypi.org/project/exuvia/" rel="noopener">PyPI</a>
     </nav>
@@ -29,9 +38,15 @@ const { current } = Astro.props;
     position: sticky;
     top: 0;
     z-index: 50;
-    border-bottom: var(--border);
-    background: rgb(17 18 20 / 0.9);
-    backdrop-filter: blur(8px);
+    /* How far down the page is, from 0 at the surface to 1 in the dark. The
+       script below keeps it; a page with no sea is always at 1. */
+    --deep: 1;
+    border-bottom: 1px solid color-mix(in srgb, rgb(111 155 255 / 0.45), var(--line) calc(var(--deep) * 100%));
+    background: color-mix(in srgb, rgb(20 34 76 / 0.5), rgb(17 18 20 / 0.9) calc(var(--deep) * 100%));
+    backdrop-filter: blur(10px) saturate(1.4);
+  }
+  :global(body:has(.sea)) .nav {
+    --deep: 0;
   }
   .bar {
     display: flex;
@@ -50,6 +65,35 @@ const { current } = Astro.props;
     letter-spacing: -0.04em;
     text-decoration: none;
   }
+  /* The mark draws itself again when the brand is pointed at. */
+  .brand:hover :global(.mark path) {
+    stroke-dasharray: 30;
+    animation: draw 0.6s ease-out;
+  }
+  @keyframes draw {
+    from {
+      stroke-dashoffset: 30;
+    }
+  }
+  .gauge {
+    display: none;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.2rem 0.6rem 0.25rem;
+    border: 1px solid color-mix(in srgb, rgb(111 155 255 / 0.4), var(--line) calc(var(--deep) * 100%));
+    border-radius: 99px;
+    color: color-mix(in srgb, #b9cdff, var(--muted) calc(var(--deep) * 100%));
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+  :global(body:has(.sea)) .gauge {
+    display: inline-flex;
+  }
+  .gauge path {
+    fill: var(--running);
+  }
   nav {
     display: flex;
     gap: 1.6rem;
@@ -61,9 +105,13 @@ const { current } = Astro.props;
     text-decoration: none;
   }
   nav a:hover,
-  nav a[aria-current="page"] {
+  nav a[aria-current] {
     text-decoration: underline;
     text-decoration-thickness: 2px;
+  }
+  /* The section being read. */
+  nav a[aria-current="location"] {
+    text-decoration-color: var(--accent);
   }
   .start {
     padding: 0.45rem 0.95rem;
@@ -77,4 +125,48 @@ const { current } = Astro.props;
       display: none;
     }
   }
+  @media (max-width: 480px) {
+    :global(body:has(.sea)) .gauge {
+      display: none;
+    }
+  }
 </style>
+
+<script>
+  // Only a page with the sea has anything to follow.
+  const bar = document.querySelector<HTMLElement>(".nav");
+  if (bar && document.querySelector(".sea")) {
+    const reading = bar.querySelector<HTMLElement>("[data-gauge] span")!;
+    const links = [...bar.querySelectorAll<HTMLAnchorElement>("a[data-covers]")];
+    const sections = [...document.querySelectorAll<HTMLElement>("main > section")];
+    // The bottom of the page is 480 m down, about as deep as lobsters are found.
+    const FLOOR = 480;
+    const smooth = (t: number) => t * t * (3 - 2 * t);
+
+    let waiting = false;
+    const follow = () => {
+      waiting = false;
+      const reach = Math.max(1, document.documentElement.scrollHeight - innerHeight);
+      const depth = Math.min(1, Math.max(0, scrollY / reach));
+      // The light goes at the same rate as the water's does.
+      bar.style.setProperty("--deep", smooth(Math.min(1, depth * 2.4)).toFixed(3));
+      const metres = Math.round(depth * FLOOR);
+      reading.textContent = metres <= 0 ? "surface" : metres >= FLOOR ? "sea floor" : `${metres} m`;
+
+      // The section under the bar, and the link that covers it.
+      const line = bar.offsetHeight + innerHeight * 0.3;
+      const here = sections.filter((section) => section.getBoundingClientRect().top < line).pop();
+      for (const link of links) {
+        const covers = !!here?.id && link.dataset.covers!.split(" ").includes(here.id);
+        covers ? link.setAttribute("aria-current", "location") : link.removeAttribute("aria-current");
+      }
+    };
+    const queue = () => {
+      if (!waiting) requestAnimationFrame(follow);
+      waiting = true;
+    };
+    addEventListener("scroll", queue, { passive: true });
+    addEventListener("resize", queue);
+    follow();
+  }
+</script>
