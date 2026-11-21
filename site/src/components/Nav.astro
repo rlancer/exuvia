@@ -27,6 +27,7 @@ const { current } = Astro.props;
     <nav aria-label="Site">
       <a href={url("/#evolution")} data-covers="evolution">Why a graph</a>
       <a href={url("/#node")} data-covers="node workbench views">How it works</a>
+      <a class="ai-link" href={url("/#ai")} data-covers="agent ai">With AI</a>
       <a class="docs-link" href={url("/docs/")} aria-current={current === "docs" ? "page" : undefined}>Docs</a>
       <a href={PYPI} rel="noopener">PyPI</a>
     </nav>
@@ -138,6 +139,12 @@ const { current } = Astro.props;
   .start {
     padding: 0.45rem 0.95rem;
     font-size: 1rem;
+  }
+  /* The first link to go when the bar gets tight. */
+  @media (max-width: 960px) {
+    nav .ai-link {
+      display: none;
+    }
   }
   @media (max-width: 760px) {
     .bar {

@@ -8,6 +8,7 @@ import Evolution from "../components/Evolution.astro";
 import NodeAnatomy from "../components/NodeAnatomy.astro";
 import Workbench from "../components/Workbench.astro";
 import ViewAnatomy from "../components/ViewAnatomy.astro";
+import Compare from "../components/Compare.astro";
 import agentPanel from "../assets/shots/agent-panel.png";
 import { agentDeployPrompt, agentSetupPrompt } from "../lib/docs";
 import { codeFigure, copyButton, getHighlighter } from "../lib/highlight";
@@ -35,6 +36,41 @@ const providers = [
   { name: "Claude", set: ["ANTHROPIC_API_KEY"] },
   { name: "Any model on OpenRouter", set: ["OPENROUTER_API_KEY"] },
   { name: "A local or self-hosted model", set: ["EXUVIA_BASE_URL", "EXUVIA_MODEL"] },
+];
+
+// Against the two ways people already do analysis with a model: asking a chat
+// that has data connectors, and having a coding agent build it from nothing.
+const aiComparison = [
+  [
+    "How the answer is made",
+    "Tool calls, and whatever fits in one conversation",
+    "Code the agent writes and runs",
+    "Code the agent writes and runs, as nodes in a graph",
+  ],
+  [
+    "Running it again",
+    "Ask again and get a different answer",
+    "Rerun whatever scripts it left, in the right order",
+    "Run any node, by hand or on a schedule. What it depends on runs first",
+  ],
+  [
+    "Last week's numbers",
+    "Somewhere in a transcript",
+    "Overwritten, unless you built storage for them",
+    "Kept: one output per run date, and a table of every run to query",
+  ],
+  [
+    "The interface",
+    "A reply in the chat",
+    "A dashboard app per analysis: a backend that loads the data and a front end that shows it",
+    "A view: front-end files that read stored outputs. There is no backend to write",
+  ],
+  [
+    "What you are left with",
+    "A conversation",
+    "One more app to host and keep running",
+    "Plain files in one project, with every version kept",
+  ],
 ];
 
 const comparison = [
@@ -164,7 +200,8 @@ const steps = [
         <h2>An agent with tools over the graph</h2>
         <p class="intro">
           The agent is not a chat box beside your work. It has the same handles you do: it lists and reads nodes,
-          writes them, runs them, and queries their outputs with DuckDB.
+          writes them, runs them, and queries their outputs with DuckDB. What it builds is not an answer in a
+          transcript but a pipeline you can run again tomorrow.
         </p>
         <ul class="habits">
           <li>It looks at the real column names before it writes a line.</li>
@@ -216,6 +253,32 @@ const steps = [
     </div>
   </section>
 
+  <section class="between" id="ai">
+    <div class="wrap">
+      <header>
+        <h2>Between a chat answer and a one-off app</h2>
+        <p>
+          A chat with data connectors answers fast, but it can only assemble what fits in a conversation, and a
+          good answer cannot be run again. A coding agent can build a far stronger analysis, but each one becomes
+          an app of its own, with nothing kept of what it said last week. exuvia gives the agent a place to build:
+          the analysis is a graph you can rerun, every run is kept, and the interface is a view over stored
+          outputs.
+        </p>
+      </header>
+      <Compare
+        label="exuvia beside AI chat and coding agents"
+        columns={["AI chat with connectors", "A coding agent on its own", "exuvia"]}
+        rows={aiComparison}
+      />
+      <p class="keep">
+        You keep the agent you already use. exuvia's tools are an <a href={url("/docs/mcp/")}>MCP server</a>, so
+        Claude Code, Cursor or Codex builds in the graph instead of in an empty repo.
+        <a href={url("/docs/run-parameters/")}>Run parameters and replays</a> are what make a run a point in time
+        you can go back to.
+      </p>
+    </div>
+  </section>
+
   <section class="between" id="compare">
     <div class="wrap">
       <header>
@@ -225,30 +288,7 @@ const steps = [
           work in. exuvia keeps the notebook's loop and gives each node the orchestrator's schedule.
         </p>
       </header>
-      <div class="table-scroll" tabindex="0" role="region" aria-label="Comparison table">
-        <table class="compare">
-          <thead>
-            <tr>
-              <td></td>
-              <th scope="col">Notebooks</th>
-              <th scope="col">Orchestrators</th>
-              <th scope="col" class="us">exuvia</th>
-            </tr>
-          </thead>
-          <tbody>
-            {
-              comparison.map(([label, a, b, c]) => (
-                <tr>
-                  <th scope="row">{label}</th>
-                  <td>{a}</td>
-                  <td>{b}</td>
-                  <td class="us">{c}</td>
-                </tr>
-              ))
-            }
-          </tbody>
-        </table>
-      </div>
+      <Compare label="exuvia beside notebooks and orchestrators" columns={["Notebooks", "Orchestrators", "exuvia"]} rows={comparison} />
 
       <h3 class="more-title">When the project outgrows your laptop</h3>
       <dl class="more">
@@ -526,53 +566,14 @@ const steps = [
   .between header p {
     color: var(--muted);
   }
-  .table-scroll {
-    margin-top: 2.5rem;
-    overflow-x: auto;
-  }
-  .compare {
-    width: 100%;
-    min-width: 44rem;
-    border-collapse: collapse;
-    text-align: left;
-  }
-  .compare th,
-  .compare td {
-    padding: 0.75rem 1.1rem;
-    border-bottom: 1px solid var(--line);
-    vertical-align: top;
-  }
-  .compare thead th {
-    border-bottom: var(--border);
-    font-family: var(--mono);
-    font-size: 1.3rem;
-    font-weight: 700;
-  }
-  .compare thead td {
-    border-bottom: var(--border);
-  }
-  .compare tbody th {
-    width: 11rem;
-    padding-left: 0;
-    font-weight: 600;
-  }
-  .compare td {
+  .keep {
+    max-width: 44rem;
+    margin-top: 1.75rem;
     color: var(--muted);
   }
-  /* The exuvia column stands out as one dark panel. */
-  .compare .us {
-    border-bottom-color: var(--line);
-    background: var(--bg-deep);
-    color: var(--text);
-  }
-  .compare thead .us {
-    border-bottom-color: var(--accent);
-    border-radius: 0.6rem 0.6rem 0 0;
-    color: var(--accent);
-  }
-  .compare tbody tr:last-child .us {
-    border-bottom: 0;
-    border-radius: 0 0 0.6rem 0.6rem;
+  .keep a {
+    text-decoration-color: var(--accent);
+    text-decoration-thickness: 2px;
   }
   .more-title {
     margin-top: clamp(3rem, 6vw, 4.5rem);

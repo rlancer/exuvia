@@ -32,6 +32,26 @@ universe ──► prices (cron 17:00 weekdays) ──► returns ──► roll
 | Custom UI | widgets and HTML built from Python | none (a separate app) | **views: TypeScript, React and CSS in files of their own** |
 | Storage | `.ipynb` JSON | Python package | **one plain file per node, git-friendly** |
 
+exuvia is also a place to build analytics with AI, and the two usual ways of
+doing that each give something up. A chat with data connectors (MCP servers
+over your warehouse, say) can only assemble what fits in a conversation, and a
+good answer cannot be run again. A coding agent can build a far stronger
+analysis, but each one becomes an app of its own, with a backend that loads
+the data and a front end that shows it, and nothing kept of what it said last
+week.
+
+| | AI chat with connectors | a coding agent on its own | **exuvia** |
+|---|---|---|---|
+| How the answer is made | tool calls, and whatever fits in one conversation | code the agent writes and runs | **code the agent writes and runs, as nodes in a graph** |
+| Running it again | ask again and get a different answer | rerun whatever scripts it left, in the right order | **run any node, by hand or on a schedule; what it depends on runs first** |
+| Last week's numbers | somewhere in a transcript | overwritten, unless you built storage for them | **kept: one output per run date, and a table of every run to query** |
+| The interface | a reply in the chat | a dashboard app per analysis: backend and front end | **a view: front-end files that read stored outputs, with no backend to write** |
+| What you are left with | a conversation | one more app to host and keep running | **plain files in one project, with every version kept** |
+
+You keep the agent you already use: exuvia's tools are an MCP server (see
+[MCP](#mcp-the-agents-tools-in-your-own-agent)), so Claude Code, Cursor or
+Codex builds in the graph instead of in an empty repo.
+
 ## Quick start
 
 With [uv](https://docs.astral.sh/uv/) there is nothing to install first:
