@@ -19,8 +19,24 @@
 # To turn on the built-in agent, add `anthropic-api-key` to the secret and
 # uncomment ANTHROPIC_API_KEY below. For a single project at / instead of a
 # hub, change `args` to ["exuvia", "serve", "/data/project", "--host",
-# "0.0.0.0", "--port", "7420"]. Put an Ingress (or a LoadBalancer Service) in
-# front to reach it from outside the cluster.
+# "0.0.0.0", "--port", "7420"].
+#
+# A hostname for the UI and API: port-forward is only for checking it. To
+# reach the hub at https://<host>/ from outside the cluster, uncomment the
+# Ingress at the bottom of this file and replace exuvia.example.com (twice)
+# with your hostname, whose DNS points at the cluster's ingress controller
+# (`kubectl get ingressclass`; `kubectl -n <its namespace> get service` shows
+# its external address). Traefik reads only Ingress resources and its own
+# IngressRoute on Kubernetes, never labels, so there are no Traefik labels
+# here (those are Swarm's, deploy/swarm.yaml). The Ingress routes the whole
+# host (/, /p/..., /api/..., /assets/...) to the Service; the hub then serves
+# the workbench at https://<host>/p/<project>/. With cert-manager, the
+# annotation gets a certificate into the `exuvia-tls` secret; without it,
+# create that secret from your own certificate (kubectl create secret tls), or
+# the controller serves its default self-signed one. Don't expose the hub
+# without TLS. /p/<project>/api/events is a long-lived event stream with a
+# ping every few seconds: Traefik passes it through as is; on ingress-nginx,
+# add the proxy-buffering annotation shown.
 #
 # One replica with a ReadWriteOnce volume: a hub owns its directory, so the
 # rollout strategy is Recreate. To scale out or survive losing the volume,
@@ -100,3 +116,25 @@ spec:
   selector: {app.kubernetes.io/name: exuvia, app.kubernetes.io/component: hub}
   ports:
     - {name: http, port: 7420, targetPort: http}
+# Hostname: uncomment, and set your host in `tls` and `rules` (see the top).
+# ---
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: exuvia-hub
+#   labels: {app.kubernetes.io/name: exuvia}
+#   annotations:
+#     cert-manager.io/cluster-issuer: letsencrypt  # only with cert-manager; your issuer's name
+#     # traefik.ingress.kubernetes.io/router.entrypoints: websecure  # Traefik: HTTPS only
+#     # nginx.ingress.kubernetes.io/proxy-buffering: "off"  # ingress-nginx: don't buffer the event stream
+# spec:
+#   # ingressClassName: traefik  # leave out to use the cluster's default class (k3s: traefik)
+#   tls:
+#     - {hosts: [exuvia.example.com], secretName: exuvia-tls}
+#   rules:
+#     - host: exuvia.example.com
+#       http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend: {service: {name: exuvia-hub, port: {name: http}}}
