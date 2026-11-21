@@ -28,6 +28,12 @@
 # replica: a hub owns its directory. On Swarm a local volume stays on the node
 # the task first ran on; pin the service there (placement constraint) or point
 # EXUVIA_DB at Postgres and EXUVIA_ARTIFACT_STORE at a bucket (README "Deploying").
+#
+# EXUVIA_ARTIFACT_STORE can share an existing bucket: exuvia only touches keys
+# under the URL's prefix. Always give one (s3://bucket/exuvia, never a bare
+# s3://bucket), and give each deployment its own (exuvia-prod, exuvia-staging):
+# keys are per project id, so two hubs on one prefix overwrite each other
+# (README "Outputs in an existing bucket").
 
 services:
   hub:
