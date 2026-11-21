@@ -621,16 +621,17 @@ own registry, or an image with your nodes' packages (see below). A hub owns
 its directory, so run one replica; to scale out or to survive losing the
 volume, point `EXUVIA_DB` at Postgres and `EXUVIA_ARTIFACT_STORE` at a bucket
 (table below). The comments at the top of each file cover the rest: the
-agent's API key, one project at `/` instead of a hub, and on Swarm the
-secrets, the volume's node, stop-first updates and a Traefik example for
-TLS.
+agent's API key, one project at `/` instead of a hub, a hostname with TLS
+(an Ingress on Kubernetes, Traefik labels on Swarm), and on Swarm the
+secrets, the volume's node and stop-first updates.
 
 ### Hand it to an agent
 
 Paste this into a coding agent (Claude Code, Cursor, Codex, Grok, ...) that
 has access to your Docker host or cluster: a cloud VM with Docker, or a
 managed Kubernetes such as GKE, EKS or AKS. Leave Docker or Kubernetes on the
-first line, whichever you use. On Docker the agent uses Swarm when the host is a Swarm manager
+first line, whichever you use, and put your hostname on the second (its DNS
+record must point at your cluster's ingress or your host). On Docker the agent uses Swarm when the host is a Swarm manager
 and Compose otherwise. Besides deploying and checking the hub, the agent creates
 a first project on it, connects itself to that project over
 [MCP](#mcp-the-agents-tools-in-your-own-agent), as the local prompt does,
@@ -641,6 +642,7 @@ so that one deploy is the whole thing.
 Deploy exuvia (https://github.com/rlancer/exuvia, a
 file-backed DAG workbench with a web UI and an HTTP API)
 as a hub on: Docker | Kubernetes.
+Hostname for the UI: exuvia.example.com
 The hub serves the API and the web UI from one container:
 there is no separate frontend to build or deploy.
 
@@ -694,10 +696,19 @@ there is no separate frontend to build or deploy.
    UI (/healthz "version" below 0.3.5): pull
    ghcr.io/rlancer/exuvia:latest again and redeploy. Don't
    build or deploy a separate frontend.
-6. Keep one replica (the hub owns its volume). Don't expose
-   it publicly without TLS in front (an Ingress, a load
-   balancer or a reverse proxy). If outputs go to an
-   existing bucket (EXUVIA_ARTIFACT_STORE), use a prefix
+6. Give it the hostname above, with TLS, before step 7:
+   - Kubernetes: uncomment the Ingress at the bottom of
+     kubernetes.yaml, set the host, apply it again.
+   - Swarm: the Traefik labels in swarm.yaml.
+   - Compose: a reverse proxy with TLS in front of it.
+   The tops of kubernetes.yaml and swarm.yaml say how. Make
+   the hostname's DNS point at the ingress controller or
+   proxy (tell me the record to add if you can't), then
+   check that https://<hostname>/healthz answers. From
+   then on <hub url> is https://<hostname>. Without a
+   hostname, keep it private (port-forward or localhost):
+   never expose it without TLS. Keep one replica (the hub
+   owns its volume). If outputs go to an existing bucket (EXUVIA_ARTIFACT_STORE), use a prefix
    only this hub writes to, e.g. s3://<bucket>/exuvia-prod.
 7. Create a project for me:
    POST /api/projects {"id": "my-research"}.
