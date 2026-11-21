@@ -31,6 +31,16 @@
 #   EXUVIA_BROWSER_AUTH  `open`: browsers get in without entering the token
 #                      (agents and the API still need it); only for a hub that
 #                      only a private network can reach. Default `token`
+#   EXUVIA_AUTH        `headers`: a sign-in proxy in front of the hub (company
+#                      SSO, oauth2-proxy) says who each person is in
+#                      X-Forwarded-User / X-Forwarded-Email; requests without
+#                      them get a 401 unless they carry the token (agents).
+#                      Only when nothing but that proxy can reach the hub.
+#                      Default `token`
+#   EXUVIA_AUTH_USER_HEADER / EXUVIA_AUTH_EMAIL_HEADER  other header names
+#   EXUVIA_AUTH_TRUSTED_PROXIES  the proxy's IPs or CIDRs: identity headers
+#                      from any other address are ignored
+#                      (README "Schedules, auth and settings")
 #
 # One task, one node: a hub owns its directory, and the `exuvia-data` volume
 # is local to the node it was created on. The placement constraint keeps the
@@ -60,6 +70,10 @@ services:
     environment:
       EXUVIA_API_TOKEN_FILE: /run/secrets/exuvia_api_token
       EXUVIA_BROWSER_AUTH: ${EXUVIA_BROWSER_AUTH:-token}
+      EXUVIA_AUTH: ${EXUVIA_AUTH:-token}
+      EXUVIA_AUTH_USER_HEADER: ${EXUVIA_AUTH_USER_HEADER:-}
+      EXUVIA_AUTH_EMAIL_HEADER: ${EXUVIA_AUTH_EMAIL_HEADER:-}
+      EXUVIA_AUTH_TRUSTED_PROXIES: ${EXUVIA_AUTH_TRUSTED_PROXIES:-}
       # ANTHROPIC_API_KEY_FILE: /run/secrets/anthropic_api_key
     secrets:
       - source: exuvia_api_token

@@ -10,7 +10,8 @@
 #   kubectl -n exuvia port-forward service/exuvia-hub 7420:7420
 #   curl http://localhost:7420/healthz
 #   open http://localhost:7420/?token=change-me   (the hub's home: create and open projects)
-#   (on a private network, EXUVIA_BROWSER_AUTH below lets browsers in without the token)
+#   (on a private network, EXUVIA_BROWSER_AUTH below lets browsers in without the token;
+#   behind a sign-in proxy, EXUVIA_AUTH=headers below names each person from its headers)
 #
 # The image defaults to ghcr.io/rlancer/exuvia:latest (public, no login). To pin
 # a release (ghcr.io/rlancer/exuvia:0.3) or use an image with your nodes'
@@ -93,6 +94,20 @@ spec:
             # get in without entering the token (agents and the API still need it).
             # - name: EXUVIA_BROWSER_AUTH
             #   value: open
+            # Only if a sign-in proxy (company SSO, oauth2-proxy, an ingress
+            # auth step) is the only way in: it says who each person is in
+            # X-Forwarded-User / X-Forwarded-Email, and requests without them
+            # (or the token) get a 401. TRUSTED_PROXIES: the proxy's pod or
+            # node CIDR; identity headers from anywhere else are ignored.
+            # README "Schedules, auth and settings".
+            # - name: EXUVIA_AUTH
+            #   value: headers
+            # - name: EXUVIA_AUTH_USER_HEADER
+            #   value: X-Forwarded-User
+            # - name: EXUVIA_AUTH_EMAIL_HEADER
+            #   value: X-Forwarded-Email
+            # - name: EXUVIA_AUTH_TRUSTED_PROXIES
+            #   value: 10.0.0.0/8
             # - name: ANTHROPIC_API_KEY
             #   valueFrom:
             #     secretKeyRef: {name: exuvia, key: anthropic-api-key}

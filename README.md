@@ -589,6 +589,7 @@ Both commands include the workbench; neither needs a separate frontend.
 |---|---|---|
 | Open in a browser | `<url>/` | `<url>/`, the hub's home: create, open and delete projects; each one's workbench is at `<url>/p/<project>/` |
 | First visit with `EXUVIA_API_TOKEN` set | `<url>/?token=<token>` (just `<url>/` with `EXUVIA_BROWSER_AUTH=open`) | `<url>/?token=<token>`, or open `<url>/` and enter the token (just `<url>/` with `EXUVIA_BROWSER_AUTH=open`) |
+| First visit with `EXUVIA_AUTH=headers` | `<url>/`, through the sign-in proxy (no token) | `<url>/`, through the sign-in proxy (no token) |
 | Project API prefix | `<url>/api` | `<url>/p/<project>/api` |
 | Server-wide API | none | `<url>/api` (`/api/projects`, `/api/schedule/tick`, ...) |
 | `exuvia mcp --url` | `<url>` | `<url>` (every project), or `<url>/p/<project>` (just that one) |
@@ -1144,7 +1145,10 @@ open, use `--url` instead: the server stays the only process that owns the
 project, its UI shows every change and run as it happens, and the tools reach
 it through `POST /api/tools/{name}`. `EXUVIA_API_TOKEN` is sent as a bearer
 token when set; `EXUVIA_API_TOKEN_FILE` (a path; `~` is your home directory)
-keeps the token itself out of the MCP client's configuration.
+keeps the token itself out of the MCP client's configuration. A server with
+`EXUVIA_AUTH=headers` turns away callers without the sign-in proxy's headers,
+so give it an `EXUVIA_API_TOKEN` too and an MCP client that connects to it
+directly uses that.
 
 **A whole hub.** Given a hub's own address (its `/healthz` says `"mode":
 "hub"`), `exuvia mcp --url` serves every project on it: `list_projects`,
@@ -1206,7 +1210,11 @@ multi-tenant host needs: one process (or one container) per tenant, one
 project per workflow. With `EXUVIA_API_TOKEN` set, the home page asks for the
 token, or a browser opens `/?token=<token>` or `/p/<project>/?token=<token>`
 once; either way it gets the cookie. With `EXUVIA_BROWSER_AUTH=open` as well,
-it gets the cookie without asking.
+it gets the cookie without asking. With `EXUVIA_AUTH=headers`, the sign-in
+proxy in front of the hub says who each browser is, so the home page and
+every workbench open without a token, and the top bar names the person (see
+"Signed-in users from a proxy" under
+[Schedules, auth and settings](#schedules-auth-and-settings)).
 
 ```bash
 exuvia hub ./projects --templates ./templates --scheduler external
@@ -1272,7 +1280,10 @@ headlessly or iframe the UI:
 
 Requests that change code may send `X-Exuvia-Origin` (letters, digits, `-`,
 `_`; e.g. `ui` or `mcp`) to label the revisions they create; otherwise they
-are recorded as `api`.
+are recorded as `api`. With `EXUVIA_AUTH=headers` the signed-in person is
+recorded as well: as `author` on each revision, and as `started_by` on each
+run row (`/api/runs`, `/api/nodes/{name}/runs`, `/api/runs/{id}`); both are
+null for a caller with only the API token, a hand edit or a scheduled run.
 
 ### Binary data: Arrow and Parquet
 

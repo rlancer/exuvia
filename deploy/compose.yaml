@@ -29,6 +29,15 @@
 #   EXUVIA_BROWSER_AUTH  `open`: browsers get in without entering the token
 #                      (agents and the API still need it); only for a hub that
 #                      only a private network can reach
+#   EXUVIA_AUTH        `headers`: a sign-in proxy in front of the hub (company
+#                      SSO, oauth2-proxy) says who each person is in
+#                      X-Forwarded-User / X-Forwarded-Email; requests without
+#                      them get a 401 unless they carry the token (agents).
+#                      Only when nothing but that proxy can reach the hub
+#   EXUVIA_AUTH_USER_HEADER / EXUVIA_AUTH_EMAIL_HEADER  other header names
+#   EXUVIA_AUTH_TRUSTED_PROXIES  the proxy's IPs or CIDRs: identity headers
+#                      from any other address are ignored
+#                      (README "Schedules, auth and settings")
 #   ANTHROPIC_API_KEY  optional: turns on the built-in agent (or OPENROUTER_API_KEY)
 #
 # For a single project at / instead of a hub, replace `command` with
@@ -69,6 +78,10 @@ services:
     environment:
       EXUVIA_API_TOKEN: ${EXUVIA_API_TOKEN:?set EXUVIA_API_TOKEN}
       EXUVIA_BROWSER_AUTH: ${EXUVIA_BROWSER_AUTH:-token}
+      EXUVIA_AUTH: ${EXUVIA_AUTH:-token}
+      EXUVIA_AUTH_USER_HEADER: ${EXUVIA_AUTH_USER_HEADER:-}
+      EXUVIA_AUTH_EMAIL_HEADER: ${EXUVIA_AUTH_EMAIL_HEADER:-}
+      EXUVIA_AUTH_TRUSTED_PROXIES: ${EXUVIA_AUTH_TRUSTED_PROXIES:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes:
