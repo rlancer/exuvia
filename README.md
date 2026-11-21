@@ -79,14 +79,15 @@ exuvia needs Python 3.11 or newer; uv downloads one when yours is older.
 The example project in this repo opens the same way, from a clone:
 `uvx exuvia serve examples/markets`.
 
-**Packages your nodes import.** A node runs in the Python environment exuvia
-is installed in, so that is where its packages go:
+**Packages your nodes import** go in the project's own `pyproject.toml`,
+which `exuvia init` writes. Add one with uv in the project folder, and exuvia
+installs it before the next run:
 
 ```bash
-uvx --with scipy --with yfinance exuvia serve my-research   # uvx
-uv tool install exuvia --with scipy --with yfinance         # uv tool
-pipx inject exuvia scipy yfinance                           # pipx
+cd my-research && uv add scipy yfinance
 ```
+
+[Packages](#packages) has the details, private package indexes among them.
 
 Set `ANTHROPIC_API_KEY` (Claude) or `OPENROUTER_API_KEY` (DeepSeek and any
 other OpenRouter model) in the environment or the project's `.env` to turn on
@@ -464,6 +465,98 @@ their `__runs`) and is then locked: external access is off except for those
 exact output files, extensions cannot load, and the configuration cannot be
 changed back, so the SQL cannot `read_parquet` another node's file, `COPY`
 out, `ATTACH` a file or `INSTALL` anything.
+
+## Packages
+
+A project lists the packages its nodes import, beyond those exuvia comes
+with, in the standard place: `[project] dependencies` in the project's
+`pyproject.toml`. The packages travel with the project, so the same list
+works on a laptop, in every project on a hub (each with its own list) and on
+a remote executor, which installs from the copy in the bundle it receives.
+
+```toml
+[project]
+name = "my-research"
+version = "0"
+requires-python = ">=3.11"
+dependencies = ["scikit-learn==1.9.1", "acme-models>=2.3"]
+```
+
+**Adding a package in the workbench.** The **Packages** button in the top
+bar lists what the project has and what is installed for it, adds packages
+(`scikit-learn`, `acme-models>=2`) and removes them, edits `pyproject.toml`
+directly, and shows the install's status and log. A package added without a
+version is pinned to the exact version installed, so the project stays
+reproducible. When a node fails on an import of something not installed,
+its error offers the package (**Install scikit-learn** for `import
+sklearn`): one click adds it, installs it and re-runs the node.
+
+**From a terminal.** `exuvia init` writes a `pyproject.toml`, and `uv add
+<package>` in the project folder adds to it, as does editing the list by
+hand. exuvia picks the change up on the next run.
+
+**The agent asks; a person approves.** The agent has `list_packages` and
+`request_packages`. On a node that fails for want of a package it asks for
+it, and the request waits in the Packages panel, with the agent's reason,
+for someone to install or dismiss it. Set `EXUVIA_AGENT_PACKAGES=install` to
+let the agent add packages itself, or `off` to keep it from asking. MCP
+clients get the same tools and the same rule.
+
+**Installed ahead of time.** A change to the list starts its install in the
+background right away, and a hub checks every project's list when it
+starts, so a project restored from an export or moved to a new exuvia
+version is ready before anyone runs it. A run that starts during an install
+waits for it. An install that fails (a package that doesn't exist, a
+registry that refuses the credentials) shows uv's explanation in the panel,
+and runs fail at once with the same error until the list changes or
+someone retries. Installs live in `.exuvia/packages/` and are reused until
+the list or exuvia's own environment changes; hub exports leave them out.
+Every change to `pyproject.toml` is kept as a code revision.
+
+**They sit on top of exuvia's own packages.** Nodes keep using the pandas,
+pyarrow and DuckDB that exuvia runs with, so the project's list is resolved
+against those versions, and packages exuvia already has are not installed
+again. A package that needs, say, `pandas<2` is refused with uv's
+explanation and leaves `pyproject.toml` as it was. exuvia does not read
+`uv.lock`; pins in the list are what make an install repeatable.
+
+**Private package indexes.** On a hub, set the index once for every project,
+on the server:
+
+```text
+UV_INDEX=internal=https://pypi.example.com/simple
+UV_INDEX_INTERNAL_USERNAME=deploy
+UV_INDEX_INTERNAL_PASSWORD_FILE=/run/secrets/pypi_token
+```
+
+uv then looks for packages there, ahead of PyPI, so people add `acme-models`
+by name and never see the URL or the credentials. `UV_INDEX_<NAME>_USERNAME`
+and `_PASSWORD` (the index name in capitals) can each come from a file with
+`_FILE`, for a Docker or Kubernetes secret. Any other uv setting works the
+same way (`UV_DEFAULT_INDEX` to replace PyPI with a mirror, for one).
+
+A single project can also name an index of its own in its `pyproject.toml`,
+where uv reads it. `uv add --index internal=https://pypi.example.com/simple
+acme-models` writes both parts:
+
+```toml
+[[tool.uv.index]]
+name = "internal"
+url = "https://pypi.example.com/simple"
+explicit = true   # only the packages in tool.uv.sources come from it
+
+[tool.uv.sources]
+acme-models = { index = "internal" }
+```
+
+Its credentials go in the environment as above, or in the project's `.env`.
+A remote executor installs the packages itself, so it needs the index
+settings in its own environment.
+
+**Packages for every project.** What every project on a server should have
+without waiting for an install (your team's standard stack, packages that
+need system libraries) belongs in the image: see
+[Packages your nodes import](#packages-your-nodes-import) under Deploying.
 
 ## Execution model
 
@@ -860,8 +953,11 @@ EXUVIA_EXECUTOR_TOKEN=change-me exuvia serve my-research --executor http://local
 
 ### Packages your nodes import
 
-Nodes run in the image's Python environment, so their packages go into the
-image. Put this in a `Dockerfile` of your own:
+A project's `pyproject.toml` works in a container too (see
+[Packages](#packages)): the container installs what it lists before the
+first run that needs it. To build the packages into the image instead, for
+system libraries or a host with no route to a package index, put this in a
+`Dockerfile` of your own:
 
 ```dockerfile
 FROM ghcr.io/rlancer/exuvia:0.3
@@ -998,8 +1094,9 @@ instead: set `<NAME>_FILE` to its path, such as
 secret, or a file in a Kubernetes secret volume. Surrounding whitespace is
 dropped. This works for `EXUVIA_API_TOKEN`, `EXUVIA_EXECUTOR_TOKEN`,
 `EXUVIA_DB`, `EXUVIA_FAILURE_WEBHOOK`, `ANTHROPIC_API_KEY`,
-`ANTHROPIC_AUTH_TOKEN`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY` and the
-`AWS_*` keys. Setting both forms to different values, or naming a missing or
+`ANTHROPIC_AUTH_TOKEN`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, the
+`AWS_*` keys, and the package index credentials `UV_INDEX_<NAME>_USERNAME`
+and `UV_INDEX_<NAME>_PASSWORD` (see "Packages"). Setting both forms to different values, or naming a missing or
 empty file, stops exuvia with an error.
 
 | Env | Default | |
@@ -1019,6 +1116,10 @@ empty file, stops exuvia with an error.
 | `EXUVIA_MAX_PARALLEL` | 4 | concurrent node runs (control plane and executor) |
 | `EXUVIA_RUN_TIMEOUT` | 1800 | seconds before a node run is killed |
 | `EXUVIA_BUNDLE_MAX_MB` | 50 | max project size shipped to a remote executor |
+| `EXUVIA_AGENT_PACKAGES` | `ask` | what the agent may do with packages: `ask` (requests wait for a person to approve them), `install`, or `off` (see "Packages") |
+| `EXUVIA_PACKAGES_CONCURRENCY` | 2 | package installs that run at once (a hub starting with many projects to install) |
+| `EXUVIA_PACKAGES_TIMEOUT` | 900 | seconds before a package install is stopped |
+| `UV_INDEX`, `UV_INDEX_<NAME>_USERNAME` / `_PASSWORD` | PyPI only | a package index for every project, and its credentials (see "Packages") |
 | `EXUVIA_EXECUTOR_DIR` | temp | executor scratch space |
 | `EXUVIA_PROVIDER` | auto | `anthropic`, `openrouter`, or `openai` (any OpenAI-compatible server) |
 | `EXUVIA_MODEL` | per provider | agent model (see below) |
@@ -1077,9 +1178,9 @@ The agent runs a tool loop over the live workspace: `list_nodes`, `read_node`,
 `write_node`, `delete_node`, `list_files` / `read_file` / `write_file` /
 `delete_file` (shared helpers under `lib/`), `list_views` / `read_view` /
 `write_view` / `write_view_file` / `delete_view_file` / `delete_view` (see
-"Views"), `run_node`, `define_param`, and
-`query_data` (DuckDB over every node's current output), and `report_issue`
-(see "MCP"). It looks at real column names before writing, runs
+"Views"), `run_node`, `define_param`,
+`query_data` (DuckDB over every node's current output), `list_packages` and
+`request_packages` (see "Packages"), and `report_issue` (see "MCP"). It looks at real column names before writing, runs
 what it writes, reads the traceback when something fails, and fixes it. Every
 tool call shows up in the chat, and nodes it touches flash on the canvas.
 
@@ -1281,6 +1382,11 @@ headlessly or iframe the UI:
 | `GET /api/project` | graph + per-node status, and every view with its state (`?params={...}` for one parameter set) |
 | `PATCH /api/project` | rename, set the timezone |
 | `GET /api/params`, `PUT/DELETE /api/params/{name}` | run parameters and the values that have run |
+| `GET /api/packages` | the project's packages (from its `pyproject.toml`), what is installed, the install status and log, and agent requests waiting for approval |
+| `POST /api/packages` | `{"add": [...], "remove": [...]}`: edit the list; a change that does not resolve is a 400 with uv's explanation and changes nothing. The install runs in the background (`packages` events) |
+| `PUT /api/packages/manifest` | replace `pyproject.toml` (`{"text"}`) and install from it |
+| `POST /api/packages/retry` | install the current list again after a failure |
+| `POST /api/packages/requests/{id}/approve`, `DELETE /api/packages/requests/{id}` | install or dismiss what the agent asked for |
 | `GET/PUT/DELETE /api/nodes/{name}` | read / write / delete a node file |
 | `GET /api/files`, `GET/PUT/DELETE /api/files/lib/{path}.py` | list / read / write (`{"source"}`) / delete shared helper modules; each answer names the nodes that import the file (`used_by`). Paths outside `lib/`, other extensions and `..` are rejected (400) |
 | `GET /api/views` | every view with its state (`?params=`), as in `/api/project` |

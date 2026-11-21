@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from .packages import missing_package
 from .workspace import Workspace
 
 LOG_TAIL_LINES = 40
@@ -29,12 +30,20 @@ async def node_report(
     run = finals.get(target) or ws.store.last_run(target, ws.node_params(target, params)[1])
     summary = {n: (r or {}).get("status") for n, r in finals.items()}
     if not run or run.get("status") != "success":
-        return False, {
+        out = {
             "runs": summary,
             "run_id": (run or {}).get("id"),
             "error": (run or {}).get("error"),
             "log_tail": _log_tail(ws, run),
         }
+        missing = missing_package(out["error"])
+        if missing:
+            out["missing_package"] = missing
+            out["hint"] = (
+                f"`{missing['module']}` is not installed. If {missing['package']} is the package that provides it, "
+                "ask for it with request_packages, then re-run this node once it is installed."
+            )
+        return False, out
     # Off the loop: reading an output may download it first.
     preview = await asyncio.to_thread(ws.preview, target, limit=head, params=params)
     out: dict[str, Any] = {"runs": summary, "run_id": run.get("id"), "rows": run.get("rows"), "schema": run.get("schema")}

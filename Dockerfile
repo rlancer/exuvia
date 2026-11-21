@@ -11,8 +11,10 @@
 # every role serves /api/view-runtime/runtime.js. tests/e2e/container_e2e.py
 # builds this image and drives the hub role over HTTP.
 #
-# Nodes need their own packages in the *executor* image. Extend it (the venv
-# belongs to root, so install as root and switch back):
+# Nodes import the packages their project lists in its pyproject.toml, which
+# the image installs before they run. To build packages into the *executor*
+# image instead, extend it (the venv belongs to root, so install as root and
+# switch back):
 #   FROM ghcr.io/rlancer/exuvia:0.3
 #   USER root
 #   RUN uv pip install --python /opt/venv/bin/python scipy statsmodels yfinance
@@ -52,5 +54,9 @@ RUN SETUPTOOLS_SCM_PRETEND_VERSION=$EXUVIA_VERSION uv sync --frozen --no-editabl
 # /data: a writable home for `exuvia hub /data` (mount a volume over it to keep it).
 RUN useradd --create-home --uid 10001 exuvia && mkdir /data && chown exuvia:exuvia /data
 USER exuvia
+# uv installs the packages a project lists in its pyproject.toml before its
+# nodes run (exuvia/packages.py). Its cache goes where any uid can write, as
+# `docker run --user` leaves HOME pointing at a folder the user can't.
+ENV UV_CACHE_DIR=/tmp/uv-cache
 EXPOSE 8080 7420
 CMD ["exuvia", "executor", "--host", "0.0.0.0", "--port", "8080"]

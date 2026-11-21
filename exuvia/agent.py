@@ -16,6 +16,7 @@ from typing import Any, AsyncIterator
 
 from . import feedback
 from .llm import Provider, resolve_provider
+from .packages import PackagesError, agent_mode
 from .project import NODE_NAME, coerce_param
 from .report import node_report
 from .workspace import Workspace, acting_as
@@ -292,6 +293,34 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "list_packages",
+        "description": (
+            "The packages this project lists in its pyproject.toml, each with the version installed and whether "
+            "it comes from the project or from exuvia itself, plus the install status (installing, ready, failed "
+            "with uv's error) and any requests still waiting for approval."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "request_packages",
+        "description": (
+            "Ask for packages to be added to the project's pyproject.toml and installed, for nodes that import "
+            "something not available. Give PyPI requirement strings (`scikit-learn`, `scipy>=1.14`); one without "
+            "a version is pinned to the version installed. Depending on the server, the request either waits for "
+            "a person to approve it in the workbench or is installed right away; the result says which. Ask only "
+            "for packages the task needs, and check the package name: never guess at names."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "packages": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                "reason": {"type": "string", "description": "one line for the person approving: what needs it"},
+            },
+            "required": ["packages", "reason"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "report_issue",
         "description": (
             "Tell the exuvia maintainers something is wrong or missing: a bug in exuvia itself, a tool that fails "
@@ -326,7 +355,15 @@ VIEW_TOOLS = {
 }
 
 
-def _available_packages() -> str:
+def _available_packages(root: Path | None = None) -> str:
+    """The data packages exuvia's environment has, plus the ones the project
+    declares in its pyproject.toml (installed before a node runs)."""
+    from .packages import PackagesError, declared
+
+    try:
+        extra = declared(root) if root else []
+    except PackagesError:
+        extra = []
     wanted = [
         "pandas", "numpy", "duckdb", "pyarrow", "polars", "scipy", "statsmodels",
         "scikit-learn", "requests", "httpx", "yfinance", "matplotlib",
@@ -337,7 +374,22 @@ def _available_packages() -> str:
             have.append(f"{pkg} {metadata.version(pkg)}")
         except metadata.PackageNotFoundError:
             pass
-    return ", ".join(have)
+    out = ", ".join(have)
+    if extra:
+        out += "; and from the project's pyproject.toml: " + ", ".join(extra)
+    return out
+
+
+def _packages_how() -> str:
+    mode = agent_mode()
+    if mode == "off":
+        return "ask the user to add a package you need; you cannot install packages on this server."
+    if mode == "install":
+        return "request_packages adds and installs packages directly on this server; ask only for what the task needs."
+    return (
+        "ask for a package with request_packages. A person approves the request in the workbench, so tell the "
+        "user it is waiting for them, and re-run the node once list_packages shows it installed."
+    )
 
 
 SYSTEM = """You are the agent inside exuvia, a DAG workbench for analysts and data scientists. You build and maintain data pipelines by editing node files and running them.
@@ -370,7 +422,7 @@ def rolling_vol(returns):
 - Prefer small, single-purpose nodes with clear names over one big node. Reuse existing nodes as inputs instead of recomputing.
 - After writing a node, run it. If it fails, read the error, fix it, and re-run. Do not hand back a node you have not seen succeed unless the user asked you not to run it.
 - Add a `chart` when a node's output is naturally visual (time series, distributions, rankings).
-- Imports go inside the function or at module top; available packages: {packages}. Do not pip install.
+- Imports go inside the function or at module top; available packages: {packages}. Do not pip install. A package that is not listed goes in the project's `pyproject.toml` under `[project] dependencies`, which exuvia installs from: {packages_how}
 - Only delete or rename nodes when asked. Keep edits minimal when changing an existing node.
 - Finish with a short summary of what you changed and what the data shows — a few sentences, not a report. Describe findings factually; you are a research tool and do not give investment advice.
 
@@ -400,7 +452,10 @@ def _validate(name: str, args: Any) -> str | None:
         return "tool input must be an object"
     schema = tool["input_schema"]
     for key in schema.get("required", []):
-        if not isinstance(args.get(key), str) or not args[key]:
+        if schema["properties"][key].get("type") == "array":
+            if not isinstance(args.get(key), list) or not args[key]:
+                return f"missing or invalid `{key}`: a non-empty list"
+        elif not isinstance(args.get(key), str) or not args[key]:
             return f"missing or invalid `{key}`"
     for key, prop in schema["properties"].items():
         if "enum" in prop and key in args and args[key] not in prop["enum"]:
@@ -409,6 +464,10 @@ def _validate(name: str, args: Any) -> str | None:
             return f"`{key}` must be an object"
         if prop.get("type") == "string" and key in args and not isinstance(args[key], str):
             return f"`{key}` must be a string"
+        if prop.get("type") == "array" and key in args and not (
+            isinstance(args[key], list) and all(isinstance(v, str) for v in args[key])
+        ):
+            return f"`{key}` must be a list of strings"
     extra = set(args) - set(schema["properties"])
     if extra:
         return f"unexpected field(s): {', '.join(sorted(extra))}"
@@ -564,6 +623,29 @@ class Agent:
                 return False, str(e), {}
             ws.set_param(args["name"], spec)
             return True, json.dumps({"defined": args["name"], **spec, "value_now": ws.resolve_params()[args["name"]]}), {}
+        if name == "list_packages":
+            st = ws.packages.state()
+            st.pop("manifest", None)
+            st["log"] = "\n".join(st["log"].splitlines()[-20:])
+            return True, json.dumps(st, default=str), {}
+        if name == "request_packages":
+            try:
+                res = await asyncio.to_thread(
+                    ws.packages.request, args.get("packages") or [], args.get("reason") or "", origin
+                )
+            except PackagesError as e:
+                return False, str(e)[-3000:], {}
+            if res["status"] == "requested":
+                text = (
+                    f"Requested {', '.join(res['packages'])}. A person approves it in the workbench's Packages panel; "
+                    "tell the user it is waiting for them, and re-run the node once list_packages shows it installed."
+                )
+            else:
+                text = (
+                    f"Added {', '.join(res['packages'])} to pyproject.toml. They install in the background; running "
+                    "a node waits for the install to finish."
+                )
+            return True, text, {}
         if name == "report_issue":
             return True, json.dumps(feedback.draft(args["title"], args["details"], args.get("kind") or "bug", origin)), {}
         return False, f"unknown tool {name}", {}
@@ -690,7 +772,8 @@ class Agent:
             params = "This project declares none yet."
         notes = ws.project.instructions()
         return (
-            SYSTEM.replace("{packages}", _available_packages())
+            SYSTEM.replace("{packages}", _available_packages(ws.project.root))
+            .replace("{packages_how}", _packages_how())
             .replace("{params}", params)
             .replace("{notes}", f"\n\n## Project notes\n{notes}" if notes else "")
         )

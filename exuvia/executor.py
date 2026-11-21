@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from . import packages
 from .pool import WarmPool
 from .project import VIEW_DIR
 
@@ -83,8 +84,16 @@ class Executor(Protocol):
 
 # -- local ------------------------------------------------------------------
 class LocalExecutor:
-    def __init__(self, cwd: Path, workers: int):
+    def __init__(self, cwd: Path, workers: int, packages_dir: Path | None = None):
+        """``packages_dir`` holds the installs of the packages projects
+        declare in their pyproject.toml, shared by every project run here (an
+        executor service); by default each project keeps its own, under
+        ``.exuvia/packages``."""
         self.pool = WarmPool(cwd, size=workers)
+        self.packages_dir = packages_dir
+        # A workspace's live view of its project's packages (set by
+        # Workspace): installs through it show up in the workbench.
+        self.packages: packages.Packages | None = None
         self._procs: dict[str, Any] = {}
         self._cancelled: set[str] = set()
 
@@ -97,10 +106,24 @@ class LocalExecutor:
         self.pool.close()
 
     def execute(self, req: ExecRequest, on_log: LogFn) -> ExecResult:
+        try:
+            if self.packages is not None:
+                site = self.packages.ensure_for_run(on_log)
+            else:
+                site = packages.ensure(
+                    req.root,
+                    self.packages_dir or req.root / ".exuvia" / "packages",
+                    on_log,
+                    prune=self.packages_dir is None,
+                )
+        except packages.PackagesError as e:
+            on_log(f"{e}\n")
+            return ExecResult(ok=False, error=f"the packages in {packages.PYPROJECT} could not be installed: {_summary(str(e))}")
         with tempfile.TemporaryDirectory(prefix="exuvia-") as tmp:
             result_path = Path(tmp) / "result.json"
             spec = {
                 "root": str(req.root),
+                "site": str(site) if site else None,
                 "node": req.node,
                 "kind": req.kind,
                 "path": req.path,
@@ -141,6 +164,26 @@ class LocalExecutor:
         self._cancelled.add(run_id)
         proc.kill()
         return True
+
+
+def _summary(text: str) -> str:
+    """What went wrong in an installer's output, on one line, for a run's
+    error; the log has all of it. uv explains a failed resolution over
+    several lines, after `╰─▶` (or `cause:` in its plain output), and other
+    failures in its last line."""
+    lines = [ln.strip() for ln in text.strip().splitlines()]
+    for i, line in enumerate(lines):
+        if "╰─▶" in line or line.startswith("cause:"):
+            parts = [line.split("╰─▶", 1)[1] if "╰─▶" in line else line[len("cause:"):]]
+            for more in lines[i + 1:]:
+                if not more or more.startswith(("hint:", "help:", "cause:")):
+                    break
+                parts.append(more)
+            if packages.CONFLICT_HINT in text:
+                parts.append("(the == versions are the ones exuvia runs with)")
+            return " ".join(p.strip() for p in parts)[:500]
+    rest = [ln for ln in lines if ln and ln != packages.CONFLICT_HINT]
+    return (rest[-1] if rest else text)[:500]
 
 
 # -- project bundles ----------------------------------------------------------

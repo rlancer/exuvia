@@ -111,3 +111,27 @@ def test_executor_requires_token(executor_url):
         headers={"Authorization": f"Bearer {TOKEN}"},
     )
     assert bad.status_code in (400, 422, 500) and bad.status_code != 200
+
+
+def test_remote_installs_the_projects_declared_packages(remote_ws, tmp_path, monkeypatch):
+    """The executor builds the packages in the bundle's pyproject.toml itself."""
+    from test_packages import make_wheel, pyproject
+
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    index = tmp_path.parent / f"{tmp_path.name}-wheels"
+    make_wheel(index, "acme-internal", "1.0", "ANSWER = 42\n")
+    pyproject(tmp_path, index, ["acme-internal"])
+    write(tmp_path, "nodes/base.py", '''
+        import exuvia
+
+        @exuvia.node()
+        def base():
+            import acme_internal
+            import pandas as pd
+            return pd.DataFrame({"answer": [acme_internal.ANSWER]})
+    ''')
+    remote_ws.reload()
+    finals = run(remote_ws, ["base"])
+    assert finals["base"]["status"] == "success", finals["base"].get("error")
+    assert remote_ws.preview("base")["rows"] == [[42]]
+    assert not (tmp_path / ".exuvia" / "packages").exists()  # installed on the executor's side

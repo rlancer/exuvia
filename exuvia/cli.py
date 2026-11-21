@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -38,6 +39,11 @@ SECRET_ENV = (
 )
 
 
+# UV_INDEX_<NAME>_USERNAME / _PASSWORD: a package index's credentials, which
+# uv reads when it installs a project's packages. Their _FILE forms work too.
+INDEX_SECRET = re.compile(r"^UV_INDEX_[A-Z0-9_]+_(USERNAME|PASSWORD)_FILE$")
+
+
 def load_secret_files(environ: dict[str, str] | None = None) -> None:
     """Set each ``SECRET_ENV`` name whose ``<NAME>_FILE`` is set from that
     file's contents (surrounding whitespace dropped; ``~`` in the path is the
@@ -46,7 +52,9 @@ def load_secret_files(environ: dict[str, str] | None = None) -> None:
     import os
 
     env = os.environ if environ is None else environ
-    for name in SECRET_ENV:
+    # Package index credentials for uv (packages.py), whatever the index is called.
+    index = sorted({k[: -len("_FILE")] for k in env if INDEX_SECRET.match(k)})
+    for name in (*SECRET_ENV, *index):
         path = env.get(f"{name}_FILE")
         if not path:
             continue
@@ -96,7 +104,12 @@ def cmd_init(args: argparse.Namespace) -> None:
             '"""A first node: returns a tiny table."""\nimport exuvia\n\n\n@exuvia.node()\ndef hello():\n'
             '    import pandas as pd\n\n    return pd.DataFrame({"x": [1, 2, 3], "y": [1, 4, 9]})\n',
         )
-    (root / ".gitignore").write_text(".exuvia/\n.env\n", encoding="utf-8")
+    pyproject = root / "pyproject.toml"
+    if not pyproject.exists():
+        from .packages import PYPROJECT_TEMPLATE, dist_name
+
+        pyproject.write_text(PYPROJECT_TEMPLATE.format(name=dist_name(p.root.name)), encoding="utf-8")
+    (root / ".gitignore").write_text(".exuvia/\n.env\n.venv/\n", encoding="utf-8")
     print(f"Initialized exuvia project at {p.root}\n  exuvia serve {args.dir}")
 
 

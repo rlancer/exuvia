@@ -35,6 +35,7 @@ from pydantic import BaseModel
 from . import _STARTED, __version__, auth
 from .agent import TOOLS, Agent
 from .arrowstream import MEDIA_TYPE as ARROW_STREAM, ArrowStream, wants_arrow
+from .packages import PackagesError
 from .project import NODE_NAME, PARAM_TYPES, coerce_param
 from .report import graph_report, node_report
 from .store import clean_origin
@@ -149,6 +150,15 @@ class AgentReq(BaseModel):
     message: str
     session_id: str | None = None
     selected: str | None = None
+
+
+class PackagesEdit(BaseModel):
+    add: list[str] = []
+    remove: list[str] = []
+
+
+class ManifestWrite(BaseModel):
+    text: str
 
 
 class ProjectCreate(BaseModel):
@@ -304,6 +314,67 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
     def param_delete(name: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         ctx.ws.set_param(name, None)
         return params_list(ctx)
+
+    # -- packages (the project's pyproject.toml; see packages.py) -------------------
+    def _packages_error(e: Exception) -> HTTPException:
+        return HTTPException(400, str(e).strip()[-4000:])
+
+    @r.get("/packages")
+    def packages_state(ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """The project's packages, their install status and log, and the
+        agent's requests waiting for approval. Starts an install when the
+        list changed on disk since the last one (an edit outside exuvia)."""
+        ctx.ws.packages.prebuild()
+        return ctx.ws.packages.state()
+
+    @r.post("/packages")
+    async def packages_edit(body: PackagesEdit, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """Add requirements (``scipy``, ``acme-models>=2``; one without a
+        version is pinned to the version it resolves to) and/or remove
+        packages by name. The edit is checked against exuvia's own versions
+        first: one that does not resolve is a 400 with uv's explanation and
+        leaves pyproject.toml as it was. The install then runs in the
+        background (``packages`` events)."""
+        pk = ctx.ws.packages
+        try:
+            if body.remove:
+                await asyncio.to_thread(pk.remove, body.remove)
+            if body.add:
+                await asyncio.to_thread(pk.add, body.add)
+        except PackagesError as e:
+            raise _packages_error(e) from e
+        return pk.state()
+
+    @r.put("/packages/manifest")
+    async def packages_manifest(body: ManifestWrite, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """Replace pyproject.toml as a whole, then install from it."""
+        try:
+            return await asyncio.to_thread(ctx.ws.packages.write_manifest, body.text)
+        except PackagesError as e:
+            raise _packages_error(e) from e
+
+    @r.post("/packages/retry")
+    def packages_retry(ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """Install the current list again after a failure (a registry that
+        was down, credentials that were fixed)."""
+        return ctx.ws.packages.retry()
+
+    @r.post("/packages/requests/{request_id}/approve")
+    async def packages_approve(request_id: int, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """Add the packages an agent asked for."""
+        try:
+            return await asyncio.to_thread(ctx.ws.packages.approve, request_id)
+        except KeyError:
+            raise HTTPException(404, f"no package request {request_id}") from None
+        except PackagesError as e:
+            raise _packages_error(e) from e
+
+    @r.delete("/packages/requests/{request_id}")
+    def packages_dismiss(request_id: int, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        try:
+            return ctx.ws.packages.dismiss(request_id)
+        except KeyError:
+            raise HTTPException(404, f"no package request {request_id}") from None
 
     # -- nodes -----------------------------------------------------------------
     @r.get("/nodes/{name}")
