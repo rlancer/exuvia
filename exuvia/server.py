@@ -39,7 +39,7 @@ from .packages import PackagesError
 from .project import NODE_NAME, PARAM_TYPES, coerce_param
 from .report import graph_report, node_report
 from .store import clean_origin
-from .users import UserStore, open_users
+from .users import UserStore, looks_like_token, open_users
 from .workspace import SCHEDULER, Workspace, acting_as
 
 STATIC = Path(__file__).parent / "static"
@@ -122,6 +122,10 @@ class BackfillReq(BaseModel):
 class UserPatch(BaseModel):
     role: str | None = None  # admin | member
     disabled: bool | None = None
+
+
+class TokenReq(BaseModel):
+    name: str = ""  # what the token is for: "laptop", "Claude Code", ...
 
 
 class ScheduleReq(BaseModel):
@@ -849,9 +853,45 @@ def _install_common(app: FastAPI, users: UserStore | None) -> None:
     def me() -> dict[str, Any]:
         """Who this request is from: ``user`` is null for a caller with only
         the API token (or on a server with no auth). ``auth`` is how this
-        server identifies people: ``headers``, ``token`` or ``none``."""
+        server identifies people: ``headers``, ``token`` or ``none``.
+        ``tokens``: whether people can make agent tokens here (/api/me/tokens)."""
         ident = auth.current()
-        return {"auth": method, "user": ident.as_dict() if ident else None}
+        return {"auth": method, "user": ident.as_dict() if ident else None, "tokens": users is not None}
+
+    def token_owner() -> tuple[UserStore, str]:
+        """The user list and the signed-in person's id, for managing their own
+        agent tokens. A request made with an agent token can't: a leaked token
+        must not be able to mint more."""
+        if users is None:
+            raise HTTPException(404, "no agent tokens: nobody signs in on this server (see EXUVIA_AUTH)")
+        ident = auth.current()
+        if ident is None or not ident.uid:
+            raise HTTPException(403, "agent tokens belong to a signed-in person: sign in through the proxy")
+        if ident.method == "token":
+            raise HTTPException(403, "an agent token can't manage tokens: sign in through the proxy")
+        return users, ident.uid
+
+    @app.get("/api/me/tokens")
+    def tokens_list() -> dict[str, Any]:
+        """The signed-in person's agent tokens (names and hints, never the tokens)."""
+        store, uid = token_owner()
+        return {"tokens": store.tokens(uid)}
+
+    @app.post("/api/me/tokens", status_code=201)
+    def tokens_create(body: TokenReq) -> dict[str, Any]:
+        """A new agent token for the signed-in person. ``token`` is in this
+        answer only: it is not kept, so it can't be shown again."""
+        store, uid = token_owner()
+        row, token = store.create_token(uid, body.name)
+        return {**row, "token": token}
+
+    @app.delete("/api/me/tokens/{tid}")
+    def tokens_revoke(tid: str) -> dict[str, Any]:
+        """Revoke one of the signed-in person's agent tokens."""
+        store, uid = token_owner()
+        if not store.revoke_token(uid, tid):
+            raise HTTPException(404, f"no token {tid}")
+        return {"ok": True}
 
     def admin_users() -> UserStore:
         """The user list, for an admin: a signed-in admin, or a caller with
@@ -910,6 +950,8 @@ def _install_common(app: FastAPI, users: UserStore | None) -> None:
         detail = (
             f"not signed in: exuvia expects the {headers.user_header} or {headers.email_header} "
             "header from the sign-in proxy in front of it"
+            + ("; agents and scripts send an agent token (Authorization: Bearer exv_...) from the hub's Connect agent"
+               if users is not None and is_api(path) else "")
         )
         if is_api(path):
             return JSONResponse({"detail": detail}, status_code=401)
@@ -937,6 +979,17 @@ def _install_common(app: FastAPI, users: UserStore | None) -> None:
                 ident = dataclasses.replace(ident, uid=user.id, role=user.role)
             with auth.signed_in(ident):
                 return await call_next(request)
+        # An agent token (users.py): signed in as the person who made it,
+        # from anywhere, since MCP clients and scripts can't pass the proxy.
+        bearer = request.headers.get("authorization", "")
+        if users is not None and bearer[:7].lower() == "bearer " and looks_like_token(bearer[7:].strip()):
+            owner = await asyncio.to_thread(users.by_token, bearer[7:].strip())
+            if owner is not None:
+                if owner.disabled:
+                    return disabled(path)
+                ident = auth.Identity(user=owner.name, email=owner.email, method="token", uid=owner.id, role=owner.role)
+                with auth.signed_in(ident):
+                    return await call_next(request)
         if not api_token:  # header auth alone: nobody gets in without the headers
             return unidentified(path)
         qs_token = request.query_params.get("token")

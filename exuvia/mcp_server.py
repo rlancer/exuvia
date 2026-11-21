@@ -21,7 +21,9 @@ Three ways to reach projects:
   "hub"``) relays to every project on it: ``list_projects`` and
   ``create_project``, and each project tool takes a ``project`` argument.
 
-``EXUVIA_API_TOKEN`` is sent as a bearer token when set.
+``EXUVIA_API_TOKEN`` is sent as a bearer token when set: the server's shared
+API token, or a person's agent token (``exv_...``, made in the hub's Connect
+agent), which signs the session in as them.
 
 Changes and runs are recorded with the origin ``mcp``.
 """
@@ -234,7 +236,10 @@ class HubBackend:
         r = await self.http.get(f"{self.url}/api/projects")
         if r.status_code == 401:
             await self.http.aclose()
-            raise RuntimeError(f"{self.url} needs its API token: set EXUVIA_API_TOKEN, or EXUVIA_API_TOKEN_FILE to a file that holds it")
+            raise RuntimeError(
+                f"{self.url} turned the token away: set EXUVIA_API_TOKEN (or EXUVIA_API_TOKEN_FILE, a file that holds it) "
+                "to the hub's API token, or to an agent token from the hub's Connect agent"
+            )
         if r.status_code != 200:
             await self.http.aclose()
             raise RuntimeError(f"GET {self.url}/api/projects: HTTP {r.status_code} {r.text[:300]}")
