@@ -283,6 +283,10 @@ echo "ANTHROPIC_API_KEY=sk-ant-..." >> my-research/.env
 
 # or any model on OpenRouter
 echo "OPENROUTER_API_KEY=sk-or-..." >> my-research/.env
+
+# or through a Portkey gateway (a model from your Model Catalog)
+echo "PORTKEY_API_KEY=..." >> my-research/.env
+echo "EXUVIA_MODEL=@anthropic-prod/claude-opus-5-5" >> my-research/.env
 ```
 
 `exuvia init` already added `.env` to the project's `.gitignore`. Then ask for

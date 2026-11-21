@@ -765,7 +765,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
     async def agent_chat(body: AgentReq, ctx: Ctx = Depends(get_ctx)) -> StreamingResponse:
         agent = ctx.agent
         if not agent.enabled:
-            raise HTTPException(400, "Set ANTHROPIC_API_KEY or OPENROUTER_API_KEY to enable the agent.")
+            raise HTTPException(400, "Set ANTHROPIC_API_KEY or OPENROUTER_API_KEY (or PORTKEY_API_KEY with EXUVIA_MODEL) to enable the agent.")
         try:
             # The turn runs in the background: closing this stream does not
             # stop it, and /events carries the same events for re-attaching.

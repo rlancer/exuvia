@@ -198,7 +198,8 @@ def test_compat_text_only_ends_and_truncated_calls_retry():
 @pytest.fixture
 def clean_env(monkeypatch):
     for k in ("EXUVIA_PROVIDER", "EXUVIA_MODEL", "EXUVIA_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-              "OPENROUTER_API_KEY", "OPEN_ROUTER_KEY", "OPENAI_API_KEY"):
+              "OPENROUTER_API_KEY", "OPEN_ROUTER_KEY", "OPENAI_API_KEY", "PORTKEY_API_KEY", "PORTKEY_BASE_URL",
+              *llm.PORTKEY_HEADERS):
         monkeypatch.delenv(k, raising=False)
     return monkeypatch
 
@@ -232,6 +233,35 @@ def test_generic_openai_needs_url_and_model(clean_env):
     clean_env.setenv("EXUVIA_BASE_URL", "http://localhost:11434/v1")
     clean_env.setenv("EXUVIA_MODEL", "qwen3:32b")
     assert resolve_provider().label == "qwen3:32b · openai"
+
+
+def test_portkey_needs_a_model_and_sends_its_headers(clean_env):
+    clean_env.setenv("EXUVIA_PROVIDER", "portkey")
+    assert resolve_provider() is None  # no key: the agent is off
+    clean_env.setenv("PORTKEY_API_KEY", "pk-test")
+    with pytest.raises(ValueError, match="EXUVIA_MODEL"):
+        resolve_provider()
+    clean_env.setenv("EXUVIA_MODEL", "@anthropic-prod/claude-opus-5-5")
+    clean_env.setenv("PORTKEY_CONFIG", "pc-exuvia-123")
+    p = resolve_provider()
+    assert p.name == "portkey" and p.label == "@anthropic-prod/claude-opus-5-5 · portkey"
+    assert str(p.client.base_url).rstrip("/") == llm.PORTKEY_URL
+    assert p.client.api_key == "pk-test"
+    headers = p.client.default_headers
+    assert headers["x-portkey-api-key"] == "pk-test" and headers["x-portkey-config"] == "pc-exuvia-123"
+    assert "x-portkey-provider" not in headers and "X-Title" not in headers
+
+    clean_env.setenv("PORTKEY_BASE_URL", "http://portkey.internal:8787/v1")
+    assert str(resolve_provider().client.base_url).rstrip("/") == "http://portkey.internal:8787/v1"
+
+
+def test_portkey_autodetects_only_with_a_model_and_after_the_others(clean_env):
+    clean_env.setenv("PORTKEY_API_KEY", "pk-test")
+    assert resolve_provider() is None  # a stray key without a model leaves the agent off
+    clean_env.setenv("EXUVIA_MODEL", "@openai-prod/gpt-5")
+    assert resolve_provider().name == "portkey"
+    clean_env.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    assert resolve_provider().name == "openrouter"
 
 
 def test_complete_asks_once_and_returns_the_text(monkeypatch):
@@ -268,6 +298,21 @@ def test_complete_asks_once_and_returns_the_text(monkeypatch):
         "messages": [{"role": "system", "content": "Data only."}, {"role": "user", "content": "Describe it."}],
         "max_tokens": 900,
     }
+
+    assert sent["client"]["default_headers"] is None
+
+    monkeypatch.setenv("EXUVIA_PROVIDER", "portkey")
+    monkeypatch.setenv("PORTKEY_API_KEY", "pk-test")
+    monkeypatch.delenv("EXUVIA_BASE_URL")
+    monkeypatch.delenv("PORTKEY_BASE_URL", raising=False)
+    for name in llm.PORTKEY_HEADERS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PORTKEY_PROVIDER", "@bedrock-prod")
+    llm.complete("Describe it.")
+    assert sent["client"]["base_url"] == llm.PORTKEY_URL
+    assert sent["client"]["default_headers"] == {"x-portkey-api-key": "pk-test", "x-portkey-provider": "@bedrock-prod"}
+    monkeypatch.setenv("EXUVIA_PROVIDER", "openai")
+    monkeypatch.setenv("EXUVIA_BASE_URL", "http://llm.internal/v1")
 
     answer.update(content="", finish="stop")
     with pytest.raises(llm.LLMError, match="no text"):

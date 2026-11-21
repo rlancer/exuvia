@@ -91,7 +91,8 @@ cd my-research && uv add scipy yfinance
 
 Set `ANTHROPIC_API_KEY` (Claude) or `OPENROUTER_API_KEY` (DeepSeek and any
 other OpenRouter model) in the environment or the project's `.env` to turn on
-the built-in agent. See [The agent](#the-agent) for providers. Or let the
+the built-in agent; a Portkey gateway or any OpenAI-compatible server works
+too. See [The agent](#the-agent) for providers. Or let the
 coding agent you already use do the setup and the building: see the next
 section.
 
@@ -1094,7 +1095,7 @@ instead: set `<NAME>_FILE` to its path, such as
 secret, or a file in a Kubernetes secret volume. Surrounding whitespace is
 dropped. This works for `EXUVIA_API_TOKEN`, `EXUVIA_EXECUTOR_TOKEN`,
 `EXUVIA_DB`, `EXUVIA_FAILURE_WEBHOOK`, `ANTHROPIC_API_KEY`,
-`ANTHROPIC_AUTH_TOKEN`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, the
+`ANTHROPIC_AUTH_TOKEN`, `OPENROUTER_API_KEY`, `PORTKEY_API_KEY`, `OPENAI_API_KEY`, the
 `AWS_*` keys, and the package index credentials `UV_INDEX_<NAME>_USERNAME`
 and `UV_INDEX_<NAME>_PASSWORD` (see "Packages"). Setting both forms to different values, or naming a missing or
 empty file, stops exuvia with an error.
@@ -1121,10 +1122,12 @@ empty file, stops exuvia with an error.
 | `EXUVIA_PACKAGES_TIMEOUT` | 900 | seconds before a package install is stopped |
 | `UV_INDEX`, `UV_INDEX_<NAME>_USERNAME` / `_PASSWORD` | PyPI only | a package index for every project, and its credentials (see "Packages") |
 | `EXUVIA_EXECUTOR_DIR` | temp | executor scratch space |
-| `EXUVIA_PROVIDER` | auto | `anthropic`, `openrouter`, or `openai` (any OpenAI-compatible server) |
+| `EXUVIA_PROVIDER` | auto | `anthropic`, `openrouter`, `portkey`, or `openai` (any OpenAI-compatible server) |
 | `EXUVIA_MODEL` | per provider | agent model (see below) |
 | `EXUVIA_EFFORT` | `medium` | Claude effort level |
 | `EXUVIA_BASE_URL` | OpenRouter | base URL for the `openai` provider (Ollama, vLLM, LiteLLM, …) |
+| `PORTKEY_BASE_URL` | `https://api.portkey.ai/v1` | a self-hosted Portkey gateway, for the `portkey` provider |
+| `PORTKEY_CONFIG` / `PORTKEY_PROVIDER` / `PORTKEY_VIRTUAL_KEY` | — | sent as `x-portkey-config`, `x-portkey-provider` and `x-portkey-virtual-key` (see "The agent") |
 | `EXUVIA_DB` | per-project SQLite | where run history, schedules, sessions and code revisions live: `sqlite:///<path>` or `postgresql://…` |
 | `EXUVIA_DB_SCOPE` | — | prefix for project scopes in a shared `EXUVIA_DB` (e.g. a user id) |
 | `EXUVIA_ARTIFACT_STORE` | local disk | `s3://bucket/prefix`: keep node outputs in an S3-compatible bucket, keyed `<prefix>/<project>/<node>/<sha>.<ext>` |
@@ -1185,12 +1188,13 @@ what it writes, reads the traceback when something fails, and fixes it. Every
 tool call shows up in the chat, and nodes it touches flash on the canvas.
 
 Pick the model with environment variables; the provider is auto-detected from
-whichever key is set (Claude wins if both are):
+whichever key is set (in this order: Claude, OpenRouter, Portkey):
 
 | Provider | Key | Default model |
 |---|---|---|
 | `anthropic` | `ANTHROPIC_API_KEY` | `claude-opus-5-5` (adaptive thinking, server-side fallback) |
 | `openrouter` | `OPENROUTER_API_KEY` (or `OPEN_ROUTER_KEY`) | `deepseek/deepseek-v4-pro` |
+| `portkey` | `PORTKEY_API_KEY` + `EXUVIA_MODEL` | none (must be set) |
 | `openai` | `OPENAI_API_KEY` + `EXUVIA_BASE_URL` + `EXUVIA_MODEL` | none (must be set) |
 
 ```bash
@@ -1200,7 +1204,29 @@ OPENROUTER_API_KEY=sk-or-... exuvia serve my-project
 EXUVIA_PROVIDER=openrouter EXUVIA_MODEL=qwen/qwen3-coder exuvia serve my-project
 # a local model
 EXUVIA_PROVIDER=openai EXUVIA_BASE_URL=http://localhost:11434/v1 EXUVIA_MODEL=qwen3:32b OPENAI_API_KEY=x exuvia serve .
+# through a Portkey gateway: the model names a provider from your Model Catalog
+PORTKEY_API_KEY=... EXUVIA_MODEL=@anthropic-prod/claude-opus-5-5 exuvia serve my-project
 ```
+
+**Portkey.** The `portkey` provider sends the agent through the
+[Portkey](https://portkey.ai) AI gateway, so its calls get your
+organization's routing, budgets, logs and guardrails. Name the model as
+`@<provider-slug>/<model>` from Portkey's Model Catalog. The calls use
+Portkey's OpenAI-compatible API, so Claude through Portkey runs without the
+`anthropic` provider's adaptive thinking and server-side fallback. Optional
+settings, each sent as a gateway header:
+
+- `PORTKEY_CONFIG`: a config id (`pc-...`) or JSON, for fallbacks, load
+  balancing, caching or guardrails (`x-portkey-config`).
+- `PORTKEY_PROVIDER`: the provider slug, when `EXUVIA_MODEL` is a bare model
+  id (`x-portkey-provider`).
+- `PORTKEY_VIRTUAL_KEY`: a virtual key, for accounts that still use them
+  (`x-portkey-virtual-key`).
+- `PORTKEY_BASE_URL`: a self-hosted gateway, such as
+  `http://portkey-gateway:8787/v1`.
+
+A `PORTKEY_API_KEY` on its own does not turn the agent on: auto-detection
+picks Portkey only once `EXUVIA_MODEL` is set as well.
 
 The model has to support function calling. The UI's agent header shows which
 model is active.
@@ -1642,7 +1668,7 @@ exuvia/
   users.py      the user list: everyone who signed in, their identities, roles and disabled accounts
   arrowstream.py  query results as an Arrow IPC stream
   agent.py      agent tools + provider-neutral tool loop
-  llm.py        model providers: Anthropic, OpenAI-compatible (OpenRouter / DeepSeek)
+  llm.py        model providers: Anthropic, OpenAI-compatible (OpenRouter / Portkey / DeepSeek)
   server.py     FastAPI routes + SSE + static UI
 ui/             React + React Flow + CodeMirror + Vega-Lite
 ui/src/views/   views runtime (sandboxed iframe), its postMessage protocol and the page's side of it

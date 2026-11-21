@@ -6,14 +6,18 @@ its own message history shape. Two implementations:
 * ``AnthropicProvider`` — Claude via the Anthropic SDK (default when
   ``ANTHROPIC_API_KEY`` is set).
 * ``OpenAICompatProvider`` — any OpenAI-compatible chat-completions endpoint:
-  OpenRouter (DeepSeek, Qwen, Llama, …), DeepSeek's own API, vLLM, Ollama,
-  Azure OpenAI, a gateway at work.
+  OpenRouter (DeepSeek, Qwen, Llama, …), the Portkey AI gateway, DeepSeek's
+  own API, vLLM, Ollama, Azure OpenAI, a gateway at work.
 
 Selection (``resolve_provider``):
-    EXUVIA_PROVIDER   anthropic | openrouter | openai   (auto-detected if unset)
-    EXUVIA_MODEL      model id (provider default if unset)
-    EXUVIA_BASE_URL   OpenAI-compatible base URL (openai provider)
-    keys             ANTHROPIC_API_KEY · OPENROUTER_API_KEY (or OPEN_ROUTER_KEY) · OPENAI_API_KEY
+    EXUVIA_PROVIDER   anthropic | openrouter | portkey | openai   (auto-detected if unset)
+    EXUVIA_MODEL      model id (provider default if unset; portkey and openai need one)
+    EXUVIA_BASE_URL   OpenAI-compatible base URL (openai provider; overrides the
+                      openrouter and portkey defaults)
+    keys             ANTHROPIC_API_KEY · OPENROUTER_API_KEY (or OPEN_ROUTER_KEY) ·
+                     PORTKEY_API_KEY · OPENAI_API_KEY
+    portkey extras   PORTKEY_BASE_URL (a self-hosted gateway) · PORTKEY_CONFIG ·
+                     PORTKEY_PROVIDER · PORTKEY_VIRTUAL_KEY, sent as x-portkey-* headers
 
 Every provider's ``turn`` yields UI events (``thinking`` / ``text`` /
 ``tool_start`` / ``error``) and ends with exactly one
@@ -32,6 +36,7 @@ from typing import Any, AsyncIterator, Protocol
 ANTHROPIC_DEFAULT = "claude-opus-5-5"
 OPENROUTER_DEFAULT = "deepseek/deepseek-v4-pro"
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
+PORTKEY_URL = "https://api.portkey.ai/v1"
 
 
 @dataclass
@@ -159,13 +164,12 @@ REASONING_KEYS = ("reasoning", "reasoning_content")
 
 
 class OpenAICompatProvider:
-    def __init__(self, name: str, model: str, base_url: str, api_key: str):
+    def __init__(self, name: str, model: str, base_url: str, api_key: str, headers: dict[str, str] | None = None):
         from openai import AsyncOpenAI
 
         self.name = name
         self.model = model
-        headers = {"X-Title": "exuvia"} if "openrouter.ai" in base_url else None
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url, default_headers=headers)
+        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url, default_headers=headers or None)
 
     @property
     def label(self) -> str:
@@ -301,10 +305,36 @@ def openrouter_key() -> str | None:
 class Endpoint:
     """Which model to call and how, read from the environment."""
 
-    provider: str  # anthropic | openrouter | openai
+    provider: str  # anthropic | openrouter | portkey | openai
     model: str
     base_url: str | None = None
     api_key: str | None = None
+    headers: dict[str, str] = field(default_factory=dict)
+
+
+# Optional Portkey settings and the gateway headers they become. A config
+# (id or JSON) can carry routing, fallbacks, caching and guardrails; a provider
+# slug or a (legacy) virtual key picks the upstream when the model id does not
+# name one as ``@slug/model``.
+PORTKEY_HEADERS = {
+    "PORTKEY_CONFIG": "x-portkey-config",
+    "PORTKEY_PROVIDER": "x-portkey-provider",
+    "PORTKEY_VIRTUAL_KEY": "x-portkey-virtual-key",
+}
+
+
+def portkey_endpoint(model: str | None) -> Endpoint | None:
+    key = os.environ.get("PORTKEY_API_KEY")
+    if not key:
+        return None
+    if not model:
+        raise ValueError("EXUVIA_PROVIDER=portkey needs EXUVIA_MODEL, e.g. @openai-prod/gpt-4o (a Model Catalog slug)")
+    url = os.environ.get("PORTKEY_BASE_URL") or os.environ.get("EXUVIA_BASE_URL") or PORTKEY_URL
+    # The OpenAI SDK sends the key as a bearer token, which the hosted gateway
+    # accepts; x-portkey-api-key is the header every gateway version reads.
+    headers = {"x-portkey-api-key": key}
+    headers.update({h: v for env, h in PORTKEY_HEADERS.items() if (v := os.environ.get(env))})
+    return Endpoint("portkey", model, url, key, headers)
 
 
 def resolve_endpoint() -> Endpoint | None:
@@ -317,6 +347,8 @@ def resolve_endpoint() -> Endpoint | None:
             choice = "anthropic"
         elif openrouter_key():
             choice = "openrouter"
+        elif os.environ.get("PORTKEY_API_KEY") and model:
+            choice = "portkey"
         elif os.environ.get("OPENAI_API_KEY") and os.environ.get("EXUVIA_BASE_URL"):
             choice = "openai"
         else:
@@ -329,13 +361,16 @@ def resolve_endpoint() -> Endpoint | None:
         key = openrouter_key()
         if not key:
             return None
-        return Endpoint("openrouter", model or OPENROUTER_DEFAULT, os.environ.get("EXUVIA_BASE_URL", OPENROUTER_URL), key)
+        url = os.environ.get("EXUVIA_BASE_URL", OPENROUTER_URL)
+        return Endpoint("openrouter", model or OPENROUTER_DEFAULT, url, key, {"X-Title": "exuvia"} if "openrouter.ai" in url else {})
+    if choice == "portkey":
+        return portkey_endpoint(model)
     if choice == "openai":
         key, url = os.environ.get("OPENAI_API_KEY"), os.environ.get("EXUVIA_BASE_URL")
         if not key or not url or not model:
             raise ValueError("EXUVIA_PROVIDER=openai needs OPENAI_API_KEY, EXUVIA_BASE_URL and EXUVIA_MODEL")
         return Endpoint("openai", model, url, key)
-    raise ValueError(f"unknown EXUVIA_PROVIDER {choice!r} (anthropic | openrouter | openai)")
+    raise ValueError(f"unknown EXUVIA_PROVIDER {choice!r} (anthropic | openrouter | portkey | openai)")
 
 
 def resolve_provider() -> Provider | None:
@@ -346,7 +381,7 @@ def resolve_provider() -> Provider | None:
     if endpoint.provider == "anthropic":
         return AnthropicProvider(endpoint.model, os.environ.get("EXUVIA_EFFORT", "medium"))
     assert endpoint.base_url and endpoint.api_key
-    return OpenAICompatProvider(endpoint.provider, endpoint.model, endpoint.base_url, endpoint.api_key)
+    return OpenAICompatProvider(endpoint.provider, endpoint.model, endpoint.base_url, endpoint.api_key, endpoint.headers)
 
 
 # -- one-shot completions for node code ---------------------------------------------
@@ -391,8 +426,7 @@ def complete(prompt: str, *, system: str | None = None, max_tokens: int = 4000) 
     else:
         import openai
 
-        headers = {"X-Title": "exuvia"} if "openrouter.ai" in (endpoint.base_url or "") else None
-        client = openai.OpenAI(api_key=endpoint.api_key, base_url=endpoint.base_url, default_headers=headers)
+        client = openai.OpenAI(api_key=endpoint.api_key, base_url=endpoint.base_url, default_headers=endpoint.headers or None)
         messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
         try:
             response = client.chat.completions.create(model=endpoint.model, messages=messages, max_tokens=max_tokens)
