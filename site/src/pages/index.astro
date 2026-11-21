@@ -27,7 +27,7 @@ const handoffs = [
   {
     id: "server",
     label: "On a server",
-    body: "Pick how you deploy and type your hostname, then paste this into an agent that can reach your Docker host or Kubernetes cluster: a cloud VM, or GKE, EKS or AKS. It deploys a hub from the published image behind a generated API token, puts it on your hostname with TLS, checks it end to end, then creates a project, connects itself to it and hands you the hub's home page.",
+    body: "Pick how you deploy and type your hostname, then paste this into an agent that can reach your Docker host or Kubernetes cluster: a cloud VM, or GKE, EKS or AKS. It deploys a hub from the published image behind a generated API token, puts it on your hostname with TLS, checks it end to end, then creates a project, connects itself to the whole hub over MCP and hands you the hub's home page.",
     steps: `/agent/deploy/${DEPLOY_TARGETS[0].id}.txt`,
     prompt: codeFigure(h, agentDeployPrompt(), "text"),
   },
