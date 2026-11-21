@@ -38,16 +38,16 @@ const words = [
 ];
 
 const grounds = [
-  { name: "On the app's grounds", note: "Amber", bg: APP_PALETTE[0].value, accent: SIGNALS[0].value, dots: true },
-  { name: "Under water", note: "Lobster blue", bg: WATER_PALETTE[0].value, accent: WATER_PALETTE[8].value, water: true },
-  { name: "Anywhere else dark", note: "One colour: Text", bg: "#2b2d33", accent: APP_PALETTE[6].value },
-  { name: "On a light ground", note: "One colour: Canvas", bg: "#f3f1ea", accent: APP_PALETTE[0].value },
+  { name: "On the app's grounds", note: "In its facets", bg: APP_PALETTE[0].value, dots: true },
+  { name: "Under water", note: "In its facets", bg: WATER_PALETTE[0].value, water: true },
+  { name: "On a light ground", note: "In its facets, the name in Canvas", bg: "#f3f1ea" },
+  { name: "With one ink", note: "One shape, the colour of the name", bg: "#2b2d33", flat: true },
 ];
 
 const donts = [
   { how: "turned", note: "Don't turn it." },
   { how: "pulled", note: "Don't stretch it." },
-  { how: "pink", note: "Don't give it a colour of your own." },
+  { how: "pink", note: "Don't give it colours of your own." },
   { how: "capital", note: "Don't capitalise the name." },
 ];
 
@@ -171,8 +171,8 @@ const pictureOf = (file: string) => url(`/brand/${file}`);
         <header class="say">
           <h2>The mark</h2>
           <p>
-            Two paths that cross, the way two edges of a graph do. It is the app's icon, and with the name beside it,
-            the logo.
+            A lobster's claw, open: the heavy finger on top, the lighter one under it. It is ten flat facets in tones
+            of the lobster's blue, like the animals further down this page. With the name beside it, it is the logo.
           </p>
         </header>
 
@@ -182,11 +182,11 @@ const pictureOf = (file: string) => url(`/brand/${file}`);
               <li>
                 <div
                   class:list={["ground", { dots: g.dots, water: g.water }]}
-                  style={`--ground:${g.bg};--accent:${g.accent};color:${inkOn(g.bg)}`}
+                  style={`--ground:${g.bg};color:${inkOn(g.bg)}`}
                 >
-                  <Mark size={88} />
+                  <Mark size={96} flat={g.flat} />
                   <span class="lockup mono">
-                    <Mark size={36} />
+                    <Mark size={28} flat={g.flat} />
                     exuvia
                   </span>
                 </div>
@@ -202,8 +202,8 @@ const pictureOf = (file: string) => url(`/brand/${file}`);
             <div>
               <dt>Colour</dt>
               <dd>
-                Amber on the app's dark grounds. The lobster's blue under water, which is the landing page. One colour,
-                the text's own, anywhere else.
+                Its own ten tones of the lobster's blue, on a dark ground or a light one. Where there is only one ink,
+                it is one shape in the colour of the name.
               </dd>
             </div>
             <div>
@@ -215,10 +215,14 @@ const pictureOf = (file: string) => url(`/brand/${file}`);
               <dd>16 pixels at the smallest, which is the favicon. Below that, use the name alone.</dd>
             </div>
             <div>
+              <dt>Which way up</dt>
+              <dd>The claw opens up and to the right, the wrist at the bottom left. It is never turned or mirrored.</dd>
+            </div>
+            <div>
               <dt>With the name</dt>
               <dd>
                 The mark, then the name in JetBrains Mono Bold, lowercase, tracked a little tight (−0.04em). The mark's
-                box is one and a half times the size of the type.
+                box is a fifth taller than the size of the type.
               </dd>
             </div>
           </dl>
@@ -260,7 +264,7 @@ const pictureOf = (file: string) => url(`/brand/${file}`);
               <li>
                 <a href={pictureOf(`${l.name}.png`)} download>
                   <span class="mono">{l.name}.png</span>
-                  <span>The mark and the name, for a {l.ground} ground</span>
+                  <span>{l.what}</span>
                 </a>
               </li>
             ))
@@ -275,12 +279,13 @@ const pictureOf = (file: string) => url(`/brand/${file}`);
         <header class="say">
           <h2>Colour</h2>
           <p>
-            exuvia is dark, and it wears the app's own skin so that a screenshot looks like part of the page. Three
-            colours mean something, and each has one job. Select a value to copy it.
+            exuvia is dark, and it wears the app's own greys so that a screenshot looks like part of the page. There
+            is one accent, the lobster's blue. Green and amber are states of a node, and appear only where a node is
+            shown. Select a value to copy it.
           </p>
         </header>
 
-        <h3>The colours that mean something</h3>
+        <h3>The accent and the states</h3>
         <ul class="signals">
           {
             SIGNALS.map((s: Swatch) => (
@@ -306,7 +311,7 @@ const pictureOf = (file: string) => url(`/brand/${file}`);
             {
               title: "The water",
               about:
-                "The landing page has the sea behind it and takes its colours from the water: the same roles, with the greys leaned to navy and the lobster's blue as the accent.",
+                "The landing page has the sea behind it and takes its colours from the water: the same roles, with the greys leaned to navy.",
               palette: WATER_PALETTE,
             },
           ].map((group) => (
@@ -676,6 +681,7 @@ const pictureOf = (file: string) => url(`/brand/${file}`);
   }
   .grounds li {
     display: grid;
+    align-content: start;
     gap: 0.15rem;
   }
   .grounds li > span {
@@ -705,7 +711,7 @@ const pictureOf = (file: string) => url(`/brand/${file}`);
   .lockup {
     display: inline-flex;
     align-items: center;
-    gap: 0.7rem;
+    gap: 0.6rem;
     font-size: 1.7rem;
     font-weight: 700;
     line-height: 1;
@@ -766,13 +772,13 @@ const pictureOf = (file: string) => url(`/brand/${file}`);
     opacity: 0.8;
   }
   .dont.turned :global(.mark) {
-    rotate: 35deg;
+    rotate: 150deg;
   }
   .dont.pulled :global(.mark) {
     scale: 1.9 0.8;
   }
-  .dont.pink {
-    --accent: #ff5fa2;
+  .dont.pink :global(.mark) {
+    filter: hue-rotate(115deg) saturate(1.3);
   }
   .files {
     display: grid;

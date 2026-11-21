@@ -21,12 +21,14 @@ export const CARD = { width: 1200, height: 630 };
 /**
  * The mark beside the name, as a see-through PNG in `public/brand/`: the one
  * piece of the brand that cannot be a plain SVG, because the name is set in
- * a typeface. `ink` is the name's colour and `mark` the mark's.
+ * a typeface. `ink` is the name's colour; with `flat` the mark is that
+ * colour too, for a place with one ink.
  */
-export type Lockup = { name: string; ground: "dark" | "light"; ink: string; mark: string };
+export type Lockup = { name: string; what: string; ink: string; flat?: boolean };
 export const LOCKUPS: Lockup[] = [
-  { name: "exuvia-lockup-on-dark", ground: "dark", ink: "#e9e7e1", mark: "#f2b84b" },
-  { name: "exuvia-lockup-on-light", ground: "light", ink: "#111214", mark: "#111214" },
+  { name: "exuvia-lockup-on-dark", what: "The mark and the name, for a dark ground", ink: "#e9e7e1" },
+  { name: "exuvia-lockup-on-light", what: "The mark and the name, for a light ground", ink: "#111214" },
+  { name: "exuvia-lockup-one-colour", what: "The mark and the name in one ink", ink: "#111214", flat: true },
 ];
 
 export type Card = {
@@ -98,7 +100,7 @@ export async function getCards(): Promise<Card[]> {
       title: "The exuvia brand",
       summary: "The name, the mark, the colours, the type and the animals.",
       animal: "Homarus",
-      alt: "The exuvia brand: the mark, two paths that cross, beside the colours of the site.",
+      alt: "The exuvia brand: the mark, a low-poly lobster's claw, above the colours of the site.",
     },
   ];
 }

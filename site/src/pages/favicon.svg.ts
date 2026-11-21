@@ -1,4 +1,4 @@
-// The favicon: the app icon, drawn from the mark in src/lib/brand.ts.
+// The favicon: the mark, drawn from src/lib/brand.ts.
 import type { APIRoute } from "astro";
 import { icon } from "../lib/brand";
 

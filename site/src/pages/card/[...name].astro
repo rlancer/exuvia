@@ -48,11 +48,11 @@ const swatches = [...SIGNALS, ...APP_PALETTE.filter((s) => ["--text", "--muted",
     <title>{card ? `Card: ${card.name}` : lockup ? `Lockup: ${lockup.name}` : "Social cards"}</title>
   </head>
 
-  <body class:list={look} style={lockup && `--ink:${lockup.ink};--accent:${lockup.mark}`}>
+  <body class:list={look} style={lockup && `--ink:${lockup.ink}`}>
     {
       lockup && (
         <div class="lockup" data-shot>
-          <Mark size={168} />
+          <Mark size={134} flat={lockup.flat} />
           <span>exuvia</span>
         </div>
       )
@@ -65,7 +65,7 @@ const swatches = [...SIGNALS, ...APP_PALETTE.filter((s) => ["--text", "--muted",
 
         <header>
           <span class="brand">
-            <Mark size={60} />
+            <Mark size={48} />
             <span>exuvia</span>
           </span>
           {card.crumb && <span class="crumb">{card.crumb}</span>}
@@ -106,7 +106,7 @@ const swatches = [...SIGNALS, ...APP_PALETTE.filter((s) => ["--text", "--muted",
           {
             card.look === "brand" && (
               <div class="art plate-art">
-                <Mark size={230} />
+                <Mark size={250} />
                 <ul>
                   {swatches.map((s) => (
                     <li style={`background:${s.value}`} />
@@ -182,7 +182,7 @@ const swatches = [...SIGNALS, ...APP_PALETTE.filter((s) => ["--text", "--muted",
   .card .brand {
     display: inline-flex;
     align-items: center;
-    gap: 16px;
+    gap: 15px;
     font-family: var(--mono);
     font-size: 40px;
     font-weight: 700;
@@ -333,7 +333,7 @@ const swatches = [...SIGNALS, ...APP_PALETTE.filter((s) => ["--text", "--muted",
   .lockup {
     display: inline-flex;
     align-items: center;
-    gap: 50px;
+    gap: 42px;
     padding: 30px 40px;
     color: var(--ink);
     font-family: var(--mono);

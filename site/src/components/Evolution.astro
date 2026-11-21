@@ -346,7 +346,7 @@ const caption = (i: number) => `${animals[i].name}, ${animals[i].age}`;
     fill: var(--text);
   }
 
-  /* The third panel is the destination: a darker ground and an amber edge. */
+  /* The third panel is the destination: a darker ground and an edge in the accent. */
   .now svg {
     border-color: var(--accent);
     background: var(--bg-deep);
@@ -367,12 +367,12 @@ const caption = (i: number) => `${animals[i].name}, ${animals[i].age}`;
   }
   .clock circle {
     fill: var(--bg-deep);
-    stroke: var(--stale);
+    stroke: var(--accent);
     stroke-width: 1.5;
   }
   .clock path {
     fill: none;
-    stroke: var(--stale);
+    stroke: var(--accent);
     stroke-width: 1.5;
     stroke-linecap: round;
     stroke-linejoin: round;

@@ -9,20 +9,48 @@ import path from "node:path";
 import { STAGES } from "./poly";
 import { polySvg } from "./polysvg";
 
-/** The mark: two paths that cross, on a 32 x 32 grid. Drawn by components/Mark.astro. */
+/**
+ * The mark: a lobster's claw, open, on a 32 x 32 grid. It is ten flat
+ * facets, like the animals of src/lib/poly.ts, each in a tone of the
+ * lobster's blue: the heavy finger on top catches the light, the underside
+ * is in shadow. `outline` is the same claw as one shape, for one colour.
+ * Drawn by components/Mark.astro.
+ */
 export const MARK = {
   box: 32,
-  path: "M7 9c8 0 10 14 18 14M7 23c8 0 10-14 18-14",
-  stroke: 3,
+  facets: [
+    ["M3 18L8 9l8 6z", "#6f9bff"],
+    ["M3 18l13-3L5 28z", "#4f76d6"],
+    ["M5 28l11-13-6 15z", "#2f4a9a"],
+    ["M8 9l10-6-2 12z", "#94b5ff"],
+    ["M18 3l9-1-6 7z", "#c9d8ff"],
+    ["M18 3l3 6-5 6z", "#7fa6ff"],
+    ["M16 15l8-1-7 11z", "#4f76d6"],
+    ["M24 14l6-4-5 10z", "#7fa6ff"],
+    ["M24 14l1 6-8 5z", "#3a5bb4"],
+    ["M16 15l1 10-7 5z", "#263d82"],
+  ],
+  outline: "M5 28L3 18 8 9l10-6 9-1-6 7-5 6 8-1 6-4-5 10-8 5-7 5z",
 };
 
-/** The mark as a file of its own, in one colour. `tile` puts it on a rounded square, as the favicon has it. */
-export function markSvg(colour: string, tile?: string): string {
-  const cap = tile ? "round" : "square";
+/**
+ * What goes inside the mark's `<svg>`: its facets, or with `flat` the one
+ * shape in that colour. Each facet is stroked in its own tone, so no seam
+ * shows between two.
+ */
+export function markBody(flat?: string): string {
+  if (flat) return `<path d="${MARK.outline}" fill="${flat}"/>`;
+  const facets = MARK.facets.map(([d, tone]) => `<path d="${d}" fill="${tone}" stroke="${tone}"/>`).join("");
+  return `<g stroke-width="0.6" stroke-linejoin="round">${facets}</g>`;
+}
+
+/** The mark as a file of its own: in its facets, or `flat` in one colour. `tile` puts it on a rounded square. */
+export function markSvg({ flat, tile }: { flat?: string; tile?: string } = {}): string {
+  const body = tile ? `<g transform="translate(5 5) scale(0.6875)">${markBody(flat)}</g>` : markBody(flat);
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${MARK.box} ${MARK.box}">` +
     (tile ? `<rect width="${MARK.box}" height="${MARK.box}" rx="7" fill="${tile}"/>` : "") +
-    `<path d="${MARK.path}" stroke="${colour}" stroke-width="${MARK.stroke}" fill="none" stroke-linecap="${cap}"/></svg>`
+    `${body}</svg>`
   );
 }
 
@@ -62,14 +90,14 @@ export const APP_PALETTE = swatches(APP, [
   ["--faint", "Faint", "Labels and small print."],
 ]);
 
-/** The colours that mean something. Each has one job, the same one it has in the app. */
+/** The colours that mean something: the one accent, and the two states of a node that the site also shows. */
 export const SIGNALS = swatches(APP, [
-  ["--accent", "Amber", "The mark, and the one thing to do next. In the app, also a node that needs a run."],
+  ["--accent", "Lobster blue", "The accent: the lobster, the mark, links and the one thing to do next. In the app, a node at work."],
   ["--fresh", "Green", "A node whose output is up to date."],
-  ["--running", "Blue", "A node at work, and the lobster."],
+  ["--stale", "Amber", "A node that needs a run. It is a state, and is never used as decoration."],
 ]);
 
-/** The landing page's palette: the same roles, with the greys leaned to navy and the lobster's blue as the accent. */
+/** The landing page's palette: the same roles, with the greys leaned to navy. */
 export const WATER_PALETTE = swatches(WATER, [
   ["--bg", "Water", "The ground of the landing page, under the sea drawn on it."],
   ["--bg-deep", "Deep water", "Code, and the bands that set a section apart."],
@@ -79,7 +107,7 @@ export const WATER_PALETTE = swatches(WATER, [
   ["--line-strong", "Strong line", "Borders of controls."],
   ["--text", "Text", "Body text and headings."],
   ["--muted", "Muted", "Paragraphs of second rank."],
-  ["--accent", "Lobster blue", "The accent on the landing page: the mark, links and the one thing to do next."],
+  ["--accent", "Lobster blue", "The accent, as everywhere."],
   ["--accent-hover", "Light blue", "The accent when it is pointed at."],
 ]);
 
@@ -89,7 +117,7 @@ export const LOBSTER = { ink: APP["--running"], shade: "#1c2c5e" };
 /** Black or white, whichever reads on `hex`. */
 export function inkOn(hex: string): string {
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.4 ? "#111214" : "#e9e7e1";
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.3 ? "#111214" : "#e9e7e1";
 }
 
 // ---- the files the brand page offers ------------------------------------------
@@ -99,18 +127,18 @@ const TILE = "#14161a";
 
 export type BrandFile = { file: string; what: string; svg: string };
 
-/** The mark in each colour it is used in. Served from /brand/ (pages/brand/[file].svg.ts). */
+/** The mark in each form it is used in. Served from /brand/ (pages/brand/[file].svg.ts). */
 export const MARK_FILES: BrandFile[] = [
-  { file: "exuvia-mark-amber.svg", what: "Amber, for the app's dark grounds", svg: markSvg(APP["--accent"]) },
-  { file: "exuvia-mark-blue.svg", what: "Lobster blue, for the water", svg: markSvg(WATER["--accent"]) },
-  { file: "exuvia-mark-light.svg", what: "One colour, for any other dark ground", svg: markSvg(APP["--text"]) },
-  { file: "exuvia-mark-ink.svg", what: "One colour, for a light ground", svg: markSvg(APP["--bg"]) },
-  { file: "exuvia-icon.svg", what: "The app icon: the mark on its tile", svg: icon() },
+  { file: "exuvia-mark.svg", what: "The mark in its facets, for any ground", svg: markSvg() },
+  { file: "exuvia-mark-blue.svg", what: "One colour: the lobster's blue", svg: markSvg({ flat: APP["--running"] }) },
+  { file: "exuvia-mark-light.svg", what: "One colour, for a dark ground", svg: markSvg({ flat: APP["--text"] }) },
+  { file: "exuvia-mark-ink.svg", what: "One colour, for a light ground", svg: markSvg({ flat: APP["--bg"] }) },
+  { file: "exuvia-icon.svg", what: "An icon: the mark on a dark tile", svg: markSvg({ tile: TILE }) },
 ];
 
-/** The app icon, which is also the site's favicon (pages/favicon.svg.ts). */
+/** The site's favicon (pages/favicon.svg.ts): the mark on nothing, so it sits on a light tab bar or a dark one. */
 export function icon(): string {
-  return markSvg(APP["--accent"], TILE);
+  return markSvg();
 }
 
 /** The five animals as pictures: the lobster lit, the four before it as the shells they left. */
