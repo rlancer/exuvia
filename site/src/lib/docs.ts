@@ -53,6 +53,12 @@ const PAGES: PageSpec[] = [
     summary: "Python and SQL node files, how dependencies are read, and shared helpers.",
   },
   {
+    slug: "packages",
+    group: "Build",
+    source: { heading: "Packages" },
+    summary: "The packages nodes import, listed in the project's pyproject.toml, private package indexes included.",
+  },
+  {
     slug: "run-parameters",
     group: "Build",
     source: { heading: "Run parameters and replays" },

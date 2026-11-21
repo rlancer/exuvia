@@ -207,6 +207,14 @@ def execute(spec: dict[str, Any]) -> dict[str, Any]:
 
     root = Path(spec["root"])
     os.chdir(root)
+    if spec.get("site"):
+        # The packages the project declares in its pyproject.toml (see
+        # packages.py). Appended, so exuvia's own packages, already imported
+        # by a warm runner, stay the ones in use; addsitedir also reads the
+        # .pth files some packages install.
+        import site
+
+        site.addsitedir(spec["site"])
     params = spec.get("params") or {}
     exuvia._runtime = {"node": spec["node"], "params": params}  # what exuvia.param() reads
     inputs = {dep: load_artifact(i.get("path"), i.get("kind")) for dep, i in spec["inputs"].items()}

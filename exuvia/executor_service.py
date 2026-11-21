@@ -51,7 +51,7 @@ def create_executor_app() -> FastAPI:
     bundles, runs = base / "bundles", base / "runs"
     bundles.mkdir(parents=True, exist_ok=True)
     runs.mkdir(parents=True, exist_ok=True)
-    local = LocalExecutor(base, workers)
+    local = LocalExecutor(base, workers, packages_dir=base / "packages")
     slots = asyncio.Semaphore(workers)
     results: dict[str, dict[str, Any]] = {}
 

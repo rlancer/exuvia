@@ -79,14 +79,15 @@ exuvia needs Python 3.11 or newer; uv downloads one when yours is older.
 The example project in this repo opens the same way, from a clone:
 `uvx exuvia serve examples/markets`.
 
-**Packages your nodes import.** A node runs in the Python environment exuvia
-is installed in, so that is where its packages go:
+**Packages your nodes import** go in the project's own `pyproject.toml`,
+which `exuvia init` writes. Add one with uv in the project folder, and exuvia
+installs it before the next run:
 
 ```bash
-uvx --with scipy --with yfinance exuvia serve my-research   # uvx
-uv tool install exuvia --with scipy --with yfinance         # uv tool
-pipx inject exuvia scipy yfinance                           # pipx
+cd my-research && uv add scipy yfinance
 ```
+
+[Packages](#packages) has the details, private package indexes among them.
 
 Set `ANTHROPIC_API_KEY` (Claude) or `OPENROUTER_API_KEY` (DeepSeek and any
 other OpenRouter model) in the environment or the project's `.env` to turn on
@@ -464,6 +465,64 @@ their `__runs`) and is then locked: external access is off except for those
 exact output files, extensions cannot load, and the configuration cannot be
 changed back, so the SQL cannot `read_parquet` another node's file, `COPY`
 out, `ATTACH` a file or `INSTALL` anything.
+
+## Packages
+
+A project lists the packages its nodes import, beyond those exuvia comes
+with, in the standard place: `[project] dependencies` in the project's
+`pyproject.toml`. `exuvia init` writes one, and `uv add <package>` in the
+project folder adds to it (as does editing the list by hand):
+
+```toml
+[project]
+name = "my-research"
+version = "0"
+requires-python = ">=3.11"
+dependencies = ["scipy>=1.14", "yfinance"]
+```
+
+Before a node runs, exuvia installs what the file lists, with uv, into
+`.exuvia/packages/` and puts it on the node's import path. The install is
+reused until the file (or exuvia's own environment) changes, so only the
+first run after an edit waits for it, and its output is in that run's log.
+The packages travel with the project, which is why this works the same
+everywhere a project goes: `uvx`, `uv tool` or `pipx` on a laptop, every
+project in a [hub](#hub-many-projects-from-one-process) with its own list,
+and a remote executor, which installs from the `pyproject.toml` in the
+project bundle it receives.
+
+**They sit on top of exuvia's own packages.** Nodes keep using the pandas,
+pyarrow and DuckDB that exuvia runs with, so the project's list is resolved
+against those versions. A project that needs, say, `pandas<2` fails its run
+with uv's explanation. Packages exuvia already has are not installed again.
+exuvia does not read `uv.lock`: the versions come from the resolution, within
+the bounds in `dependencies`.
+
+**Private package indexes.** uv runs in the project folder, so the uv
+settings in its `pyproject.toml` apply. A package index of your own is an
+`[[tool.uv.index]]`, and `[tool.uv.sources]` says which packages come from
+it (`uv add --index internal=https://pypi.example.com/simple acme-models`
+writes both):
+
+```toml
+[[tool.uv.index]]
+name = "internal"
+url = "https://pypi.example.com/simple"
+explicit = true   # only the packages in tool.uv.sources come from it
+
+[tool.uv.sources]
+acme-models = { index = "internal" }
+```
+
+The index's credentials stay out of the file: uv reads them from
+`UV_INDEX_INTERNAL_USERNAME` and `UV_INDEX_INTERNAL_PASSWORD` (the index name
+in capitals). Set them where exuvia runs, or in the project's `.env`. A remote
+executor installs the packages itself, so it needs them in its own
+environment. uv's own config file (`~/.config/uv/uv.toml`) works as well.
+
+Packages that need system libraries, or hosts with no route to a package
+index, are better served by an image with the packages built in: see
+[Packages your nodes import](#packages-your-nodes-import) under Deploying.
 
 ## Execution model
 
@@ -860,8 +919,11 @@ EXUVIA_EXECUTOR_TOKEN=change-me exuvia serve my-research --executor http://local
 
 ### Packages your nodes import
 
-Nodes run in the image's Python environment, so their packages go into the
-image. Put this in a `Dockerfile` of your own:
+A project's `pyproject.toml` works in a container too (see
+[Packages](#packages)): the container installs what it lists before the
+first run that needs it. To build the packages into the image instead, for
+system libraries or a host with no route to a package index, put this in a
+`Dockerfile` of your own:
 
 ```dockerfile
 FROM ghcr.io/rlancer/exuvia:0.3

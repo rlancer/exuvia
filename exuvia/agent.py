@@ -326,7 +326,15 @@ VIEW_TOOLS = {
 }
 
 
-def _available_packages() -> str:
+def _available_packages(root: Path | None = None) -> str:
+    """The data packages exuvia's environment has, plus the ones the project
+    declares in its pyproject.toml (installed before a node runs)."""
+    from .packages import PackagesError, declared
+
+    try:
+        extra = declared(root) if root else []
+    except PackagesError:
+        extra = []
     wanted = [
         "pandas", "numpy", "duckdb", "pyarrow", "polars", "scipy", "statsmodels",
         "scikit-learn", "requests", "httpx", "yfinance", "matplotlib",
@@ -337,7 +345,10 @@ def _available_packages() -> str:
             have.append(f"{pkg} {metadata.version(pkg)}")
         except metadata.PackageNotFoundError:
             pass
-    return ", ".join(have)
+    out = ", ".join(have)
+    if extra:
+        out += "; and from the project's pyproject.toml: " + ", ".join(extra)
+    return out
 
 
 SYSTEM = """You are the agent inside exuvia, a DAG workbench for analysts and data scientists. You build and maintain data pipelines by editing node files and running them.
@@ -370,7 +381,7 @@ def rolling_vol(returns):
 - Prefer small, single-purpose nodes with clear names over one big node. Reuse existing nodes as inputs instead of recomputing.
 - After writing a node, run it. If it fails, read the error, fix it, and re-run. Do not hand back a node you have not seen succeed unless the user asked you not to run it.
 - Add a `chart` when a node's output is naturally visual (time series, distributions, rankings).
-- Imports go inside the function or at module top; available packages: {packages}. Do not pip install.
+- Imports go inside the function or at module top; available packages: {packages}. Do not pip install. A package that is not listed goes in the project's `pyproject.toml` under `[project] dependencies` (`uv add <package>` in the project folder), and exuvia installs it before the next run. The exuvia tools cannot edit that file: without another way to, ask the user to add it.
 - Only delete or rename nodes when asked. Keep edits minimal when changing an existing node.
 - Finish with a short summary of what you changed and what the data shows — a few sentences, not a report. Describe findings factually; you are a research tool and do not give investment advice.
 
@@ -690,7 +701,7 @@ class Agent:
             params = "This project declares none yet."
         notes = ws.project.instructions()
         return (
-            SYSTEM.replace("{packages}", _available_packages())
+            SYSTEM.replace("{packages}", _available_packages(ws.project.root))
             .replace("{params}", params)
             .replace("{notes}", f"\n\n## Project notes\n{notes}" if notes else "")
         )

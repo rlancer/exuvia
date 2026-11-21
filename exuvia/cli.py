@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -87,6 +88,22 @@ def _cli_params(pairs: list[str] | None) -> dict[str, str]:
     return out
 
 
+PYPROJECT_TEMPLATE = """\
+[project]
+name = "{name}"
+version = "0"
+requires-python = ">=3.11"
+# Packages the nodes import beyond those exuvia comes with. `uv add scipy`
+# in this folder adds one; exuvia installs them before the next run.
+dependencies = []
+"""
+
+
+def _dist_name(folder: str) -> str:
+    """A valid project name for pyproject.toml from a folder name."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", folder).strip("-._").lower() or "exuvia-project"
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     root = Path(args.dir)
     p = Project(root)
@@ -96,7 +113,10 @@ def cmd_init(args: argparse.Namespace) -> None:
             '"""A first node: returns a tiny table."""\nimport exuvia\n\n\n@exuvia.node()\ndef hello():\n'
             '    import pandas as pd\n\n    return pd.DataFrame({"x": [1, 2, 3], "y": [1, 4, 9]})\n',
         )
-    (root / ".gitignore").write_text(".exuvia/\n.env\n", encoding="utf-8")
+    pyproject = root / "pyproject.toml"
+    if not pyproject.exists():
+        pyproject.write_text(PYPROJECT_TEMPLATE.format(name=_dist_name(p.root.name)), encoding="utf-8")
+    (root / ".gitignore").write_text(".exuvia/\n.env\n.venv/\n", encoding="utf-8")
     print(f"Initialized exuvia project at {p.root}\n  exuvia serve {args.dir}")
 
 

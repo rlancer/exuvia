@@ -25,14 +25,8 @@ uvx exuvia init my-research
 uvx exuvia serve my-research
 ```
 
-Nodes run in the Python environment exuvia is installed in, so the packages
-they import go there too:
-
-```bash
-uv tool install exuvia --with scipy          # uv tool
-pipx inject exuvia scipy                     # pipx
-uvx --with scipy exuvia serve my-research    # uvx
-```
+The packages your nodes import go in the project's own `pyproject.toml`
+(see [Create a project](#create-a-project)), not into exuvia's install.
 
 Would you rather have your coding agent do all of this?
 [Set up with your agent](#set-up-with-your-agent) has a prompt to paste into
@@ -53,8 +47,21 @@ my-research/
     hello.py      the first node
   lib/            shared Python helpers, imported by nodes
   views/          custom UI over node outputs
-  .gitignore      ignores .exuvia/ and .env
+  pyproject.toml  the packages the nodes import
+  .gitignore      ignores .exuvia/, .env and .venv/
 ```
+
+`pyproject.toml` lists the packages your nodes import beyond those exuvia
+comes with, under `[project] dependencies`. Add one with uv in the project
+folder, and exuvia installs it before the next run:
+
+```bash
+cd my-research && uv add scipy
+```
+
+A package from your team's own index works the same way, with the index in
+`pyproject.toml` and its credentials in the environment: see
+[Packages](#packages).
 
 Open `nodes/hello.py`. A node is a function with the `@exuvia.node()`
 decorator, in a file named after it. This one takes no parameters, so it
