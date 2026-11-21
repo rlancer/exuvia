@@ -214,7 +214,7 @@ def main() -> None:
     p.add_argument("--param", action="append", metavar="NAME=VALUE", help="status for this parameter set")
     p.set_defaults(fn=cmd_status)
 
-    p = sub.add_parser("mcp", help="serve a project's agent tools to MCP clients over stdio (needs exuvia[mcp])")
+    p = sub.add_parser("mcp", help="serve a project's agent tools to MCP clients over stdio")
     p.add_argument("dir", nargs="?", help="project to open in this process (default: .)")
     p.add_argument("--url", metavar="URL",
                    help="relay to a running `exuvia serve` (its address) or hub project (<hub>/p/<project>) instead; "

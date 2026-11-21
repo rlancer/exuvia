@@ -15,10 +15,10 @@ Two ways to reach a project:
   its address) or a hub project (``URL`` is ``<hub>/p/<project>``) through
   ``POST /api/tools/{name}``. The server stays the only process that owns the
   project, so its UI shows every change as it happens. ``EXUVIA_API_TOKEN`` is
-  sent as a bearer token when set.
+  sent as a bearer token when set. If nothing answers at ``URL``, the relay
+  starts anyway and each tool call says how to start the workbench.
 
-Changes and runs are recorded with the origin ``mcp``. Needs the ``mcp``
-extra: ``pip install "exuvia[mcp]"``.
+Changes and runs are recorded with the origin ``mcp``.
 """
 
 from __future__ import annotations
@@ -91,16 +91,37 @@ class RemoteBackend:
         self._guide: dict[str, Any] | None = None
 
     async def start(self) -> None:
+        """Load the guide. A workbench that is not running is not fatal: the
+        relay starts anyway, with this package's own tool list, and every
+        call says how to start the workbench until one answers. A server
+        that answers wrongly (an HTTP error, an old exuvia) is fatal."""
         import httpx
 
         try:
             await self._load_guide()
         except httpx.HTTPError as e:
-            await self.http.aclose()
-            raise RuntimeError(f"could not reach exuvia at {self.api}: {type(e).__name__}: {e}") from e
+            print(f"exuvia mcp: {self.offline_message(e)}", file=sys.stderr)
         except RuntimeError:
             await self.http.aclose()
             raise
+
+    def offline_message(self, e: Exception) -> str:
+        from urllib.parse import urlsplit
+
+        base = self.api.removesuffix("/api")
+        url = urlsplit(base)
+        if url.path.strip("/"):  # a hub project: there is no one command to give
+            how = "Ask the user to start that exuvia server"
+        else:
+            port = f" --port {url.port}" if url.port else ""
+            how = (
+                f"Start it in the background with `exuvia serve <project folder>{port}` "
+                "(or `uvx exuvia serve ...`), or ask the user to"
+            )
+        return (
+            f"could not reach exuvia at {base} ({type(e).__name__}): the workbench this MCP server "
+            f"relays to is not running. {how}, then call the tool again."
+        )
 
     async def stop(self) -> None:
         await self.http.aclose()
@@ -116,10 +137,24 @@ class RemoteBackend:
         return guide
 
     async def instructions(self) -> str:
-        return (await self._load_guide())["instructions"]
+        import httpx
+
+        try:
+            return (await self._load_guide())["instructions"]
+        except httpx.HTTPError as e:
+            return self.offline_message(e)
 
     async def tools(self) -> list[dict[str, Any]]:
-        return (self._guide or await self._load_guide())["tools"]
+        import httpx
+
+        if self._guide:
+            return self._guide["tools"]
+        try:
+            return (await self._load_guide())["tools"]
+        except httpx.HTTPError:
+            from .agent import TOOLS  # the same tools, from this install
+
+            return TOOLS
 
     async def call(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
         import httpx
@@ -127,7 +162,7 @@ class RemoteBackend:
         try:
             r = await self.http.post(f"{self.api}/tools/{name}", json=args)
         except httpx.HTTPError as e:
-            return False, f"could not reach exuvia at {self.api}: {type(e).__name__}: {e}"
+            return False, self.offline_message(e)
         if r.status_code != 200:
             return False, f"HTTP {r.status_code}: {r.text[:2000]}"
         body = r.json()
@@ -168,7 +203,7 @@ async def serve_stdio(backend: LocalBackend | RemoteBackend) -> None:
 
     remote = isinstance(backend, RemoteBackend)
     if remote:
-        await backend.start()  # an unreachable server fails here, with a plain message
+        await backend.start()  # a server that answers wrongly fails here, with a plain message
     # Inside stdio_server, stray prints (the workspace's, a node's) land on
     # stderr instead of corrupting the protocol on stdout.
     async with stdio_server() as (read, write):
@@ -187,7 +222,7 @@ def main(directory: str | None, url: str | None) -> None:
     try:
         import mcp  # noqa: F401
     except ImportError:
-        sys.exit('exuvia mcp needs the MCP SDK: pip install "exuvia[mcp]" (or uvx --from "exuvia[mcp]" exuvia mcp ...)')
+        sys.exit("exuvia mcp needs the MCP SDK, which exuvia installs: reinstall exuvia (pip install -U exuvia)")
 
     if url:
         if directory:
