@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { api, apiUrl, HUB_PROJECT, type Project } from "./api";
+import { api, apiUrl, HUB_PROJECT, type PackagesState, type Project } from "./api";
 import { Canvas } from "./Canvas";
 import { Inspector, Overview } from "./Inspector";
 import { AgentPanel, type AgentHandle } from "./AgentPanel";
 import { NewNodeDialog } from "./NewNodeDialog";
+import { PackagesDialog } from "./PackagesDialog";
 import { Views } from "./Views";
 import { SignedInAs } from "./Me";
 import { useTheme } from "./theme";
@@ -30,6 +31,11 @@ export default function App() {
   }, []);
   const [dark, toggleTheme] = useTheme();
   const agent = useRef<AgentHandle>(null);
+  const [pkgs, setPkgs] = useState<PackagesState | null>(null);
+  const [pkgOpen, setPkgOpen] = useState(false);
+  // Nodes to re-run once the packages installed for them are ready.
+  const [rerun, setRerun] = useState<string[]>([]);
+  const refreshPkgs = useCallback(() => api.packages().then(setPkgs).catch(() => {}), []);
 
   const refresh = useCallback(() => api.project().then(setProject).catch(() => {}), []);
   const pending = useRef<number | null>(null);
@@ -51,13 +57,31 @@ export default function App() {
       const e = JSON.parse(m.data);
       if (e.type === "graph" || e.type === "run" || e.type === "hello") refreshSoon();
       if (e.type === "log") setLogs((l) => ({ ...l, [e.run_id]: (l[e.run_id] ?? "") + e.text }));
+      if (e.type === "packages" || e.type === "hello") refreshPkgs();
     };
     const tick = setInterval(refreshSoon, 30_000); // keeps "next run in…" honest
     return () => {
       es.close();
       clearInterval(tick);
     };
-  }, [refresh, refreshSoon]);
+  }, [refresh, refreshSoon, refreshPkgs]);
+
+  useEffect(() => {
+    if (!rerun.length || !pkgs) return;
+    if (pkgs.status === "ready" || pkgs.status === "remote") {
+      rerun.forEach((name) => api.run(name).catch(() => {}));
+      setRerun([]);
+    } else if (pkgs.status === "failed") {
+      setRerun([]);
+      setPkgOpen(true);
+    }
+  }, [pkgs, rerun]);
+
+  /** The Install button on a node that failed importing a missing package. */
+  const installFor = async (node: string, pkg: string) => {
+    setPkgs(await api.packagesEdit({ add: [pkg] }));
+    setRerun((r) => (r.includes(node) ? r : [...r, node]));
+  };
 
   const nodes = useMemo(() => project?.nodes ?? [], [project]);
   const sel = nodes.find((n) => n.name === selected) ?? null;
@@ -117,6 +141,16 @@ export default function App() {
           ▶ Run stale{staleCount ? ` (${staleCount})` : ""}
         </button>
         <button className="btn" onClick={() => setNewOpen(true)}>+ Node</button>
+        <button
+          className={`btn pk-btn pk-${pkgs?.status ?? "none"}`}
+          onClick={() => setPkgOpen(true)}
+          title={pkgs?.requests.length ? "The agent is waiting for you to approve packages" : "The packages your nodes import"}
+        >
+          Packages
+          {pkgs?.requests.length ? <span className="pk-badge">{pkgs.requests.length}</span> : null}
+          {pkgs?.status === "installing" || pkgs?.status === "pending" ? <span className="pk-spin" /> : null}
+          {pkgs?.status === "failed" ? <span className="pk-bang">!</span> : null}
+        </button>
         <SignedInAs />
         <button className="btn ghost icon-btn" onClick={toggleTheme} title="Toggle theme">{dark ? "☀" : "☾"}</button>
       </header>
@@ -162,6 +196,8 @@ export default function App() {
                   aiEnabled={aiOn}
                   onAskAI={askAI}
                   onDeleted={() => setSelected(null)}
+                  onInstall={(pkg) => installFor(sel.name, pkg)}
+                  installing={rerun.includes(sel.name)}
                 />
               ) : (
                 <Overview nodes={nodes} onSelect={setSelected} />
@@ -187,6 +223,8 @@ export default function App() {
           </div>
         )}
       </div>
+
+      {pkgOpen && <PackagesDialog state={pkgs} onChange={setPkgs} onClose={() => setPkgOpen(false)} />}
 
       {newOpen && (
         <NewNodeDialog

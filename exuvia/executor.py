@@ -91,6 +91,9 @@ class LocalExecutor:
         ``.exuvia/packages``."""
         self.pool = WarmPool(cwd, size=workers)
         self.packages_dir = packages_dir
+        # A workspace's live view of its project's packages (set by
+        # Workspace): installs through it show up in the workbench.
+        self.packages: packages.Packages | None = None
         self._procs: dict[str, Any] = {}
         self._cancelled: set[str] = set()
 
@@ -104,12 +107,15 @@ class LocalExecutor:
 
     def execute(self, req: ExecRequest, on_log: LogFn) -> ExecResult:
         try:
-            site = packages.ensure(
-                req.root,
-                self.packages_dir or req.root / ".exuvia" / "packages",
-                on_log,
-                prune=self.packages_dir is None,
-            )
+            if self.packages is not None:
+                site = self.packages.ensure_for_run(on_log)
+            else:
+                site = packages.ensure(
+                    req.root,
+                    self.packages_dir or req.root / ".exuvia" / "packages",
+                    on_log,
+                    prune=self.packages_dir is None,
+                )
         except packages.PackagesError as e:
             on_log(f"{e}\n")
             return ExecResult(ok=False, error=f"the packages in {packages.PYPROJECT} could not be installed: {_summary(str(e))}")

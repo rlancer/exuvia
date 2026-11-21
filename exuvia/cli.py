@@ -39,6 +39,11 @@ SECRET_ENV = (
 )
 
 
+# UV_INDEX_<NAME>_USERNAME / _PASSWORD: a package index's credentials, which
+# uv reads when it installs a project's packages. Their _FILE forms work too.
+INDEX_SECRET = re.compile(r"^UV_INDEX_[A-Z0-9_]+_(USERNAME|PASSWORD)_FILE$")
+
+
 def load_secret_files(environ: dict[str, str] | None = None) -> None:
     """Set each ``SECRET_ENV`` name whose ``<NAME>_FILE`` is set from that
     file's contents (surrounding whitespace dropped; ``~`` in the path is the
@@ -47,7 +52,9 @@ def load_secret_files(environ: dict[str, str] | None = None) -> None:
     import os
 
     env = os.environ if environ is None else environ
-    for name in SECRET_ENV:
+    # Package index credentials for uv (packages.py), whatever the index is called.
+    index = sorted({k[: -len("_FILE")] for k in env if INDEX_SECRET.match(k)})
+    for name in (*SECRET_ENV, *index):
         path = env.get(f"{name}_FILE")
         if not path:
             continue
@@ -88,22 +95,6 @@ def _cli_params(pairs: list[str] | None) -> dict[str, str]:
     return out
 
 
-PYPROJECT_TEMPLATE = """\
-[project]
-name = "{name}"
-version = "0"
-requires-python = ">=3.11"
-# Packages the nodes import beyond those exuvia comes with. `uv add scipy`
-# in this folder adds one; exuvia installs them before the next run.
-dependencies = []
-"""
-
-
-def _dist_name(folder: str) -> str:
-    """A valid project name for pyproject.toml from a folder name."""
-    return re.sub(r"[^A-Za-z0-9._-]+", "-", folder).strip("-._").lower() or "exuvia-project"
-
-
 def cmd_init(args: argparse.Namespace) -> None:
     root = Path(args.dir)
     p = Project(root)
@@ -115,7 +106,9 @@ def cmd_init(args: argparse.Namespace) -> None:
         )
     pyproject = root / "pyproject.toml"
     if not pyproject.exists():
-        pyproject.write_text(PYPROJECT_TEMPLATE.format(name=_dist_name(p.root.name)), encoding="utf-8")
+        from .packages import PYPROJECT_TEMPLATE, dist_name
+
+        pyproject.write_text(PYPROJECT_TEMPLATE.format(name=dist_name(p.root.name)), encoding="utf-8")
     (root / ".gitignore").write_text(".exuvia/\n.env\n.venv/\n", encoding="utf-8")
     print(f"Initialized exuvia project at {p.root}\n  exuvia serve {args.dir}")
 

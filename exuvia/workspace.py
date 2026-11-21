@@ -48,8 +48,9 @@ from . import auth
 from .arrowstream import ArrowStream
 from .artifacts import artifact_key, artifact_store
 from .events import EventBus
-from .executor import ExecRequest, make_executor
+from .executor import ExecRequest, LocalExecutor, make_executor
 from .notify import failure_webhook, payload, send
+from .packages import Packages, missing_package
 from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Project, View, _hash, _validate_cron
 from .store import CodeChange, clean_origin, open_store
 
@@ -61,7 +62,7 @@ SCHEDULER = os.environ.get("EXUVIA_SCHEDULER", "internal")
 HISTORY_VIEW_LIMIT = 400  # parameter sets unioned into a `<node>__runs` view
 _ALL_ROWS = 2**62  # the limit of an offset-only read
 # Project files besides nodes/ whose versions are kept as code revisions.
-VERSIONED_FILES = ("exuvia.json", "AGENTS.md")
+VERSIONED_FILES = ("exuvia.json", "AGENTS.md", "pyproject.toml")
 
 # Who is changing the code right now (the agent, an API caller, ...). Code
 # revisions record it; a change nobody claimed came from editing the files.
@@ -106,6 +107,12 @@ class Workspace:
         self._stop_watching: asyncio.Event | None = None
         self._backfill: dict[str, Any] | None = None
         self.executor = make_executor(self.project.root, MAX_PARALLEL)
+        # The packages the project lists in its pyproject.toml (packages.py).
+        local = isinstance(self.executor, LocalExecutor)
+        self.packages = Packages(self.project.root, publish=self.bus.publish, local=local)
+        if local:
+            self.executor.packages = self.packages
+        self.packages.on_edit = self.reload  # records pyproject.toml as a revision
         # Where this project's API is mounted: "/api" alone, "/p/<id>/api" in a
         # hub (set by Hub.get). Used for the run link in failure webhooks.
         self.api_prefix = "/api"
@@ -114,6 +121,7 @@ class Workspace:
     async def start(self) -> None:
         self.bus.bind(asyncio.get_running_loop())
         self.executor.start()
+        self.packages.prebuild()  # install a changed list now, not at the next run
         # Fresh contexts: a change the watcher sees was made by editing files,
         # and a scheduled run was started by the clock, not by whichever
         # request (and signed-in person) happened to load the project.
@@ -414,6 +422,9 @@ class Workspace:
                 "schedule": sched,
                 "run_params": own,
                 "params_key": key,
+                # A run that failed importing something not installed: the
+                # package to offer to install (see packages.missing_package).
+                "missing_package": missing_package(reason) if state == "failed" else None,
             }
         return out
 

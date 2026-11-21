@@ -16,8 +16,12 @@ export function Inspector(props: {
   onDeleted: () => void;
   onAskAI: (prompt: string) => void;
   aiEnabled: boolean;
+  /** Add a package to the project and re-run this node once it is installed. */
+  onInstall: (pkg: string) => Promise<void>;
+  /** An install started from this node is under way. */
+  installing: boolean;
 }) {
-  const { node, logs, dark, onDeleted, onAskAI, aiEnabled } = props;
+  const { node, logs, dark, onDeleted, onAskAI, aiEnabled, onInstall, installing } = props;
   const [tab, setTab] = useState<Tab>("code");
   const [source, setSource] = useState("");
   const [saved, setSaved] = useState("");
@@ -138,6 +142,16 @@ export function Inspector(props: {
             {(problem || err) && (
               <div className="err-banner">
                 <div>{err || problem}</div>
+                {!err && node.missing_package && (
+                  <button
+                    className="btn sm primary"
+                    disabled={installing}
+                    title={`Add ${node.missing_package.package} to the project's pyproject.toml, install it, and re-run ${node.name}`}
+                    onClick={() => onInstall(node.missing_package!.package).catch((e) => setErr((e as Error).message))}
+                  >
+                    {installing ? "Installing…" : `Install ${node.missing_package.package}`}
+                  </button>
+                )}
                 {aiEnabled && !err && (
                   <button className="btn sm" onClick={() => onAskAI(`Fix \`${node.name}\` — it's failing. Read the error, fix the code, and re-run it.`)}>
                     ✦ Fix with AI

@@ -13,7 +13,6 @@ from pathlib import Path
 import pytest
 
 from exuvia import packages
-from exuvia.cli import _dist_name
 from exuvia.workspace import Workspace
 
 
@@ -155,4 +154,208 @@ def test_init_writes_a_pyproject(tmp_path, monkeypatch, capsys):
     assert 'name = "my-research"' in (root / "pyproject.toml").read_text(encoding="utf-8")
     assert packages.declared(root) == []
     assert ".venv/" in (root / ".gitignore").read_text(encoding="utf-8")
-    assert _dist_name("...") == "exuvia-project"
+    assert packages.dist_name("...") == "exuvia-project"
+
+
+# -- the live manager: edits, requests, pre-building ------------------------------
+def wait_settled(pk: packages.Packages, timeout: float = 60) -> dict:
+    import time
+
+    end = time.time() + timeout
+    while time.time() < end:
+        st = pk.state()
+        if st["status"] not in ("installing", "pending"):
+            return st
+        time.sleep(0.05)
+    raise AssertionError(f"still {st['status']}")
+
+
+def test_add_pins_a_bare_name_and_prebuilds(project):
+    root, index, ws = project
+    pyproject(root, index, [])
+    events = []
+    pk = packages.Packages(root, publish=events.append)
+    st = pk.add(["acme-internal", "pandas"])
+    text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"acme-internal==1.0"' in text  # pinned to the version that resolved
+    assert '"pandas"' in text  # exuvia's own: left to follow exuvia
+    st = wait_settled(pk)  # installed in the background, before any run
+    assert st["status"] == "ready" and st["installed"] == 1
+    rows = {p["name"]: (p["version"], p["source"]) for p in st["packages"]}
+    assert rows["acme-internal"] == ("1.0", "project")
+    assert rows["pandas"][1] == "exuvia"
+    assert {"type": "packages"} in events
+
+
+def test_an_edit_that_does_not_resolve_changes_nothing(project):
+    root, index, ws = project
+    before = (root / "pyproject.toml").read_text(encoding="utf-8")
+    pk = packages.Packages(root)
+    with pytest.raises(packages.PackagesError, match="pandas"):
+        pk.add(["pandas<1"])
+    with pytest.raises(packages.PackagesError, match="not a package requirement"):
+        pk.add(["--index-url=https://evil.example/simple"])
+    with pytest.raises(packages.PackagesError, match="not in pyproject.toml"):
+        pk.remove(["scipy"])
+    assert (root / "pyproject.toml").read_text(encoding="utf-8") == before
+
+
+def test_remove_and_a_project_without_pyproject(tmp_path, monkeypatch):
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    index = tmp_path / "wheels"
+    make_wheel(index, "acme-internal", "1.0", "ANSWER = 42\n")
+    root = tmp_path / "hub-project"
+    root.mkdir()
+    pk = packages.Packages(root)
+    assert pk.state()["status"] == "none" and pk.state()["manifest"] is None
+    # A project with no pyproject.toml (one a hub created) gets one on the first add.
+    with pytest.raises(packages.PackagesError):
+        pk.add(["acme-internal"])  # no index configured: rejected, and no file left behind
+    assert not (root / "pyproject.toml").exists()
+    pyproject(root, index, [])
+    pk.add(["acme-internal"])
+    assert packages.declared(root) == ["acme-internal==1.0"]
+    pk.remove(["acme-internal"])
+    assert packages.declared(root) == []
+
+
+def test_a_failed_list_fails_runs_fast_until_retried(project, monkeypatch):
+    root, index, ws = project
+    pyproject(root, index, ["acme-internal>=9"])  # no such version
+    first = run(ws, ["answer"])["answer"]
+    assert first["status"] == "failed" and "could not be installed" in first["error"]
+    calls = []
+    monkeypatch.setattr(packages, "ensure", lambda *a, **k: calls.append(1))
+    assert run(ws, ["answer"])["answer"]["status"] == "failed"
+    assert calls == []  # the earlier failure, without running uv again
+    assert ws.packages.state()["status"] == "failed"
+    monkeypatch.undo()
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    make_wheel(index, "acme-internal", "9.0", "ANSWER = 9\n")
+    ws.packages.retry()
+    assert wait_settled(ws.packages)["status"] == "ready"
+
+
+def test_agent_requests_wait_for_approval(project, monkeypatch):
+    root, index, ws = project
+    pyproject(root, index, [])
+    pk = packages.Packages(root)
+    res = pk.request(["acme-internal"], "the answer node imports it", origin="agent")
+    assert res["status"] == "requested"
+    assert packages.declared(root) == []  # nothing changes until a person approves
+    [req] = pk.state()["requests"]
+    assert req["packages"] == ["acme-internal"] and req["reason"] == "the answer node imports it"
+    pk.approve(req["id"])
+    assert packages.declared(root) == ["acme-internal==1.0"] and pk.state()["requests"] == []
+    pk.request(["six"], "")
+    pk.dismiss(pk.state()["requests"][0]["id"])
+    assert pk.state()["requests"] == []
+
+    monkeypatch.setenv("EXUVIA_AGENT_PACKAGES", "off")
+    with pytest.raises(packages.PackagesError, match="turned off"):
+        pk.request(["six"], "")
+    monkeypatch.setenv("EXUVIA_AGENT_PACKAGES", "install")
+    pyproject(root, index, [])
+    assert pk.request(["acme-internal"], "")["status"] == "added"
+    assert packages.declared(root) == ["acme-internal==1.0"]
+
+
+def test_agent_tools(project):
+    from exuvia.agent import Agent
+
+    root, index, ws = project
+    pyproject(root, index, [])
+    agent = Agent(ws)
+
+    async def call(name, args):
+        return await agent.call_tool(name, args)
+
+    ok, text, _ = asyncio.run(call("request_packages", {"packages": "acme-internal", "reason": "x"}))
+    assert not ok and "list" in text
+    ok, text, _ = asyncio.run(call("request_packages", {"packages": ["acme-internal"], "reason": "the answer node"}))
+    assert ok and "approves it in the workbench" in text
+    ok, text, _ = asyncio.run(call("list_packages", {}))
+    assert ok and '"requests"' in text and "acme-internal" in text
+    assert "request_packages" in agent.instructions()
+
+
+def test_missing_module_is_offered_as_a_package(project):
+    root, index, ws = project
+    write(root, "nodes/answer.py", '''
+        import exuvia
+
+        @exuvia.node()
+        def answer():
+            import sklearn
+            return None
+    ''')
+    ws.reload()
+    finals = run(ws, ["answer"])
+    assert finals["answer"]["status"] == "failed"
+    [node] = [n for n in ws.snapshot()["nodes"] if n["name"] == "answer"]
+    assert node["missing_package"] == {"module": "sklearn", "package": "scikit-learn"}
+    assert packages.missing_package("No module named 'lib.helpers'") is None  # the project's own code
+    assert packages.missing_package("ValueError: nope") is None
+
+
+def test_packages_api_and_revision(project):
+    from fastapi.testclient import TestClient
+
+    from exuvia.server import create_app
+
+    root, index, ws = project
+    ws.executor.close()
+    pyproject(root, index, [])
+    with TestClient(create_app(root)) as c:
+        assert c.get("/api/packages").json()["status"] == "none"
+        bad = c.post("/api/packages", json={"add": ["pandas<1"]})
+        assert bad.status_code == 400 and "pandas" in bad.json()["detail"]
+        st = c.post("/api/packages", json={"add": ["acme-internal"]}).json()
+        assert st["packages"][0]["requirement"] == "acme-internal==1.0"
+        revs = c.get("/api/code/revisions", params={"path": "pyproject.toml"}).json()
+        assert revs, "pyproject.toml edits are kept as code revisions"
+        assert c.put("/api/packages/manifest", json={"text": "[project\n"}).status_code == 400
+        assert c.post("/api/packages/requests/99/approve").status_code == 404
+        assert c.post("/api/packages", json={"remove": ["acme-internal"]}).json()["packages"] == []
+
+
+def test_hub_export_leaves_installed_packages_out(project):
+    from exuvia.hub import Hub
+
+    root, index, ws = project
+    run(ws, ["answer"])
+    assert installs(root)
+    import tarfile
+
+    hub = Hub(root.parent)
+    with tarfile.open(hub.export()) as tar:
+        names = tar.getnames()
+    assert any(n.endswith("pyproject.toml") for n in names)
+    assert not [n for n in names if "/.exuvia/packages/" in n]
+
+
+def test_index_credentials_from_files(tmp_path):
+    from exuvia.cli import load_secret_files
+
+    secret = tmp_path / "pw"
+    secret.write_text("s3cret\n", encoding="utf-8")
+    env = {"UV_INDEX_INTERNAL_PASSWORD_FILE": str(secret), "UV_INDEX_INTERNAL_URL_FILE": str(secret)}
+    load_secret_files(env)
+    assert env["UV_INDEX_INTERNAL_PASSWORD"] == "s3cret"
+    assert "UV_INDEX_INTERNAL_URL" not in env  # only credentials read files
+
+
+def test_a_server_wide_index_stays_out_of_the_project(project, monkeypatch):
+    """UV_INDEX on the server applies to installs, but `uv add` must not copy
+    it into each project's pyproject.toml."""
+    root, index, ws = project
+    write(root, "pyproject.toml", '[project]\nname = "r"\nversion = "0"\nrequires-python = ">=3.11"\ndependencies = []\n')
+    # The wheel comes from a local folder (UV_FIND_LINKS; uv runs offline), so the
+    # index itself is never reached: only whether it is written down matters.
+    monkeypatch.setenv("UV_FIND_LINKS", str(index))
+    monkeypatch.setenv("UV_INDEX", "internal=https://pypi.invalid/simple")
+    pk = packages.Packages(root)
+    pk.add(["acme-internal"])
+    text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "tool.uv" not in text and "pypi.invalid" not in text
+    assert packages.declared(root) == ["acme-internal==1.0"]

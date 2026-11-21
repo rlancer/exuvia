@@ -45,6 +45,38 @@ export interface GraphNode {
   finished_at: number | null;
   last_run: RunRow | null;
   schedule: { cron: string; paused: boolean; next: number | null } | null;
+  /** The last run failed importing something not installed: the package that likely provides it. */
+  missing_package?: { module: string; package: string } | null;
+}
+
+/** One requirement in the project's pyproject.toml, and what is installed for it. */
+export interface PackageRow {
+  requirement: string;
+  name: string;
+  version: string | null;
+  /** `project`: installed for this project; `exuvia`: comes with exuvia itself. */
+  source: "project" | "exuvia" | null;
+}
+
+/** Packages the agent asked for, waiting for a person to approve them. */
+export interface PackageRequest {
+  id: number;
+  packages: string[];
+  reason: string;
+  origin: string;
+  at: number;
+}
+
+/** `GET /api/packages`: the project's packages (exuvia/packages.py Packages.state). */
+export interface PackagesState {
+  status: "none" | "pending" | "installing" | "ready" | "failed" | "remote";
+  error: string | null;
+  packages: PackageRow[];
+  installed: number;
+  log: string;
+  requests: PackageRequest[];
+  agent: "ask" | "install" | "off";
+  manifest: string | null;
 }
 
 /** A view's state for one parameter set, derived from the nodes it reads. */
@@ -212,6 +244,13 @@ export const api = {
   cancel: (id: string) => req("POST", `/api/runs/${id}/cancel`),
   query: (sql: string) => queryRows(sql),
   resetAgent: (id: string) => req("DELETE", `/api/agent/${id}`),
+  packages: () => req<PackagesState>("GET", "/api/packages"),
+  /** Add requirements and/or remove packages; a list that does not resolve is an error and changes nothing. */
+  packagesEdit: (b: { add?: string[]; remove?: string[] }) => req<PackagesState>("POST", "/api/packages", b),
+  packagesManifest: (text: string) => req<PackagesState>("PUT", "/api/packages/manifest", { text }),
+  packagesRetry: () => req<PackagesState>("POST", "/api/packages/retry"),
+  packagesApprove: (id: number) => req<PackagesState>("POST", `/api/packages/requests/${id}/approve`),
+  packagesDismiss: (id: number) => req<PackagesState>("DELETE", `/api/packages/requests/${id}`),
 };
 
 /** Who this page is signed in as (`GET /api/me`, on the server itself, not under a project). */

@@ -37,6 +37,7 @@ from .store import Store, project_scope, stored_paths_at
 PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 SKIP_DIRS = {"__pycache__", "node_modules"}
 DB_REL = ".exuvia/exuvia.db"
+PACKAGES_REL = ".exuvia/packages/"
 # Pauses between attempts to remove a folder (see _remove_tree).
 REMOVE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8)
 
@@ -250,6 +251,8 @@ class Hub:
                     posix = rel.as_posix()
                     if posix.startswith(DB_REL):
                         continue  # the live database (and its -wal/-shm) is copied above
+                    if posix.startswith(PACKAGES_REL):
+                        continue  # installed packages: rebuilt from pyproject.toml when the project loads
                     if rel.name.endswith((".tmp", ".part")):
                         continue  # half-written artifacts
                     if posix in stored:
