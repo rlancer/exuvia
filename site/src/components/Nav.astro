@@ -42,7 +42,7 @@ const { current } = Astro.props;
        script below keeps it; a page with no sea is always at 1. */
     --deep: 1;
     border-bottom: 1px solid color-mix(in srgb, rgb(111 155 255 / 0.45), var(--line) calc(var(--deep) * 100%));
-    background: color-mix(in srgb, rgb(20 34 76 / 0.5), rgb(17 18 20 / 0.9) calc(var(--deep) * 100%));
+    background: color-mix(in srgb, rgb(20 34 76 / 0.5), var(--bar) calc(var(--deep) * 100%));
     backdrop-filter: blur(10px) saturate(1.4);
   }
   :global(body:has(.sea)) .nav {
