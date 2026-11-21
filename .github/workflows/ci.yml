@@ -136,7 +136,8 @@ jobs:
       # image.yml's multi-arch one). Pushes to main write it; pull requests
       # read main's, so a change that leaves ui/ and uv.lock alone skips the
       # UI build and the dependency install. Pull requests don't write it:
-      # exporting every layer would cost more than it saves on the next push.
+      # uploading the layers took about 80 s on a cold cache, more than a
+      # later push to the pull request would save.
       # The runner's Docker uses the containerd image store, so its default
       # builder can use this cache and loads the image without a tarball.
       - name: Build image
@@ -150,7 +151,7 @@ jobs:
           load: true
           provenance: false
           cache-from: type=gha,scope=ci
-          cache-to: type=gha,scope=ci,mode=max  # TEMP: measure the export; main-only before merge
+          cache-to: ${{ github.event_name == 'push' && 'type=gha,scope=ci,mode=max' || '' }}
 
       # Loading the image into the cluster and rolling the hub out takes about
       # 25 s; the steps up to the Kubernetes one run meanwhile.
