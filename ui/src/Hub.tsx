@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, hubApi, PROJECT_ID, type HubProject } from "./api";
 import { ConnectDialog } from "./Connect";
 import { SignedInAs } from "./Me";
+import { HelpMenu } from "./Help";
 import { useMe } from "./useMe";
 import { useTheme } from "./theme";
 import { Brand, Mark } from "./Brand";
@@ -84,6 +85,7 @@ export default function Hub() {
             <button className="btn primary" onClick={() => setNewOpen(true)}><IconPlus size={12} /> Project</button>
           </>
         )}
+        <HelpMenu />
         <button className="btn ghost icon-btn" onClick={toggleTheme} title={dark ? "Light theme" : "Dark theme"} aria-label={dark ? "Light theme" : "Dark theme"}>
           {dark ? <IconSun /> : <IconMoon />}
         </button>

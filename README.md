@@ -1026,6 +1026,19 @@ off the run path with a 5 s timeout; a failed delivery is printed to stderr
 and not retried. Runs marked failed because the server restarted mid-run are
 not sent.
 
+**Version and updates.** The **?** button in the workbench's top bar shows
+the running version and whether a newer release is out (`GET /api/about`).
+A new release is never a toast or a banner: the button gets a small dot until
+someone opens the menu, and the menu says how to update. On someone's own
+install that is the command for how it was installed (`uv tool upgrade
+exuvia`, `pipx upgrade exuvia`, `uvx exuvia@latest …`, ...). On a deployed
+server it says that whoever runs the server updates it by deploying the new
+image, since the person looking at the workbench usually can't. The image
+sets `EXUVIA_DEPLOYED=1` to mark a deployed server; set it yourself on one
+installed another way. The server asks PyPI at most every 6 hours, and only
+while someone has the workbench open; `EXUVIA_UPDATE_CHECK=off` turns the
+check off, for a server that should not reach the internet.
+
 **Auth.** Set `EXUVIA_API_TOKEN` on a hosted control plane: API clients send
 `Authorization: Bearer <token>`; browsers open `/?token=<token>` once and get
 an HttpOnly cookie. On a hub that only a private network can reach, set
