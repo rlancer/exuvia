@@ -3,6 +3,7 @@ import { Image } from "astro:assets";
 import Base from "../layouts/Base.astro";
 import HeroGraph from "../components/HeroGraph.astro";
 import PolyMolts from "../components/PolyMolts.astro";
+import Sea from "../components/Sea.astro";
 import Evolution from "../components/Evolution.astro";
 import NodeAnatomy from "../components/NodeAnatomy.astro";
 import Workbench from "../components/Workbench.astro";
@@ -102,6 +103,7 @@ const steps = [
   description="exuvia turns an analysis into a graph of plain Python and SQL files, with per-node schedules, stored outputs and an AI agent that works on the graph with you."
   current="home"
 >
+  <Sea />
   <section class="hero">
     <div class="wrap hero-top">
       <div class="pitch">
@@ -474,7 +476,7 @@ const steps = [
   .between {
     padding: clamp(4rem, 9vw, 7rem) 0;
     border-top: var(--border);
-    background: var(--panel);
+    background: var(--band);
   }
   .between header p {
     color: var(--muted);

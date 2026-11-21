@@ -18,6 +18,10 @@
   --panel-2: #1d1f23;
   --line: #2a2c31;
   --line-strong: #3a3d44;
+  /* The bands that set a section apart: --panel and --bg-deep, except on a
+     page with the sea behind it (below), where they let it show through. */
+  --band: var(--panel);
+  --band-deep: var(--bg-deep);
 
   /* Text. --muted and --faint are a shade lighter than the app's: here they
      carry paragraphs, not labels. */
@@ -85,6 +89,11 @@ body {
   font-size: var(--step-0);
   line-height: 1.55;
   text-rendering: optimizeLegibility;
+}
+/* The landing page has the sea behind it (src/components/Sea.astro). */
+body:has(.sea) {
+  --band: rgb(23 24 27 / 0.66);
+  --band-deep: rgb(11 12 14 / 0.5);
 }
 /* Long reading (the docs) gets a plain ground. */
 body:has(.shell) {
@@ -155,7 +164,7 @@ button {
 
 /* A band one step darker than the page, to set a section apart. */
 .reverse {
-  background: var(--bg-deep);
+  background: var(--band-deep);
   color: var(--text);
 }
 
