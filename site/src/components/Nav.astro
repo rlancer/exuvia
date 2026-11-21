@@ -1,6 +1,7 @@
 ---
 import Mark from "./Mark.astro";
 import { url } from "../lib/paths";
+import { GITHUB, PYPI } from "../lib/project";
 
 interface Props {
   current?: "home" | "docs";
@@ -27,8 +28,16 @@ const { current } = Astro.props;
       <a href={url("/#evolution")} data-covers="evolution">Why a graph</a>
       <a href={url("/#node")} data-covers="node workbench views">How it works</a>
       <a class="docs-link" href={url("/docs/")} aria-current={current === "docs" ? "page" : undefined}>Docs</a>
-      <a href="https://pypi.org/project/exuvia/" rel="noopener">PyPI</a>
+      <a href={PYPI} rel="noopener">PyPI</a>
     </nav>
+    <a class="github" href={GITHUB} rel="noopener" aria-label="exuvia on GitHub" title="exuvia on GitHub">
+      <!-- The GitHub mark (github.com/logos). -->
+      <svg viewBox="0 0 16 16" width="22" height="22" aria-hidden="true">
+        <path
+          d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+        ></path>
+      </svg>
+    </a>
     <a class="btn btn-primary start" href={url("/docs/getting-started/")}>Get started</a>
   </div>
 </header>
@@ -112,6 +121,21 @@ const { current } = Astro.props;
   /* The section being read. */
   nav a[aria-current="location"] {
     text-decoration-color: var(--accent);
+  }
+  /* Sits between the links and Get started; the nav's gap already spaces it. */
+  .github {
+    display: inline-flex;
+    margin-left: -0.35rem;
+    padding: 0.35rem;
+    border-radius: 0.4rem;
+    color: var(--muted);
+  }
+  .github:hover,
+  .github:focus-visible {
+    color: var(--text);
+  }
+  .github path {
+    fill: currentColor;
   }
   .start {
     padding: 0.45rem 0.95rem;
