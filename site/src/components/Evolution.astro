@@ -1,8 +1,5 @@
 ---
-import { Image } from "astro:assets";
-import small from "../assets/growth-1.png";
-import medium from "../assets/growth-2.png";
-import large from "../assets/growth-3.png";
+import { SWAY, build, extent, stage } from "../lib/poly";
 
 // The same five steps of one analysis, drawn the way each tool holds them.
 const steps = ["universe", "prices", "returns", "rolling_vol", "summary"];
@@ -38,13 +35,34 @@ const wires = [
   "M76,92 L76,195", // universe -> summary
 ];
 
-// One animal, three sizes: a lobster only grows by leaving a shell behind.
-// Widths keep the three woodcuts at one scale.
+// Above each tool, an animal from the lobster's line (src/lib/poly.ts), the
+// same low-poly models as the hero: two older, smaller forms in grey, then
+// the lobster in its blue. `size` is how big each is drawn beside the lobster.
+const REST = -0.28; // head to the right, turned a little toward the viewer
 const animals = [
-  { image: small, width: "44%" },
-  { image: medium, width: "57%" },
-  { image: large, width: "79%" },
-];
+  { name: "Waptia", size: 0.64 },
+  { name: "Palaeopalaemon", size: 0.8 },
+  { name: "Homarus", size: 1 },
+].map((animal) => {
+  const { age } = stage(animal.name);
+  const box = extent(build(stage(animal.name)).v, [REST - SWAY, REST, REST + SWAY]);
+  const [wide, tall] = [(box.right - box.left) * animal.size, (box.bottom - box.top) * animal.size];
+  return { ...animal, age, wide, tall };
+});
+// Every canvas is as wide as its column and holds `span` model units, so the
+// three are at one scale. On a wide page they are all as tall as the tallest
+// animal; stacked on a narrow one, each is as tall as its own.
+const MARGIN = 0.4;
+const span = Math.max(...animals.map((a) => a.wide)) + MARGIN * 2;
+const rise = Math.max(...animals.map((a) => a.tall)) + MARGIN * 2;
+const canvas = (i: number) => ({
+  "data-animal": animals[i].name,
+  "data-size": animals[i].size,
+  "data-span": span,
+  "data-margin": MARGIN,
+  style: `--all:${(span / rise).toFixed(4)};--own:${(span / (animals[i].tall + MARGIN * 2)).toFixed(4)}`,
+});
+const caption = (i: number) => `${animals[i].name}, ${animals[i].age}`;
 ---
 
 <section class="evolution" id="evolution">
@@ -52,15 +70,17 @@ const animals = [
     <header>
       <h2>From a list of cells to a graph of files</h2>
       <p>
-        A lobster grows by leaving its old shell behind. Data tools have grown the same way: each generation
-        kept what worked and shed what hurt. Here is one five-step analysis in all three.
+        The lobster's ancestors were smaller, plainer animals without claws. Data tools have grown the same way:
+        each generation kept what worked and shed what hurt. Here is one five-step analysis in all three.
       </p>
     </header>
 
     <ol class="stages">
       <li>
-        <div class="animal" style={`--w:${animals[0].width}`}>
-          <Image src={animals[0].image} alt="" widths={[200, 322]} sizes="170px" loading="lazy" />
+        <div class="animal" aria-hidden="true">
+          <canvas {...canvas(0)}></canvas>
+          <span>{caption(0)}</span>
+          <i data-ink></i><i data-shade></i>
         </div>
         <svg viewBox="0 0 320 284" role="img" aria-labelledby="ev-jupyter">
           <title id="ev-jupyter">
@@ -94,8 +114,10 @@ const animals = [
       </li>
 
       <li>
-        <div class="animal" style={`--w:${animals[1].width}`}>
-          <Image src={animals[1].image} alt="" widths={[260, 414]} sizes="220px" loading="lazy" />
+        <div class="animal" aria-hidden="true">
+          <canvas {...canvas(1)}></canvas>
+          <span>{caption(1)}</span>
+          <i data-ink></i><i data-shade></i>
         </div>
         <svg viewBox="0 0 320 284" role="img" aria-labelledby="ev-marimo">
           <title id="ev-marimo">
@@ -142,8 +164,10 @@ const animals = [
       </li>
 
       <li class="now">
-        <div class="animal" style={`--w:${animals[2].width}`}>
-          <Image src={animals[2].image} alt="" widths={[360, 574]} sizes="300px" loading="lazy" />
+        <div class="animal" aria-hidden="true">
+          <canvas {...canvas(2)}></canvas>
+          <span>{caption(2)}</span>
+          <i data-ink></i><i data-shade></i>
         </div>
         <svg viewBox="0 0 320 284" role="img" aria-labelledby="ev-exuvia">
           <title id="ev-exuvia">
@@ -227,22 +251,35 @@ const animals = [
     grid-template-rows: auto auto auto auto 1fr;
     align-content: start;
   }
-  /* Every column reserves the height of the largest animal, so the three
-     stand on one line and the diagrams below line up. */
+  /* The animals stand on one line, so the diagrams below line up. */
   .animal {
-    display: flex;
-    align-items: flex-end;
-    aspect-ratio: 370 / 202;
-    padding-bottom: 1rem;
+    --poly-ink: var(--muted);
+    --poly-shade: var(--line);
+    padding-bottom: 0.9rem;
   }
-  .animal :global(img) {
+  .now .animal {
+    --poly-ink: var(--running);
+    --poly-shade: #1c2c5e;
+  }
+  canvas {
     display: block;
-    width: var(--w);
-    height: auto;
+    width: 100%;
+    aspect-ratio: var(--all);
   }
-  /* The two earlier animals are printed in black: lift them to grey. */
-  li:not(.now) .animal :global(img) {
-    filter: brightness(0) invert(0.6);
+  /* The canvas reads its two colours off these. */
+  [data-ink] {
+    color: var(--poly-ink);
+  }
+  [data-shade] {
+    color: var(--poly-shade);
+  }
+  /* Each is named underneath, as the hero names its animals. */
+  .animal span {
+    display: block;
+    margin-top: 0.35rem;
+    color: var(--faint);
+    font-family: var(--mono);
+    font-size: 0.8rem;
   }
   svg {
     display: block;
@@ -358,9 +395,69 @@ const animals = [
       gap: 2.5rem;
       max-width: 30rem;
     }
-    .animal {
-      aspect-ratio: auto;
-      padding-top: 0.5rem;
+    canvas {
+      aspect-ratio: var(--own);
     }
   }
 </style>
+
+<script>
+  import { SWAY, build, extent, painter, stage, sway, tone } from "../lib/poly";
+
+  const REST = -0.28; // as in the frontmatter above
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /** Sets one animal up on its canvas and returns the function that draws it, `life` seconds in. */
+  function animal(canvas: HTMLCanvasElement) {
+    const ctx = canvas.getContext("2d")!;
+    const { animal: name = "Homarus", size = "1", span = "20", margin = "0" } = canvas.dataset;
+    const mesh = build(stage(name));
+    const paint = painter(ctx, mesh);
+    const box = extent(mesh.v, [REST - SWAY, REST, REST + SWAY]);
+    const probe = canvas.parentElement!;
+    const [ink, shade] = [tone(probe, "ink"), tone(probe, "shade")];
+
+    return (life: number) => {
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+      const ratio = Math.min(2, devicePixelRatio || 1);
+      if (canvas.width !== Math.round(width * ratio) || canvas.height !== Math.round(height * ratio)) {
+        canvas.width = Math.round(width * ratio);
+        canvas.height = Math.round(height * ratio);
+      }
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+      // Stood on the bottom left corner.
+      const unit = (width / Number(span)) * Number(size);
+      const edge = (width / Number(span)) * Number(margin);
+      paint.place(mesh.v, REST + (still ? 0 : sway(life)), unit, edge - box.left * unit, height - edge - box.bottom * unit);
+      paint.solid(ink, shade);
+    };
+  }
+
+  for (const root of document.querySelectorAll<HTMLElement>(".evolution")) {
+    const draws = new Map<Element, (life: number) => void>();
+    for (const canvas of root.querySelectorAll<HTMLCanvasElement>("canvas[data-animal]")) draws.set(canvas, animal(canvas));
+
+    if (still) {
+      // No motion: each at rest, redrawn when its canvas changes size.
+      for (const [canvas, draw] of draws) new ResizeObserver(() => draw(0)).observe(canvas);
+      continue;
+    }
+    // The three turn together, and only the ones on screen are drawn.
+    const seen = new Set<Element>();
+    let born = 0;
+    let frame = 0;
+    const tick = (now: number) => {
+      born ||= now;
+      for (const canvas of seen) draws.get(canvas)!((now - born) / 1000);
+      frame = requestAnimationFrame(tick);
+    };
+    const watch = new IntersectionObserver((entries) => {
+      for (const entry of entries) entry.isIntersecting ? seen.add(entry.target) : seen.delete(entry.target);
+      if (seen.size && !frame) frame = requestAnimationFrame(tick);
+      if (!seen.size && frame) frame = (cancelAnimationFrame(frame), 0);
+    });
+    for (const canvas of draws.keys()) watch.observe(canvas);
+  }
+</script>
