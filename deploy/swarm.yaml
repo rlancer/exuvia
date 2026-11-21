@@ -1,0 +1,114 @@
+# exuvia as a hub on Docker Swarm: many projects, each with its API under
+# /p/<project>/api and the web UI at /p/<project>/ (README "Hub"). The UI is
+# built into the image, so this one service is the whole deployment.
+# On a single Docker host that is not a Swarm, use compose.yaml instead.
+#
+# This file is all you need, no clone. On a manager node:
+#   curl -O https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/swarm.yaml
+#   openssl rand -hex 32 | docker secret create exuvia_api_token -
+#   docker node update --label-add exuvia=true <node that keeps the data>
+#   docker stack deploy -c swarm.yaml --detach=false exuvia
+#
+# Then: curl http://<any node>:7420/healthz
+#       open http://<host>:7420/p/<project>/?token=<token>   (the workbench;
+#       the token is needed once, the browser keeps it in a cookie)
+#
+# The token: the API token lives in the Swarm secret `exuvia_api_token` and
+# reaches exuvia as a file (EXUVIA_API_TOKEN_FILE), so it never shows in
+# `docker service inspect`. Read it back only where you created it. Every
+# secret setting takes a *_FILE form: ANTHROPIC_API_KEY_FILE,
+# OPENROUTER_API_KEY_FILE, EXUVIA_DB_FILE, AWS_SECRET_ACCESS_KEY_FILE, ...
+# (README "Schedules, auth and settings").
+#
+# Variables (`docker stack deploy` reads the shell environment, not a .env):
+#   EXUVIA_IMAGE       default ghcr.io/rlancer/exuvia:latest (public, no login);
+#                      pin a release (ghcr.io/rlancer/exuvia:0.3) or name an
+#                      image with your nodes' packages. It must be in a registry
+#                      every node can pull from
+#   EXUVIA_PORT        published port, default 7420 (see "Behind a proxy")
+#   EXUVIA_SECRET      name of the token secret, default exuvia_api_token
+#
+# One task, one node: a hub owns its directory, and the `exuvia-data` volume
+# is local to the node it was created on. The placement constraint keeps the
+# task on the node labelled exuvia=true, and updates stop the old task before
+# starting the new one, so two hubs never share the volume. To run anywhere
+# in the swarm or survive losing that node, point EXUVIA_DB at Postgres and
+# EXUVIA_ARTIFACT_STORE at a bucket with a prefix of its own
+# (s3://bucket/exuvia-prod; README "Outputs in an existing bucket").
+#
+# Behind a proxy: don't expose the hub without TLS. With Traefik (v3) on the
+# swarm, attach the service to Traefik's network, uncomment the labels below,
+# set EXUVIA_HOST, and delete the `ports` block so only Traefik reaches it.
+# Traefik v2 spells the network label traefik.docker.network. Any other proxy
+# works the same way: route the whole host (/, /p/..., /api/..., /assets/...)
+# to port 7420; /p/<project>/api/events is a long-lived event stream, so
+# don't buffer it.
+
+services:
+  hub:
+    image: ${EXUVIA_IMAGE:-ghcr.io/rlancer/exuvia:latest}
+    command: ["exuvia", "hub", "/data", "--host", "0.0.0.0", "--port", "7420"]
+    environment:
+      EXUVIA_API_TOKEN_FILE: /run/secrets/exuvia_api_token
+      # ANTHROPIC_API_KEY_FILE: /run/secrets/anthropic_api_key
+    secrets:
+      - source: exuvia_api_token
+        target: exuvia_api_token
+        uid: "10001"  # the image's `exuvia` user
+        gid: "10001"
+        mode: 0400
+      # - source: anthropic_api_key
+      #   target: anthropic_api_key
+      #   uid: "10001"
+      #   gid: "10001"
+      #   mode: 0400
+    ports:
+      - "${EXUVIA_PORT:-7420}:7420"
+    volumes:
+      - exuvia-data:/data
+    networks:
+      - exuvia
+      # - traefik-public
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7420/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      replicas: 1
+      placement:
+        constraints: ["node.labels.exuvia == true"]
+      update_config:
+        parallelism: 1
+        order: stop-first  # never two hubs on one volume
+        failure_action: rollback
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+      restart_policy:
+        condition: any
+        delay: 5s
+      # labels:
+      #   traefik.enable: "true"
+      #   traefik.http.routers.exuvia.rule: Host(`${EXUVIA_HOST}`)
+      #   traefik.http.routers.exuvia.entrypoints: websecure
+      #   traefik.http.routers.exuvia.tls.certresolver: letsencrypt
+      #   traefik.http.services.exuvia.loadbalancer.server.port: "7420"
+      #   traefik.swarm.network: traefik-public
+
+secrets:
+  exuvia_api_token:
+    external: true
+    name: ${EXUVIA_SECRET:-exuvia_api_token}
+  # anthropic_api_key:
+  #   external: true
+
+volumes:
+  exuvia-data:
+
+networks:
+  exuvia:
+    driver: overlay
+  # traefik-public:
+  #   external: true

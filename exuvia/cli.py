@@ -21,6 +21,45 @@ from pathlib import Path
 from .project import Project
 
 
+# Settings that hold secrets. Each can instead come from a file, `<NAME>_FILE`
+# (a Docker or Swarm secret at /run/secrets/..., a Kubernetes secret volume).
+SECRET_ENV = (
+    "EXUVIA_API_TOKEN",
+    "EXUVIA_EXECUTOR_TOKEN",
+    "EXUVIA_DB",
+    "EXUVIA_FAILURE_WEBHOOK",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+)
+
+
+def load_secret_files(environ: dict[str, str] | None = None) -> None:
+    """Set each ``SECRET_ENV`` name whose ``<NAME>_FILE`` is set from that
+    file's contents (surrounding whitespace dropped). Setting both to
+    different values is an error, as is a missing or empty file."""
+    import os
+
+    env = os.environ if environ is None else environ
+    for name in SECRET_ENV:
+        path = env.get(f"{name}_FILE")
+        if not path:
+            continue
+        try:
+            value = Path(path).read_text(encoding="utf-8").strip()
+        except OSError as e:
+            raise SystemExit(f"{name}_FILE: cannot read {path}: {e.strerror or e}") from e
+        if not value:
+            raise SystemExit(f"{name}_FILE: {path} is empty")
+        if env.get(name) not in (None, "", value):
+            raise SystemExit(f"set {name} or {name}_FILE, not both")
+        env[name] = value
+
+
 def _load_dotenv(root: Path) -> None:
     """Minimal .env loader (KEY=VALUE lines) so secrets stay out of node code."""
     import os
@@ -33,6 +72,7 @@ def _load_dotenv(root: Path) -> None:
                     continue
                 key, _, value = line.partition("=")
                 os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    load_secret_files()  # a .env may name secret files too
 
 
 def _cli_params(pairs: list[str] | None) -> dict[str, str]:
@@ -228,6 +268,7 @@ def main() -> None:
     p.set_defaults(fn=cmd_executor)
 
     args = ap.parse_args()
+    load_secret_files()
     args.fn(args)
 
 

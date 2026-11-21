@@ -574,11 +574,14 @@ a `/healthz` check and `EXUVIA_API_TOKEN` auth. CI brings each one up and
 runs the end-to-end test against it. You need the one file, not the repo:
 
 ```bash
-# Docker Compose or Podman Compose
+# Docker Compose or Podman Compose, on one host
 curl -O https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/compose.yaml
-EXUVIA_API_TOKEN=change-me docker compose up -d
-# Docker Swarm (the same file)
-EXUVIA_API_TOKEN=change-me docker stack deploy -c compose.yaml exuvia
+EXUVIA_API_TOKEN=change-me docker compose up -d --wait
+# Docker Swarm, on a manager: the token as a Swarm secret, the data on one labelled node
+curl -O https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/swarm.yaml
+printf change-me | docker secret create exuvia_api_token -
+docker node update --label-add exuvia=true <node>
+docker stack deploy -c swarm.yaml --detach=false exuvia
 # Kubernetes
 kubectl create namespace exuvia
 kubectl -n exuvia create secret generic exuvia --from-literal=api-token=change-me
@@ -598,15 +601,17 @@ own registry, or an image with your nodes' packages (see below). A hub owns
 its directory, so run one replica; to scale out or to survive losing the
 volume, point `EXUVIA_DB` at Postgres and `EXUVIA_ARTIFACT_STORE` at a bucket
 (table below). The comments at the top of each file cover the rest: the
-agent's API key, one project with the UI instead of a hub, and Swarm volume
-placement.
+agent's API key, one project at `/` instead of a hub, and on Swarm the
+secrets, the volume's node, stop-first updates and a Traefik example for
+TLS.
 
 ### Hand it to an agent
 
 Paste this into a coding agent (Claude Code, Cursor, Codex, Grok, ...) that
 has access to your Docker host or cluster: a cloud VM with Docker, or a
-managed Kubernetes such as GKE, EKS or AKS. Change the first line to the
-platform you want. Besides deploying and checking the hub, the agent creates
+managed Kubernetes such as GKE, EKS or AKS. Leave Docker or Kubernetes on the
+first line, whichever you use. On Docker the agent uses Swarm when the host is a Swarm manager
+and Compose otherwise. Besides deploying and checking the hub, the agent creates
 a first project on it, connects itself to that project over
 [MCP](#mcp-the-agents-tools-in-your-own-agent), as the local prompt does,
 and gives you the project's workbench URL. The hub serves the web UI itself,
@@ -615,26 +620,39 @@ so that one deploy is the whole thing.
 ```text
 Deploy exuvia (https://github.com/rlancer/exuvia, a
 file-backed DAG workbench with a web UI and an HTTP API)
-as a hub on: Docker Compose | Docker Swarm | Kubernetes.
+as a hub on: Docker | Kubernetes.
 The hub serves the API and the web UI from one container:
 there is no separate frontend to build or deploy.
 
-1. Download the deploy file: compose.yaml for Compose or
-   Swarm, kubernetes.yaml for Kubernetes, from
+1. Pick the deploy file from
    https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/
+   - Kubernetes: kubernetes.yaml.
+   - Docker: run `docker info --format
+     '{{.Swarm.LocalNodeState}} {{.Swarm.ControlAvailable}}'`.
+     `active true` means a Swarm manager: use swarm.yaml.
+     Anything else: compose.yaml, with Docker Compose or
+     Podman Compose. Don't create a Swarm for this.
    Read the comments at the top of the file; they are the
    instructions.
-2. Generate a random API token (e.g. `openssl rand -hex 32`).
-   Store it as the EXUVIA_API_TOKEN variable (Compose/Swarm)
-   or as `api-token` in a secret named `exuvia` (Kubernetes).
-   Don't print it in logs or commit it.
+2. Generate a random API token (e.g. `openssl rand -hex 32`)
+   and store it without printing it or committing it:
+   - Compose: EXUVIA_API_TOKEN in a .env next to
+     compose.yaml that only its owner can read.
+   - Swarm: pipe it into
+     `docker secret create exuvia_api_token -`.
+   - Kubernetes: `api-token` in a secret named `exuvia`.
+   Also keep it in a file only I can read on this machine:
+   the MCP server (step 7) and my browser need it.
 3. Image: ghcr.io/rlancer/exuvia:latest, public, no login
    needed. If the hosts can't reach ghcr.io, copy it to a
    registry they can reach (docker pull, tag, push) and set
    EXUVIA_IMAGE (Compose/Swarm) or the Deployment's image.
 4. Bring it up and wait until it is healthy:
    - Compose: `docker compose -f compose.yaml up -d --wait`
-   - Swarm: `docker stack deploy -c compose.yaml exuvia`
+   - Swarm: label the node that keeps the data
+     (`docker node update --label-add exuvia=true <node>`),
+     then `docker stack deploy -c swarm.yaml --detach=false
+     exuvia`
    - Kubernetes: `kubectl create namespace exuvia`, create
      the secret, `kubectl -n exuvia apply -f kubernetes.yaml`,
      `kubectl -n exuvia rollout status deployment/exuvia-hub`
@@ -761,6 +779,16 @@ not sent.
 `Authorization: Bearer <token>`; browsers open `/?token=<token>` once and get
 an HttpOnly cookie. Always set `EXUVIA_EXECUTOR_TOKEN` on a networked executor
 — it runs arbitrary code by design.
+
+**Secrets from files.** Each setting that holds a secret can come from a file
+instead: set `<NAME>_FILE` to its path, such as
+`EXUVIA_API_TOKEN_FILE=/run/secrets/exuvia_api_token` for a Docker or Swarm
+secret, or a file in a Kubernetes secret volume. Surrounding whitespace is
+dropped. This works for `EXUVIA_API_TOKEN`, `EXUVIA_EXECUTOR_TOKEN`,
+`EXUVIA_DB`, `EXUVIA_FAILURE_WEBHOOK`, `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY` and the
+`AWS_*` keys. Setting both forms to different values, or naming a missing or
+empty file, stops exuvia with an error.
 
 | Env | Default | |
 |---|---|---|
