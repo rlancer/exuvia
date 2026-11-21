@@ -39,7 +39,12 @@
 # Behind a proxy: don't expose the hub without TLS. With Traefik (v3) on the
 # swarm, attach the service to Traefik's network, uncomment the labels below,
 # set EXUVIA_HOST, and delete the `ports` block so only Traefik reaches it.
-# Traefik v2 spells the network label traefik.docker.network. Any other proxy
+# Traefik v2 spells the network label traefik.docker.network. The names
+# traefik-public, websecure and letsencrypt are examples: use the network,
+# entrypoint and cert resolver your Traefik actually has (`docker service
+# inspect` on its service shows them). With no Traefik on the swarm the labels
+# do nothing: deploy one, or put another proxy in front. Point the hostname's
+# DNS at the swarm and check https://<EXUVIA_HOST>/healthz. Any other proxy
 # works the same way: route the whole host (/, /p/..., /api/..., /assets/...)
 # to port 7420; /p/<project>/api/events is a long-lived event stream, so
 # don't buffer it.

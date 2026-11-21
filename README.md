@@ -699,17 +699,22 @@ there is no separate frontend to build or deploy.
 6. Give it the hostname above, with TLS, before step 7:
    - Kubernetes: uncomment the Ingress at the bottom of
      kubernetes.yaml, set the host, apply it again.
-   - Swarm: the Traefik labels in swarm.yaml.
-   - Compose: a reverse proxy with TLS in front of it.
-   The tops of kubernetes.yaml and swarm.yaml say how. Make
+   - Swarm: the Traefik labels in swarm.yaml, with the
+     network, entrypoint and cert resolver names of the
+     swarm's Traefik. No Traefik there: tell me.
+   - Compose: the `caddy` service in compose.yaml if nothing
+     listens on ports 80 and 443, or its Traefik labels if
+     a Traefik runs on the host.
+   The comments at the top of each file say how. Make
    the hostname's DNS point at the ingress controller or
    proxy (tell me the record to add if you can't), then
    check that https://<hostname>/healthz answers. From
    then on <hub url> is https://<hostname>. Without a
    hostname, keep it private (port-forward or localhost):
    never expose it without TLS. Keep one replica (the hub
-   owns its volume). If outputs go to an existing bucket (EXUVIA_ARTIFACT_STORE), use a prefix
-   only this hub writes to, e.g. s3://<bucket>/exuvia-prod.
+   owns its volume). If outputs go to an existing bucket
+   (EXUVIA_ARTIFACT_STORE), use a prefix only this hub
+   writes to, e.g. s3://<bucket>/exuvia-prod.
 7. Create a project for me:
    POST /api/projects {"id": "my-research"}.
    Then add an MCP server named `exuvia` to your own

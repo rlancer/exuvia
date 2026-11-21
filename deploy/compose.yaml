@@ -38,6 +38,22 @@
 # s3://bucket), and give each deployment its own (exuvia-prod, exuvia-staging):
 # keys are per project id, so two hubs on one prefix overwrite each other
 # (README "Outputs in an existing bucket").
+#
+# A hostname with TLS: don't expose the hub without TLS. Point the hostname's
+# DNS at this host and set EXUVIA_HOST to it (in the .env), then either:
+#   - No proxy on this host yet (nothing listening on ports 80 and 443):
+#     uncomment the `caddy` service and the `caddy-data` volume below. Caddy
+#     gets a Let's Encrypt certificate for EXUVIA_HOST by itself and passes
+#     the event stream through unbuffered.
+#   - A Traefik already on this host (Docker provider): uncomment the hub's
+#     `labels` and the `proxy` network instead, and use the entrypoint, cert
+#     resolver and network names that Traefik uses (`docker inspect` on its
+#     container shows them; the ones below are examples).
+# Either way, change the hub's port to "127.0.0.1:${EXUVIA_PORT:-7420}:7420"
+# so only this host reaches it directly, then check
+# https://<EXUVIA_HOST>/healthz. Any other proxy works the same way: route the
+# whole host (/, /p/..., /api/..., /assets/...) to port 7420, and don't
+# buffer /p/<project>/api/events, a long-lived event stream.
 
 services:
   hub:
@@ -58,6 +74,26 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+    # labels:  # an existing Traefik (v3; v2 too)
+    #   traefik.enable: "true"
+    #   traefik.http.routers.exuvia.rule: Host(`${EXUVIA_HOST}`)
+    #   traefik.http.routers.exuvia.entrypoints: websecure
+    #   traefik.http.routers.exuvia.tls.certresolver: letsencrypt
+    #   traefik.http.services.exuvia.loadbalancer.server.port: "7420"
+    #   traefik.docker.network: proxy
+    # networks: [default, proxy]
+
+  # caddy:  # no proxy yet: TLS for EXUVIA_HOST on ports 80 and 443
+  #   image: caddy:2
+  #   command: ["caddy", "reverse-proxy", "--from", "${EXUVIA_HOST:?set EXUVIA_HOST}", "--to", "hub:7420"]
+  #   ports: ["80:80", "443:443"]
+  #   volumes: [caddy-data:/data]  # the certificate, kept across restarts
+  #   restart: unless-stopped
 
 volumes:
   exuvia-data:
+  # caddy-data:
+
+# networks:  # with the Traefik labels: Traefik's network, by its real name
+#   proxy:
+#     external: true
