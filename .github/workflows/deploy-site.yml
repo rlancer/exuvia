@@ -53,22 +53,28 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v5
+      # The bun version matches mise.toml; the cache is bun's package cache,
+      # keyed on the lockfile.
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: site/package-lock.json
+          bun-version: "1.4.5"
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: bun-site-${{ runner.os }}-${{ hashFiles('site/bun.lock') }}
+          restore-keys: bun-site-${{ runner.os }}-
 
       # SITE_URL makes the social-card and canonical URLs absolute. Previews
       # are built without it, so they never claim the production address.
       - name: Typecheck + build
         env:
           SITE_URL: ${{ github.ref == 'refs/heads/main' && env.PRODUCTION_URL || '' }}
-        run: npm ci && npm run build
+        run: bun install --frozen-lockfile && bun run build
 
       - name: Deploy to production
         if: github.ref == 'refs/heads/main'
-        run: npx wrangler deploy --message "exuvia site ${GITHUB_SHA::7}"
+        run: bun run wrangler deploy --message "exuvia site ${GITHUB_SHA::7}"
 
       # A new custom domain's certificate can take a little while to issue
       # (curl fails the TLS handshake until it does), so retry.
@@ -89,7 +95,7 @@ jobs:
         if: github.ref != 'refs/heads/main'
         run: |
           alias=$(echo "$GITHUB_REF_NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//' | cut -c1-40 | sed -E 's/-+$//')
-          npx wrangler versions upload --preview-alias "$alias" --message "exuvia site ${GITHUB_SHA::7} ($GITHUB_REF_NAME)" | tee upload.log
+          bun run wrangler versions upload --preview-alias "$alias" --message "exuvia site ${GITHUB_SHA::7} ($GITHUB_REF_NAME)" | tee upload.log
           url=$(grep -oE 'https://[^ ]+\.workers\.dev' upload.log | tail -1)
           if [ -n "$url" ]; then
             echo "Preview: $url/" | tee -a "$GITHUB_STEP_SUMMARY"

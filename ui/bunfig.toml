@@ -1,0 +1,6 @@
+# `bun run` runs scripts and package binaries (vite, tsc, vitest, astro,
+# wrangler) on bun itself, even where Node is installed: their
+# `#!/usr/bin/env node` and any `node` a script calls resolve to bun.
+# `bunx` ignores this, so run binaries with `bun run <bin>` instead.
+[run]
+bun = true

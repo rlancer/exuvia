@@ -25,7 +25,8 @@ on:
       - pyproject.toml
       - uv.lock
       - ui/package.json
-      - ui/package-lock.json
+      - ui/bun.lock
+      - ui/bunfig.toml
 
 permissions:
   contents: read
