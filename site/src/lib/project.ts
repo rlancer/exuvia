@@ -2,6 +2,8 @@
 // introduces it to readers and agents who arrive without context.
 
 export const GITHUB = "https://github.com/rlancer/exuvia";
+/** The site in production. The README prompts send agents to files under it. */
+export const SITE = "https://exuvia.lobster.mp";
 export const PYPI = "https://pypi.org/project/exuvia/";
 
 export const SUMMARY =

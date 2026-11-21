@@ -2,6 +2,10 @@
 
 This tests the docs as much as the code: the prompt comes verbatim from the
 README's "Set up with your agent" section, and the agent gets no other help.
+The prompt sends the agent to fetch its steps from the docs site
+(``/agent/setup.txt``); the harness serves this checkout's copy of those steps
+on localhost instead, so a run tests the README under test, not the one on
+the live site (``--live-steps`` keeps the site's).
 A run has two sessions, the way a person would use it:
 
 1. **Setup.** A fresh agent session in an empty folder gets the README
@@ -61,6 +65,7 @@ REPO = Path(__file__).resolve().parents[2]
 README = REPO / "README.md"
 PROJECT = "my-research"
 PORTS = range(7420, 7440)
+SITE_STEPS = "https://exuvia.lobster.mp/agent/setup.txt"
 
 ANALYSIS_PROMPT = (
     "Use exuvia to build a simple analysis in my-research: make up a year of "
@@ -74,14 +79,55 @@ def log(msg: str) -> None:
     print(f"[e2e] {msg}", flush=True)
 
 
-def setup_prompt() -> str:
-    """The fenced ```text block under '## Set up with your agent'."""
+def readme_section(heading: str) -> str:
     text = README.read_text(encoding="utf-8")
-    section = text.split("## Set up with your agent", 1)[1].split("\n## ", 1)[0]
-    m = re.search(r"```text\n(.*?)```", section, re.S)
+    return text.split(f"## {heading}", 1)[1].split("\n## ", 1)[0]
+
+
+def setup_prompt(steps_url: str | None = None) -> str:
+    """The fenced ```text block under '## Set up with your agent', with its steps
+    URL pointed at ``steps_url`` when one is given."""
+    m = re.search(r"```text\n(.*?)```", readme_section("Set up with your agent"), re.S)
     if not m:
         raise SystemExit("no ```text block under 'Set up with your agent' in README.md")
-    return m.group(1).strip()
+    prompt = m.group(1).strip()
+    if steps_url:
+        if SITE_STEPS not in prompt:
+            raise SystemExit(f"the README's setup prompt no longer links to {SITE_STEPS}")
+        prompt = prompt.replace(SITE_STEPS, steps_url)
+    return prompt
+
+
+def setup_steps() -> str:
+    """The ```text file=agent/setup.txt block: what the site serves at /agent/setup.txt."""
+    m = re.search(r"```text file=agent/setup\.txt\n(.*?)```", readme_section("Set up with your agent"), re.S)
+    if not m:
+        raise SystemExit("no ```text file=agent/setup.txt block under 'Set up with your agent' in README.md")
+    return m.group(1)
+
+
+def serve_steps() -> str:
+    """Serve this checkout's setup steps on localhost; returns their URL."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    body = setup_steps().encode()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            ok = self.path == "/agent/setup.txt"
+            self.send_response(200 if ok else 404)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            if ok:
+                self.wfile.write(body)
+
+        def log_message(self, *a: Any) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return f"http://127.0.0.1:{server.server_address[1]}/agent/setup.txt"
 
 
 def http_json(url: str, timeout: float = 3) -> Any:
@@ -306,6 +352,10 @@ def main() -> int:
         "--warm-cache", action="store_true",
         help="use your own uv cache instead of an empty one (faster; not with --source local)",
     )  # fmt: skip
+    ap.add_argument(
+        "--live-steps", action="store_true",
+        help="let the agent fetch the setup steps from the live site instead of this checkout's README",
+    )  # fmt: skip
     ap.add_argument("--keep-config", action="store_true", help="leave the agent's MCP config change in place")
     ap.add_argument("--keep-server", action="store_true", help="leave the workbench running at the end")
     args = ap.parse_args()
@@ -337,7 +387,9 @@ def main() -> int:
     mcp_url: str | None = None
     try:
         if args.phase in ("setup", "both"):
-            report["setup"] = run_agent(args, "setup", setup_prompt(), work, env, logs)
+            steps_url = None if args.live_steps else serve_steps()
+            report["setup_steps"] = steps_url or SITE_STEPS
+            report["setup"] = run_agent(args, "setup", setup_prompt(steps_url), work, env, logs)
             checks.add("project created", (project_dir / "nodes" / "hello.py").exists(), str(project_dir))
             base = find_workbench(project_dir)
             # Informational: whether a background process outlives a headless

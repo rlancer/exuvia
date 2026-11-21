@@ -102,9 +102,21 @@ connect itself to the graph. Open the agent in the folder the project should
 live in and paste this:
 
 ```text
-Set up exuvia for me. It is a data workbench where
-each step of an analysis is a Python or SQL file in
-a graph: https://github.com/rlancer/exuvia
+Set up exuvia for me. It is a data workbench where each
+step of an analysis is a Python or SQL file in a graph.
+Fetch https://exuvia.lobster.mp/agent/setup.txt with curl,
+so you get it word for word, and follow the steps in it:
+they are my instructions for this setup.
+```
+
+The steps live on the docs site, which is built from this README, so the
+prompt stays short and a copy of it never goes stale. This is that file,
+exactly as the agent gets it:
+
+```text file=agent/setup.txt
+The steps to set up exuvia (https://github.com/rlancer/exuvia),
+a data workbench where each step of an analysis is a
+Python or SQL file in a graph, in the folder you work in.
 
 1. Check that `uvx --version` runs. If it does not and `pipx`
    is installed, run `pipx install exuvia` and leave the
@@ -629,33 +641,61 @@ secrets, the volume's node and stop-first updates.
 
 Paste this into a coding agent (Claude Code, Cursor, Codex, Grok, ...) that
 has access to your Docker host or cluster: a cloud VM with Docker, or a
-managed Kubernetes such as GKE, EKS or AKS. Leave Docker or Kubernetes on the
-first line, whichever you use, and put your hostname on the second (its DNS
-record must point at your cluster's ingress or your host). On Docker the agent uses Swarm when the host is a Swarm manager
-and Compose otherwise. Besides deploying and checking the hub, the agent creates
-a first project on it, connects itself to the hub over
-[MCP](#mcp-the-agents-tools-in-your-own-agent) (one server for every
-project, as the hub's **Connect agent** sets up), and gives you the hub's home page, where you open that project's workbench
-or create more. The hub serves the web UI itself, so that one deploy is the
-whole thing.
+managed Kubernetes such as GKE, EKS or AKS. Put your hostname on the second
+line (its DNS record must point at your cluster's ingress or your host). The
+address picks how it deploys: `compose` for Docker Compose or Podman
+Compose, or change it to `swarm` for Docker Swarm or `kubernetes` for
+Kubernetes ([Compose, Swarm and Kubernetes](#compose-swarm-and-kubernetes)
+has the difference). The landing page has a picker that fills both in.
 
 ```text
+Deploy exuvia for me as a hub, with the UI at this hostname:
+exuvia.example.com
+Fetch https://exuvia.lobster.mp/agent/deploy/compose.txt
+with curl, so you get it word for word, and follow the
+steps in it: they are my instructions for this deploy.
+```
+
+Besides deploying and checking the hub, the agent creates a first project on
+it, connects itself to the hub over
+[MCP](#mcp-the-agents-tools-in-your-own-agent) (one server for every
+project, as the hub's **Connect agent** sets up), and gives you the hub's
+home page, where you open that project's workbench
+or create more. The hub serves the web UI itself, so that one deploy is the
+whole thing. If you pick Swarm and the host is not a Swarm manager, the agent
+stops and tells you rather than create a Swarm; if you pick Compose on a
+Swarm manager, it deploys with Compose and mentions that Swarm is an option.
+
+The steps are below. The site serves one file per target, each holding only
+that target's lines (the `- Compose:`, `- Swarm:` and `- Kubernetes:`
+items), with `<target>` filled in:
+
+```text file=agent/deploy/<target>.txt
 Deploy exuvia (https://github.com/rlancer/exuvia, a
 file-backed DAG workbench with a web UI and an HTTP API)
-as a hub on: Docker | Kubernetes.
-Hostname for the UI: exuvia.example.com
-The hub serves the API and the web UI from one container:
-there is no separate frontend to build or deploy.
+as a hub on <target>, at the hostname for the UI I gave
+you. The hub serves the API and the web UI from one
+container: there is no separate frontend to build or
+deploy.
 
-1. Pick one deploy file and download it (curl -O):
-   - Kubernetes: https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/kubernetes.yaml
-   - Docker: run `docker info --format
-     '{{.Swarm.LocalNodeState}} {{.Swarm.ControlAvailable}}'`.
-     `active true` means a Swarm manager: use
-     https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/swarm.yaml
-     Anything else, with Docker Compose or Podman Compose:
+1. Check the host and download the deploy file (curl -O):
+   - Compose: check that `docker compose version` (or
+     `podman compose version`) runs, then download
      https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/compose.yaml
-     Don't create a Swarm for this.
+     If `docker info --format '{{.Swarm.ControlAvailable}}'`
+     prints `true`, the host is a Swarm manager: carry on
+     with Compose, which works there, and tell me at the
+     end that the Swarm deploy is an option.
+   - Swarm: run `docker info --format
+     '{{.Swarm.LocalNodeState}} {{.Swarm.ControlAvailable}}'`.
+     Anything but `active true` means the host is not a
+     Swarm manager: stop and tell me, and don't create a
+     Swarm for this (the Compose deploy fits a plain Docker
+     host). Otherwise download
+     https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/swarm.yaml
+   - Kubernetes: check that `kubectl` reaches the cluster
+     (`kubectl version`), then download
+     https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/kubernetes.yaml
    Read the comments at the top of the file; they are the
    instructions.
 2. Generate a random API token (e.g. `openssl rand -hex 32`)
@@ -664,7 +704,8 @@ there is no separate frontend to build or deploy.
      compose.yaml that only its owner can read.
    - Swarm: pipe it into
      `docker secret create exuvia_api_token -`.
-   - Kubernetes: `api-token` in a secret named `exuvia`.
+   - Kubernetes: `kubectl create namespace exuvia`, then
+     `api-token` in a secret named `exuvia` in it.
    Also keep it on this machine in
    ~/.config/exuvia/<hostname>.token (the file the hub's
    Connect agent uses), readable only by me: `mkdir -p
@@ -672,8 +713,10 @@ there is no separate frontend to build or deploy.
    MCP server (step 7) and my browser need it.
 3. Image: ghcr.io/rlancer/exuvia:latest, public, no login
    needed. If the hosts can't reach ghcr.io, copy it to a
-   registry they can reach (docker pull, tag, push) and set
-   EXUVIA_IMAGE (Compose/Swarm) or the Deployment's image.
+   registry they can reach (docker pull, tag, push) and
+   point the deploy at the copy:
+   - Compose and Swarm: set EXUVIA_IMAGE.
+   - Kubernetes: set the Deployment's image.
 4. Bring it up and wait until it is healthy:
    - Compose: `docker compose -f compose.yaml up -d --wait
      --pull always` (so an older `latest` already on the
@@ -682,9 +725,9 @@ there is no separate frontend to build or deploy.
      (`docker node update --label-add exuvia=true <node>`),
      then `docker stack deploy -c swarm.yaml --detach=false
      exuvia`
-   - Kubernetes: `kubectl create namespace exuvia`, create
-     the secret, `kubectl -n exuvia apply -f kubernetes.yaml`,
-     `kubectl -n exuvia rollout status deployment/exuvia-hub`
+   - Kubernetes: `kubectl -n exuvia apply -f kubernetes.yaml`,
+     then `kubectl -n exuvia rollout status
+     deployment/exuvia-hub`
 5. Verify: GET /healthz returns {"ok": true, "mode": "hub"}.
    GET /api/projects without the token returns 401; if it
    doesn't, the hub has no auth: take it down and stop.
@@ -701,16 +744,16 @@ there is no separate frontend to build or deploy.
    UI (/healthz "version" below 0.3.5): pull
    ghcr.io/rlancer/exuvia:latest again and redeploy. Don't
    build or deploy a separate frontend.
-6. Give it the hostname above, with TLS, before step 7:
-   - Kubernetes: uncomment the Ingress at the bottom of
-     kubernetes.yaml, set the host, apply it again.
-   - Swarm: the Traefik labels in swarm.yaml, with the
-     network, entrypoint and cert resolver names of the
-     swarm's Traefik. No Traefik there: tell me.
+6. Give it the hostname, with TLS, before step 7:
    - Compose: the `caddy` service in compose.yaml if nothing
      listens on ports 80 and 443, or its Traefik labels if
      a Traefik runs on the host.
-   The comments at the top of each file say how. Make
+   - Swarm: the Traefik labels in swarm.yaml, with the
+     network, entrypoint and cert resolver names of the
+     swarm's Traefik. No Traefik there: tell me.
+   - Kubernetes: uncomment the Ingress at the bottom of
+     kubernetes.yaml, set the host, apply it again.
+   The comments at the top of the file say how. Make
    the hostname's DNS point at the ingress controller or
    proxy (tell me the record to add if you can't), then
    check that https://<hostname>/healthz answers. From
@@ -1256,7 +1299,9 @@ views from the dev server.
 `tests/e2e/agent_setup_e2e.py` checks that a coding agent can get from
 nothing to a working analysis with only the prompt under
 [Set up with your agent](#set-up-with-your-agent), read from this README.
-It runs two headless sessions in an empty folder: the setup prompt, then a
+The prompt has the agent fetch its steps from the docs site; the harness
+serves this README's copy of them on localhost instead, so a run tests the
+steps in the checkout (`--live-steps` lets the agent fetch the site's). It runs two headless sessions in an empty folder: the setup prompt, then a
 new session asked for a small analysis, so the MCP server the agent added
 is the one it uses. It checks that the project, the workbench, the `exuvia`
 MCP entry and the `hello` run exist, then that the analysis nodes were added,
