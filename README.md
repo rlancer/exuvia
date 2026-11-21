@@ -619,7 +619,9 @@ hub on: Docker Compose | Docker Swarm | Kubernetes.
    `answer` and rows [[42]]; then DELETE /api/projects/smoke.
 6. Keep one replica (the hub owns its volume). Don't expose
    it publicly without TLS in front (an Ingress, a load
-   balancer or a reverse proxy).
+   balancer or a reverse proxy). If outputs go to an
+   existing bucket (EXUVIA_ARTIFACT_STORE), use a prefix
+   only this hub writes to, e.g. s3://<bucket>/exuvia-prod.
 7. Create a project for me:
    POST /api/projects {"id": "my-research"}.
    Then add an MCP server named `exuvia` to your own
@@ -702,6 +704,45 @@ an HttpOnly cookie. Always set `EXUVIA_EXECUTOR_TOKEN` on a networked executor
 | `EXUVIA_S3_REGION` | `AWS_REGION`, then `us-east-1` | signing region (`auto` for R2) |
 | `EXUVIA_S3_ADDRESSING` | `path` | `virtual` puts the bucket in the host name |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` | — | bucket credentials (requests are SigV4-signed) |
+
+### Outputs in an existing bucket
+
+`EXUVIA_ARTIFACT_STORE` does not need a bucket of its own. exuvia only reads
+and writes objects under the prefix in the URL, with GetObject, HeadObject,
+PutObject, DeleteObject and ListObjectsV2. It never reads or changes bucket
+settings (lifecycle rules, policies, CORS, versioning). Its only bulk delete
+runs when a project is deleted, and it removes `<prefix>/<project>/`. Two rules
+keep it away from everything else in the bucket:
+
+- **Always give a prefix**, e.g. `s3://shared-bucket/exuvia`. With a bare
+  `s3://shared-bucket`, project folders sit at the bucket root, and deleting
+  a project named `logs` deletes whatever else is under `logs/`.
+- **One prefix per deployment**, e.g. `s3://shared-bucket/exuvia-prod` and
+  `s3://shared-bucket/exuvia-staging`. Object keys use the project id and not
+  `EXUVIA_DB_SCOPE`, so two hubs on the same prefix that both have a project
+  `demo` overwrite each other's outputs, and deleting `demo` on one deletes
+  the other's outputs too.
+
+Credentials can then be limited to the prefix. On AWS:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::shared-bucket/exuvia/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::shared-bucket",
+      "Condition": {"StringLike": {"s3:prefix": "exuvia/*"}}
+    }
+  ]
+}
+```
 
 ## The agent
 
