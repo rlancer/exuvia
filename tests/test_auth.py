@@ -120,7 +120,7 @@ def test_the_api_token_still_lets_agents_in(headers_mode, tmp_path, monkeypatch)
         assert client.get("/api/project").status_code == 401
         bearer = {"Authorization": "Bearer s3cret"}
         assert client.get("/api/project", headers=bearer).status_code == 200
-        assert client.get("/api/me", headers=bearer).json() == {"auth": "headers", "user": None}
+        assert client.get("/api/me", headers=bearer).json() == {"auth": "headers", "user": None, "tokens": True}
         assert client.get("/api/project", headers={"Authorization": "Bearer wrong"}).status_code == 401
         assert client.get("/api/project", headers=ALICE).status_code == 200
         # The token's browser sign-in still works, for someone outside the proxy.
@@ -163,7 +163,7 @@ def test_me_without_auth(tmp_path, monkeypatch):
     for name in ("EXUVIA_AUTH", "EXUVIA_API_TOKEN"):
         monkeypatch.delenv(name, raising=False)
     with TestClient(create_app(tmp_path / "p")) as client:
-        assert client.get("/api/me", headers=ALICE).json() == {"auth": "none", "user": None}  # headers not trusted
+        assert client.get("/api/me", headers=ALICE).json() == {"auth": "none", "user": None, "tokens": False}  # headers not trusted
 
 
 def test_hub_with_header_auth(headers_mode, tmp_path, monkeypatch):

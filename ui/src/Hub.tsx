@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, hubApi, PROJECT_ID, type HubProject } from "./api";
-import { mcpSetup } from "./mcp";
+import { ConnectDialog } from "./Connect";
 import { SignedInAs } from "./Me";
 import { HelpMenu } from "./Help";
+import { useMe } from "./useMe";
 import { useTheme } from "./theme";
 import { Brand, Mark } from "./Brand";
 import { Dialog } from "./Dialog";
-import { Code } from "./Code";
 import { IconMoon, IconPlus, IconSun } from "./icons";
 import { Toasts } from "./toast";
 
@@ -37,6 +37,9 @@ export default function Hub() {
   const [deleting, setDeleting] = useState<HubProject | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [dark, toggleTheme] = useTheme();
+  // Someone signed in reaches Connect agent from their account menu.
+  const who = useMe();
+  const signedIn = !!who?.user;
 
   const load = useCallback(
     () =>
@@ -74,17 +77,19 @@ export default function Hub() {
         <span className="spacer" />
         {listing && (
           <>
-            <button className="btn" onClick={() => setConnecting(true)} title="Connect a coding agent to every project on this hub over MCP">
-              Connect agent
-            </button>
+            {who !== undefined && !signedIn && (
+              <button className="btn" onClick={() => setConnecting(true)} title="Connect a coding agent to every project on this hub over MCP">
+                Connect agent
+              </button>
+            )}
             <button className="btn primary" onClick={() => setNewOpen(true)}><IconPlus size={12} /> Project</button>
           </>
         )}
-        <SignedInAs />
         <HelpMenu />
         <button className="btn ghost icon-btn" onClick={toggleTheme} title={dark ? "Light theme" : "Dark theme"} aria-label={dark ? "Light theme" : "Dark theme"}>
           {dark ? <IconSun /> : <IconMoon />}
         </button>
+        <SignedInAs hub />
       </header>
 
       <main className="hub-main">
@@ -293,54 +298,6 @@ function DeleteDialog(props: { project: HubProject; onClose: () => void; onDelet
         <div className="actions">
           <button type="button" className="btn ghost" onClick={props.onClose}>Cancel</button>
           <button type="submit" className="btn destroy" disabled={typed !== id || busy}>Delete project</button>
-        </div>
-    </Dialog>
-  );
-}
-
-type Client = "prompt" | "claude" | "codex" | "json";
-const CLIENTS: { id: Client; label: string; hint: string }[] = [
-  { id: "prompt", label: "Ask your agent", hint: "Paste this into Claude Code, Cursor, Codex, Grok or any coding agent with a terminal: it adds the server itself." },
-  { id: "claude", label: "Claude Code", hint: "Run this in a terminal. The tools are there from your next session." },
-  { id: "codex", label: "Codex", hint: "Run this in a terminal. The tools are there from your next session." },
-  { id: "json", label: "JSON config", hint: "Add this under mcpServers in your client's MCP config (Cursor, Claude Desktop, Windsurf, ...)." },
-];
-
-/** The MCP setup for the hub: a token file, then one client's command. */
-function ConnectDialog(props: { auth: boolean; onClose: () => void }) {
-  const [client, setClient] = useState<Client>("prompt");
-  const setup = mcpSetup({ origin: location.origin, host: location.host, auth: props.auth });
-  const current = CLIENTS.find((c) => c.id === client)!;
-
-  return (
-    <Dialog title="Connect an agent to this hub" className="connect-dialog" onClose={props.onClose}>
-        <p className="hub-muted">
-          Over MCP, your coding agent works in every project here: it lists and creates projects, and reads, writes and
-          runs their nodes, and you see each change in the workbench as it happens. One connection covers the whole
-          hub. It needs <a href="https://docs.astral.sh/uv/" target="_blank" rel="noreferrer">uv</a>{" "}
-          (or pipx) on its machine.
-        </p>
-        {setup.saveToken && (
-          <div className="connect-step">
-            <div className="connect-label">1. Save the hub's API token in a file only you can read</div>
-            <Code text={setup.saveToken} />
-            <div className="hub-muted connect-note">Run it, paste the token, press Enter, then Ctrl-D. Agents read the token from this file; it never goes into their config.</div>
-          </div>
-        )}
-        <div className="connect-step">
-          <div className="connect-label">{setup.saveToken ? "2. " : ""}Add the MCP server</div>
-          <div className="seg connect-tabs" role="tablist">
-            {CLIENTS.map((c) => (
-              <button key={c.id} type="button" role="tab" aria-selected={client === c.id} className={client === c.id ? "on" : ""} onClick={() => setClient(c.id)}>
-                {c.label}
-              </button>
-            ))}
-          </div>
-          <Code text={setup[client]} wrap={client === "prompt"} />
-          <div className="hub-muted connect-note">{current.hint}</div>
-        </div>
-        <div className="actions">
-          <button type="button" className="btn" onClick={props.onClose}>Done</button>
         </div>
     </Dialog>
   );

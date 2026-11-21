@@ -255,3 +255,124 @@ def test_a_server_starting_on_an_existing_list_takes_no_table_locks(users):
         db.query = query
         db.close()
     assert not [s for s in seen if s.lstrip().lower().startswith("create")]
+
+
+# -- agent tokens -----------------------------------------------------------------
+
+
+def test_an_agent_token_signs_in_as_its_user_until_revoked(users):
+    a = users.sign_in(ident("alice", "alice@example.com"), now=1)
+    row, token = users.create_token(a.id, "  my   laptop ", now=2)
+    assert token.startswith("exv_") and len(token) > 40
+    assert (row["name"], row["hint"], row["last_used"]) == ("my laptop", token[-4:], None)
+    assert users.by_token(token, now=3).id == a.id
+    assert users.by_token(token + "x", now=3) is None
+    assert users.by_token("s3cret", now=3) is None  # not an agent token: no lookup at all
+    [listed] = users.tokens(a.id)
+    assert listed == {**row, "last_used": 3}
+    assert token not in str(users.db.query("select * from user_tokens"))  # only its hash is kept
+    assert users.create_token(a.id, "", now=4)[0]["name"] == "agent"
+    with pytest.raises(KeyError):
+        users.create_token("nobody", "x")
+
+    b = users.sign_in(ident("bob"), now=5)
+    assert not users.revoke_token(b.id, row["id"])  # not bob's to revoke
+    assert users.by_token(token, now=6) is not None
+    assert users.revoke_token(a.id, row["id"])
+    assert users.by_token(token, now=6) is None  # at once, on this replica
+    assert [t["name"] for t in users.tokens(a.id)] == ["agent"]
+
+
+def test_agent_token_routes(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXUVIA_ADMINS", "alice")
+    with TestClient(create_app(tmp_path / "p")) as client:
+        assert client.get("/api/me", headers=BOB).json()["tokens"] is True
+        assert client.get("/api/me/tokens").status_code == 401
+        r = client.post("/api/me/tokens", json={"name": "Claude Code"}, headers=BOB)
+        assert r.status_code == 201
+        made = r.json()
+        token = {"Authorization": f"Bearer {made['token']}"}
+        assert [t["name"] for t in client.get("/api/me/tokens", headers=BOB).json()["tokens"]] == ["Claude Code"]
+        assert "token" not in client.get("/api/me/tokens", headers=BOB).json()["tokens"][0]
+        assert client.get("/api/me/tokens", headers=ALICE).json()["tokens"] == []  # each person sees their own
+
+        # No proxy headers: the token alone signs the caller in as bob.
+        me = client.get("/api/me", headers=token).json()["user"]
+        assert (me["id"], me["method"], me["role"]) == ("bob", "token", "member")
+        client.put("/api/nodes/nums", json={"source": NODE, "kind": "python"}, headers=token)
+        assert client.post("/api/nodes/nums/run", json={"wait": 60}, headers=token).status_code == 200
+        [run] = client.get("/api/nodes/nums/runs", headers=token).json()
+        assert (run["started_by"], run["started_by_user"]) == ("bob", me["uid"])
+        assert client.get("/api/users", headers=token).status_code == 403  # a member's token is a member
+
+        # A token can't mint or revoke tokens: a leaked one stays one.
+        assert client.post("/api/me/tokens", json={}, headers=token).status_code == 403
+        assert client.delete(f"/api/me/tokens/{made['id']}", headers=token).status_code == 403
+
+        # A disabled user's tokens stop working with them.
+        alice_token = client.post("/api/me/tokens", json={}, headers=ALICE).json()["token"]
+        client.patch(f"/api/users/{me['uid']}", json={"disabled": True}, headers=ALICE)
+        assert client.get("/api/project", headers=token).status_code == 403
+        client.patch(f"/api/users/{me['uid']}", json={"disabled": False}, headers=ALICE)
+        assert client.get("/api/project", headers=token).status_code == 200
+        # An admin's token is an admin.
+        assert client.get("/api/users", headers={"Authorization": f"Bearer {alice_token}"}).status_code == 200
+
+        assert client.delete("/api/me/tokens/nope", headers=BOB).status_code == 404
+        assert client.delete(f"/api/me/tokens/{made['id']}", headers=ALICE).status_code == 404  # not alice's
+        assert client.delete(f"/api/me/tokens/{made['id']}", headers=BOB).json() == {"ok": True}
+        r = client.get("/api/project", headers=token)
+        assert r.status_code == 401 and "agent token" in r.json()["detail"]
+
+
+def test_agent_tokens_need_a_user_list(tmp_path, monkeypatch):
+    monkeypatch.delenv("EXUVIA_AUTH")
+    with TestClient(create_app(tmp_path / "p")) as client:
+        assert client.get("/api/me").json()["tokens"] is False
+        assert client.post("/api/me/tokens", json={}).status_code == 404
+
+
+def test_a_hub_takes_agent_tokens_everywhere_and_exports_them(tmp_path):
+    with TestClient(create_hub_app(tmp_path / "hub")) as hub:
+        token = {"Authorization": f"Bearer {hub.post('/api/me/tokens', json={}, headers=ALICE).json()['token']}"}
+        assert hub.post("/api/projects", json={"id": "a"}, headers=token).status_code == 200
+        assert hub.get("/p/a/api/project", headers=token).status_code == 200
+        assert hub.get("/api/me", headers=token).json()["user"]["id"] == "alice"
+        export = hub.get("/api/hub/export", headers=token).content
+
+    with TestClient(create_hub_app(tmp_path / "fresh")) as hub:
+        assert hub.post("/api/hub/import", content=export, headers=ALICE).status_code == 200
+        assert hub.get("/api/projects", headers=token).status_code == 200
+
+
+def test_an_archive_from_before_agent_tokens_imports(tmp_path):
+    old = tmp_path / "old.db"
+    con = sqlite3.connect(old)
+    from exuvia.users import TABLES
+
+    for name in ("users", "user_identities"):
+        con.execute(TABLES[name])
+    con.execute("insert into users values ('', 'u1', 'alice', null, 'admin', 0, 1, 1)")
+    con.commit()
+    con.close()
+    store = UserStore(SQLiteDatabase(tmp_path / "u.db"), owns_db=True)
+    store.create_token(store.sign_in(ident("bob")).id, "x")
+    assert store.replace_from(old) == 1
+    assert store.db.query("select count(*) as n from user_tokens")[0]["n"] == 0
+    store.close()
+
+
+def test_a_user_list_from_before_agent_tokens_gains_the_table(tmp_path):
+    db = tmp_path / "u.db"
+    con = sqlite3.connect(db)
+    from exuvia.users import TABLES
+
+    for name in ("users", "user_identities"):
+        con.execute(TABLES[name])
+    con.commit()
+    con.close()
+    store = UserStore(SQLiteDatabase(db), owns_db=True)
+    a = store.sign_in(ident("alice"))
+    _, token = store.create_token(a.id)
+    assert store.by_token(token).id == a.id
+    store.close()
