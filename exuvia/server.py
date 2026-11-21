@@ -795,7 +795,7 @@ def create_app(root: str | Path) -> FastAPI:
 
 
 def create_hub_app(root: str | Path, templates: str | Path | None = None) -> FastAPI:
-    from .hub import PROJECT_ID, Hub
+    from .hub import PROJECT_ID, Hub, StillInUse
 
     hub = Hub(root, templates)
 
@@ -847,6 +847,8 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
             await hub.apply_template(project, body.template)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+        except StillInUse as e:
+            raise HTTPException(409, str(e)) from e
         ctx = await hub.get(project)
         return {"id": project, "name": ctx.ws.project.name, "nodes": sorted(p.stem for p in ctx.ws.project.node_files())}
 
@@ -854,7 +856,10 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
     async def project_delete(project: str) -> dict[str, Any]:
         if not PROJECT_ID.match(project) or not hub.exists(project):
             raise HTTPException(404, f"no project {project}")
-        await hub.delete(project)
+        try:
+            await hub.delete(project)
+        except StillInUse as e:
+            raise HTTPException(409, str(e)) from e
         return {"ok": True}
 
     @app.post("/api/schedule/tick")
@@ -884,6 +889,8 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
             restored = await hub.restore(blob)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+        except StillInUse as e:
+            raise HTTPException(409, str(e)) from e
         return {"ok": True, "projects": restored}
 
     return app
