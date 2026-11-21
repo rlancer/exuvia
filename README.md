@@ -984,8 +984,8 @@ site build fails when a section is added, renamed or removed without
 updating that map. The getting-started tutorial is the one hand-written page
 (`site/src/docs/getting-started.md`). `site/tools/capture.mjs` retakes the
 product screenshots from a running `exuvia serve` and renders the social
-card; `site/tools/ink.mjs` turns a generated woodcut into the transparent
-prints the pages use. The site is static (`site/dist`). It is built for the
+card. The animals on the landing page are low-poly models built in code
+(`site/src/lib/poly.ts`), with no image or model files. The site is static (`site/dist`). It is built for the
 root of its host unless `SITE_BASE` (for example `/exuvia`) names a sub-path
 to serve it from; every link, asset and the search index follow that base.
 `SITE_URL` (the origin only) makes the canonical and social-card URLs
