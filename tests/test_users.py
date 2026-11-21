@@ -234,3 +234,24 @@ def test_a_vanished_user_starts_over(tmp_path):
     b = store.sign_in(ident("alice"), now=1 + SEEN_EVERY + 1)
     assert b.id != a.id and [u["id"] for u in store.list()] == [b.id]
     store.close()
+
+
+def test_a_server_starting_on_an_existing_list_takes_no_table_locks(users):
+    """`create ... if not exists` still locks the table in Postgres, and that
+    deadlocked against a sign-in on another replica. Once the tables exist, a
+    server starting up must run no DDL at all."""
+    from exuvia import users as users_mod
+    from exuvia.db import open_database
+
+    users.sign_in(ident("alice"))
+    url = os.environ.get("EXUVIA_DB")
+    db = open_database(url) if url else SQLiteDatabase(users.db.file)
+    seen: list[str] = []
+    query = db.query
+    db.query = lambda sql, args=(): (seen.append(sql), query(sql, args))[1]
+    try:
+        users_mod._prepare(db)
+    finally:
+        db.query = query
+        db.close()
+    assert not [s for s in seen if s.lstrip().lower().startswith("create")]

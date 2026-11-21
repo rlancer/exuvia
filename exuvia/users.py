@@ -36,6 +36,7 @@ from typing import Any
 
 from .auth import Identity
 from .db import Database, database_url, scope_prefix, shared_database
+from .store import SCHEMA_LOCK_KEY
 
 ROLES = ("admin", "member")
 # How long a sign-in is answered from memory before the database is read
@@ -76,11 +77,19 @@ _prepared: "weakref.WeakSet[Any]" = weakref.WeakSet()
 
 
 def _prepare(db: Database) -> None:
+    """Create the tables once per database. In Postgres even ``create ...
+    if not exists`` locks the table, which can deadlock against a sign-in on
+    another replica, so once the tables exist no DDL runs at all. Creating
+    them takes the schema lock store.py uses, so replicas starting together
+    on a new database wait for the first one."""
     if db in _prepared:
         return
-    with db.transaction():
-        for ddl in (*TABLES.values(), *INDEXES):
-            db.query(ddl)
+    if not (db.columns("users") and db.columns("user_identities")):
+        with db.transaction():
+            if db.dialect == "postgres":
+                db.query(f"select pg_advisory_xact_lock({SCHEMA_LOCK_KEY})")
+            for ddl in (*TABLES.values(), *INDEXES):
+                db.query(ddl)
     _prepared.add(db)
 
 
