@@ -2,12 +2,12 @@ name: CI
 
 # Python tests, UI build, and the container image (remote executor run plus
 # the hub end-to-end test, tests/e2e/container_e2e.py). The website (site/) is
-# built and deployed by deploy-site.yml, so changes that touch only it, or only
-# Markdown, skip the two heavy jobs.
+# built and deployed by deploy-site.yml, so changes that touch only it (site/,
+# deploy-site.yml), or only Markdown, skip the two heavy jobs.
 #
 # The `main` ruleset requires both heavy jobs' checks on every PR, so pull
 # requests always start this workflow (no paths filter): `changes` decides
-# whether anything besides site/ and Markdown changed, and when nothing did
+# whether anything besides the site and Markdown changed, and when nothing did
 # the heavy jobs are skipped, which reports them as passing. If `changes`
 # itself fails they run anyway, so a broken filter never lets code through
 # untested. Pushes to main keep the paths filter; nothing requires checks there.
@@ -15,7 +15,7 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore: ["site/**", "**.md"]
+    paths-ignore: ["site/**", ".github/workflows/deploy-site.yml", "**.md"]
   pull_request:
 
 permissions:
@@ -53,7 +53,7 @@ jobs:
             printf 'Code changes:\n%s\n' "$code"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
-            echo "Only site/ and Markdown changed: skipping tests and the image build."
+            echo "Only the site and Markdown changed: skipping tests and the image build."
           fi
 
   test:
