@@ -3,19 +3,22 @@
  * shared (`og:image`). Every page names one (layouts/Base.astro), and the
  * brand page shows them all.
  *
+ * A card is a picture and no words: the site that unfolds the link sets the
+ * page's title and description beside it, and a card is often shown too
+ * small to read. The home page has one, the docs' front page has one, each
+ * group of docs pages shares one, and the brand page has one.
+ *
  * A card is a 1200 x 630 PNG in `public/og/`. Its source is a page of this
  * site, `/card/<name>/`, which exists only under `astro dev`;
- * `node tools/capture.mjs cards <site url>` photographs each one. The build
- * fails when a card has no PNG, so a docs page added to the site is given
- * its card or stops the build, never shared with the wrong picture.
+ * `bun tools/capture.mjs cards <site url>` photographs each one. The build
+ * fails when a card has no PNG, so a group of docs added to the site is
+ * given its card or stops the build, never shared with the wrong picture.
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { getDocs } from "./docs";
+import { GROUPS, getDocs } from "./docs";
 
-/** Where the site lives, as the cards print it. */
-export const HOST = "exuvia.lobster.mp";
 export const CARD = { width: 1200, height: 630 };
 
 /**
@@ -35,13 +38,11 @@ export type Card = {
   /** The PNG is `public/og/<name>.png`. */
   name: string;
   /** How it is drawn (pages/card/[...name].astro). */
-  look: "sea" | "docs" | "doc" | "brand";
-  /** The page it is for, root-relative. */
+  look: "sea" | "docs" | "group" | "brand";
+  /** A page that wears it, root-relative. */
   page: string;
-  /** Where in the site that page is. */
-  crumb?: string;
-  title: string;
-  summary: string;
+  /** What it is the card of, as the brand page says it. */
+  label: string;
   /** The animal of src/lib/poly.ts drawn on it. */
   animal: string;
   /** What the picture shows, for someone who cannot see it. */
@@ -49,7 +50,7 @@ export type Card = {
 };
 
 // The docs run from the oldest animal to the lobster: each group of pages has
-// one of the five, in outline, on its cards.
+// one of the five, in outline, on its card.
 const ANIMALS: Record<string, string> = {
   Start: "Waptia",
   Build: "Ceratiocaris",
@@ -58,6 +59,9 @@ const ANIMALS: Record<string, string> = {
   Project: "Homarus",
 };
 
+/** The card every docs page of `group` wears. */
+export const groupCard = (group: string) => `docs-${group.toLowerCase()}`;
+
 export async function getCards(): Promise<Card[]> {
   const docs = await getDocs();
   return [
@@ -65,42 +69,41 @@ export async function getCards(): Promise<Card[]> {
       name: "home",
       look: "sea",
       page: "/",
-      title: "A data workbench where the graph is the interface",
-      summary: "Plain Python and SQL files, per-node schedules, an agent on the graph.",
+      label: "Home page",
       animal: "Homarus",
-      alt: "exuvia: a data workbench where the graph is the interface. A low-poly blue lobster under water, with the outlines of older shelled animals behind it.",
+      alt: "A low-poly blue lobster under water, with the outlines of older shelled animals adrift behind it.",
     },
     {
       name: "docs",
       look: "docs",
       page: "/docs/",
-      crumb: "Docs",
-      title: "Documentation",
-      summary: "Guides and reference: nodes, schedules, the agent, views, deployment and the HTTP API.",
+      label: "Docs",
       animal: "Homarus",
-      alt: "exuvia documentation. A low-poly blue lobster, and above it the outlines of four older shelled animals.",
+      alt: "A low-poly blue lobster, and above it the outlines of four older shelled animals.",
     },
-    ...docs.map(
-      (doc): Card => ({
-        name: `docs-${doc.slug}`,
-        look: "doc",
-        page: `/docs/${doc.slug}/`,
-        crumb: `Docs / ${doc.group}`,
-        title: doc.title,
-        summary: doc.summary,
-        animal: ANIMALS[doc.group] ?? "Homarus",
-        alt: `exuvia docs: ${doc.title}. ${doc.summary}`,
-      }),
-    ),
+    ...GROUPS.flatMap((group): Card[] => {
+      const first = docs.find((doc) => doc.group === group);
+      const animal = ANIMALS[group];
+      if (!first) return [];
+      if (!animal) throw new Error(`The docs group "${group}" has no animal for its social card (src/lib/cards.ts).`);
+      return [
+        {
+          name: groupCard(group),
+          look: "group",
+          page: `/docs/${first.slug}/`,
+          label: `Docs: ${group}`,
+          animal,
+          alt: `The outline of ${animal}, a shelled animal drawn in low-poly lines.`,
+        },
+      ];
+    }),
     {
       name: "brand",
       look: "brand",
       page: "/brand/",
-      crumb: "Brand",
-      title: "The exuvia brand",
-      summary: "The name, the mark, the colours, the type and the animals.",
+      label: "Brand",
       animal: "Homarus",
-      alt: "The exuvia brand: the mark, a low-poly lobster's claw, above the colours of the site.",
+      alt: "The exuvia mark, a low-poly lobster's claw, above the colours of the site.",
     },
   ];
 }
@@ -114,7 +117,7 @@ export async function getCard(name: string): Promise<Card & { src: string }> {
     // While the cards are being drawn there is nothing to photograph yet.
     if (import.meta.env.DEV) return { ...card, src: `/og/${name}.png` };
     throw new Error(
-      `The social card public/og/${name}.png is missing. With the site running (npm run dev): node tools/capture.mjs cards http://localhost:4380`,
+      `The social card public/og/${name}.png is missing. With the site running (bun run dev): bun tools/capture.mjs cards http://localhost:4380`,
     );
   }
   // Sites that unfold links keep the picture by its address, so the address

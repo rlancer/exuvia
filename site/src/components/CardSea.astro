@@ -102,10 +102,10 @@ const ridges = RIDGES.map((colour, k) => {
   return kelp.join("") + facets.join("");
 });
 
-// ---- two of the old shells, adrift ----
+// ---- two of the old shells, adrift, clear of the lobster in the middle ----
 const drift = [
-  { name: "Eryma", x: 80, y: 372, unit: 13, yaw: -0.3 },
-  { name: "Waptia", x: 452, y: 116, unit: 10, yaw: Math.PI + 0.5 },
+  { name: "Eryma", x: 64, y: 196, unit: 13, yaw: -0.3 },
+  { name: "Waptia", x: 900, y: 132, unit: 10, yaw: Math.PI + 0.5 },
 ].map((shell) => {
   const { svg } = polySvg(shell.name, { yaw: shell.yaw, unit: shell.unit, line: rgba(LIGHT, 0.2) });
   return `<g transform="translate(${shell.x} ${shell.y})">${svg}</g>`;

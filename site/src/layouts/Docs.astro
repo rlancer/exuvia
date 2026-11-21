@@ -1,5 +1,6 @@
 ---
 import Base from "./Base.astro";
+import { groupCard } from "../lib/cards";
 import { GROUPS, getDocs, type DocPage } from "../lib/docs";
 import { markdownPath, url } from "../lib/paths";
 
@@ -25,7 +26,7 @@ const icon = (d: string) => `<svg viewBox="0 0 16 16" width="16" height="16" ari
   title={`${title} | exuvia docs`}
   description={description}
   current="docs"
-  card={page ? `docs-${page.slug}` : "docs"}
+  card={page ? groupCard(page.group) : "docs"}
   kind={page ? "article" : "website"}
 >
   {markdown && <link slot="head" rel="alternate" type="text/markdown" href={markdown} title="This page as Markdown" />}
