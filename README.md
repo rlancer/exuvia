@@ -76,7 +76,7 @@ section.
 
 ## Set up with your agent
 
-A coding agent that has a terminal (Claude Code, Cursor, Codex, ...) can do
+A coding agent that has a terminal (Claude Code, Cursor, Codex, Grok, ...) can do
 the whole setup: install exuvia, create a project, start the workbench and
 connect itself to the graph. Open the agent in the folder the project should
 live in and paste this:
@@ -87,9 +87,9 @@ each step of an analysis is a Python or SQL file in
 a graph: https://github.com/rlancer/exuvia
 
 1. Check that `uvx --version` runs. If it does not and `pipx`
-   is installed, run `pipx install "exuvia[mcp]"` and leave
-   the `uvx` and `uvx --from "exuvia[mcp]"` prefixes off the
-   commands below. If neither is installed, install uv:
+   is installed, run `pipx install exuvia` and leave the
+   `uvx` prefix off the commands below. If neither is
+   installed, install uv:
    https://docs.astral.sh/uv/getting-started/installation/
 2. Create a project in this folder:
    `uvx exuvia init my-research`
@@ -109,8 +109,10 @@ a graph: https://github.com/rlancer/exuvia
    so I see each step in the workbench.
 5. Add an MCP server named `exuvia` to your own configuration,
    so you have the same tools natively from your next session
-   on. Its command:
-   `uvx --from "exuvia[mcp]" exuvia mcp --url <address>`
+   on. Use your CLI's own command for it if it has one, such
+   as `claude mcp add`, `codex mcp add` or `grok mcp add`.
+   The server's command:
+   `uvx exuvia mcp --url <address>`
    It relays to the workbench, so tell me that the workbench
    from step 3 has to be running whenever I use it.
 6. Run the `hello` node with the `run_node` tool to check the
@@ -129,8 +131,10 @@ What you end up with:
   your agent already runs on.
 - **An MCP server that relays to the workbench.** In later sessions start
   `exuvia serve my-research` before the agent, or the `exuvia` MCP server
-  has nothing to connect to. [MCP](#mcp-the-agents-tools-in-your-own-agent)
-  has the other mode, which opens the project without a running server.
+  has nothing to connect to: its tools then answer with how to start the
+  workbench, so the agent can do it or ask you to.
+  [MCP](#mcp-the-agents-tools-in-your-own-agent) has the other mode, which
+  opens the project without a running server.
 
 To put exuvia on a server instead of your machine, the prompt under
 [Hand it to an agent](#hand-it-to-an-agent) deploys a hub with Docker
@@ -740,10 +744,8 @@ plus `list_revisions`, `read_revision`, `restore_node` and
 `restore_view_file`) and a `guide` tool. The agent's instructions (how exuvia
 works, this project's parameters and `AGENTS.md`) are the server's
 instructions, and `guide` returns them for clients that don't pass those on.
-It needs the `mcp` extra.
 
 ```bash
-pip install "exuvia[mcp]"
 exuvia mcp my-project                                # open the project in this process
 exuvia mcp --url http://127.0.0.1:7420               # relay to a running `exuvia serve`
 exuvia mcp --url http://127.0.0.1:7420/p/my-project  # ...or to one project of a hub
@@ -753,15 +755,16 @@ Add it to Claude Code (or any client's MCP config) with `uvx`, so nothing
 has to be installed first:
 
 ```bash
-claude mcp add exuvia -- uvx --from "exuvia[mcp]" exuvia mcp /path/to/my-project
+claude mcp add exuvia -- uvx exuvia mcp /path/to/my-project
 ```
 
 ```json
-{"mcpServers": {"exuvia": {"command": "uvx", "args": ["--from", "exuvia[mcp]", "exuvia", "mcp", "/path/to/my-project"]}}}
+{"mcpServers": {"exuvia": {"command": "uvx", "args": ["exuvia", "mcp", "/path/to/my-project"]}}}
 ```
 
-With pipx the command is `pipx run --spec "exuvia[mcp]" exuvia mcp ...`, or
-plain `exuvia mcp ...` after `pipx install "exuvia[mcp]"`. To have your agent
+With pipx the command is `pipx run exuvia mcp ...`, or plain `exuvia mcp ...`
+after `pipx install exuvia`. (Older commands with `exuvia[mcp]` still work:
+the MCP SDK used to be an extra and is now always installed.) To have your agent
 install exuvia and add the server itself, see
 [Set up with your agent](#set-up-with-your-agent).
 
@@ -931,6 +934,7 @@ mise run ui-build  # bundle the UI and the views runtime into exuvia/static
 mise run test
 cd ui && npm test  # views runtime unit tests (Vitest)
 mise run e2e       # build the container image and drive a hub in it over HTTP
+mise run agent-e2e # hand the setup prompt to a coding agent and check its work
 mise run lint-actions # actionlint + shellcheck over .github/workflows
 mise run site-dev   # the website on :4380
 mise run site-build # typecheck + static build into site/dist
@@ -942,6 +946,35 @@ the frame loads nothing itself. `exuvia serve` (and every hub project) serves
 it at `/api/view-runtime/runtime.js`, so a page that embeds a headless exuvia
 gets the runtime matching the server it talks to. Build once before using
 views from the dev server.
+
+### Testing the setup prompt with an agent
+
+`tests/e2e/agent_setup_e2e.py` checks that a coding agent can get from
+nothing to a working analysis with only the prompt under
+[Set up with your agent](#set-up-with-your-agent), read from this README.
+It runs two headless sessions in an empty folder: the setup prompt, then a
+new session asked for a small analysis, so the MCP server the agent added
+is the one it uses. It checks that the project, the workbench, the `exuvia`
+MCP entry and the `hello` run exist, then that the analysis nodes were added,
+ran fresh, and ran through MCP. The default agent is the Grok Build CLI
+(`agent` or `grok`) with `grok-4.5`:
+
+```bash
+mise run agent-e2e                                        # exuvia from PyPI
+mise exec -- python tests/e2e/agent_setup_e2e.py --source local   # this checkout
+mise exec -- python tests/e2e/agent_setup_e2e.py --model grok-4.7 --phase setup
+```
+
+`--cold-analysis` stops the workbench before the second session, so the agent
+has to start it, prompted only by what the MCP tools answer.
+
+`--source local` builds a wheel of the checkout, versioned above the latest
+release, and points uv at it, so the agent's plain `uvx exuvia` commands run
+the code under test. Each run starts uv with an empty cache, as a new user
+has (`--warm-cache` uses yours). The agent's user-level MCP config
+(`~/.grok/config.toml`) is saved first and restored afterwards. Transcripts and `report.json` are
+kept in a `-logs` folder next to the work folder. When a run fails, fix the
+prompt or exuvia rather than the agent's instructions.
 
 ### Building the image
 

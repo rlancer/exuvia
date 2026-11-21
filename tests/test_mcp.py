@@ -150,12 +150,42 @@ def test_remote_backend_relays_to_a_running_server(served):
         assert revs[0]["origin"] == "mcp"
 
 
-def test_remote_backend_reports_an_unreachable_server():
+def test_remote_backend_starts_without_a_running_server():
+    """No workbench yet: the relay still lists the tools, and calls (and
+    the guide) say how to start one, so the agent can fix it itself."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]  # nothing listens here once the socket closes
-    with pytest.raises(RuntimeError, match="could not reach exuvia"):
-        asyncio.run(RemoteBackend(f"http://127.0.0.1:{port}").start())
+
+    async def go():
+        backend = RemoteBackend(f"http://127.0.0.1:{port}")
+        await backend.start()
+        try:
+            return await backend.tools(), await backend.instructions(), await backend.call("list_nodes", {})
+        finally:
+            await backend.stop()
+
+    tools, instructions, (ok, text) = asyncio.run(go())
+    assert {t["name"] for t in tools} == {t["name"] for t in TOOLS}
+    assert not ok
+    for said in (text, instructions):
+        assert "could not reach exuvia" in said and f"exuvia serve <project folder> --port {port}" in said
+
+
+def test_remote_backend_picks_up_a_server_started_later(served):
+    url, _ = served
+
+    async def go():
+        backend = RemoteBackend("http://127.0.0.1:1")  # nothing there
+        await backend.start()
+        backend.api = f"{url}/api"  # ...until the workbench comes up
+        try:
+            return await backend.call("list_nodes", {}), await backend.instructions()
+        finally:
+            await backend.stop()
+
+    (ok, _), instructions = asyncio.run(go())
+    assert ok and "could not reach" not in instructions
 
 
 def test_stdio_end_to_end(tmp_path):

@@ -319,6 +319,7 @@ dependencies = [
     { name = "duckdb" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "mcp" },
     { name = "openai" },
     { name = "pandas" },
     { name = "pyarrow" },
@@ -331,9 +332,6 @@ dependencies = [
 dev = [
     { name = "pytest" },
 ]
-mcp = [
-    { name = "mcp" },
-]
 postgres = [
     { name = "psycopg", extra = ["binary"] },
 ]
@@ -345,7 +343,7 @@ requires-dist = [
     { name = "duckdb", specifier = ">=1.1" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.3,<3" },
+    { name = "mcp", specifier = ">=2.3,<3" },
     { name = "openai", specifier = ">=1.40" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },
