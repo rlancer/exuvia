@@ -198,6 +198,7 @@ export const AgentPanel = forwardRef<
           The agent builds, runs, and fixes nodes for you. To turn it on, set <code>ANTHROPIC_API_KEY</code> (Claude) or{" "}
           <code>OPENROUTER_API_KEY</code> (DeepSeek and other models via OpenRouter) in your environment or the
           project's <code>.env</code>, then restart <code>exuvia serve</code>. <code>EXUVIA_MODEL</code> picks the model.
+          Through a Portkey gateway, set <code>PORTKEY_API_KEY</code> and <code>EXUVIA_MODEL</code>.
           <br />
           <br />
           Everything else (editing, running, scheduling, querying) works without it.
