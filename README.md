@@ -1162,8 +1162,9 @@ git clone https://github.com/rlancer/exuvia
 cd exuvia
 mise run sync      # uv sync + bun install
 mise run ui-dev    # Vite on :5180 proxying /api → :7420
-mise run demo      # exuvia serve examples/markets
+mise run demo      # ui-build if needed, then exuvia serve examples/markets
 mise run ui-build  # bundle the UI and the views runtime into exuvia/static
+mise run ui-typecheck # tsc over the UI (CI's `bun run build` runs it too)
 mise run test
 mise run ui-test   # views runtime unit tests (Vitest)
 mise run e2e       # build the container image and drive a hub in it over HTTP
@@ -1181,6 +1182,16 @@ UI tests as `bun run test`: plain `bun test` is bun's own test runner. The
 one step on Node is `wrangler dev` (`mise run site-cf-dev`), whose local
 Workers runtime does not start under bun; mise installs Node for that task
 alone.
+
+`sync`, `ui-build` and `demo` run `scripts/dev.py`, which makes a fresh git
+worktree ready in seconds. It keeps uv's and bun's package caches in the
+clone's git dir (`.git/exuvia-cache/`), on the same drive as every worktree,
+so installs hardlink packages instead of copying them. It also keeps the
+built UI keyed on the content of `ui/` (uncommitted edits included), so a
+worktree that hasn't changed the UI copies the build in instead of running
+Vite. A build skips `tsc` and runs both Vite builds at once; `cd ui && bun
+run build` is the full build with the typecheck, as CI runs it.
+`.claude/launch.json` starts `demo` and `ui-dev` from an agent's browser pane.
 
 The views runtime is a second build (`ui/vite.runtime.config.ts`): one
 self-contained script, because the page hands it to the frame as text and

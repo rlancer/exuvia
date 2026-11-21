@@ -11,7 +11,8 @@ things make a fresh worktree start in seconds rather than minutes:
   (`.git/exuvia-cache/`), on the same drive as every worktree, so installs
   hardlink files out of the cache instead of copying them (a cache on
   another drive, the default on Windows when the clone is not on C:, means
-  copying ~20k files per worktree).
+  copying ~20k files per worktree). bun is told to hardlink
+  (`--backend=hardlink`): on Windows it copies by default.
 - The built UI is kept per content of `ui/` (a git tree hash, so uncommitted
   edits count), shared by all worktrees: a worktree that has not touched
   the UI copies the build in instead of running Vite. A build skips `tsc`
@@ -67,7 +68,7 @@ def run(cmd: list[str], cwd: Path = ROOT, env: dict[str, str] | None = None) -> 
 def sync() -> None:
     env = tool_env()
     run(["uv", "sync", "--extra", "dev"], env=env)
-    run(["bun", "install"], cwd=UI, env=env)
+    run(["bun", "install", "--backend=hardlink"], cwd=UI, env=env)
 
 
 def ui_key(cache: Path) -> str:
@@ -84,7 +85,7 @@ def build_ui(dest: Path, runtime: Path, env: dict[str, str]) -> None:
     """The app into dest and the views runtime into runtime, side by side;
     the runtime then moves to dest/view-runtime (the app build empties its
     outDir, so the two cannot share one while running)."""
-    run(["bun", "install"], cwd=UI, env=env)
+    run(["bun", "install", "--backend=hardlink"], cwd=UI, env=env)
     bun = shutil.which("bun") or "bun"
     procs = [
         subprocess.Popen([bun, "run", "vite", "build", *args], cwd=UI, env=env)
