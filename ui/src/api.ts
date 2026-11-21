@@ -218,10 +218,40 @@ export const api = {
 export interface Me {
   /** How the server identifies people: a sign-in proxy's `headers`, a shared `token`, or `none`. */
   auth: "headers" | "token" | "none";
-  user: { id: string; user: string | null; email: string | null; method: string } | null;
+  user: {
+    /** The name records show: the user name, else the email. */
+    id: string;
+    user: string | null;
+    email: string | null;
+    method: string;
+    /** The stable user id in the user list. */
+    uid: string | null;
+    role: "admin" | "member" | null;
+  } | null;
 }
 
 export const me = async () => (await sendTo("GET", "/api/me")).json() as Promise<Me>;
+
+/** Someone in the user list (`GET /api/users`, admins only). */
+export interface UserRow {
+  id: string;
+  name: string;
+  email: string | null;
+  role: "admin" | "member";
+  disabled: boolean;
+  /** Named in EXUVIA_ADMINS: always an admin, never disabled. */
+  pinned_admin: boolean;
+  created_at: number;
+  last_seen: number;
+  identities: { method: string; subject: string; email: string | null; created_at: number; last_seen: number }[];
+}
+
+/** The server's user list (served at `/api/users` in both shapes, not under a project). */
+export const usersApi = {
+  list: async () => ((await sendTo("GET", "/api/users")).json() as Promise<{ users: UserRow[] }>).then((r) => r.users),
+  update: async (id: string, change: { role?: "admin" | "member"; disabled?: boolean }) =>
+    (await sendTo("PATCH", `/api/users/${encodeURIComponent(id)}`, change)).json() as Promise<UserRow>,
+};
 
 /** A project on a hub, as `GET /api/projects` lists it. */
 export interface HubProject {

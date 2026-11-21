@@ -359,6 +359,12 @@ pre.log { margin: 0; padding: 10px 14px; font-size: 11.5px; line-height: 1.5; wh
 .field select { padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); }
 .dialog p { margin: 0; }
 .connect-dialog { width: min(620px, calc(100% - 32px)); max-height: calc(100% - 32px); overflow: auto; }
+.users-dialog { width: min(760px, calc(100% - 32px)); max-height: calc(100% - 32px); }
+.users-dialog .hint { color: var(--muted); font-size: 12.5px; }
+.users-scroll { overflow: auto; min-height: 0; border: 1px solid var(--line); border-radius: 6px; }
+table.grid.users { font-family: inherit; }
+table.grid.users tr.disabled td { color: var(--faint); text-decoration: line-through; }
+table.grid.users tr.disabled td:last-child { text-decoration: none; }
 .connect-step { display: flex; flex-direction: column; gap: 8px; }
 .connect-label { font-weight: 600; font-size: 12.5px; }
 .connect-note { font-size: 12px; }

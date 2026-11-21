@@ -37,6 +37,8 @@
 #   EXUVIA_AUTH_USER_HEADER / EXUVIA_AUTH_EMAIL_HEADER  other header names
 #   EXUVIA_AUTH_TRUSTED_PROXIES  the proxy's IPs or CIDRs: identity headers
 #                      from any other address are ignored
+#   EXUVIA_ADMINS      user names or emails (comma-separated) who are always
+#                      admins: they manage everyone else under Users
 #                      (README "Schedules, auth and settings")
 #   ANTHROPIC_API_KEY  optional: turns on the built-in agent (or OPENROUTER_API_KEY)
 #
@@ -82,6 +84,7 @@ services:
       EXUVIA_AUTH_USER_HEADER: ${EXUVIA_AUTH_USER_HEADER:-}
       EXUVIA_AUTH_EMAIL_HEADER: ${EXUVIA_AUTH_EMAIL_HEADER:-}
       EXUVIA_AUTH_TRUSTED_PROXIES: ${EXUVIA_AUTH_TRUSTED_PROXIES:-}
+      EXUVIA_ADMINS: ${EXUVIA_ADMINS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes:
