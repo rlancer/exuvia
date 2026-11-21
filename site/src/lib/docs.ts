@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Marked, type Tokens } from "marked";
 import { codeFigure, escapeHtml, getHighlighter } from "./highlight";
-import { url } from "./paths";
+import { absolute, markdownPath, url } from "./paths";
 
 type PageSpec = {
   slug: string;
@@ -146,6 +146,8 @@ export type DocPage = {
   toc: TocEntry[];
   /** Plain text for the search index. */
   text: string;
+  /** The page as standalone Markdown for agents, served at /docs/<slug>.md. */
+  markdown: string;
 };
 
 const SITE_ROOT = process.cwd();
@@ -192,6 +194,36 @@ export function agentSetupPrompt(): string {
   const block = section && /^```text\n([\s\S]*?)\n```$/m.exec(section.replace(/\r\n/g, "\n"));
   if (!block) throw new Error(`README.md "## ${AGENT_SETUP}" has no \`\`\`text block for the landing page to show.`);
   return block[1];
+}
+
+/**
+ * The page's Markdown as an agent reads it on its own: a `# title` and the
+ * summary on top, README headings moved up a level to sit under that title,
+ * and README `#anchor` links pointed at the Markdown page that holds them.
+ * Code fences are left exactly as written.
+ */
+function agentMarkdown(spec: PageSpec, title: string, markdown: string, anchors: Map<string, string>): string {
+  const fromReadme = "heading" in spec.source;
+  let fenced = false;
+  const body = markdown
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => {
+      const fence = line.trimStart().startsWith("```");
+      if (fence) fenced = !fenced;
+      if (fenced || fence) return line;
+      if (fromReadme) line = line.replace(/^#(#{2,5}) /, "$1 ");
+      // The HTML renderer has already failed the build on an anchor no page holds.
+      return line.replace(/\]\(#([^)\s]+)\)/g, (_, id: string) => {
+        const [page, hash] = anchors.get(id)!.split("#");
+        if (page === `/docs/${spec.slug}/`) return `](#${id})`;
+        const slug = page.replace(/^\/docs\/|\/$/g, "");
+        return `](${absolute(markdownPath(slug))}${hash ? `#${hash}` : ""})`;
+      });
+    })
+    .join("\n")
+    .trim();
+  return `# ${title}\n\n> ${spec.summary}\n\n${body}\n`;
 }
 
 function inlineText(tokens: Tokens.Generic[] | undefined): string {
@@ -297,6 +329,15 @@ async function build(): Promise<DocPage[]> {
       .replace(/&amp;/g, "&")
       .replace(/\s+/g, " ")
       .trim();
-    return { slug: spec.slug, group: spec.group, title, summary: spec.summary, html, toc, text };
+    return {
+      slug: spec.slug,
+      group: spec.group,
+      title,
+      summary: spec.summary,
+      html,
+      toc,
+      text,
+      markdown: agentMarkdown(spec, title, markdown, anchors),
+    };
   });
 }

@@ -31,6 +31,8 @@ const card = Astro.site ? new URL(url("/og.png"), Astro.site).href : url("/og.pn
     <meta property="og:description" content={description} />
     <meta property="og:image" content={card} />
     <meta name="twitter:card" content="summary_large_image" />
+    <link rel="alternate" type="text/plain" href={url("/llms.txt")} title="llms.txt" />
+    <slot name="head" />
   </head>
   <body>
     <a class="skip" href="#main">Skip to content</a>

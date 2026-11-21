@@ -10,3 +10,18 @@ export function url(path: string): string {
   if (!path.startsWith("/")) throw new Error(`url() takes a root-relative path, got "${path}"`);
   return BASE + path;
 }
+
+/**
+ * `url()`, made absolute when the build knows its origin (SITE_URL). Text an
+ * agent reads away from the site (the Markdown pages, llms.txt) uses this so
+ * its links still resolve once copied elsewhere.
+ */
+export function absolute(path: string): string {
+  const site = import.meta.env.SITE;
+  return site ? new URL(url(path), site).href : url(path);
+}
+
+/** The Markdown twin of a docs page: /docs/nodes/ → /docs/nodes.md */
+export function markdownPath(slug: string): string {
+  return `/docs/${slug}.md`;
+}
