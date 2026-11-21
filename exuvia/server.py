@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import html
 import json
 import os
 import re
@@ -30,7 +31,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import _STARTED, __version__
+from . import _STARTED, __version__, auth
 from .agent import TOOLS, Agent
 from .arrowstream import MEDIA_TYPE as ARROW_STREAM, ArrowStream, wants_arrow
 from .project import NODE_NAME, PARAM_TYPES, coerce_param
@@ -755,10 +756,27 @@ def _browser_open() -> bool:
 
 
 def _install_common(app: FastAPI) -> None:
-    """CORS and the optional shared-secret auth, for both app shapes."""
+    """CORS, who is signed in (EXUVIA_AUTH) and the optional shared-secret
+    auth, for both app shapes."""
     origins = [o for o in os.environ.get("EXUVIA_CORS_ORIGINS", "").split(",") if o]
     if origins:  # e.g. https://lobster.mp when embedded in another app
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"], allow_headers=["*"])
+
+    headers = auth.header_auth()
+    api_token = os.environ.get("EXUVIA_API_TOKEN")
+    method = "headers" if headers else ("token" if api_token else "none")
+
+    @app.get("/api/me")
+    def me() -> dict[str, Any]:
+        """Who this request is from: ``user`` is null for a caller with only
+        the API token (or on a server with no auth). ``auth`` is how this
+        server identifies people: ``headers``, ``token`` or ``none``."""
+        ident = auth.current()
+        return {"auth": method, "user": ident.as_dict() if ident else None}
+
+    if not headers and not api_token:
+        return
+    browser_open = _browser_open() if api_token and not headers else False
 
     # API clients send `Authorization: Bearer <token>`; browsers open
     # `/?token=<token>` once and get an HttpOnly cookie (EventSource can't
@@ -766,12 +784,12 @@ def _install_common(app: FastAPI) -> None:
     # network), every page load hands out the cookie, so people never type
     # the token; the API still turns away callers that have neither cookie
     # nor token, and SameSite=Lax keeps other sites from riding the cookie.
-    api_token = os.environ.get("EXUVIA_API_TOKEN")
-    if not api_token:
-        return
-    browser_open = _browser_open()
-
+    #
+    # With EXUVIA_AUTH=headers a proxy in front has signed the person in and
+    # says who they are on every request, the page and the API alike. The API
+    # token, when set, still lets agents and MCP clients in without them.
     def give_cookie(request: Request, resp: Any) -> Any:
+        assert api_token
         resp.set_cookie("exuvia_token", api_token, httponly=True, samesite="lax",
                         secure=request.url.scheme == "https")
         return resp
@@ -779,9 +797,28 @@ def _install_common(app: FastAPI) -> None:
     def is_api(path: str) -> bool:
         return path.startswith("/api/") or bool(_HUB_API.match(path))
 
+    def unidentified(path: str) -> Any:
+        assert headers is not None
+        detail = (
+            f"not signed in: exuvia expects the {headers.user_header} or {headers.email_header} "
+            "header from the sign-in proxy in front of it"
+        )
+        if is_api(path):
+            return JSONResponse({"detail": detail}, status_code=401)
+        return HTMLResponse(f"<!doctype html><title>exuvia: not signed in</title><p>{html.escape(detail)}.</p>",
+                            status_code=401)
+
     @app.middleware("http")
-    async def require_token(request: Request, call_next: Callable[[Request], Awaitable[Any]]):
+    async def require_auth(request: Request, call_next: Callable[[Request], Awaitable[Any]]):
         path = request.url.path
+        if path == "/healthz":  # liveness: no auth
+            return await call_next(request)
+        ident = headers.identify(request.headers, request.client.host if request.client else None) if headers else None
+        if ident is not None:
+            with auth.signed_in(ident):
+                return await call_next(request)
+        if not api_token:  # header auth alone: nobody gets in without the headers
+            return unidentified(path)
         qs_token = request.query_params.get("token")
         if qs_token is not None and not is_api(path):
             if not hmac.compare_digest(qs_token.encode(), api_token.encode()):
@@ -789,6 +826,8 @@ def _install_common(app: FastAPI) -> None:
             return give_cookie(request, RedirectResponse(path or "/"))
         if is_api(path):
             if not _token_ok(request, api_token):
+                if headers:
+                    return unidentified(path)
                 return JSONResponse({"detail": "unauthorized"}, status_code=401)
             return await call_next(request)
         resp = await call_next(request)
@@ -955,7 +994,11 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
         app.mount("/assets", StaticFiles(directory=STATIC / "assets"), name="assets")
 
         def authorized(request: Request) -> bool:
+            if auth.current() is not None:  # signed in through the proxy
+                return True
             token = os.environ.get("EXUVIA_API_TOKEN")
+            if auth.header_auth() is not None:
+                return bool(token) and _token_ok(request, token)
             return not token or _browser_open() or _token_ok(request, token)
 
         @app.get("/", response_class=HTMLResponse)

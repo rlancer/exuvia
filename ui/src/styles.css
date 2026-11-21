@@ -98,6 +98,7 @@ code, pre, .mono { font-family: var(--mono); }
 .counts { display: flex; gap: 10px; color: var(--muted); font-size: 12px; }
 .counts span { display: inline-flex; align-items: center; gap: 5px; }
 .spacer { flex: 1; }
+.signed-in { color: var(--muted); font-size: 12px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .main { display: grid; grid-template-columns: minmax(0, 1fr) clamp(380px, 32vw, 600px) 340px; min-height: 0; }
 .main.agent-collapsed { grid-template-columns: minmax(0, 1fr) clamp(400px, 38vw, 680px) 40px; }

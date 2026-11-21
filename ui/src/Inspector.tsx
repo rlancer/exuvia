@@ -308,6 +308,7 @@ function RunsTab({ node, logs }: { node: GraphNode; logs: Record<string, string>
             <span>{r.status}</span>
             <span className="trig">
               {r.trigger}
+              {r.started_by ? ` · ${r.started_by}` : ""}
               {r.error ? <span className="err"> · {r.error}</span> : r.rows != null ? ` · ${fmtNum(r.rows)} rows` : ""}
             </span>
             <span className="when">{dur(r.started_at, r.finished_at) || ago(r.queued_at)} · {ago(r.queued_at)}</span>
@@ -371,7 +372,7 @@ export function Overview(props: { nodes: GraphNode[]; onSelect: (n: string) => v
             <li key={r.id} className={`s-${r.status}`} onClick={() => props.onSelect(r.node)}>
               <span className="dot" />
               <span>{r.status}</span>
-              <span className="trig"><span className="mono">{r.node}</span> · {r.trigger}</span>
+              <span className="trig"><span className="mono">{r.node}</span> · {r.trigger}{r.started_by ? ` · ${r.started_by}` : ""}</span>
               <span className="when">{ago(r.queued_at)}</span>
             </li>
           ))}

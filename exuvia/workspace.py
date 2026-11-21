@@ -44,6 +44,7 @@ from typing import Any, Iterator
 
 from croniter import croniter
 
+from . import auth
 from .arrowstream import ArrowStream
 from .artifacts import artifact_key, artifact_store
 from .events import EventBus
@@ -113,14 +114,15 @@ class Workspace:
     async def start(self) -> None:
         self.bus.bind(asyncio.get_running_loop())
         self.executor.start()
-        # A fresh context: a change the watcher sees was made by editing files,
-        # not by whichever request happened to load the project.
+        # Fresh contexts: a change the watcher sees was made by editing files,
+        # and a scheduled run was started by the clock, not by whichever
+        # request (and signed-in person) happened to load the project.
         self._stop_watching = asyncio.Event()
         self._tasks = [asyncio.create_task(self._watch_files(self._stop_watching), context=Context())]
         if artifact_store() is not None:
-            self._tasks.append(asyncio.create_task(self._sync_artifacts()))
+            self._tasks.append(asyncio.create_task(self._sync_artifacts(), context=Context()))
         if SCHEDULER == "internal":
-            self._tasks.append(asyncio.create_task(self._schedule_loop()))
+            self._tasks.append(asyncio.create_task(self._schedule_loop(), context=Context()))
 
     async def stop(self) -> None:
         """Stop the background tasks and wait for them to finish. Once this
@@ -148,7 +150,9 @@ class Workspace:
     def reload(self) -> None:
         with self._edit_lock:
             self.graph = self.project.load()
-            self.record_code(_ORIGIN.get() or "file")
+            origin = _ORIGIN.get()
+            # A change nobody claimed was a hand edit, whoever is signed in.
+            self.record_code(origin or "file", author=auth.current_id() if origin else None)
         self.bus.publish({"type": "graph"})
 
     # -- code revisions ------------------------------------------------------
@@ -171,10 +175,11 @@ class Workspace:
                 files[name] = (None, None, p)
         return files
 
-    def record_code(self, origin: str) -> int:
+    def record_code(self, origin: str, author: str | None = None) -> int:
         """Store a revision for every versioned file whose content differs
-        from its latest revision, and for every one that disappeared. Returns
-        how many were recorded."""
+        from its latest revision, and for every one that disappeared, saved
+        by ``author`` (a signed-in person) through ``origin``. Returns how
+        many were recorded."""
         latest = self.store.latest_code()
         changes: list[CodeChange] = []
         files = self._code_files()
@@ -189,7 +194,7 @@ class Workspace:
         for rel, digest in latest.items():
             if digest is not None and rel not in files:
                 changes.append((rel, _node_of(rel), _view_of(rel), None, None))
-        n = self.store.record_code(changes, origin)
+        n = self.store.record_code(changes, origin, author=author)
         if n:
             self.bus.touch()
         return n
@@ -580,11 +585,14 @@ class Workspace:
             return {}
 
         batch = uuid.uuid4().hex[:8]
+        # Whoever is signed in started it; a cascade task inherits the context
+        # of the run it follows, so it names the same person.
+        started_by = auth.current_id()
         run_ids: dict[str, str] = {}
         keys: dict[str, str] = {}
         for n in plan:
             own, keys[n] = self.node_params(n, params)
-            run_ids[n] = self.store.create_run(n, batch, trigger, own, keys[n])
+            run_ids[n] = self.store.create_run(n, batch, trigger, own, keys[n], started_by)
             self._inflight[(n, keys[n])] = run_ids[n]
             self._emit_run(run_ids[n])
         prev_artifacts = {n: status[n]["artifact_id"] for n in plan}
@@ -925,7 +933,8 @@ class Workspace:
             if node.name in paused or node.name in running:
                 continue
             due.append(node.name)
-            asyncio.create_task(self.run([node.name], force={node.name}, trigger="schedule"))
+            # The clock started it, not whoever called /api/schedule/tick.
+            asyncio.create_task(self.run([node.name], force={node.name}, trigger="schedule"), context=Context())
         if clock_moved:
             self.bus.publish({"type": "graph"})
         return due
