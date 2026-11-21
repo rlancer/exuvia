@@ -22,12 +22,13 @@ def write(root: Path, rel: str, body: str) -> None:
     p.write_text(textwrap.dedent(body).lstrip(), encoding="utf-8")
 
 
-def make_wheel(folder: Path, name: str, version: str, source: str) -> None:
+def make_wheel(folder: Path, name: str, version: str, source: str = "", requires: tuple[str, ...] = ()) -> None:
     """A minimal pure-Python wheel of one module."""
     mod, dist = name.replace("-", "_"), f"{name.replace('-', '_')}-{version}.dist-info"
+    meta = f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n" + "".join(f"Requires-Dist: {r}\n" for r in requires)
     files = {
         f"{mod}/__init__.py": source,
-        f"{dist}/METADATA": f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+        f"{dist}/METADATA": meta,
         f"{dist}/WHEEL": "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
     }
     files[f"{dist}/RECORD"] = "".join(f"{f},,\n" for f in [*files, f"{dist}/RECORD"])
@@ -129,6 +130,71 @@ def test_conflict_with_exuvias_own_versions_fails_the_run(project):
     assert error.startswith("the packages in pyproject.toml could not be installed: ")
     assert "pandas<1" in error and "the == versions are the ones exuvia runs with" in error
     assert installs(root) == []
+
+
+def grpc_project(tmp_path: Path, deps: list[str], extra: str = "") -> Path:
+    """A project on an index (searched for every package, as a team's
+    registry often is) where acme-grpc 2.0 needs, through acme-proto,
+    a pandas exuvia does not run, and acme-grpc 1.0 has a Git URL dependency."""
+    index = tmp_path / "grpc-wheels"
+    make_wheel(index, "acme-grpc", "2.0", requires=("acme-proto==0.2.3",))
+    make_wheel(index, "acme-proto", "0.2.3", "ANSWER = 42\n", requires=("pandas<1",))
+    make_wheel(index, "acme-grpc", "1.0", requires=("acme-legacy @ git+https://example.invalid/acme-legacy",))
+    make_wheel(index, "pandas", "0.1")
+    root = tmp_path / "grpc"
+    listed = ", ".join(f'"{d}"' for d in deps)
+    write(root, "pyproject.toml", f'''
+        [project]
+        name = "research"
+        version = "0"
+        requires-python = ">=3.11"
+        dependencies = [{listed}]
+        {extra}
+
+        [[tool.uv.index]]
+        name = "internal"
+        url = "{index.as_posix()}"
+        format = "flat"
+    ''')
+    return root
+
+
+def test_a_conflict_with_exuvias_versions_is_not_hidden_by_an_older_release(tmp_path, monkeypatch):
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    root = grpc_project(tmp_path, [])
+    before = (root / "pyproject.toml").read_text(encoding="utf-8")
+    with pytest.raises(packages.PackagesError) as e:
+        packages.Packages(root).add(["acme-grpc"])
+    error = str(e.value)
+    pandas = packages.metadata.version("pandas")
+    # Why the newest release does not fit comes first, then the error uv stopped at.
+    assert error.index(f"pandas=={pandas}") < error.index("was included as a URL dependency")
+    assert "pandas<1" in error and "newest releases (acme-grpc 2.0)" in error
+    assert packages.CONFLICT_HINT in error
+    from exuvia.executor import _summary
+
+    assert "pandas<1" in _summary(error) and "exuvia runs with" in _summary(error)
+    assert (root / "pyproject.toml").read_text(encoding="utf-8") == before
+
+
+def test_an_error_unrelated_to_exuvias_versions_is_reported_as_is(tmp_path, monkeypatch):
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    root = grpc_project(tmp_path, ["acme-grpc<2"])
+    with pytest.raises(packages.PackagesError) as e:
+        packages.resolve(root)
+    assert "was included as a URL dependency" in str(e.value)
+    assert "newest releases" not in str(e.value) and packages.CONFLICT_HINT not in str(e.value)
+
+
+def test_override_dependencies_lifts_a_requirement_on_exuvias_packages(tmp_path, monkeypatch):
+    """The README's way out when a package's requirement is narrower than it
+    needs to be: uv reads [tool.uv] override-dependencies from the project."""
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    root = grpc_project(tmp_path, ["acme-grpc==2.0"], extra='\n[tool.uv]\noverride-dependencies = ["pandas"]')
+    # uv reads the metadata of exuvia's pandas, which an offline test finds here.
+    make_wheel(tmp_path / "grpc-wheels", "pandas", packages.metadata.version("pandas"))
+    folder = packages.ensure(root, root / ".exuvia" / "packages", lambda _: None)
+    assert set(packages.installed_in(folder)) == {"acme-grpc", "acme-proto"}  # not pandas
 
 
 def test_no_dependencies_installs_nothing(tmp_path):

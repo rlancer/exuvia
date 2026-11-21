@@ -12,7 +12,9 @@ separate one, which keeps the pre-warmed runners shared by every project:
 
 * They are resolved with exuvia's installed versions as constraints, so a
   project that needs, say, ``pandas<2`` while exuvia runs pandas 3 fails with
-  uv's explanation instead of importing a mix of the two.
+  uv's explanation instead of importing a mix of the two. When uv's
+  backtracking to older releases ends at some other error, the conflict
+  with exuvia's versions is looked for and reported first.
 * Packages exuvia already has are excluded from the install, so the folder
   holds only what the project adds.
 
@@ -160,17 +162,72 @@ def _compile(root: Path, work: Path) -> Path:
     constraints, _, only_exuvia = _write_base_files(work)
     resolved = work / "resolved.txt"
     try:
-        _uv_run(["pip", "compile", PYPROJECT, "--python", sys.executable, "-c", str(constraints),
-                 "--excludes", str(only_exuvia), "-o", str(resolved), "--quiet"], cwd=root)
+        _uv_compile(root, resolved, only_exuvia, constraints)
     except PackagesError as e:
         text = str(e)
-        if any(f"{name}=={version}".lower() in text.lower() for name, version in _base()):
+        if not _names_a_base_pin(text):
+            text = _hidden_base_conflict(root, work, only_exuvia, constraints, text) or text
+        if _names_a_base_pin(text):
             text += f"\n\n{CONFLICT_HINT}"  # one of exuvia's own versions is in the way
         raise PackagesError(text) from None
     return resolved
 
 
+def _uv_compile(root: Path, out: Path, excludes: Path, *constraints: Path) -> None:
+    args = ["pip", "compile", PYPROJECT, "--python", sys.executable]
+    for c in constraints:
+        args += ["-c", str(c)]
+    _uv_run([*args, "--excludes", str(excludes), "-o", str(out), "--quiet"], cwd=root)
+
+
+def _names_a_base_pin(text: str) -> bool:
+    return any(f"{name}=={version}".lower() in text.lower() for name, version in _base())
+
+
+def _hidden_base_conflict(root: Path, work: Path, excludes: Path, constraints: Path, error: str) -> str | None:
+    """uv's explanation of a conflict with exuvia's versions that a failed
+    resolution (``error``) did not mention, or None if there is none.
+
+    Held to exuvia's versions, uv backtracks from a package's newest release
+    to older ones, and can stop at an error in one of those (a Git URL
+    dependency, a build that fails) instead of reporting why the newer
+    releases did not fit. So resolve again without exuvia's versions: if
+    that works and needs other versions of exuvia's own packages, resolve
+    with exuvia's versions once more, holding the project's packages to the
+    releases that resolution chose, and report why that fails."""
+    free = work / "free.txt"
+    try:
+        _uv_compile(root, free, excludes)
+    except PackagesError:
+        return None  # it does not resolve on its own either: the error stands
+    wanted = _pins(free.read_text(encoding="utf-8"))
+    base = {_norm(n): v for n, v in _base()}
+    if not any(name in base and version != base[name] for name, version in wanted.items()):
+        return None
+    listed = {_requirement_name(d) for d in declared(root)}
+    newest = {name: wanted[name] for name in sorted(n for n in listed if n and n in wanted and n not in base)}
+    if not newest:
+        return None
+    held = work / "newest.txt"
+    held.write_text("".join(f"{n}=={v}\n" for n, v in newest.items()), encoding="utf-8")
+    try:
+        _uv_compile(root, work / "held.txt", excludes, constraints, held)
+    except PackagesError as e:
+        if not _names_a_base_pin(str(e)):
+            return None
+        releases = ", ".join(f"{n} {v}" for n, v in newest.items())
+        return (f"{e}\n\nThat is with the newest releases ({releases}), which need other versions of "
+                f"packages exuvia runs with. uv went on to older releases and stopped at another error:\n\n{error}")
+    return None
+
+
 _PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?==([^\s;#]+)")
+
+
+def _pins(text: str) -> dict[str, str]:
+    """``normalized name -> version`` of the ``name==version`` lines of a
+    requirements file."""
+    return {_norm(m.group(1)): m.group(2) for line in text.splitlines() if (m := _PIN.match(line.strip()))}
 
 
 def resolve(root: Path) -> dict[str, str]:
@@ -182,7 +239,7 @@ def resolve(root: Path) -> dict[str, str]:
             text = _compile(root, work).read_text(encoding="utf-8")
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    return {_norm(m.group(1)): m.group(2) for line in text.splitlines() if (m := _PIN.match(line.strip()))}
+    return _pins(text)
 
 
 def ensure(root: Path, cache: Path, log: Callable[[str], None], prune: bool = False) -> Path | None:
