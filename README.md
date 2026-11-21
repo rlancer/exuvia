@@ -548,6 +548,25 @@ project with the web UI) and an executor (its default command, see
 "Architecture"). The UI is built into the image and served by the same
 process, so there is no separate frontend to deploy.
 
+### Which URL is which
+
+`<url>` is the address the server answers at, e.g. `http://127.0.0.1:7420`.
+Both commands include the workbench; neither needs a separate frontend.
+
+| | `exuvia serve <dir>` (one project) | `exuvia hub <dir>` (many projects) |
+|---|---|---|
+| Open in a browser | `<url>/` | `<url>/p/<project>/` (`<url>/` lists the projects) |
+| First visit with `EXUVIA_API_TOKEN` set | `<url>/?token=<token>` | `<url>/p/<project>/?token=<token>` |
+| Project API prefix | `<url>/api` | `<url>/p/<project>/api` |
+| Server-wide API | none | `<url>/api` (`/api/projects`, `/api/schedule/tick`, ...) |
+| `exuvia mcp --url` | `<url>` | `<url>/p/<project>` |
+| Read-only check | `GET <url>/api/project` | `GET <url>/p/<project>/api/project` |
+| `GET <url>/healthz` answers | `"mode": "serve"` | `"mode": "hub"` |
+
+`GET …/api/project` is the graph: every node with its state, and every
+view. There is no `GET …/api/nodes` list; `/api/nodes/{name}` reads one
+node's file.
+
 ### Compose, Swarm and Kubernetes
 
 `deploy/` holds a ready hub for each: one service with a volume at `/data`,
