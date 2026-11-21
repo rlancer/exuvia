@@ -36,7 +36,12 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     PYTHONUNBUFFERED=1 \
     EXUVIA_EXECUTOR_DIR=/tmp/exuvia-executor
 WORKDIR /app
-COPY pyproject.toml uv.lock README.md LICENSE ./
+# Dependencies first, in their own layer: it depends only on the lockfile, so
+# it builds while the ui stage does and stays cached when only code changes
+# (ci.yml keeps the layer cache between runs).
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project --no-editable && rm -rf /root/.cache
+COPY README.md LICENSE ./
 COPY exuvia/ ./exuvia/
 COPY --from=ui /src/exuvia/static ./exuvia/static
 # The build context has no .git, so the version comes in as an argument
