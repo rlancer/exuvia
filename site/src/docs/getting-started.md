@@ -36,8 +36,8 @@ uvx --with scipy exuvia serve my-research    # uvx
 
 Would you rather have your coding agent do all of this?
 [Set up with your agent](#set-up-with-your-agent) has a prompt to paste into
-Claude Code, Cursor or any agent with a terminal. It installs exuvia, starts
-the workbench and connects itself to the project.
+Claude Code, Cursor, Codex, Grok or any agent with a terminal. It installs
+exuvia, starts the workbench and connects itself to the project.
 
 ## Create a project
 
