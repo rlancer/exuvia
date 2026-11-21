@@ -32,15 +32,16 @@
   --muted: #a8a69c;
   --faint: #7d7b74;
 
-  /* Colour means the same as in the app, and each has one job:
-     accent   the exuvia mark and the one thing to do next
+  /* Colour: one accent, the lobster's blue, and the app's three states.
+     accent   the exuvia mark (the lobster's claw), links and the one thing
+              to do next
      fresh    a node whose output is up to date
-     stale    a node that needs a run (the app's stale is its accent too)
-     running  a node at work, and the lobster
-     On the landing page the accent is the lobster's blue instead (below). */
-  --accent: #f2b84b;
-  --accent-hover: #f7cf80;
-  --accent-ink: #17181b;
+     stale    a node that needs a run: the app's amber, which is a state
+              here and never decoration
+     running  a node at work, and the lobster */
+  --accent: #6f9bff;
+  --accent-hover: #94b5ff;
+  --accent-ink: #0a1230;
   --fresh: #4cc38a;
   --stale: #f2b84b;
   --running: #6f9bff;
@@ -95,9 +96,9 @@ body {
   text-rendering: optimizeLegibility;
 }
 /* The landing page has the sea behind it (src/components/Sea.astro), and
-   takes its colours from the water: the greys lean to navy, and the accent
-   is the lobster's blue. The app's amber stays where it is a state (stale).
-   The docs keep the app's own palette, to match the app they describe. */
+   takes its colours from the water: the greys lean to navy. The accent is
+   the lobster's blue here as everywhere. The docs keep the app's own greys,
+   to match the app they describe. */
 body:has(.sea) {
   --bg: #0f131c;
   --bg-deep: #0a0d14;
@@ -113,10 +114,6 @@ body:has(.sea) {
   --text: #e8eaf0;
   --muted: #a3a9b8;
   --faint: #767d8f;
-
-  --accent: #6f9bff;
-  --accent-hover: #94b5ff;
-  --accent-ink: #0a1230;
 
   /* Redeclared so that they pick up the lines above. */
   --border: 1px solid var(--line);
@@ -219,7 +216,7 @@ button {
   white-space: nowrap;
 }
 
-/* Buttons. Two kinds only: the one thing to do (a solid amber block), and the
+/* Buttons. Two kinds only: the one thing to do (a solid block of the accent), and the
    rest (bare until hovered). */
 .btn {
   display: inline-flex;
@@ -248,18 +245,18 @@ button {
 }
 
 /* Code blocks. Shiki paints with these variables (src/lib/highlight.ts).
-   Weight does most of the work; strings and function names take the stale
-   and fresh colours. */
+   Weight does most of the work; strings take the light blue and function
+   names the fresh green. */
 .code {
   --shiki-foreground: var(--text);
   --shiki-background: transparent;
   --shiki-token-constant: var(--text);
-  --shiki-token-string: var(--stale);
+  --shiki-token-string: var(--accent-hover);
   --shiki-token-comment: #99978f;
   --shiki-token-keyword: #ffffff;
   --shiki-token-parameter: var(--text);
   --shiki-token-function: var(--fresh);
-  --shiki-token-string-expression: var(--stale);
+  --shiki-token-string-expression: var(--accent-hover);
   --shiki-token-punctuation: #b9b7af;
   --shiki-token-link: var(--text);
   position: relative;

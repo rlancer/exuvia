@@ -1110,9 +1110,14 @@ pages are built from the `## ` sections of this README, so there is one copy
 of the reference: `site/src/lib/docs.ts` maps each section to a page, and the
 site build fails when a section is added, renamed or removed without
 updating that map. The getting-started tutorial is the one hand-written page
-(`site/src/docs/getting-started.md`). `site/tools/capture.mjs` retakes the
-product screenshots from a running `exuvia serve` and renders the social
-card. The animals on the landing page are low-poly models built in code
+(`site/src/docs/getting-started.md`). `/brand/` is the brand page: the name,
+the mark, the colours, the type, the animals and every social card, all read
+from the code that draws them (`site/src/lib/brand.ts`). Every page has a
+social card of its own, a PNG in `site/public/og/` listed in
+`site/src/lib/cards.ts`; the build fails when a page's card is missing.
+`site/tools/capture.mjs` retakes the product screenshots from a running
+`exuvia serve`, and photographs the social cards from the site's own
+`/card/` pages, which exist only under `astro dev`. The animals on the landing page are low-poly models built in code
 (`site/src/lib/poly.ts`), with no image or model files. The site is static (`site/dist`). It is built for the
 root of its host unless `SITE_BASE` (for example `/exuvia`) names a sub-path
 to serve it from; every link, asset and the search index follow that base.

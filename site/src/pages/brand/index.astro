@@ -1,0 +1,1108 @@
+---
+// The brand page: the name, the mark, the colours, the type, the animals,
+// how exuvia writes, and every social card. Nothing here is a copy: the mark
+// and the colours come from src/lib/brand.ts (which reads global.css), the
+// animals from src/lib/poly.ts and the cards from src/lib/cards.ts.
+import Base from "../../layouts/Base.astro";
+import Mark from "../../components/Mark.astro";
+import { ANIMAL_FILES, APP_PALETTE, MARK_FILES, SIGNALS, WATER_PALETTE, inkOn, type Swatch } from "../../lib/brand";
+import { CARD, LOCKUPS, getCard, getCards } from "../../lib/cards";
+import { copyButton } from "../../lib/highlight";
+import { url } from "../../lib/paths";
+import { STAGES } from "../../lib/poly";
+
+const description =
+  "The exuvia brand: the name and how to write it, the mark, the colours, the typefaces, the low-poly animals, the voice, and every social card.";
+
+const sections = [
+  ["name", "Name"],
+  ["mark", "Mark"],
+  ["colour", "Colour"],
+  ["type", "Type"],
+  ["animals", "Animals"],
+  ["voice", "Voice"],
+  ["cards", "Social cards"],
+];
+
+// What to call exuvia, at three lengths. The first two are the landing page's own.
+const words = [
+  { length: "In a line", text: "A data workbench where the graph is the interface." },
+  {
+    length: "In a sentence",
+    text: "exuvia turns an analysis into a graph of plain Python and SQL files, with per-node schedules, stored outputs and an AI agent that works on the graph with you.",
+  },
+  {
+    length: "In a paragraph",
+    text: "exuvia is an open-source data workbench where the graph is the interface. It turns an analysis into a graph of plain Python and SQL files. You can schedule any node on its own, keep every output it produces, and work with an AI agent that reads, writes, runs and debugs the graph alongside you.",
+  },
+];
+
+const grounds = [
+  { name: "On the app's grounds", note: "In its facets", bg: APP_PALETTE[0].value, dots: true },
+  { name: "Under water", note: "In its facets", bg: WATER_PALETTE[0].value, water: true },
+  { name: "On a light ground", note: "In its facets, the name in Canvas", bg: "#f3f1ea" },
+  { name: "With one ink", note: "One shape, the colour of the name", bg: "#2b2d33", flat: true },
+];
+
+const donts = [
+  { how: "turned", note: "Don't turn it." },
+  { how: "pulled", note: "Don't stretch it." },
+  { how: "pink", note: "Don't give it colours of your own." },
+  { how: "capital", note: "Don't capitalise the name." },
+];
+
+// The five animals, oldest first, with what changed in each (the notes of src/lib/poly.ts).
+const notes: Record<string, string> = {
+  Waptia: "Shrimp-like, with a short saddle of a shell and a tail of two flaps. No claws.",
+  Ceratiocaris: "A phyllocarid. Most of the animal is a hinged shield; behind it, a tapering body and three spines.",
+  Palaeopalaemon: "Among the first decapods: ten legs, long feelers, a tail fan and small pincers.",
+  Eryma: "An early clawed lobster. The body is a lobster's; the claws are still slim and even.",
+  Homarus: "The lobster. Heavy, with one claw for crushing and a lighter one for cutting.",
+};
+const animals = STAGES.map((s, i) => ({ ...s, note: notes[s.name], picture: ANIMAL_FILES[i] }));
+
+const voice = [
+  {
+    rule: "Say what it does",
+    body: "Plain verbs and short sentences. A reader should be able to picture the thing happening.",
+    yes: "Schedule any node on its own, and keep every output it produces.",
+    no: "Unlock powerful, flexible orchestration for your data.",
+  },
+  {
+    rule: "Name the thing",
+    body: "A file, a command or a number says more than a category does.",
+    yes: "exuvia run brings a project up to date and exits non-zero when a node fails, so it fits CI and cron.",
+    no: "Seamless integration with your existing automation.",
+  },
+  {
+    rule: "Say what it does not do",
+    body: "exuvia is an early release and says so. The docs keep a page of what is missing.",
+    yes: "exuvia is an early release. See what it does not do yet.",
+    no: "Production-ready and enterprise-grade.",
+  },
+  {
+    rule: "One metaphor",
+    body: "The shell is the output a run leaves behind. That is the whole metaphor: no claws, no pinching, no pages of sea puns.",
+    yes: "Every run of a node leaves a shell too: an output you can go back to.",
+    no: "Get your claws into your data and make a splash.",
+  },
+];
+
+const cards = await Promise.all((await getCards()).map((card) => getCard(card.name)));
+const [home, ...rest] = cards;
+const pictureOf = (file: string) => url(`/brand/${file}`);
+---
+
+<Base title="Brand | exuvia" description={description} card="brand">
+  <div class="brandpage">
+    <header class="wrap top">
+      <p class="crumb mono">Brand</p>
+      <h1>The exuvia brand</h1>
+      <p class="lede">
+        What exuvia is called, what it looks like and how it writes. It is here for anyone who puts exuvia in an
+        article, a talk, a list of tools or a product of their own.
+      </p>
+      <nav aria-label="On this page">
+        {sections.map(([id, label]) => <a href={`#${id}`}>{label}</a>)}
+      </nav>
+    </header>
+
+    <!-- ---- the name ---------------------------------------------------- -->
+    <section id="name">
+      <div class="wrap split">
+        <div class="say">
+          <h2>The name</h2>
+          <p>
+            An exuvia is the shell an animal leaves behind when it molts. A lobster grows by climbing out of one. In
+            exuvia, every run of a node leaves one too: an output you can go back to.
+          </p>
+          <dl class="rules">
+            <div>
+              <dt>Lowercase, always</dt>
+              <dd>
+                Write <b>exuvia</b>, at the start of a sentence and in a heading too. Not <s>Exuvia</s>, and not{" "}
+                <s>EXUVIA</s>.
+              </dd>
+            </div>
+            <div>
+              <dt>The same word in code</dt>
+              <dd>
+                <code>pip install exuvia</code>, <code>exuvia serve</code>, <code>import exuvia</code>.
+              </dd>
+            </div>
+            <div>
+              <dt>Say it</dt>
+              <dd>ig-ZOO-vee-uh. More than one are exuviae.</dd>
+            </div>
+          </dl>
+        </div>
+        <figure class="entry">
+          <p class="headword mono">exuvia</p>
+          <p class="sound">
+            <span>/ɪɡˈzuːviə/</span>
+            <i>noun</i>
+          </p>
+          <p class="sense">
+            The shell a lobster leaves behind when it molts. Every run of a node leaves one too: an output you can go
+            back to.
+          </p>
+        </figure>
+      </div>
+
+      <div class="wrap">
+        <h3>What to call it</h3>
+        <ul class="words">
+          {
+            words.map((w) => (
+              <li>
+                <span class="length">{w.length}</span>
+                <p>{w.text}</p>
+                <Fragment set:html={copyButton(w.text)} />
+              </li>
+            ))
+          }
+        </ul>
+      </div>
+    </section>
+
+    <!-- ---- the mark ---------------------------------------------------- -->
+    <section id="mark">
+      <div class="wrap">
+        <header class="say">
+          <h2>The mark</h2>
+          <p>
+            A lobster's claw, open: the heavy finger on top, the lighter one under it. It is ten flat facets in tones
+            of the lobster's blue, like the animals further down this page. With the name beside it, it is the logo.
+          </p>
+        </header>
+
+        <ul class="grounds">
+          {
+            grounds.map((g) => (
+              <li>
+                <div
+                  class:list={["ground", { dots: g.dots, water: g.water }]}
+                  style={`--ground:${g.bg};color:${inkOn(g.bg)}`}
+                >
+                  <Mark size={96} flat={g.flat} />
+                  <span class="lockup mono">
+                    <Mark size={28} flat={g.flat} />
+                    exuvia
+                  </span>
+                </div>
+                <b>{g.name}</b>
+                <span>{g.note}</span>
+              </li>
+            ))
+          }
+        </ul>
+
+        <div class="split">
+          <dl class="rules">
+            <div>
+              <dt>Colour</dt>
+              <dd>
+                Its own ten tones of the lobster's blue, on a dark ground or a light one. Where there is only one ink,
+                it is one shape in the colour of the name.
+              </dd>
+            </div>
+            <div>
+              <dt>Room</dt>
+              <dd>Keep half the mark's width clear on every side. Nothing else goes in that space.</dd>
+            </div>
+            <div>
+              <dt>Size</dt>
+              <dd>16 pixels at the smallest, which is the favicon. Below that, use the name alone.</dd>
+            </div>
+            <div>
+              <dt>Which way up</dt>
+              <dd>The claw opens up and to the right, the wrist at the bottom left. It is never turned or mirrored.</dd>
+            </div>
+            <div>
+              <dt>With the name</dt>
+              <dd>
+                The mark, then the name in JetBrains Mono Bold, lowercase, tracked a little tight (−0.04em). The mark's
+                box is a fifth taller than the size of the type.
+              </dd>
+            </div>
+          </dl>
+          <figure class="room" aria-label="The mark with the clear space round it marked.">
+            <div class="clear">
+              <Mark size={128} />
+            </div>
+            <figcaption class="mono">½ × on every side</figcaption>
+          </figure>
+        </div>
+
+        <ul class="donts">
+          {
+            donts.map((d) => (
+              <li>
+                <div class:list={["dont", d.how]}>
+                  {d.how === "capital" ? <span class="mono">Exuvia</span> : <Mark size={64} />}
+                </div>
+                <span>{d.note}</span>
+              </li>
+            ))
+          }
+        </ul>
+
+        <h3>Files</h3>
+        <ul class="files">
+          {
+            MARK_FILES.map((f) => (
+              <li>
+                <a href={pictureOf(f.file)} download>
+                  <span class="mono">{f.file}</span>
+                  <span>{f.what}</span>
+                </a>
+              </li>
+            ))
+          }
+          {
+            LOCKUPS.map((l) => (
+              <li>
+                <a href={pictureOf(`${l.name}.png`)} download>
+                  <span class="mono">{l.name}.png</span>
+                  <span>{l.what}</span>
+                </a>
+              </li>
+            ))
+          }
+        </ul>
+      </div>
+    </section>
+
+    <!-- ---- colour ------------------------------------------------------ -->
+    <section id="colour">
+      <div class="wrap">
+        <header class="say">
+          <h2>Colour</h2>
+          <p>
+            exuvia is dark, and it wears the app's own greys so that a screenshot looks like part of the page. There
+            is one accent, the lobster's blue. Green and amber are states of a node, and appear only where a node is
+            shown. Select a value to copy it.
+          </p>
+        </header>
+
+        <h3>The accent and the states</h3>
+        <ul class="signals">
+          {
+            SIGNALS.map((s: Swatch) => (
+              <li style={`--chip:${s.value};--on:${inkOn(s.value)}`}>
+                <button class="chip" type="button" data-copy={s.value}>
+                  <b>{s.name}</b>
+                  <span class="mono">{s.value}</span>
+                  <span class="copy-note" role="status" />
+                </button>
+                <p>{s.job}</p>
+              </li>
+            ))
+          }
+        </ul>
+
+        {
+          [
+            {
+              title: "The workbench",
+              about: "The app's dark theme. The docs and this page wear it, to match the app they describe.",
+              palette: APP_PALETTE,
+            },
+            {
+              title: "The water",
+              about:
+                "The landing page has the sea behind it and takes its colours from the water: the same roles, with the greys leaned to navy.",
+              palette: WATER_PALETTE,
+            },
+          ].map((group) => (
+            <>
+              <h3>{group.title}</h3>
+              <p class="about">{group.about}</p>
+              <ul class="palette">
+                {group.palette.map((s) => (
+                  <li>
+                    <button class="tile" type="button" data-copy={s.value} style={`--chip:${s.value};--on:${inkOn(s.value)}`}>
+                      <span class="mono">{s.value}</span>
+                      <span class="copy-note" role="status" />
+                    </button>
+                    <b>{s.name}</b>
+                    <code>{s.token}</code>
+                    <span>{s.job}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ))
+        }
+      </div>
+    </section>
+
+    <!-- ---- type -------------------------------------------------------- -->
+    <section id="type">
+      <div class="wrap">
+        <header class="say">
+          <h2>Type</h2>
+          <p>
+            Two typefaces, the app's own. Both are open source, under the SIL Open Font License, so anything made for
+            exuvia can be set in them.
+          </p>
+        </header>
+        <div class="faces">
+          <figure>
+            <p class="glyphs mono">Aa</p>
+            <figcaption>
+              <b>JetBrains Mono</b>
+              <span>
+                For headings, for code and for the name, the way the app sets a node's name. Bold, tracked tight
+                (−0.045em), with the gap between words closed up: a mono space is a full character wide, which is too
+                wide between big words.
+              </span>
+            </figcaption>
+            <p class="sample mono heading">The graph is the interface</p>
+            <p class="sample mono code">def rolling_vol(returns):</p>
+          </figure>
+          <figure>
+            <p class="glyphs">Aa</p>
+            <figcaption>
+              <b>Inter</b>
+              <span>
+                For reading: paragraphs, captions, buttons and tables. Regular for text and semibold for emphasis, at
+                17.5 pixels with a line height of 1.55.
+              </span>
+            </figcaption>
+            <p class="sample reading">
+              exuvia turns an analysis into a graph of plain Python and SQL files. Schedule any node on its own, and
+              keep every output it produces.
+            </p>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---- the animals ------------------------------------------------- -->
+    <section id="animals">
+      <div class="wrap">
+        <header class="say">
+          <h2>The animals</h2>
+          <p>
+            The lobster, and four of the animals that wore a shell like it long before there were lobsters. They are
+            low-poly models built in code from one body plan, so each can turn into the next. There are no photographs
+            and no illustrations of any other kind.
+          </p>
+        </header>
+        <ol class="animals">
+          {
+            animals.map((a) => (
+              <li>
+                <a href={pictureOf(a.picture.file)} download title={`Download ${a.picture.file}`}>
+                  <Fragment set:html={a.picture.svg} />
+                </a>
+                <b>
+                  <i>{a.name}</i>, {a.age}
+                </b>
+                <span>{a.note}</span>
+              </li>
+            ))
+          }
+        </ol>
+        <dl class="rules three">
+          <div>
+            <dt>Solid is alive</dt>
+            <dd>The lobster is lit facets in its blue. Nothing else is that blue except a node at work.</dd>
+          </div>
+          <div>
+            <dt>An outline is a shell</dt>
+            <dd>A form the animal has left is drawn as its edges alone, in a muted line: an empty shell.</dd>
+          </div>
+          <div>
+            <dt>Facets, never curves</dt>
+            <dd>Everything in the sea is flat-sided, down to the six-sided bubbles. They are not drawn to one scale.</dd>
+          </div>
+        </dl>
+      </div>
+    </section>
+
+    <!-- ---- voice ------------------------------------------------------- -->
+    <section id="voice">
+      <div class="wrap">
+        <header class="say">
+          <h2>Voice</h2>
+          <p>
+            exuvia writes the way a careful engineer explains something to a colleague: plainly, with the real names of
+            things, and without selling. Headings are in sentence case, the reader is "you", and there are no
+            exclamation marks.
+          </p>
+        </header>
+        <ul class="voice">
+          {
+            voice.map((v) => (
+              <li>
+                <h3>{v.rule}</h3>
+                <p>{v.body}</p>
+                <p class="yes">
+                  <span>Like this</span>
+                  {v.yes}
+                </p>
+                <p class="no">
+                  <span>Not like this</span>
+                  {v.no}
+                </p>
+              </li>
+            ))
+          }
+        </ul>
+      </div>
+    </section>
+
+    <!-- ---- social cards ------------------------------------------------ -->
+    <section id="cards">
+      <div class="wrap">
+        <header class="say">
+          <h2>Social cards</h2>
+          <p>
+            The picture a link to exuvia unfolds into when it is shared. Every page has its own, at {CARD.width} by{" "}
+            {CARD.height} pixels. The home page's is under water, like the page; the rest wear the app's palette, and
+            each part of the docs has one of the animals on it, oldest first.
+          </p>
+        </header>
+        <figure class="card first">
+          <a href={url(home.src)}>
+            <img src={url(home.src)} width={CARD.width} height={CARD.height} alt={home.alt} />
+          </a>
+          <figcaption>
+            <a href={url(home.page)}>Home page</a>
+            <a class="mono" href={url(home.src)} download={`exuvia-${home.name}.png`}>{home.name}.png</a>
+          </figcaption>
+        </figure>
+        <ul class="gallery">
+          {
+            rest.map((card) => (
+              <li>
+                <figure class="card">
+                  <a href={url(card.src)}>
+                    <img src={url(card.src)} width={CARD.width} height={CARD.height} alt={card.alt} loading="lazy" />
+                  </a>
+                  <figcaption>
+                    <a href={url(card.page)}>{card.crumb && card.look === "doc" ? card.title : card.crumb}</a>
+                    <a class="mono" href={url(card.src)} download={`exuvia-${card.name}.png`}>
+                      {card.name}.png
+                    </a>
+                  </figcaption>
+                </figure>
+              </li>
+            ))
+          }
+        </ul>
+      </div>
+    </section>
+
+    <section class="using">
+      <div class="wrap">
+        <h2>Using these</h2>
+        <p>
+          Use the name, the mark and these files to point at exuvia: in an article, a talk, a list of tools, or the
+          page of something that works with it. Please don't use them in a way that suggests exuvia made or stands
+          behind something it did not. The code is open source under the{" "}
+          <a href="https://www.apache.org/licenses/LICENSE-2.0" rel="noopener">Apache-2.0 license</a>.
+        </p>
+      </div>
+    </section>
+  </div>
+</Base>
+
+<style>
+  /* ---- the page ----------------------------------------------------------- */
+  .top {
+    padding-block: clamp(3rem, 8vw, 5.5rem) clamp(2rem, 5vw, 3rem);
+  }
+  .crumb {
+    color: var(--accent);
+    font-size: 1rem;
+    font-weight: 700;
+  }
+  h1 {
+    margin-top: 0.6rem;
+    font-size: var(--step-4);
+    line-height: 1.06;
+  }
+  .lede {
+    max-width: 42rem;
+    margin-top: 1.4rem;
+    color: var(--muted);
+    font-size: var(--step-1);
+    line-height: 1.4;
+  }
+  .top nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 2rem;
+  }
+  .top nav a {
+    padding: 0.3rem 0.85rem 0.35rem;
+    border: var(--border-strong);
+    border-radius: 99px;
+    background: var(--panel);
+    font-size: 1rem;
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .top nav a:hover {
+    border-color: var(--text);
+  }
+  section {
+    padding: clamp(3rem, 7vw, 5rem) 0;
+    border-top: var(--border);
+    scroll-margin-top: 4rem;
+  }
+  section:nth-of-type(even) {
+    background: var(--band);
+  }
+  h2 {
+    font-size: var(--step-3);
+  }
+  h3 {
+    margin-top: clamp(2.25rem, 5vw, 3.25rem);
+    font-size: 1.5rem;
+  }
+  .say {
+    max-width: 44rem;
+  }
+  .say p {
+    margin-top: 1.1rem;
+    color: var(--muted);
+    font-size: var(--step-1);
+    line-height: 1.4;
+  }
+  .about {
+    max-width: 44rem;
+    margin-top: 0.5rem;
+    color: var(--muted);
+  }
+  .split {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    gap: clamp(2rem, 5vw, 4rem);
+    align-items: start;
+  }
+  ul,
+  ol {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  /* A short list of rules: a name, then what it asks. */
+  .rules {
+    display: grid;
+    margin: 2rem 0 0;
+  }
+  .rules div {
+    display: grid;
+    grid-template-columns: 11rem minmax(0, 1fr);
+    gap: 0.25rem 1.5rem;
+    padding: 0.85rem 0;
+    border-top: var(--border);
+  }
+  .rules dt {
+    font-weight: 600;
+  }
+  .rules dd {
+    margin: 0;
+    color: var(--muted);
+  }
+  .rules b {
+    color: var(--text);
+    font-family: var(--mono);
+  }
+  .rules.three {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0 2.5rem;
+  }
+  .rules.three div {
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+  }
+
+  /* ---- the name ----------------------------------------------------------- */
+  .entry {
+    margin: 0;
+    padding: 1.75rem 2rem 2rem;
+    border: var(--border-strong);
+    border-radius: 0.75rem;
+    background: var(--bg-deep);
+  }
+  .headword {
+    color: var(--accent);
+    font-size: clamp(3rem, 7vw, 4.75rem);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.045em;
+  }
+  .sound {
+    display: flex;
+    gap: 1rem;
+    margin-top: 0.9rem;
+    color: var(--muted);
+  }
+  .sense {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: var(--border);
+    font-size: var(--step-1);
+    line-height: 1.4;
+  }
+  .words {
+    display: grid;
+    margin-top: 1rem;
+  }
+  .words li {
+    display: grid;
+    grid-template-columns: 11rem minmax(0, 1fr) auto;
+    gap: 0.5rem 1.5rem;
+    align-items: start;
+    padding: 1rem 0;
+    border-top: var(--border);
+  }
+  .words .length {
+    font-weight: 600;
+  }
+  .words p {
+    max-width: 52rem;
+    color: var(--muted);
+  }
+
+  /* ---- the mark ----------------------------------------------------------- */
+  .grounds {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1.25rem;
+    margin-top: 2.5rem;
+  }
+  .grounds li {
+    display: grid;
+    align-content: start;
+    gap: 0.15rem;
+  }
+  .grounds li > span {
+    color: var(--muted);
+  }
+  .grounds b {
+    margin-top: 0.6rem;
+    font-weight: 600;
+  }
+  .ground {
+    display: grid;
+    place-items: center;
+    align-content: center;
+    gap: 1.5rem;
+    aspect-ratio: 4 / 3.4;
+    border: var(--border-strong);
+    border-radius: 0.75rem;
+    background-color: var(--ground);
+  }
+  .ground.dots {
+    background-image: radial-gradient(circle, var(--dots) 1px, transparent 1.4px);
+    background-size: 20px 20px;
+  }
+  .ground.water {
+    background-image: linear-gradient(rgb(111 155 255 / 0.22), rgb(111 155 255 / 0)), linear-gradient(rgb(22 38 84 / 0.34), rgb(22 38 84 / 0.34));
+  }
+  .lockup {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 1.7rem;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.04em;
+  }
+  .room {
+    display: grid;
+    justify-items: center;
+    gap: 0.9rem;
+    margin: 2rem 0 0;
+    padding: 2rem;
+    border: var(--border);
+    border-radius: 0.75rem;
+    background: var(--bg-deep);
+    color: var(--muted);
+    font-size: 0.95rem;
+  }
+  /* Half the mark's width, hatched, on every side of it. */
+  .clear {
+    padding: 64px;
+    border: 1px dashed var(--line-strong);
+    background:
+      linear-gradient(var(--bg-deep), var(--bg-deep)) center / 128px 128px no-repeat,
+      var(--hatch);
+    color: var(--line-strong);
+    line-height: 0;
+  }
+  .donts {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1.25rem;
+    margin-top: 2.5rem;
+  }
+  .donts li {
+    display: grid;
+    gap: 0.6rem;
+    color: var(--muted);
+  }
+  .dont {
+    position: relative;
+    display: grid;
+    place-items: center;
+    height: 7.5rem;
+    overflow: hidden;
+    border: var(--border);
+    border-radius: 0.6rem;
+    background: var(--bg-deep);
+    font-size: 1.9rem;
+    font-weight: 700;
+    letter-spacing: -0.04em;
+  }
+  /* Struck through, corner to corner. */
+  .dont::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to top right, transparent calc(50% - 1px), #e5484d calc(50% - 1px), #e5484d calc(50% + 1px), transparent calc(50% + 1px));
+    opacity: 0.8;
+  }
+  .dont.turned :global(.mark) {
+    rotate: 150deg;
+  }
+  .dont.pulled :global(.mark) {
+    scale: 1.9 0.8;
+  }
+  .dont.pink :global(.mark) {
+    filter: hue-rotate(115deg) saturate(1.3);
+  }
+  .files {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+    gap: 0 2rem;
+    margin-top: 1rem;
+  }
+  .files a {
+    display: grid;
+    gap: 0.1rem;
+    padding: 0.8rem 0;
+    border-top: var(--border);
+    color: var(--muted);
+    text-decoration: none;
+  }
+  .files a .mono {
+    color: var(--text);
+    font-size: 1.05rem;
+    text-decoration: underline;
+    text-decoration-color: var(--accent);
+    text-decoration-thickness: 2px;
+  }
+
+  /* ---- colour ------------------------------------------------------------- */
+  .signals {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1.25rem;
+    margin-top: 1.25rem;
+  }
+  .signals p {
+    margin-top: 0.75rem;
+    color: var(--muted);
+  }
+  .chip,
+  .tile {
+    display: flex;
+    width: 100%;
+    border: 1px solid rgb(255 255 255 / 0.1);
+    background: var(--chip);
+    color: var(--on);
+    text-align: left;
+    cursor: pointer;
+  }
+  .chip {
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 0.1rem;
+    height: 9rem;
+    padding: 1rem 1.15rem;
+    border-radius: 0.75rem;
+  }
+  .chip b {
+    font-family: var(--mono);
+    font-size: 1.5rem;
+    letter-spacing: -0.04em;
+  }
+  .palette {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(12.5rem, 1fr));
+    gap: 1.75rem 1.25rem;
+    margin-top: 1.5rem;
+  }
+  .palette li {
+    display: grid;
+    align-content: start;
+    gap: 0.1rem;
+  }
+  .palette li > span {
+    color: var(--muted);
+    font-size: 1rem;
+    line-height: 1.4;
+  }
+  .palette b {
+    margin-top: 0.6rem;
+    font-weight: 600;
+  }
+  .palette code {
+    color: var(--faint);
+  }
+  .tile {
+    align-items: flex-end;
+    height: 5.25rem;
+    padding: 0.6rem 0.75rem;
+    border-radius: 0.6rem;
+    font-size: 0.95rem;
+  }
+  /* Copied: the value gives way to a tick for a moment. */
+  :is(.chip, .tile)[data-state="copied"] .mono::after {
+    content: "  copied";
+  }
+  :is(.chip, .tile):hover {
+    border-color: var(--on);
+  }
+
+  /* ---- type --------------------------------------------------------------- */
+  .faces {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.25rem;
+    margin-top: 2.5rem;
+  }
+  .faces figure {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.5rem 1.75rem;
+    align-items: center;
+    margin: 0;
+    padding: 1.75rem 2rem 2rem;
+    border: var(--border-strong);
+    border-radius: 0.75rem;
+    background: var(--bg-deep);
+  }
+  .glyphs {
+    font-size: 6rem;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.045em;
+  }
+  .faces figcaption {
+    display: grid;
+    gap: 0.3rem;
+    color: var(--muted);
+    font-size: 1rem;
+    line-height: 1.45;
+  }
+  .faces figcaption b {
+    color: var(--text);
+    font-size: 1.25rem;
+  }
+  .sample {
+    grid-column: 1 / -1;
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: var(--border);
+  }
+  .sample.heading {
+    font-size: var(--step-2);
+    font-weight: 700;
+    line-height: 1.14;
+    letter-spacing: -0.045em;
+    word-spacing: -0.22em;
+  }
+  .sample.code {
+    margin-top: 0;
+    padding-top: 0;
+    border: 0;
+    color: var(--muted);
+    font-size: 1.05rem;
+  }
+
+  /* ---- the animals -------------------------------------------------------- */
+  .animals {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 2rem 1.5rem;
+    margin-top: 2.5rem;
+  }
+  .animals li {
+    display: grid;
+    align-content: start;
+    gap: 0.3rem;
+  }
+  /* The lobster has a row to itself, under the four it came from. */
+  .animals li:last-child {
+    grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    gap: 0.3rem 2.5rem;
+    align-items: center;
+    padding-top: 2rem;
+    border-top: var(--border);
+  }
+  .animals li:last-child a {
+    grid-row: span 2;
+    height: auto;
+  }
+  .animals li:last-child b {
+    align-self: end;
+    font-size: 1.5rem;
+  }
+  .animals li:last-child span {
+    align-self: start;
+    font-size: var(--step-1);
+    line-height: 1.4;
+  }
+  .animals a {
+    display: grid;
+    place-items: center;
+    height: 9rem;
+  }
+  .animals a :global(svg) {
+    width: 100%;
+    height: 100%;
+  }
+  .animals b {
+    font-family: var(--mono);
+    font-weight: 700;
+    letter-spacing: -0.03em;
+  }
+  .animals span {
+    color: var(--muted);
+    font-size: 1rem;
+    line-height: 1.45;
+  }
+
+  /* ---- voice -------------------------------------------------------------- */
+  .voice {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 3rem;
+    margin-top: 1rem;
+  }
+  .voice h3 {
+    margin-top: 2rem;
+    font-size: 1.3rem;
+  }
+  .voice p {
+    margin-top: 0.4rem;
+    color: var(--muted);
+  }
+  .voice .yes,
+  .voice .no {
+    margin-top: 0.75rem;
+    padding: 0.7rem 1rem 0.8rem;
+    border-left: 3px solid var(--fresh);
+    background: var(--bg-deep);
+    color: var(--text);
+  }
+  .voice .no {
+    border-left-color: var(--line-strong);
+    color: var(--faint);
+    text-decoration: line-through;
+    text-decoration-color: var(--line-strong);
+  }
+  .voice span {
+    display: block;
+    color: var(--muted);
+    font-size: 0.9rem;
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .voice .no span {
+    display: inline-block;
+    width: 100%;
+  }
+
+  /* ---- social cards ------------------------------------------------------- */
+  .card {
+    margin: 0;
+  }
+  .card.first {
+    max-width: 56rem;
+    margin-top: 2.5rem;
+  }
+  .card img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: var(--border-strong);
+    border-radius: 0.6rem;
+  }
+  .card figcaption {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.25rem 1rem;
+    margin-top: 0.6rem;
+    font-weight: 600;
+  }
+  .card figcaption .mono {
+    color: var(--muted);
+    font-size: 0.95rem;
+    font-weight: 400;
+  }
+  .gallery {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 2rem 1.5rem;
+    margin-top: 2.5rem;
+  }
+
+  .using p {
+    max-width: 46rem;
+    margin-top: 1rem;
+    color: var(--muted);
+  }
+  a {
+    text-decoration-color: var(--accent);
+    text-decoration-thickness: 2px;
+  }
+
+  @media (max-width: 900px) {
+    .split,
+    .faces,
+    .voice,
+    .rules.three {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .grounds,
+    .donts,
+    .animals,
+    .gallery {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .signals {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .animals li:last-child {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  @media (max-width: 560px) {
+    .rules div,
+    .words li {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .words li :global(.copy) {
+      justify-self: start;
+    }
+    .gallery {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .faces figure {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

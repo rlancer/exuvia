@@ -21,7 +21,13 @@ const markdown = page ? url(markdownPath(page.slug)) : undefined;
 const icon = (d: string) => `<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">${d}</svg>`;
 ---
 
-<Base title={`${title} | exuvia docs`} description={description} current="docs">
+<Base
+  title={`${title} | exuvia docs`}
+  description={description}
+  current="docs"
+  card={page ? `docs-${page.slug}` : "docs"}
+  kind={page ? "article" : "website"}
+>
   {markdown && <link slot="head" rel="alternate" type="text/markdown" href={markdown} title="This page as Markdown" />}
   <div class="wrap shell">
     <aside class="side">
@@ -377,7 +383,7 @@ const icon = (d: string) => `<svg viewBox="0 0 16 16" width="16" height="16" ari
   .prose :global(blockquote) {
     margin-inline: 0;
     padding-left: 1rem;
-    border-left: 3px solid var(--stale);
+    border-left: 3px solid var(--accent);
     color: var(--muted);
   }
   .prose :global(.table-scroll) {

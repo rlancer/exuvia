@@ -1,17 +1,22 @@
 ---
-// The exuvia mark: two paths that cross, the app's icon, drawn in its amber.
+// The exuvia mark: a lobster's claw in flat facets of the lobster's blue.
+// With `flat` it is one shape in the colour of the text around it, for a
+// place with one ink. Its shape and tones are in src/lib/brand.ts.
+import { MARK, markBody } from "../lib/brand";
+
 interface Props {
   size?: number;
+  flat?: boolean;
 }
-const { size = 28 } = Astro.props;
+const { size = 28, flat = false } = Astro.props;
 ---
 
-<svg class="mark" width={size} height={size} viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-  <path d="M7 9c8 0 10 14 18 14M7 23c8 0 10-14 18-14" stroke-width="3" fill="none" stroke-linecap="square"></path>
-</svg>
-
-<style>
-  .mark path {
-    stroke: var(--accent);
-  }
-</style>
+<svg
+  class="mark"
+  width={size}
+  height={size}
+  viewBox={`0 0 ${MARK.box} ${MARK.box}`}
+  aria-hidden="true"
+  focusable="false"
+  set:html={markBody(flat ? "currentColor" : undefined)}
+/>

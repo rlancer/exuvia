@@ -2,6 +2,7 @@
 import "../styles/global.css";
 import Nav from "../components/Nav.astro";
 import Footer from "../components/Footer.astro";
+import { CARD, getCard } from "../lib/cards";
 import { url } from "../lib/paths";
 
 interface Props {
@@ -9,11 +10,18 @@ interface Props {
   description: string;
   /** Marks the current top-level nav item. */
   current?: "home" | "docs";
+  /** The social card a link to this page unfolds into (src/lib/cards.ts). */
+  card?: string;
+  /** What a link to this page is, to the sites that unfold it: a page of the site, or something to read. */
+  kind?: "website" | "article";
 }
 
-const { title, description, current } = Astro.props;
+const { title, description, current, card: cardName = "home", kind = "website" } = Astro.props;
 const canonical = Astro.site ? new URL(Astro.url.pathname, Astro.site).href : undefined;
-const card = Astro.site ? new URL(url("/og.png"), Astro.site).href : url("/og.png");
+const card = await getCard(cardName);
+// Absolute when the build knows its address (SITE_URL): most sites that
+// unfold a link will not fetch a relative picture.
+const picture = Astro.site ? new URL(url(card.src), Astro.site).href : url(card.src);
 ---
 
 <!doctype html>
@@ -26,11 +34,24 @@ const card = Astro.site ? new URL(url("/og.png"), Astro.site).href : url("/og.pn
     {canonical && <link rel="canonical" href={canonical} />}
     <link rel="icon" href={url("/favicon.svg")} type="image/svg+xml" />
     <meta name="theme-color" content="#111214" />
-    <meta property="og:type" content="website" />
+    {/* How a link to this page unfolds when it is shared: Open Graph, which
+         most sites read, and the few names X asks for by its own. */}
+    <meta property="og:site_name" content="exuvia" />
+    <meta property="og:type" content={kind} />
+    <meta property="og:locale" content="en_US" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
-    <meta property="og:image" content={card} />
+    {canonical && <meta property="og:url" content={canonical} />}
+    <meta property="og:image" content={picture} />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content={String(CARD.width)} />
+    <meta property="og:image:height" content={String(CARD.height)} />
+    <meta property="og:image:alt" content={card.alt} />
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={picture} />
+    <meta name="twitter:image:alt" content={card.alt} />
     <link rel="alternate" type="text/plain" href={url("/llms.txt")} title="llms.txt" />
     <slot name="head" />
   </head>
