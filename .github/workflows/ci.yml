@@ -11,6 +11,12 @@ name: CI
 # the heavy jobs are skipped, which reports them as passing. If `changes`
 # itself fails they run anyway, so a broken filter never lets code through
 # untested. Pushes to main keep the paths filter; nothing requires checks there.
+#
+# Both heavy jobs overlap their slow parts to keep a run short. The tests run
+# on one pytest worker per core. The container job brings the kind cluster up
+# while the image builds, and loads the image into it while the Compose and
+# Swarm steps run (.github/scripts/bg.sh runs a command in the background and
+# a later step collects its log and exit status).
 
 on:
   push:
@@ -63,6 +69,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # The record-store tests also run against Postgres (tests/test_revisions.py).
+    # The health check asks over TCP: while the image initialises the database
+    # it runs a temporary server on the Unix socket only, which must not count.
     services:
       postgres:
         image: postgres:17
@@ -70,16 +78,22 @@ jobs:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
         options: >-
-          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 12
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 1s --health-timeout 5s --health-retries 60
     steps:
       - uses: actions/checkout@v5
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
+      # One pytest worker per core (pytest-xdist), each test file on one
+      # worker: only tests/test_revisions.py uses Postgres, and two workers
+      # creating the schema in the empty database at once collide ("duplicate
+      # key ... pg_type_typname_nsp_index"). xdist is added here rather than to
+      # the `dev` extra: a change to pyproject.toml or uv.lock is a release.
       - name: Python tests
         env:
           EXUVIA_TEST_POSTGRES_URL: postgresql://postgres:ci@127.0.0.1:5432/postgres
-        run: uv sync --extra dev --extra postgres --python 3.12 && uv run pytest -q
+        run: uv sync --extra dev --extra postgres --python 3.12 && uv run --with pytest-xdist==3.8.0 pytest -q -n auto --dist loadfile
 
       # The bun version matches mise.toml; the cache is bun's package cache,
       # keyed on the lockfile.
@@ -111,10 +125,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The cluster takes about 40 s to come up and needs nothing from the
+      # image, so it starts now and comes up while the image builds.
+      - name: Start a kind cluster (in the background)
+        run: .github/scripts/bg.sh start kind-cluster kind create cluster --name exuvia --wait 120s
+
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - name: Build image
         run: docker build -t exuvia:ci .
+
+      # Loading the image into the cluster and rolling the hub out takes about
+      # 25 s; the steps up to the Kubernetes one run meanwhile.
+      - name: Deploy to the kind cluster (in the background)
+        run: .github/scripts/bg.sh start kind-deploy .github/scripts/kind-deploy.sh
 
       - name: Start executor container
         run: |
@@ -172,13 +196,8 @@ jobs:
           E2E_URL: http://127.0.0.1:7422
           E2E_TOKEN: ci-token
         run: |
-          kind create cluster --name exuvia --wait 120s
-          kind load docker-image exuvia:ci --name exuvia
-          kubectl create namespace exuvia
-          kubectl -n exuvia create secret generic exuvia --from-literal=api-token=ci-token
-          sed 's#ghcr.io/rlancer/exuvia:latest#exuvia:ci#' deploy/kubernetes.yaml | kubectl -n exuvia apply -f -
-          diagnose() { kubectl -n exuvia get all,pvc; kubectl -n exuvia describe pods; kubectl -n exuvia logs deployment/exuvia-hub --all-containers || true; }
-          kubectl -n exuvia rollout status deployment/exuvia-hub --timeout=180s || { diagnose; exit 1; }
+          diagnose() { kubectl -n exuvia get all,pvc || true; kubectl -n exuvia describe pods || true; kubectl -n exuvia logs deployment/exuvia-hub --all-containers || true; }
+          .github/scripts/bg.sh wait kind-deploy 420 || { diagnose; exit 1; }
           kubectl -n exuvia port-forward service/exuvia-hub 7422:7420 >/tmp/port-forward.log 2>&1 &
           python3 tests/e2e/container_e2e.py || { diagnose; cat /tmp/port-forward.log; exit 1; }
 

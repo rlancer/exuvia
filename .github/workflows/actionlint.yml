@@ -1,9 +1,10 @@
 name: Lint workflows
 
 # actionlint (https://github.com/rhysd/actionlint) over .github/workflows/,
-# with shellcheck on the `run:` scripts: the same check as `mise run
-# lint-actions`, with the versions pinned in mise.toml. It runs only when a
-# workflow or mise.toml changes. The check is not required by the `main`
+# with shellcheck on the `run:` scripts and on the scripts the workflows call
+# (.github/scripts/): the same check as `mise run lint-actions`, with the
+# versions pinned in mise.toml. It runs only when a workflow, one of those
+# scripts or mise.toml changes. The check is not required by the `main`
 # ruleset (ci.yml's two heavy jobs are), so a pull request that does not
 # touch workflows never waits on it.
 
@@ -11,11 +12,13 @@ on:
   pull_request:
     paths:
       - .github/workflows/**
+      - .github/scripts/**
       - mise.toml
   push:
     branches: [main]
     paths:
       - .github/workflows/**
+      - .github/scripts/**
       - mise.toml
 
 permissions:
@@ -40,3 +43,6 @@ jobs:
 
       - name: actionlint
         run: actionlint
+
+      - name: shellcheck the workflows' scripts
+        run: shellcheck .github/scripts/bg.sh .github/scripts/kind-deploy.sh
