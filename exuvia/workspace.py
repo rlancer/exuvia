@@ -47,7 +47,7 @@ from croniter import croniter
 from .arrowstream import ArrowStream
 from .artifacts import artifact_key, artifact_store
 from .events import EventBus
-from .executor import ExecRequest, make_executor
+from .executor import CappedLog, ExecRequest, ExecResult, make_executor
 from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Project, View, _hash, _validate_cron
 from .store import CodeChange, clean_origin, open_store
 
@@ -737,9 +737,17 @@ class Workspace:
         )
         self._emit_run(run_id)
 
-        def on_log(text: str) -> None:
+        def sink(text: str) -> None:
             self.store.append_log(run_id, text)
             self.bus.publish({"type": "log", "run_id": run_id, "node": name, "text": text})
+
+        log = CappedLog(sink)  # bounds what the store and the UI receive
+
+        def execute() -> ExecResult:
+            try:
+                return self.executor.execute(req, log)
+            finally:
+                log.close()
 
         req = ExecRequest(
             run_id=run_id,
@@ -754,7 +762,7 @@ class Workspace:
             params={p: params.get(p) for p in node.params},
         )
         # Executors block (subprocess pipes / HTTP streams); keep them off the loop.
-        res = await asyncio.to_thread(self.executor.execute, req, on_log)
+        res = await asyncio.to_thread(execute)
         if not res.ok:
             return self._finish(run_id, name, key, status="failed", error=res.error)
         rel = self._rel(res.artifact_path)

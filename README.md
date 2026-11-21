@@ -446,7 +446,9 @@ out, `ATTACH` a file or `INSTALL` anything.
   the graph allows (`EXUVIA_MAX_PARALLEL`, default 4).
 - **Subprocess isolation.** Every node runs in its own Python process: crash
   isolation, clean per-run logs streamed live to the UI, killable timeouts
-  (`EXUVIA_RUN_TIMEOUT`, default 1800 s).
+  (`EXUVIA_RUN_TIMEOUT`, default 1800 s). A run's log is capped
+  (`EXUVIA_MAX_LOG_KB`, default 1024): past the cap, a marker line says so,
+  the middle is dropped, and the end, where a traceback lands, is kept.
 - **Per-node schedules + cascade.** A scheduled node is forced to re-run on its
   cron. If it produces *different* output, downstream nodes with
   `cascade=True` refresh automatically; identical output stops the cascade.
@@ -658,6 +660,7 @@ an HttpOnly cookie. Always set `EXUVIA_EXECUTOR_TOKEN` on a networked executor
 | `EXUVIA_API_TOKEN` | off | shared-secret auth for the control plane API |
 | `EXUVIA_MAX_PARALLEL` | 4 | concurrent node runs (control plane and executor) |
 | `EXUVIA_RUN_TIMEOUT` | 1800 | seconds before a node run is killed |
+| `EXUVIA_MAX_LOG_KB` | 1024 | log kept per run: the first ¾ as it streams, the last ¼ when the run ends, the middle dropped (`0` = no cap) |
 | `EXUVIA_BUNDLE_MAX_MB` | 50 | max project size shipped to a remote executor |
 | `EXUVIA_EXECUTOR_DIR` | temp | executor scratch space |
 | `EXUVIA_PROVIDER` | auto | `anthropic`, `openrouter`, or `openai` (any OpenAI-compatible server) |

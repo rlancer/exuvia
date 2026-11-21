@@ -35,7 +35,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
 from . import __version__
-from .executor import ExecRequest, LocalExecutor, bundle_hash_of_zip
+from .executor import CappedLog, ExecRequest, ExecResult, LocalExecutor, bundle_hash_of_zip
 from .project import NODE_NAME
 
 RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -166,12 +166,22 @@ def create_executor_app() -> FastAPI:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[str | None] = asyncio.Queue()
 
-        def on_log(text: str) -> None:
+        def sink(text: str) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, json.dumps({"type": "log", "text": text}) + "\n")
+
+        # Cap here too, so a runaway node does not stream megabytes to the
+        # control plane only for it to drop them.
+        log = CappedLog(sink)
+
+        def execute() -> ExecResult:
+            try:
+                return local.execute(req, log)
+            finally:
+                log.close()  # on this thread, so the tail is queued before the result
 
         async def work() -> None:
             async with slots:
-                res = await asyncio.to_thread(local.execute, req, on_log)
+                res = await asyncio.to_thread(execute)
             results[run_id] = {"path": res.artifact_path}
             out = {k: v for k, v in res.__dict__.items() if k != "artifact_path"}
             await queue.put(json.dumps({"type": "result", "result": out}) + "\n")
