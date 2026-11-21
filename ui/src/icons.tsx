@@ -43,3 +43,9 @@ export const IconSpark = icon(<path d="M8 1.5l1.5 4.2a1.3 1.3 0 0 0 .8.8L14.5 8l
 
 /** "Ctrl" on most keyboards, "⌘" on a Mac: for the hints next to shortcuts. */
 export const MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
+export const IconUser = icon(
+  <>
+    <circle cx="8" cy="5.5" r="2.6" />
+    <path d="M2.8 13.6c.7-2.5 2.7-3.9 5.2-3.9s4.5 1.4 5.2 3.9" />
+  </>,
+);

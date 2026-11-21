@@ -950,7 +950,7 @@ def _install_common(app: FastAPI, users: UserStore | None) -> None:
         detail = (
             f"not signed in: exuvia expects the {headers.user_header} or {headers.email_header} "
             "header from the sign-in proxy in front of it"
-            + ("; agents and scripts send an agent token (Authorization: Bearer exv_...) from the hub's Connect agent"
+            + ("; agents and scripts send an agent token (Authorization: Bearer exv_...) from the hub's account menu (Connect an agent)"
                if users is not None and is_api(path) else "")
         )
         if is_api(path):

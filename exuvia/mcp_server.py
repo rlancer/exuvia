@@ -238,7 +238,7 @@ class HubBackend:
             await self.http.aclose()
             raise RuntimeError(
                 f"{self.url} turned the token away: set EXUVIA_API_TOKEN (or EXUVIA_API_TOKEN_FILE, a file that holds it) "
-                "to the hub's API token, or to an agent token from the hub's Connect agent"
+                "to the hub's API token, or to your agent token (the hub's account menu: Connect an agent)"
             )
         if r.status_code != 200:
             await self.http.aclose()

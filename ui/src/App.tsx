@@ -180,10 +180,10 @@ export default function App() {
           {pkgs?.status === "installing" || pkgs?.status === "pending" ? <span className="pk-spin" /> : null}
           {pkgs?.status === "failed" ? <span className="pk-bang">!</span> : null}
         </button>
-        <SignedInAs />
         <button className="btn ghost icon-btn" onClick={toggleTheme} title={dark ? "Light theme" : "Dark theme"} aria-label={dark ? "Light theme" : "Dark theme"}>
           {dark ? <IconSun /> : <IconMoon />}
         </button>
+        <SignedInAs />
       </header>
 
       <div className={mainCls}>
