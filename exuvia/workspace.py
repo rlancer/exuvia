@@ -48,6 +48,7 @@ from .arrowstream import ArrowStream
 from .artifacts import artifact_key, artifact_store
 from .events import EventBus
 from .executor import ExecRequest, make_executor
+from .notify import failure_webhook, payload, send
 from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Project, View, _hash, _validate_cron
 from .store import CodeChange, clean_origin, open_store
 
@@ -104,6 +105,9 @@ class Workspace:
         self._stop_watching: asyncio.Event | None = None
         self._backfill: dict[str, Any] | None = None
         self.executor = make_executor(self.project.root, MAX_PARALLEL)
+        # Where this project's API is mounted: "/api" alone, "/p/<id>/api" in a
+        # hub (set by Hub.get). Used for the run link in failure webhooks.
+        self.api_prefix = "/api"
 
     # -- lifecycle ---------------------------------------------------------
     async def start(self) -> None:
@@ -653,7 +657,26 @@ class Workspace:
             del self._inflight[(name, key)]
         self._emit_run(run_id)
         self.bus.publish({"type": "graph"})
+        if status == "failed":
+            self._notify_failure(run_id)
         return status
+
+    def _notify_failure(self, run_id: str) -> None:
+        """POST the failure webhook, if one is configured for this run's
+        trigger (see notify.py). Never raises: notifying is not the run."""
+        try:
+            hook = failure_webhook(self.project.config)
+            if hook is None:
+                return
+            url, triggers = hook
+            run = self.store.run(run_id)
+            if run is None or (triggers is not None and run.get("trigger") not in triggers):
+                return
+            base = os.environ.get("EXUVIA_PUBLIC_URL", "").strip().rstrip("/")
+            link = f"{base}{self.api_prefix}/runs/{run_id}" if base else None
+            send(url, payload(self.project.name, run, link))
+        except Exception as e:
+            print(f"exuvia: failure webhook skipped for run {run_id}: {e}", file=sys.stderr)
 
     def _rel(self, path: str | None) -> str | None:
         """Artifact paths are stored relative to the project root so a project

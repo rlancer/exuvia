@@ -82,6 +82,7 @@ class Hub:
             ctx = self._ctxs.get(project_id)
             if ctx is None:
                 ws = Workspace(self.root / project_id, origin=self._load_origin.pop(project_id, "load"))
+                ws.api_prefix = f"/p/{project_id}/api"
                 await ws.start()
                 ctx = Ctx(ws, Agent(ws))
                 self._ctxs[project_id] = ctx

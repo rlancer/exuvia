@@ -240,6 +240,8 @@ select * from screen where as_of_date <= $as_of
 - `timezone` also sets the clock for cron schedules. `schedules` overrides or
   adds a per-node cron without editing the node file (this is what the
   schedule API writes), so an embedding app can let people schedule nodes.
+  `failure_webhook` tells Slack or any URL when a scheduled run fails (see
+  [Failure notifications](#schedules-auth-and-settings)).
 
 ```bash
 exuvia run my-project --param as_of=2026-11-06
@@ -679,6 +681,51 @@ Durable Object alarm or Cron Trigger, a Kubernetes CronJob, or system cron.
 Ticks are idempotent; fires missed while asleep are coalesced into one
 catch-up run, and paused schedules skip their backlog.
 
+**Failure notifications.** Give a project a webhook and exuvia POSTs JSON to
+it when a scheduled or cascade run fails (manual runs have someone watching
+them; skipped downstream nodes are not reported, only the node that broke):
+
+```json
+{ "failure_webhook": "https://hooks.slack.com/services/T000/B000/XXXX" }
+```
+
+```json
+{ "failure_webhook": { "url": "https://example.com/hooks/exuvia", "triggers": "all" } }
+```
+
+`triggers` is `"all"` or a list of `schedule`, `cascade`, `manual`,
+`backfill` (default `["schedule", "cascade"]`). `EXUVIA_FAILURE_WEBHOOK` (and
+`EXUVIA_FAILURE_TRIGGERS`, comma-separated) set one for every project on a
+host or hub; a project's own `failure_webhook` wins, and `false` turns it off
+for that project. The webhook URL is often a secret, and `exuvia.json` is kept
+in code revisions and usually committed, so prefer the env var for those.
+
+```json
+{
+  "text": "exuvia: put-selling / screen failed (schedule): ValueError: feed is empty\nhttps://exuvia.example.com/api/runs/3f9c2a1b7d4e",
+  "event": "run.failed",
+  "project": "put-selling",
+  "node": "screen",
+  "run_id": "3f9c2a1b7d4e",
+  "trigger": "schedule",
+  "status": "failed",
+  "error": "Traceback (most recent call last): … ValueError: feed is empty",
+  "params": { "as_of": "2026-11-06" },
+  "queued_at": "2026-11-06T21:30:00.412+00:00",
+  "finished_at": "2026-11-06T21:30:04.981+00:00",
+  "url": "https://exuvia.example.com/api/runs/3f9c2a1b7d4e"
+}
+```
+
+`text` makes it a Slack incoming-webhook message as it is (for Discord, add
+`/slack` to the webhook URL); the other fields are for your own receiver.
+`error` is trimmed to 2000 characters. `url` is the run's record (error and
+log) in the API, `/p/<project>/api/runs/<id>` in a hub, and is `null` unless
+`EXUVIA_PUBLIC_URL` says where the server is reachable. Delivery is one POST
+off the run path with a 5 s timeout; a failed delivery is printed to stderr
+and not retried. Runs marked failed because the server restarted mid-run are
+not sent.
+
 **Auth.** Set `EXUVIA_API_TOKEN` on a hosted control plane: API clients send
 `Authorization: Bearer <token>`; browsers open `/?token=<token>` once and get
 an HttpOnly cookie. Always set `EXUVIA_EXECUTOR_TOKEN` on a networked executor
@@ -689,6 +736,9 @@ an HttpOnly cookie. Always set `EXUVIA_EXECUTOR_TOKEN` on a networked executor
 | `EXUVIA_EXECUTOR_URL` / `EXUVIA_EXECUTOR_TOKEN` | local pool | remote executor + its token |
 | `EXUVIA_SCHEDULER` | `internal` | `external` = only `POST /api/schedule/tick` advances schedules |
 | `EXUVIA_API_TOKEN` | off | shared-secret auth for the control plane API |
+| `EXUVIA_FAILURE_WEBHOOK` | off | URL that failed runs are POSTed to, for projects without their own `failure_webhook` |
+| `EXUVIA_FAILURE_TRIGGERS` | `schedule,cascade` | which failed runs the env webhook reports (`all`, or any of `schedule`, `cascade`, `manual`, `backfill`) |
+| `EXUVIA_PUBLIC_URL` | — | where this server is reachable (e.g. `https://exuvia.example.com`), for run links in failure webhooks |
 | `EXUVIA_MAX_PARALLEL` | 4 | concurrent node runs (control plane and executor) |
 | `EXUVIA_RUN_TIMEOUT` | 1800 | seconds before a node run is killed |
 | `EXUVIA_BUNDLE_MAX_MB` | 50 | max project size shipped to a remote executor |
