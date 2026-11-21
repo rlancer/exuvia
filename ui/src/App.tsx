@@ -8,6 +8,7 @@ import { NewNodeDialog } from "./NewNodeDialog";
 import { PackagesDialog } from "./PackagesDialog";
 import { Views } from "./Views";
 import { SignedInAs } from "./Me";
+import { HelpMenu } from "./Help";
 import { useTheme } from "./theme";
 import { Brand, Mark } from "./Brand";
 import { IconMoon, IconPackage, IconPlay, IconPlus, IconSpark, IconSun } from "./icons";
@@ -181,6 +182,7 @@ export default function App() {
           {pkgs?.status === "failed" ? <span className="pk-bang">!</span> : null}
         </button>
         <SignedInAs />
+        <HelpMenu />
         <button className="btn ghost icon-btn" onClick={toggleTheme} title={dark ? "Light theme" : "Dark theme"} aria-label={dark ? "Light theme" : "Dark theme"}>
           {dark ? <IconSun /> : <IconMoon />}
         </button>

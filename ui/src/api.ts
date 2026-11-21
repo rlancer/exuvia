@@ -271,6 +271,28 @@ export interface Me {
 
 export const me = async () => (await sendTo("GET", "/api/me")).json() as Promise<Me>;
 
+/** `GET /api/about`: the running version, how it was installed and whether a newer release is out (exuvia/about.py). */
+export interface About {
+  version: string;
+  install: "deployed" | "source" | "uvx" | "uv-tool" | "pipx" | "pip";
+  deployed: boolean;
+  /** The command that updates this install; null on a deployed server. */
+  upgrade: string | null;
+  image: string;
+  latest: string | null;
+  update: "off" | "dev" | "error" | "available" | "current";
+  error: string | null;
+  /** Unix seconds. */
+  checked_at: number | null;
+  changes_url: string | null;
+  repo_url: string;
+  docs_url: string;
+  issues_url: string;
+}
+
+export const about = async (refresh = false) =>
+  (await sendTo("GET", refresh ? "/api/about?refresh=true" : "/api/about")).json() as Promise<About>;
+
 /** Someone in the user list (`GET /api/users`, admins only). */
 export interface UserRow {
   id: string;

@@ -32,7 +32,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import _STARTED, __version__, auth
+from . import _STARTED, __version__, about as about_mod, auth
 from .agent import TOOLS, Agent
 from .arrowstream import MEDIA_TYPE as ARROW_STREAM, ArrowStream, wants_arrow
 from .packages import PackagesError
@@ -833,10 +833,11 @@ def _browser_open() -> bool:
     return mode == "open"
 
 
-def _install_common(app: FastAPI, users: UserStore | None) -> None:
+def _install_common(app: FastAPI, users: UserStore | None, command: str = "serve") -> None:
     """CORS, who is signed in (EXUVIA_AUTH) and the optional shared-secret
     auth, for both app shapes. ``users`` is the user list each sign-in is
-    recorded in (None when nobody signs in: EXUVIA_AUTH=token)."""
+    recorded in (None when nobody signs in: EXUVIA_AUTH=token). ``command``
+    is the CLI command this app is (``serve`` or ``hub``)."""
     origins = [o for o in os.environ.get("EXUVIA_CORS_ORIGINS", "").split(",") if o]
     if origins:  # e.g. https://lobster.mp when embedded in another app
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"], allow_headers=["*"])
@@ -852,6 +853,14 @@ def _install_common(app: FastAPI, users: UserStore | None) -> None:
         server identifies people: ``headers``, ``token`` or ``none``."""
         ident = auth.current()
         return {"auth": method, "user": ident.as_dict() if ident else None}
+
+    @app.get("/api/about")
+    async def about(refresh: bool = False) -> dict[str, Any]:
+        """The running version, how it was installed (``deployed`` or a local
+        install) and whether a newer release is out, for the help menu. The
+        check against PyPI is cached; ``refresh`` asks again (at most once a
+        minute). ``EXUVIA_UPDATE_CHECK=off`` turns it off."""
+        return await about_mod.about(refresh, command)
 
     def admin_users() -> UserStore:
         """The user list, for an admin: a signed-in admin, or a caller with
@@ -1011,7 +1020,7 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
     # One user list for every project on the hub (see users.py).
     if auth.identifies_people():
         hub.users = open_users(hub.root / HUB_USERS_DB)
-    _install_common(app, hub.users)
+    _install_common(app, hub.users, "hub")
     app.state.hub = hub
 
     async def get_ctx(project: str) -> Ctx:

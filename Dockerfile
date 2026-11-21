@@ -36,7 +36,10 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_LINK_MODE=copy \
     PATH=/opt/venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
-    EXUVIA_EXECUTOR_DIR=/tmp/exuvia-executor
+    EXUVIA_EXECUTOR_DIR=/tmp/exuvia-executor \
+    EXUVIA_DEPLOYED=1
+# EXUVIA_DEPLOYED: the help menu tells people that whoever runs this server
+# updates it (a new image), instead of a command for an install they don't have.
 WORKDIR /app
 # Dependencies first, in their own layer: it depends only on the lockfile, so
 # it builds while the ui stage does and stays cached when only code changes

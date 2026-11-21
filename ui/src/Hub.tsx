@@ -2,9 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, hubApi, PROJECT_ID, type HubProject } from "./api";
 import { mcpSetup } from "./mcp";
 import { SignedInAs } from "./Me";
+import { HelpMenu } from "./Help";
 import { useTheme } from "./theme";
 import { Brand, Mark } from "./Brand";
 import { Dialog } from "./Dialog";
+import { Code } from "./Code";
 import { IconMoon, IconPlus, IconSun } from "./icons";
 import { Toasts } from "./toast";
 
@@ -79,6 +81,7 @@ export default function Hub() {
           </>
         )}
         <SignedInAs />
+        <HelpMenu />
         <button className="btn ghost icon-btn" onClick={toggleTheme} title={dark ? "Light theme" : "Dark theme"} aria-label={dark ? "Light theme" : "Dark theme"}>
           {dark ? <IconSun /> : <IconMoon />}
         </button>
@@ -340,36 +343,5 @@ function ConnectDialog(props: { auth: boolean; onClose: () => void }) {
           <button type="button" className="btn" onClick={props.onClose}>Done</button>
         </div>
     </Dialog>
-  );
-}
-
-/** A block of text to copy, with a button that copies it. */
-function Code(props: { text: string; wrap?: boolean }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(props.text);
-    } catch {
-      // No clipboard API (plain http on another host): copy through a selection.
-      const t = document.createElement("textarea");
-      t.value = props.text;
-      document.body.appendChild(t);
-      t.select();
-      document.execCommand("copy");
-      t.remove();
-    }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
-  return (
-    <div className="code-copy">
-      <pre className={props.wrap ? "wrap" : ""}>
-        {props.wrap
-          ? props.text
-          : // Lines break only at spaces: a browser would also break after `-`, splitting `--url`.
-            props.text.split(/( )/).map((part, i) => (part === " " ? " " : <span key={i} className="tok">{part}</span>))}
-      </pre>
-      <button type="button" className="btn sm" onClick={copy}>{copied ? "Copied" : "Copy"}</button>
-    </div>
   );
 }
