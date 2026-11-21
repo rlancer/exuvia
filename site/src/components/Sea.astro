@@ -1,0 +1,408 @@
+---
+// The landing page's backdrop: the sea, and scrolling the page is the dive.
+// One canvas fixed behind everything, drawn in layers that move at different
+// speeds as the page scrolls, so the near ones pass faster than the far ones:
+//
+//   the surface    a band of facets under the nav, with shafts of light.
+//                  Both are left behind in the first screen or two.
+//   the water      blue near the top, close to black at the bottom. Bubbles
+//                  rise through the shallows and thin out; the specks that
+//                  sink through deep water take their place.
+//   the shells     the older animals of src/lib/poly.ts in outline, drifting
+//                  in mid water. The deeper the page, the older the animal.
+//   the sea floor  three ridges and their kelp, which rise into view over
+//                  the last screen of the page.
+//   the lobster    a small one that makes the dive with you. It joins below
+//                  the hero and keeps to the right-hand edge. Scroll fast and
+//                  it falls behind, then darts after you the way lobsters do,
+//                  tail first, trailing bubbles. At the bottom of the page it
+//                  settles on the sea floor.
+//
+// Under prefers-reduced-motion there is no parallax and nothing drifts: only
+// the water's colour follows the scroll.
+//
+// The page's bands are see-through while this is on it (--band in global.css).
+---
+
+<canvas class="sea" data-sea aria-hidden="true"></canvas>
+
+<style>
+  .sea {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    width: 100%;
+    height: 100vh;
+    height: 100lvh;
+    pointer-events: none;
+  }
+</style>
+
+<script>
+  import { STAGES, build, painter } from "../lib/poly";
+
+  type RGB = [number, number, number];
+  const clamp = (t: number) => Math.min(1, Math.max(0, t));
+  const smooth = (t: number) => t * t * (3 - 2 * t);
+  const wrap = (v: number, size: number) => ((v % size) + size) % size;
+  const rgba = ([r, g, b]: RGB, a: number) => `rgba(${r},${g},${b},${a})`;
+  const tint = ([r, g, b]: RGB, k: number): RGB => [Math.round(r * k), Math.round(g * k), Math.round(b * k)];
+
+  // The lobster's blue and its shadow, and what is left of them further down.
+  const LIGHT: RGB = [111, 155, 255];
+  const WATER: RGB = [22, 38, 84];
+  const DARK: RGB = [4, 6, 12];
+  const RIDGES: RGB[] = [
+    [26, 38, 70], // furthest: hazy
+    [19, 28, 52],
+    [12, 17, 33], // nearest: dark
+  ];
+  const KELP: RGB[] = [
+    [24, 50, 72],
+    [20, 58, 62],
+    [15, 46, 48],
+  ];
+
+  /** Random numbers that come out the same on every visit. */
+  function dice(seed: number) {
+    return () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function start(canvas: HTMLCanvasElement) {
+    const ctx = canvas.getContext("2d")!;
+    const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const meshes = STAGES.map(build);
+    const paint = painter(ctx, meshes[0]);
+    const lobster = meshes[meshes.length - 1];
+    // Eryma first and Waptia last: the deeper, the older.
+    const shells = meshes.slice(0, -1).reverse();
+
+    let [W, H] = [0, 0];
+    let scene = layout();
+    // The diver: where it is, which way it faces, how fast the page is moving
+    // under it, and the bubbles it has let go of.
+    const diver = { y: 0, yaw: -Math.PI / 2, speed: 0, puffs: [] as { x: number; y: number; r: number; born: number }[] };
+    let last = { t: 0, y: scrollY };
+
+    /** Everything whose place depends on the size of the window. */
+    function layout() {
+      const random = dice(7);
+      const between = (a: number, b: number) => a + (b - a) * random();
+
+      // The surface: two rows of corners, joined into a strip of facets.
+      const step = 84;
+      const waves = Array.from({ length: Math.ceil(W / step) + 3 }, () => ({
+        drop: between(26, 74),
+        phase: between(0, 6.28),
+        glow: between(0.4, 1),
+      }));
+      const beams = Math.max(3, Math.round(W / 300));
+      const shafts = Array.from({ length: beams }, (_, i) => ({
+        x: ((i + between(0.1, 0.9)) / beams) * W,
+        width: between(30, 110),
+        length: between(0.55, 1.05),
+        phase: between(0, 6.28),
+      }));
+
+      // What floats: two layers of sinking specks, two of rising bubbles.
+      const area = (W * H) / 100_000;
+      const motes = [
+        { speed: 0.1, count: 9 * area, size: [0.6, 1.2], rise: -3, bubble: false },
+        { speed: 0.26, count: 5 * area, size: [1, 1.9], rise: -6, bubble: false },
+        { speed: 0.5, count: 2.2 * area, size: [2, 4.5], rise: 14, bubble: true },
+        { speed: 0.85, count: 1.1 * area, size: [4, 8], rise: 24, bubble: true },
+      ].map((layer) => ({
+        ...layer,
+        all: Array.from({ length: Math.round(layer.count) }, () => ({
+          x: between(0, W),
+          y: between(0, H + 80),
+          r: between(layer.size[0], layer.size[1]),
+          phase: between(0, 6.28),
+          pace: between(0.6, 1.4),
+        })),
+      }));
+
+      // The sea floor: three ridges of facets, the nearest last.
+      const ridges = RIDGES.map((colour, k) => {
+        const gap = between(120, 170) - k * 12;
+        const height = H * (0.3 - k * 0.075);
+        const count = Math.ceil(W / gap) + 2;
+        const x = (i: number) => (i - 0.5) * gap;
+        const top = Array.from({ length: count }, () => H - height * between(0.5, 1));
+        const mid = top.map((y, i) => ({ x: x(i) + between(-0.3, 0.3) * gap, y: y + (H - y) * between(0.35, 0.6) }));
+        const facets: { points: number[]; colour: string }[] = [];
+        const facet = (...points: number[]) =>
+          facets.push({ points, colour: rgba(tint(colour, between(0.78, 1.22)), 1) });
+        for (let i = 0; i < count - 1; i++) {
+          facet(x(i), top[i], x(i + 1), top[i + 1], mid[i].x, mid[i].y);
+          facet(mid[i].x, mid[i].y, mid[i + 1].x, mid[i + 1].y, x(i + 1), top[i + 1]);
+          facet(mid[i].x, mid[i].y, mid[i + 1].x, mid[i + 1].y, x(i), H + 2);
+          facet(x(i), H + 2, x(i + 1), H + 2, mid[i + 1].x, mid[i + 1].y);
+        }
+        // Kelp grows from some of the peaks.
+        const kelp = top.flatMap((y, i) =>
+          random() < 0.45
+            ? Array.from({ length: 1 + Math.floor(random() * 3) }, () => ({
+                x: x(i) + between(-18, 18),
+                y: y + 14,
+                joints: Math.round(between(5, 10) + k),
+                reach: between(13, 21) * (0.8 + k * 0.15),
+                phase: between(0, 6.28),
+              }))
+            : [],
+        );
+        return { facets, kelp, travel: height + 40, top, x };
+      });
+      return { step, waves, shafts, motes, ridges };
+    }
+
+    function resize() {
+      [W, H] = [canvas.clientWidth, canvas.clientHeight];
+      // Sharp enough for thin lines, but never more pixels than a laptop screen.
+      const ratio = Math.min(1.5, devicePixelRatio || 1, Math.sqrt(1_800_000 / Math.max(1, W * H)));
+      canvas.width = Math.round(W * ratio);
+      canvas.height = Math.round(H * ratio);
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      scene = layout();
+    }
+
+    /**
+     * The water itself: blue, lit from above, darker the further down. It is
+     * the canvas's CSS background, which costs nothing to keep on screen and
+     * changes only when the page has scrolled.
+     */
+    let painted = -1;
+    function water(depth: number, day: number) {
+      if (Math.abs(depth - painted) < 0.002) return;
+      painted = depth;
+      const dark = rgba(DARK, +(0.6 * smooth(depth)).toFixed(3));
+      canvas.style.background = [
+        `linear-gradient(${dark}, ${dark})`,
+        `linear-gradient(${rgba(LIGHT, +(0.2 * day).toFixed(3))}, ${rgba(LIGHT, 0)})`,
+        rgba(WATER, +(0.34 - 0.14 * depth).toFixed(3)),
+      ].join(", ");
+    }
+
+    /** One frame, `t` seconds in, with the page scrolled `y` pixels of `reach`. */
+    function draw(t: number, y: number, reach: number) {
+      const depth = clamp(y / reach);
+      const day = 1 - smooth(clamp(depth * 2.4));
+      water(depth, day);
+      if (still) return;
+      ctx.clearRect(0, 0, W, H);
+
+      // ---- the surface, and the light that comes through it ----
+      const surface = 62 - y * 0.42;
+      if (day > 0.01 && surface > -H) {
+        for (const shaft of scene.shafts) {
+          const x = shaft.x + Math.sin(t * 0.21 + shaft.phase) * 26 - y * 0.05;
+          const [length, lean] = [H * shaft.length, H * shaft.length * 0.34];
+          const beam = ctx.createLinearGradient(0, surface, 0, surface + length);
+          beam.addColorStop(0, rgba(LIGHT, 0.13 * day * (0.7 + 0.3 * Math.sin(t * 0.5 + shaft.phase))));
+          beam.addColorStop(1, rgba(LIGHT, 0));
+          ctx.fillStyle = beam;
+          ctx.beginPath();
+          ctx.moveTo(x, surface);
+          ctx.lineTo(x + shaft.width, surface);
+          ctx.lineTo(x + shaft.width * 2.2 - lean, surface + length);
+          ctx.lineTo(x - shaft.width * 0.4 - lean, surface + length);
+          ctx.fill();
+        }
+      }
+      if (surface > -90) {
+        const { step, waves } = scene;
+        const slide = wrap(t * 9 + y * 0.08, step);
+        const at = (i: number): [number, number] => [(i - 1) * step + slide, surface];
+        const under = (i: number): [number, number] => [
+          (i - 0.5) * step + slide,
+          surface + waves[i].drop * (0.75 + 0.25 * Math.sin(t * 0.9 + waves[i].phase)),
+        ];
+        ctx.fillStyle = rgba(LIGHT, 0.16);
+        ctx.fillRect(0, 0, W, Math.max(0, surface));
+        for (let i = 0; i < waves.length - 1; i++) {
+          const shine = 0.5 + 0.5 * Math.sin(t * 0.7 + waves[i].phase * 2);
+          const corners = [
+            [at(i), at(i + 1), under(i)],
+            [under(i), under(i + 1), at(i + 1)],
+          ];
+          corners.forEach(([a, b, c], half) => {
+            ctx.fillStyle = rgba(LIGHT, (half ? 0.05 : 0.09) + 0.1 * waves[i].glow * (half ? 1 - shine : shine));
+            ctx.beginPath();
+            ctx.moveTo(a[0], a[1]);
+            ctx.lineTo(b[0], b[1]);
+            ctx.lineTo(c[0], c[1]);
+            ctx.fill();
+          });
+        }
+      }
+
+      // ---- the shells, one after another on the way down ----
+      const unit = Math.min(19, Math.max(8, W / 72));
+      shells.forEach((mesh, i) => {
+        const home = ((i + 0.9) / (shells.length + 0.6)) * reach;
+        const cy = H * 0.5 + (home - y) * 0.62 + Math.sin(t * 0.31 + i * 2) * 12;
+        if (cy < -H * 0.3 || cy > H * 1.3) return;
+        const left = i % 2 === 1;
+        const cx = W * (left ? 0.13 : 0.87) + Math.sin(t * 0.07 + i * 1.7) * W * 0.035;
+        const yaw = (left ? -0.35 : Math.PI + 0.35) + Math.sin(t * 0.13 + i) * 0.3;
+        paint.place(mesh.v, yaw, unit, cx, cy);
+        paint.shell(rgba(LIGHT, 1), 0.15 - 0.04 * depth);
+      });
+
+      // ---- specks and bubbles ----
+      const tall = H + 80;
+      for (const layer of scene.motes) {
+        const alpha = layer.bubble ? 0.42 * (1 - 0.85 * depth) : 0.14 + 0.4 * depth;
+        if (alpha <= 0.02) continue;
+        ctx.fillStyle = ctx.strokeStyle = rgba(layer.bubble ? LIGHT : [190, 205, 235], alpha);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (const mote of layer.all) {
+          const my = wrap(mote.y - y * layer.speed - t * layer.rise * mote.pace, tall) - 40;
+          const mx = mote.x + Math.sin(t * 0.5 * mote.pace + mote.phase) * (layer.bubble ? 7 : 3);
+          if (!layer.bubble) {
+            ctx.rect(mx, my, mote.r, mote.r);
+            continue;
+          }
+          // A bubble is six-sided, like everything else here.
+          for (let j = 0; j <= 6; j++) {
+            const angle = mote.phase + (j / 6) * Math.PI * 2;
+            const [px, py] = [mx + Math.cos(angle) * mote.r, my + Math.sin(angle) * mote.r];
+            j ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+          }
+        }
+        layer.bubble ? ctx.stroke() : ctx.fill();
+      }
+
+      // ---- the sea floor, over the last screen of the page ----
+      const rise = smooth(clamp((y - (reach - H * 1.15)) / (H * 1.15)));
+      scene.ridges.forEach((ridge, k) => {
+        const sunk = (1 - rise) * ridge.travel * (1 + k * 0.5);
+        if (rise > 0) {
+          ctx.save();
+          ctx.translate(-(1 - rise) * 40 * (k + 1), sunk);
+          for (const frond of ridge.kelp) {
+            // A ribbon of joints, each leaning a little further than the last.
+            let [x, fy, angle] = [frond.x, frond.y, -Math.PI / 2];
+            for (let j = 0; j < frond.joints; j++) {
+              const width = 7 * (1 - j / frond.joints) + 1.5;
+              angle += Math.sin(t * 0.7 + frond.phase + j * 0.5) * 0.11 + 0.02;
+              const [nx, ny] = [x + Math.cos(angle) * frond.reach, fy + Math.sin(angle) * frond.reach];
+              ctx.fillStyle = rgba(tint(KELP[k], j % 2 ? 0.8 : 1.1), 1);
+              ctx.beginPath();
+              ctx.moveTo(x - width, fy);
+              ctx.lineTo(x + width, fy);
+              ctx.lineTo(nx + width * 0.8, ny);
+              ctx.lineTo(nx - width * 0.8, ny);
+              ctx.fill();
+              [x, fy] = [nx, ny];
+            }
+          }
+          for (const { points, colour } of ridge.facets) {
+            ctx.fillStyle = ctx.strokeStyle = colour;
+            ctx.lineWidth = 0.75;
+            ctx.beginPath();
+            ctx.moveTo(points[0], points[1]);
+            ctx.lineTo(points[2], points[3]);
+            ctx.lineTo(points[4], points[5]);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
+        // The lobster goes in front of the middle ridge, where it will land.
+        if (k === 1) dive(t, y, rise, ridge, sunk);
+      });
+    }
+
+    /** The lobster that comes down with the page, and the bubbles behind it. */
+    function dive(t: number, y: number, rise: number, ridge: (typeof scene.ridges)[number], sunk: number) {
+      const dt = Math.min(0.1, Math.max(0.001, t - last.t));
+      diver.speed += ((y - last.y) / dt - diver.speed) * Math.min(1, dt * 7);
+      last = { t, y };
+      const fast = Math.abs(diver.speed) > 220;
+
+      // Mid water: it hangs head up in the right-hand margin, sinking tail
+      // first. A fast scroll leaves it behind, and a fast scroll back up turns
+      // it over, because a lobster only darts backwards.
+      const lag = Math.max(-H * 0.24, Math.min(H * 0.24, diver.speed * 0.11));
+      diver.y += (H * 0.6 - lag + Math.sin(t * 0.8) * 9 - diver.y) * Math.min(1, dt * 3.5);
+      const hang = -Math.PI / 2 + Math.sin(t * 0.4) * 0.22;
+      const facing = fast ? (diver.speed > 0 ? -Math.PI / 2 : Math.PI / 2) : hang;
+      const turn = Math.atan2(Math.sin(facing - diver.yaw), Math.cos(facing - diver.yaw));
+      diver.yaw += turn * Math.min(1, dt * 6);
+
+      // It comes in from above once the hero has gone, and at the bottom of
+      // the page it lets itself down onto the ridge.
+      const here = smooth(clamp((y - H * 0.5) / (H * 0.5)));
+      const landed = smooth(clamp(rise * 1.6 - 0.6));
+      const mix = (a: number, b: number) => a + (b - a) * landed;
+      const size = Math.min(7.5, Math.max(4.5, W / 190)) * mix(1, 1.25);
+      // The page's margin, where there is one: it swims down the middle of
+      // it, dimmer when the margin is too thin to keep it clear of the text.
+      const margin = Math.max(W * 0.04, (W - 1176) / 2);
+      const clear = clamp((margin - 30) / 40);
+      const home = W - Math.max(30, margin / 2) - size * 6;
+      const peak = Math.min(ridge.top.length - 2, Math.max(0, Math.round(home / (ridge.x(1) - ridge.x(0)) + 0.5)));
+      const cx = mix(W - Math.max(30, margin / 2), ridge.x(peak));
+      const cy = mix(-H * 0.25 + (diver.y + H * 0.25) * here, ridge.top[peak] + sunk - size * 1.1);
+      const stand = Math.PI + 0.3 + Math.sin(t * 0.25) * 0.14;
+      const yaw = diver.yaw + Math.atan2(Math.sin(stand - diver.yaw), Math.cos(stand - diver.yaw)) * landed;
+
+      // Bubbles: let go of while it darts, they rise and thin out.
+      if (fast && diver.puffs.length < 70 && Math.random() < dt * 40) {
+        diver.puffs.push({ x: cx + (Math.random() - 0.5) * size * 4, y: cy, r: 1.5 + Math.random() * 4, born: t });
+      }
+      diver.puffs = diver.puffs.filter((puff) => t - puff.born < 1.8);
+      ctx.lineWidth = 1;
+      for (const puff of diver.puffs) {
+        const age = (t - puff.born) / 1.8;
+        ctx.strokeStyle = rgba(LIGHT, 0.55 * (1 - age));
+        ctx.beginPath();
+        for (let j = 0; j <= 6; j++) {
+          const angle = puff.x + (j / 6) * Math.PI * 2;
+          const [px, py] = [
+            puff.x + Math.sin(age * 9 + puff.r) * 5 + Math.cos(angle) * puff.r * (1 + age),
+            puff.y - age * 70 + Math.sin(angle) * puff.r * (1 + age),
+          ];
+          j ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+        }
+        ctx.stroke();
+      }
+
+      if (here <= 0) return;
+      paint.place(lobster.v, yaw, size, cx, cy);
+      paint.solid(tint(LIGHT, mix(0.45 + 0.4 * clear, 0.6)), [14, 22, 48]);
+    }
+
+    const reach = () => Math.max(1, document.documentElement.scrollHeight - innerHeight);
+    // Every frame while the page is moving; every other one while it only drifts.
+    let [odd, seen] = [false, -1];
+    const frame = (now: number) => {
+      odd = !odd;
+      if (odd || scrollY !== seen || Math.abs(diver.speed) > 20) draw(now / 1000, (seen = scrollY), reach());
+      if (!document.hidden) requestAnimationFrame(frame);
+    };
+    new ResizeObserver(() => {
+      resize();
+      painted = -1;
+      if (still) draw(0, scrollY, reach());
+    }).observe(canvas);
+    resize();
+    if (still) {
+      addEventListener("scroll", () => draw(0, scrollY, reach()), { passive: true });
+      draw(0, scrollY, reach());
+      return;
+    }
+    document.addEventListener("visibilitychange", () => document.hidden || requestAnimationFrame(frame));
+    requestAnimationFrame(frame);
+  }
+
+  for (const canvas of document.querySelectorAll<HTMLCanvasElement>("[data-sea]")) start(canvas);
+</script>
