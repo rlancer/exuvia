@@ -686,6 +686,7 @@ Both commands include the workbench; neither needs a separate frontend.
 | First visit with `EXUVIA_AUTH=headers` | `<url>/`, through the sign-in proxy (no token) | `<url>/`, through the sign-in proxy (no token) |
 | Project API prefix | `<url>/api` | `<url>/p/<project>/api` |
 | Server-wide API | none | `<url>/api` (`/api/projects`, `/api/schedule/tick`, ...) |
+| MCP over HTTP (no CLI) | `<url>/mcp` | `<url>/mcp` (every project), or `<url>/p/<project>/mcp` (just that one) |
 | `exuvia mcp --url` | `<url>` | `<url>` (every project), or `<url>/p/<project>` (just that one) |
 | Read-only check | `GET <url>/api/project` | `GET <url>/p/<project>/api/project` |
 | `GET <url>/healthz` answers | `"mode": "serve"` | `"mode": "hub"` |
@@ -1077,20 +1078,27 @@ their own, so nobody has to handle the shared `EXUVIA_API_TOKEN`. In the
 account menu (the profile icon in the top bar) on a hub, **Connect an
 agent** makes one (name it for where it goes, such as "Claude Code on my laptop") and shows the commands for Claude Code,
 Codex, a JSON `mcpServers` entry or a prompt for any agent, with the token
-already in them: copy one, paste it, done. The token (`exv_...`) is sent as
-`Authorization: Bearer`, through `EXUVIA_API_TOKEN` in the MCP server's
-environment, and signs the agent in as the person who made it, whatever its
-address: runs and revisions name them, an admin's token is an admin and a
+already in them: copy one, paste it, done. They connect to the hub's own
+MCP endpoint, `<hub>/mcp`, so nothing is installed. The token (`exv_...`) is
+sent as `Authorization: Bearer` (with `exuvia mcp --url`, through
+`EXUVIA_API_TOKEN` in its environment), and signs the agent in as the person
+who made it, whatever its address: runs and revisions name them, an admin's token is an admin and a
 member's is a member, and disabling the person shuts out their tokens too.
 It is shown once (exuvia keeps only a hash), and the same dialog lists each
 person's tokens, with when each was last used, and revokes them. A request
 made with a token cannot make or revoke tokens, so a leaked one cannot mint
 more. Scripts use the routes behind it: `GET`/`POST /api/me/tokens` and
 `DELETE /api/me/tokens/{id}`, signed in through the proxy. If the agents
-reach exuvia through the sign-in proxy, the proxy has to pass requests
-that carry an `Authorization: Bearer` header through to exuvia untouched
-(oauth2-proxy's `--skip-auth-route` or an ingress rule, say), since exuvia
-checks the token itself. A hub that nobody signs in to keeps the
+reach exuvia through the sign-in proxy, the proxy has to pass their requests
+through to exuvia untouched, since exuvia checks the token itself: at least
+the MCP endpoints, `/mcp` and `/p/<project>/mcp` (oauth2-proxy:
+`--skip-auth-route='^/mcp/?$' --skip-auth-route='^/p/[^/]+/mcp/?$'`; or an
+ingress rule that routes those paths around the auth step), and for scripts
+and `exuvia mcp --url`, requests that carry an `Authorization: Bearer`
+header. That is safe: exuvia turns away a request to those paths without a
+valid token (401), whatever the proxy did. Behind such a proxy, a client
+that the proxy stops gets the proxy's answer (a redirect to sign in, or its
+own 401), not exuvia's. A hub that nobody signs in to keeps the
 **Connect agent** button in its top bar, for the shared token. Hub exports carry the tokens' hashes with the user
 list, so tokens keep working after an import.
 
@@ -1346,6 +1354,34 @@ there, each person's own agent token goes in `EXUVIA_API_TOKEN` (see "Agent
 tokens" under [auth](#schedules-auth-and-settings)), and the agent works as
 them.
 
+**Over HTTP, with nothing installed.** `exuvia serve` and `exuvia hub` are
+MCP servers themselves, over Streamable HTTP: a client needs only the
+address. `<hub>/mcp` serves every project on a hub (the tools described
+under "A whole hub" below), `<hub>/p/<project>/mcp` just that one, and
+`<server>/mcp` an `exuvia serve`'s project. The tools run in the server, as
+`POST /api/tools/{name}` does, behind the same auth as the API: send the
+API token or your agent token as `Authorization: Bearer`, and the agent
+works as you. The hub's **Connect an agent** writes these commands out with
+your token in them:
+
+```bash
+claude mcp add --transport http --scope user exuvia https://hub.example.com/mcp --header "Authorization: Bearer exv_..."
+codex mcp add exuvia --url https://hub.example.com/mcp --bearer-token-env-var EXUVIA_API_TOKEN
+```
+
+```json
+{"mcpServers": {"exuvia": {"type": "http", "url": "https://hub.example.com/mcp", "headers": {"Authorization": "Bearer exv_..."}}}}
+```
+
+Codex reads the token from an environment variable, so set
+`EXUVIA_API_TOKEN` where Codex starts (`export` in your shell profile, or
+`setx` on Windows). Behind a sign-in proxy, the proxy has to let `/mcp` and
+`/p/<project>/mcp` through without signing in (see "Agent tokens" under
+[auth](#schedules-auth-and-settings)). The endpoint is stateless: every
+request stands alone, so any replica can answer it. `exuvia mcp --url` (the
+local relay, below) still works, and is how a client reads the shared API
+token from a file (`EXUVIA_API_TOKEN_FILE`).
+
 **A whole hub.** Given a hub's own address (its `/healthz` says `"mode":
 "hub"`), `exuvia mcp --url` serves every project on it: `list_projects`,
 `create_project`, and each project tool with a required `project` argument
@@ -1400,9 +1436,11 @@ the hub has any) and opens its workbench, and deletes one. Its **Connect
 agent** button gives the [MCP](#mcp-the-agents-tools-in-your-own-agent) setup
 for the whole hub (one server for every project): a prompt that has your
 coding agent add the server itself, the `claude mcp add` and `codex mcp add`
-commands, and `mcpServers` JSON for other clients. Each reads the hub's token
-from a file (`~/.config/exuvia/<host>.token`, which the page shows how to
-create), never from its own config. It is the shape a
+commands, and `mcpServers` JSON for other clients. With a person's agent
+token, or on a hub without a token, they connect to the hub's own `/mcp`.
+With the hub's shared token, each reads it from a file
+(`~/.config/exuvia/<host>.token`, which the page shows how to create) through
+`exuvia mcp --url`, never from its own config. It is the shape a
 multi-tenant host needs: one process (or one container) per tenant, one
 project per workflow. With `EXUVIA_API_TOKEN` set, the home page asks for the
 token, or a browser opens `/?token=<token>` or `/p/<project>/?token=<token>`
@@ -1423,6 +1461,7 @@ exuvia hub ./projects --templates ./templates --scheduler external
 | `GET /p/{project}/` | that project's workbench (the web UI, talking to `/p/{project}/api`) |
 | `GET /api/projects` | list projects (`{projects, templates, auth}`; `auth`: whether clients need the API token) |
 | `GET /api/tools` | the project tools, as each project's `/guide` lists them (for `exuvia mcp --url <hub>`) |
+| `POST /mcp` | MCP over Streamable HTTP for every project (see "MCP"); `POST /p/{project}/mcp` for that one |
 | `POST /api/projects` | create one (`{id, name, template}`; templates come from `--templates` / `EXUVIA_TEMPLATES_DIR`) |
 | `PUT /api/projects/{project}/template` | replace its code with a template's (`{template}`): node files and views not in the template are removed (each view folder is replaced whole), the name, run history and stored outputs are kept, and removed files stay restorable from their revisions |
 | `DELETE /api/projects/{project}` | remove one |

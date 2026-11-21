@@ -328,3 +328,136 @@ def test_hub_tools_route(tmp_path):
     with TestClient(create_hub_app(tmp_path / "hub")) as hub:
         tools = hub.get("/api/tools").json()["tools"]
         assert {t["name"] for t in tools} == TOOL_NAMES - {"guide"}
+
+
+# -- MCP over HTTP: the server's own /mcp (exuvia/mcp_http.py) ------------------
+
+
+def http_client(url: str, token: str | None = None):
+    """An MCP client of a Streamable HTTP endpoint, as Claude Code or Codex
+    connect with just the address (and a bearer token)."""
+    from mcp.client.streamable_http import streamable_http_client
+    from mcp.shared._httpx_utils import create_mcp_http_client
+
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+    return Client(streamable_http_client(url, http_client=create_mcp_http_client(headers=headers)))
+
+
+async def drive_http(url: str, token: str | None = None) -> dict:
+    async with http_client(url, token) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+        guide = text(await client.call_tool("guide", {}))
+        wrote = await client.call_tool("write_node", {"name": "nums", "kind": "python", "source": SRC})
+        await client.call_tool("write_node", {"name": "total", "kind": "sql", "source": TOTAL})
+        ran = await client.call_tool("run_node", {"name": "total"})
+        queried = await client.call_tool("query_data", {"sql": "select max(n) as m from nums"})
+        bad = await client.call_tool("write_node", {"name": "x"})
+        missing = await client.call_tool("run_node", {"name": "nope"})
+        instructions = client.instructions
+    return locals()
+
+
+def test_serve_answers_mcp_over_http(served):
+    """`exuvia serve` is its own MCP server at /mcp: no `exuvia mcp` needed."""
+    url, root = served
+    check(asyncio.run(drive_http(f"{url}/mcp")))
+    with TestClient(create_app(root)) as client:
+        revs = client.get("/api/code/revisions", params={"node": "total"}).json()
+        assert revs[0]["origin"] == "mcp"
+        assert client.get("/api/nodes/total/runs").json()[0]["trigger"] == "mcp"
+    # Some clients add a trailing slash.
+    assert asyncio.run(drive_http(f"{url}/mcp/"))["instructions"]
+
+
+def test_a_hub_answers_mcp_over_http(hub_served):
+    """<hub>/mcp: every project, the same tools as `exuvia mcp --url <hub>`;
+    <hub>/p/<id>/mcp: one project. Both behind the API's token."""
+    async def hub_wide(token):
+        async with http_client(f"{hub_served}/mcp", token) as client:
+            tools = {t.name: t for t in (await client.list_tools()).tools}
+            empty = client.instructions
+            made = await client.call_tool("create_project", {"id": "books", "name": "Books"})
+            dup = await client.call_tool("create_project", {"id": "books"})
+            bad_id = await client.call_tool("create_project", {"id": "no spaces"})
+            wrote = await client.call_tool("write_node", {"project": "books", "name": "nums", "kind": "python", "source": SRC})
+            ran = await client.call_tool("run_node", {"project": "books", "name": "nums"})
+            no_project = await client.call_tool("list_nodes", {})
+            missing = await client.call_tool("list_nodes", {"project": "nope"})
+            hub_guide = text(await client.call_tool("guide", {}))
+            book_guide = await client.call_tool("guide", {"project": "books"})
+            listing = json.loads(text(await client.call_tool("list_projects", {})))
+        async with http_client(f"{hub_served}/mcp", token) as client:
+            later = client.instructions  # worked out again for each client
+        return locals()
+
+    seen = asyncio.run(hub_wide("s3cret"))
+    assert set(seen["tools"]) == {"guide", "list_projects", "create_project", *(t["name"] for t in TOOLS)}
+    assert seen["tools"]["run_node"].input_schema["required"] == ["project", "name"]
+    assert "no projects yet" in seen["empty"] and "- books: Books" in seen["later"]
+    assert json.loads(text(seen["made"])) == {"id": "books", "name": "Books", "workbench": f"{hub_served}/p/books/"}
+    assert seen["dup"].is_error and "already exists" in text(seen["dup"])
+    assert seen["bad_id"].is_error and "project ids are" in text(seen["bad_id"])
+    assert not seen["wrote"].is_error
+    assert not seen["ran"].is_error and json.loads(text(seen["ran"]))["rows"] == 3
+    assert seen["no_project"].is_error and "name the project" in text(seen["no_project"])
+    assert seen["missing"].is_error and "no project nope" in text(seen["missing"])
+    assert "Every project tool takes the project's id" in seen["hub_guide"]
+    assert not seen["book_guide"].is_error and "How exuvia works" in text(seen["book_guide"])
+    assert [p["id"] for p in seen["listing"]["projects"]] == ["books"]
+
+    async def one_project():
+        async with http_client(f"{hub_served}/p/books/mcp", "s3cret") as client:
+            tools = {t.name for t in (await client.list_tools()).tools}
+            nodes = json.loads(text(await client.call_tool("list_nodes", {})))
+            return tools, nodes, client.instructions
+
+    tools, nodes, instructions = asyncio.run(one_project())
+    assert tools == TOOL_NAMES and [n["name"] for n in nodes] == ["nums"]
+    assert "How exuvia works" in instructions
+
+    import httpx
+
+    init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}}
+    accept = {"Accept": "application/json, text/event-stream"}
+    for path in ("/mcp", "/p/books/mcp"):  # no token, no tools
+        r = httpx.post(hub_served + path, json=init, headers=accept)
+        assert r.status_code == 401, (path, r.status_code)
+    r = httpx.post(f"{hub_served}/p/nope/mcp", json=init, headers={**accept, "Authorization": "Bearer s3cret"})
+    assert r.status_code == 404 and "no project nope" in r.text
+
+
+def test_mcp_over_http_works_as_the_agent_tokens_owner(tmp_path, monkeypatch):
+    """A person's agent token signs the MCP client in as them: what it
+    changes and runs is theirs, as through the API."""
+    import httpx
+
+    from exuvia.server import create_hub_app
+
+    for name in ("EXUVIA_API_TOKEN", "EXUVIA_AUTH_TRUSTED_PROXIES", "EXUVIA_DB", "EXUVIA_ADMINS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("EXUVIA_AUTH", "headers")
+    alice = {"X-Forwarded-User": "alice", "X-Forwarded-Email": "alice@example.com"}
+    url, server, thread = _serve(create_hub_app(tmp_path / "hub"))
+    try:
+        token = httpx.post(f"{url}/api/me/tokens", json={"name": "codex"}, headers=alice).json()["token"]
+        uid = httpx.get(f"{url}/api/me", headers=alice).json()["user"]["uid"]
+
+        async def go():
+            async with http_client(f"{url}/mcp", token) as client:
+                await client.call_tool("create_project", {"id": "a"})
+                await client.call_tool("write_node", {"project": "a", "name": "nums", "kind": "python", "source": SRC})
+                return await client.call_tool("run_node", {"project": "a", "name": "nums"})
+
+        assert not asyncio.run(go()).is_error
+        [rev] = httpx.get(f"{url}/p/a/api/code/revisions", params={"node": "nums"}, headers=alice).json()
+        assert (rev["author"], rev["author_user"], rev["origin"]) == ("alice", uid, "mcp")
+        [run] = httpx.get(f"{url}/p/a/api/nodes/nums/runs", headers=alice).json()
+        assert (run["started_by"], run["started_by_user"], run["trigger"]) == ("alice", uid, "mcp")
+
+        # Without a token or the proxy's headers, nobody gets in.
+        r = httpx.post(f"{url}/mcp", json={}, headers={"Accept": "application/json, text/event-stream"})
+        assert r.status_code == 401 and "agent token" in r.json()["detail"]
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
