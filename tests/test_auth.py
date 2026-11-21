@@ -47,10 +47,12 @@ def test_nobody_gets_in_without_the_headers(headers_mode, tmp_path, monkeypatch)
 
         assert client.get("/api/project", headers=ALICE).status_code == 200
         assert client.get("/", headers=ALICE).text.endswith("<title>workbench</title>")
-        assert client.get("/api/me", headers=ALICE).json() == {
-            "auth": "headers",
-            "user": {"user": "alice", "email": "alice@example.com", "method": "headers", "id": "alice"},
+        me = client.get("/api/me", headers=ALICE).json()
+        assert me["auth"] == "headers"
+        assert {k: me["user"][k] for k in ("user", "email", "method", "id", "role")} == {
+            "user": "alice", "email": "alice@example.com", "method": "headers", "id": "alice", "role": "member",
         }
+        assert len(me["user"]["uid"]) == 12  # recorded in the user list (test_users.py)
         # Either header is enough; the email names the person when there is no user name.
         me = client.get("/api/me", headers={"X-Forwarded-Email": "bob@example.com"}).json()["user"]
         assert me["id"] == "bob@example.com" and me["user"] is None

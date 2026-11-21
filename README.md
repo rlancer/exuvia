@@ -961,6 +961,37 @@ else. The proxy must also drop any of these headers a client sends itself.
 cannot pass through the proxy send the token instead, and are recorded as
 nobody. `EXUVIA_BROWSER_AUTH` has no effect in this mode.
 
+**Users and admins.** Everyone who signs in is recorded in a user list on
+their first request, with no approval step: the sign-in proxy already
+decides who gets in. Each user has a stable id, the name and email their
+latest sign-in gave, a role (`admin` or `member`), whether they are
+disabled, and when they were first and last seen. Runs and revisions link to
+that id as well as the name (`started_by_user`, `author_user`), so a renamed
+person keeps their history. A user can have several *identities*, one per
+way of signing in (the headers now, SSO later); a new identity whose email
+an existing user already has joins that user, so adding a sign-in method
+later does not split anyone in two.
+
+`EXUVIA_ADMINS` (user names or emails, comma-separated) names the first
+admins. They are admins whenever they sign in, and nobody can demote or
+disable them through exuvia, so the hub always has a way back in. An admin
+sees a **Users** button in the top bar: everyone who has signed in, where
+they can make others admins or members and disable or re-enable them. A
+disabled user gets a 403 even though the proxy lets them through, which
+locks them out of exuvia without touching the company sign-in. Nobody can
+demote or disable themselves. A caller with the API token counts as an
+admin for the user routes (`GET /api/users`, `PATCH /api/users/{id}`), so a
+script can manage users too.
+
+The list belongs to the server, not to a project: a hub keeps one list for
+all its projects, in `.exuvia/hub.db` under the hub's directory (hub exports
+carry it, and an import restores it with roles and disabled users), or in
+the shared `EXUVIA_DB` under `EXUVIA_DB_SCOPE` when one is set. `exuvia
+serve` keeps it in the project's database. Each server remembers a sign-in
+for a minute, so with several replicas on one database a disabled user can
+take up to a minute to be turned away by the others. Without `EXUVIA_AUTH`,
+there is no user list.
+
 **Secrets from files.** Each setting that holds a secret can come from a file
 instead: set `<NAME>_FILE` to its path, such as
 `EXUVIA_API_TOKEN_FILE=/run/secrets/exuvia_api_token` for a Docker or Swarm
@@ -979,6 +1010,7 @@ empty file, stops exuvia with an error.
 | `EXUVIA_AUTH` | `token` | `headers` = a sign-in proxy in front says who each request is from (see "Signed-in users from a proxy" above) |
 | `EXUVIA_AUTH_USER_HEADER` / `EXUVIA_AUTH_EMAIL_HEADER` | `X-Forwarded-User` / `X-Forwarded-Email` | the headers that carry the user name and email with `EXUVIA_AUTH=headers` |
 | `EXUVIA_AUTH_TRUSTED_PROXIES` | any peer | IPs or CIDRs (comma-separated) whose identity headers are trusted; others are ignored |
+| `EXUVIA_ADMINS` | — | user names or emails (comma-separated) who are always admins of the user list (see "Users and admins" above) |
 | `EXUVIA_BROWSER_AUTH` | `token` | `open` = every page load gives the browser the auth cookie, so people never enter the token (private networks only; see "Auth" above) |
 | `<NAME>_FILE` | — | read a secret setting from a file, e.g. `EXUVIA_API_TOKEN_FILE=/run/secrets/exuvia_api_token` (see "Secrets from files" above) |
 | `EXUVIA_FAILURE_WEBHOOK` | off | URL that failed runs are POSTed to, for projects without their own `failure_webhook` |
@@ -1232,7 +1264,8 @@ exuvia hub ./projects --templates ./templates --scheduler external
 | `ANY /p/{project}/api/...` | that project's API (everything in the table below) |
 | `POST /api/schedule/tick` | evaluate every project's schedules; returns what started and the next due time. A project that fails to load or tick is skipped and named under `errors` (id → reason); the others still tick |
 | `GET /api/hub/state` | whether anything is running, and a counter that changes when state does |
-| `GET /api/hub/export`, `POST /api/hub/import` | the whole directory as one archive, for hosts with no persistent disk (without outputs already in `EXUVIA_ARTIFACT_STORE`, or records already in a shared `EXUVIA_DB`) |
+| `GET /api/hub/export`, `POST /api/hub/import` | the whole directory as one archive, for hosts with no persistent disk (without outputs already in `EXUVIA_ARTIFACT_STORE`, or records already in a shared `EXUVIA_DB`). With `EXUVIA_AUTH` set it carries the user list too, which an import puts in place of the hub's |
+| `GET /api/users`, `PATCH /api/users/{id}` | the user list, for admins (see "Users and admins"): everyone who has signed in with their identities / change one's `role` or `disabled` |
 
 With `--scheduler external` nothing fires on its own: the host calls
 `/api/schedule/tick` when it wants schedules evaluated and can sleep until the
@@ -1274,7 +1307,8 @@ headlessly or iframe the UI:
 | `POST /api/nodes/{name}/schedule` | set, clear, pause or resume a schedule |
 | `POST /api/schedule/tick` | evaluate schedules now (for external schedulers) |
 | `GET /api/events` | SSE: graph changes, run status, live logs |
-| `GET /api/me` | who the request is from: `{auth, user}`, `user` being `{id, user, email, method}` or null (in a hub, at `<url>/api/me`) |
+| `GET /api/me` | who the request is from: `{auth, user}`, `user` being `{id, user, email, method, uid, role}` (`id` the name records show, `uid` the user id) or null (in a hub, at `<url>/api/me`) |
+| `GET /api/users`, `PATCH /api/users/{id}` | the server's user list, for admins (`{role}` `admin`/`member`, `{disabled}`); in a hub, at `<url>/api/users` (see "Users and admins") |
 | `POST /api/agent` | SSE: agent turn |
 | `GET/DELETE /api/agent/{session_id}`, `POST .../cancel` | saved transcript, clear it, stop a turn |
 
@@ -1282,8 +1316,9 @@ Requests that change code may send `X-Exuvia-Origin` (letters, digits, `-`,
 `_`; e.g. `ui` or `mcp`) to label the revisions they create; otherwise they
 are recorded as `api`. With `EXUVIA_AUTH=headers` the signed-in person is
 recorded as well: as `author` on each revision, and as `started_by` on each
-run row (`/api/runs`, `/api/nodes/{name}/runs`, `/api/runs/{id}`); both are
-null for a caller with only the API token, a hand edit or a scheduled run.
+run row (`/api/runs`, `/api/nodes/{name}/runs`, `/api/runs/{id}`), with
+their user id beside each (`author_user`, `started_by_user`); all are null
+for a caller with only the API token, a hand edit or a scheduled run.
 
 ### Binary data: Arrow and Parquet
 
@@ -1496,6 +1531,7 @@ exuvia/
   runner.py     per-node subprocess entry point
   store.py      SQLite run history
   auth.py       who a request is from (EXUVIA_AUTH=headers: a sign-in proxy's headers)
+  users.py      the user list: everyone who signed in, their identities, roles and disabled accounts
   arrowstream.py  query results as an Arrow IPC stream
   agent.py      agent tools + provider-neutral tool loop
   llm.py        model providers: Anthropic, OpenAI-compatible (OpenRouter / DeepSeek)
@@ -1541,8 +1577,9 @@ the package to public once (package settings → Change visibility).
 ## Status
 
 Prototype. Not yet: SSO in exuvia itself (people are identified only by a sign-in
-proxy's headers, or share a token), per-user permissions (everyone signed in can do everything; the hub leaves tenancy to its
-host), executor autoscaling, incremental nodes (run parameters cover date partitions), non-Python runtimes, secrets management beyond env vars.
+proxy's headers, or share a token), per-project permissions (admins manage the user list, but everyone signed in can
+open and change every project; the hub leaves tenancy to its host), personal API tokens (an agent's changes are
+recorded as nobody's), executor autoscaling, incremental nodes (run parameters cover date partitions), non-Python runtimes, secrets management beyond env vars.
 
 Found a bug, or something missing? Open an issue at
 [github.com/rlancer/exuvia/issues](https://github.com/rlancer/exuvia/issues). Your agent can draft one

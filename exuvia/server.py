@@ -13,6 +13,7 @@ Two shapes, one set of project routes:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hmac
 import html
 import json
@@ -37,6 +38,7 @@ from .arrowstream import MEDIA_TYPE as ARROW_STREAM, ArrowStream, wants_arrow
 from .project import NODE_NAME, PARAM_TYPES, coerce_param
 from .report import graph_report, node_report
 from .store import clean_origin
+from .users import UserStore, open_users
 from .workspace import SCHEDULER, Workspace, acting_as
 
 STATIC = Path(__file__).parent / "static"
@@ -114,6 +116,11 @@ class BackfillReq(BaseModel):
     targets: list[str] | None = None
     params: dict[str, Any] | None = None
     force: bool = False
+
+
+class UserPatch(BaseModel):
+    role: str | None = None  # admin | member
+    disabled: bool | None = None
 
 
 class ScheduleReq(BaseModel):
@@ -755,9 +762,10 @@ def _browser_open() -> bool:
     return mode == "open"
 
 
-def _install_common(app: FastAPI) -> None:
+def _install_common(app: FastAPI, users: UserStore | None) -> None:
     """CORS, who is signed in (EXUVIA_AUTH) and the optional shared-secret
-    auth, for both app shapes."""
+    auth, for both app shapes. ``users`` is the user list each sign-in is
+    recorded in (None when nobody signs in: EXUVIA_AUTH=token)."""
     origins = [o for o in os.environ.get("EXUVIA_CORS_ORIGINS", "").split(",") if o]
     if origins:  # e.g. https://lobster.mp when embedded in another app
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"], allow_headers=["*"])
@@ -773,6 +781,35 @@ def _install_common(app: FastAPI) -> None:
         server identifies people: ``headers``, ``token`` or ``none``."""
         ident = auth.current()
         return {"auth": method, "user": ident.as_dict() if ident else None}
+
+    def admin_users() -> UserStore:
+        """The user list, for an admin: a signed-in admin, or a caller with
+        the API token (the operator)."""
+        if users is None:
+            raise HTTPException(404, "no user list: nobody signs in on this server (see EXUVIA_AUTH)")
+        ident = auth.current()
+        if ident is not None and ident.role != "admin":
+            raise HTTPException(403, "admins only")
+        return users
+
+    @app.get("/api/users")
+    def users_list() -> dict[str, Any]:
+        """Everyone who has signed in, most recently seen first."""
+        return {"users": admin_users().list()}
+
+    @app.patch("/api/users/{uid}")
+    def users_update(uid: str, body: UserPatch) -> dict[str, Any]:
+        """Make someone an admin or a member, or disable / re-enable them."""
+        store = admin_users()
+        ident = auth.current()
+        if ident is not None and ident.uid == uid and (body.role == "member" or body.disabled):
+            raise HTTPException(400, "you cannot demote or disable yourself; ask another admin")
+        try:
+            return store.update(uid, role=body.role, disabled=body.disabled).as_dict()
+        except KeyError:
+            raise HTTPException(404, f"no user {uid}") from None
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
 
     if not headers and not api_token:
         return
@@ -808,6 +845,13 @@ def _install_common(app: FastAPI) -> None:
         return HTMLResponse(f"<!doctype html><title>exuvia: not signed in</title><p>{html.escape(detail)}.</p>",
                             status_code=401)
 
+    def disabled(path: str) -> Any:
+        detail = "your exuvia account is disabled: ask an admin to enable it"
+        if is_api(path):
+            return JSONResponse({"detail": detail}, status_code=403)
+        return HTMLResponse(f"<!doctype html><title>exuvia: disabled</title><p>{html.escape(detail)}.</p>",
+                            status_code=403)
+
     @app.middleware("http")
     async def require_auth(request: Request, call_next: Callable[[Request], Awaitable[Any]]):
         path = request.url.path
@@ -815,6 +859,11 @@ def _install_common(app: FastAPI) -> None:
             return await call_next(request)
         ident = headers.identify(request.headers, request.client.host if request.client else None) if headers else None
         if ident is not None:
+            if users is not None:  # recorded in the user list (see users.py)
+                user = users.recent(ident) or await asyncio.to_thread(users.sign_in, ident)
+                if user.disabled:
+                    return disabled(path)
+                ident = dataclasses.replace(ident, uid=user.id, role=user.role)
             with auth.signed_in(ident):
                 return await call_next(request)
         if not api_token:  # header auth alone: nobody gets in without the headers
@@ -847,7 +896,10 @@ def create_app(root: str | Path) -> FastAPI:
         await ws.stop()
 
     app = FastAPI(title="exuvia", lifespan=lifespan)
-    _install_common(app)
+    # One project: the user list lives in its database (or the shared one).
+    users = open_users(ws.store.db) if auth.identifies_people() else None
+    _install_common(app, users)
+    app.state.users = users
     app.state.ws = ws
     app.include_router(project_router(lambda: ctx), prefix="/api")
 
@@ -870,7 +922,7 @@ def create_app(root: str | Path) -> FastAPI:
 
 
 def create_hub_app(root: str | Path, templates: str | Path | None = None) -> FastAPI:
-    from .hub import PROJECT_ID, Hub, StillInUse
+    from .hub import HUB_USERS_DB, PROJECT_ID, Hub, StillInUse
 
     hub = Hub(root, templates)
 
@@ -885,7 +937,10 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
         await hub.close()
 
     app = FastAPI(title="exuvia hub", lifespan=lifespan)
-    _install_common(app)
+    # One user list for every project on the hub (see users.py).
+    if auth.identifies_people():
+        hub.users = open_users(hub.root / HUB_USERS_DB)
+    _install_common(app, hub.users)
     app.state.hub = hub
 
     async def get_ctx(project: str) -> Ctx:
