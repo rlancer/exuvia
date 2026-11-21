@@ -938,6 +938,28 @@ a 401, so agents and MCP clients keep using the token. It lets in anyone who
 can load the page, so use it only behind a VPN or an internal-only address. Always set `EXUVIA_EXECUTOR_TOKEN` on a networked executor
 — it runs arbitrary code by design.
 
+**Signed-in users from a proxy.** When something in front of exuvia
+already signs people in (a company SSO gateway, oauth2-proxy, an ingress
+with an auth step) and passes who they are in request headers, set
+`EXUVIA_AUTH=headers`. exuvia reads the user name from
+`X-Forwarded-User` and the email from `X-Forwarded-Email`; set
+`EXUVIA_AUTH_USER_HEADER` and `EXUVIA_AUTH_EMAIL_HEADER` to read other
+headers (say `Remote-User`). Either header is enough to be signed in. A
+request without them gets a 401, the page and the API alike; `/healthz`
+stays open. The signed-in person is named in the workbench's top bar, on each
+run they start (`started_by`; a cascade it sets off names them too, a
+scheduled run names nobody) and on each code revision they save (`author`).
+`GET /api/me` says who a request is from.
+
+exuvia takes the headers as given, so nothing but the proxy may reach it:
+anyone who can talk to exuvia directly can claim to be anyone. Set
+`EXUVIA_AUTH_TRUSTED_PROXIES` to the proxy's addresses (IPs or CIDRs,
+comma-separated) and exuvia ignores the headers on requests from anywhere
+else. The proxy must also drop any of these headers a client sends itself.
+`EXUVIA_API_TOKEN` still works alongside: agents and MCP clients that
+cannot pass through the proxy send the token instead, and are recorded as
+nobody. `EXUVIA_BROWSER_AUTH` has no effect in this mode.
+
 **Secrets from files.** Each setting that holds a secret can come from a file
 instead: set `<NAME>_FILE` to its path, such as
 `EXUVIA_API_TOKEN_FILE=/run/secrets/exuvia_api_token` for a Docker or Swarm
@@ -953,6 +975,9 @@ empty file, stops exuvia with an error.
 | `EXUVIA_EXECUTOR_URL` / `EXUVIA_EXECUTOR_TOKEN` | local pool | remote executor + its token |
 | `EXUVIA_SCHEDULER` | `internal` | `external` = only `POST /api/schedule/tick` advances schedules |
 | `EXUVIA_API_TOKEN` | off | shared-secret auth for the control plane API |
+| `EXUVIA_AUTH` | `token` | `headers` = a sign-in proxy in front says who each request is from (see "Signed-in users from a proxy" above) |
+| `EXUVIA_AUTH_USER_HEADER` / `EXUVIA_AUTH_EMAIL_HEADER` | `X-Forwarded-User` / `X-Forwarded-Email` | the headers that carry the user name and email with `EXUVIA_AUTH=headers` |
+| `EXUVIA_AUTH_TRUSTED_PROXIES` | any peer | IPs or CIDRs (comma-separated) whose identity headers are trusted; others are ignored |
 | `EXUVIA_BROWSER_AUTH` | `token` | `open` = every page load gives the browser the auth cookie, so people never enter the token (private networks only; see "Auth" above) |
 | `<NAME>_FILE` | — | read a secret setting from a file, e.g. `EXUVIA_API_TOKEN_FILE=/run/secrets/exuvia_api_token` (see "Secrets from files" above) |
 | `EXUVIA_FAILURE_WEBHOOK` | off | URL that failed runs are POSTed to, for projects without their own `failure_webhook` |
@@ -1233,7 +1258,7 @@ headlessly or iframe the UI:
 | `GET /api/nodes/{name}/data` | a node's output (`?params=` or `?run_id=`, `?limit=`, `?offset=`): JSON rows, or an Arrow stream (see "Binary data") |
 | `GET/HEAD /api/artifacts/{node}/{artifact_id}.parquet` (or `.json`) | the stored file of one output, byte for byte, with `Range` support (see "Binary data") |
 | `GET /api/nodes/{name}/history` | the node's stored output per parameter set (with the `code_hash` each was computed with) |
-| `GET /api/code/revisions` | saved versions of the code, newest first (`?node=` for one node, `?view=` for one view's files, deleted ones included); each says who saved it and whether it is current |
+| `GET /api/code/revisions` | saved versions of the code, newest first (`?node=` for one node, `?view=` for one view's files, deleted ones included); each says how it was saved (`origin`), by whom (`author`, with `EXUVIA_AUTH=headers`) and whether it is current |
 | `GET /api/code/blobs/{hash}` | the text of one saved version |
 | `POST /api/nodes/{name}/restore` | make a saved version (`{hash}`) current again; brings back a deleted node |
 | `GET /api/runs/{run_id}/source` | the exact code a run executed |
@@ -1241,6 +1266,7 @@ headlessly or iframe the UI:
 | `POST /api/nodes/{name}/schedule` | set, clear, pause or resume a schedule |
 | `POST /api/schedule/tick` | evaluate schedules now (for external schedulers) |
 | `GET /api/events` | SSE: graph changes, run status, live logs |
+| `GET /api/me` | who the request is from: `{auth, user}`, `user` being `{id, user, email, method}` or null (in a hub, at `<url>/api/me`) |
 | `POST /api/agent` | SSE: agent turn |
 | `GET/DELETE /api/agent/{session_id}`, `POST .../cancel` | saved transcript, clear it, stop a turn |
 
@@ -1458,6 +1484,7 @@ exuvia/
   pool.py       pre-warmed single-use worker processes
   runner.py     per-node subprocess entry point
   store.py      SQLite run history
+  auth.py       who a request is from (EXUVIA_AUTH=headers: a sign-in proxy's headers)
   arrowstream.py  query results as an Arrow IPC stream
   agent.py      agent tools + provider-neutral tool loop
   llm.py        model providers: Anthropic, OpenAI-compatible (OpenRouter / DeepSeek)
@@ -1502,7 +1529,8 @@ the package to public once (package settings → Change visibility).
 
 ## Status
 
-Prototype. Not yet: multi-user auth (only a shared token; the hub leaves tenancy to its
+Prototype. Not yet: SSO in exuvia itself (people are identified only by a sign-in
+proxy's headers, or share a token), per-user permissions (everyone signed in can do everything; the hub leaves tenancy to its
 host), executor autoscaling, incremental nodes (run parameters cover date partitions), non-Python runtimes, secrets management beyond env vars.
 
 Found a bug, or something missing? Open an issue at

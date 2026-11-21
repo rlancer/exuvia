@@ -6,6 +6,7 @@ import { Inspector, Overview } from "./Inspector";
 import { AgentPanel, type AgentHandle } from "./AgentPanel";
 import { NewNodeDialog } from "./NewNodeDialog";
 import { Views } from "./Views";
+import { SignedInAs } from "./Me";
 import { useTheme } from "./theme";
 
 const embed = new URLSearchParams(location.search).has("embed");
@@ -116,6 +117,7 @@ export default function App() {
           ▶ Run stale{staleCount ? ` (${staleCount})` : ""}
         </button>
         <button className="btn" onClick={() => setNewOpen(true)}>+ Node</button>
+        <SignedInAs />
         <button className="btn ghost icon-btn" onClick={toggleTheme} title="Toggle theme">{dark ? "☀" : "☾"}</button>
       </header>
 

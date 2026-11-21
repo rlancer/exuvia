@@ -54,6 +54,7 @@ TABLES = {
     error text,
     params text,            -- json {name: value}: the parameters this node depends on
     params_key text not null default '',
+    started_by text,        -- the signed-in person who started it, or whose run cascaded into it (see auth.py)
     primary key (project, id)
 )""",
     "schedules": """create table if not exists schedules (
@@ -97,6 +98,7 @@ TABLES = {
     origin text not null,      -- who saved it: agent, api, file, load, template, restore, ...
     saved_at double precision not null,
     view_name text,            -- view name for a file under views/<name>/
+    author text,               -- the signed-in person who saved it (see auth.py); null when nobody was
     primary key (project, id)
 )""",
 }
@@ -123,7 +125,7 @@ LEGACY_COLUMNS = {
 
 RUN_COLS = (
     "id,node,batch_id,trigger,status,queued_at,started_at,finished_at,"
-    "artifact_id,kind,rows,error,params,params_key"
+    "artifact_id,kind,rows,error,params,params_key,started_by"
 )
 
 # One changed file for ``Store.record_code``: (path, node, view, hash,
@@ -197,9 +199,13 @@ def _upgrade_legacy(db: Database) -> None:
         db.query("alter table runs add column params text")
     if cols and "params_key" not in cols:
         db.query("alter table runs add column params_key text not null default ''")
+    if cols and "started_by" not in cols:  # from before signed-in users
+        db.query("alter table runs add column started_by text")
     cols = db.columns("code_revisions")
     if cols and "view_name" not in cols:  # from before views existed
         db.query("alter table code_revisions add column view_name text")
+    if cols and "author" not in cols:  # from before signed-in users
+        db.query("alter table code_revisions add column author text")
     for table, legacy in LEGACY_COLUMNS.items():
         have = db.columns(table)
         if not have or "project" in have:
@@ -259,13 +265,22 @@ class Store:
 
     # -- runs --------------------------------------------------------------
     def create_run(
-        self, node: str, batch_id: str, trigger: str, params: dict[str, Any] | None = None, params_key: str = ""
+        self,
+        node: str,
+        batch_id: str,
+        trigger: str,
+        params: dict[str, Any] | None = None,
+        params_key: str = "",
+        started_by: str | None = None,
     ) -> str:
         run_id = uuid.uuid4().hex[:12]
         self._q(
-            "insert into runs (project, id, node, batch_id, trigger, status, queued_at, params, params_key) "
-            "values (?,?,?,?,?,?,?,?,?)",
-            (self.scope, run_id, node, batch_id, trigger, "queued", time.time(), json.dumps(params or {}), params_key),
+            "insert into runs (project, id, node, batch_id, trigger, status, queued_at, params, params_key, started_by) "
+            "values (?,?,?,?,?,?,?,?,?,?)",
+            (
+                self.scope, run_id, node, batch_id, trigger, "queued", time.time(),
+                json.dumps(params or {}), params_key, started_by,
+            ),
         )
         return run_id
 
@@ -431,8 +446,11 @@ class Store:
         )
         return {r["path"]: r["hash"] for r in rows}
 
-    def record_code(self, changes: list[CodeChange], origin: str, now: float | None = None) -> int:
-        """Record changed files as new revisions (see ``CodeChange``)."""
+    def record_code(
+        self, changes: list[CodeChange], origin: str, now: float | None = None, author: str | None = None
+    ) -> int:
+        """Record changed files as new revisions (see ``CodeChange``),
+        saved by ``author`` (the signed-in person, if any) through ``origin``."""
         if not changes:
             return 0
         saved_at = time.time() if now is None else now
@@ -445,9 +463,9 @@ class Store:
                         (self.scope, digest, source),
                     )
                 self._q(
-                    "insert into code_revisions(project, id, path, node, view_name, hash, origin, saved_at) "
-                    "values(?,?,?,?,?,?,?,?)",
-                    (self.scope, revision_id(), path, node, view, digest, origin, saved_at),
+                    "insert into code_revisions(project, id, path, node, view_name, hash, origin, author, saved_at) "
+                    "values(?,?,?,?,?,?,?,?,?)",
+                    (self.scope, revision_id(), path, node, view, digest, origin, author, saved_at),
                 )
         return len(changes)
 
@@ -462,7 +480,7 @@ class Store:
                 where += f" and {column}=?"
                 args.append(value)
         rows = self._q(
-            f"select id, path, node, view_name, hash, origin, saved_at from code_revisions where {where} "
+            f"select id, path, node, view_name, hash, origin, author, saved_at from code_revisions where {where} "
             "order by saved_at desc, id desc limit ?",
             (*args, limit),
         )

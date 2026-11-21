@@ -20,6 +20,8 @@ export interface RunRow {
   error?: string | null;
   log?: string;
   artifact_id?: string | null;
+  /** The signed-in person who started it, or whose run cascaded into it. */
+  started_by?: string | null;
 }
 
 export interface GraphNode {
@@ -211,6 +213,15 @@ export const api = {
   query: (sql: string) => queryRows(sql),
   resetAgent: (id: string) => req("DELETE", `/api/agent/${id}`),
 };
+
+/** Who this page is signed in as (`GET /api/me`, on the server itself, not under a project). */
+export interface Me {
+  /** How the server identifies people: a sign-in proxy's `headers`, a shared `token`, or `none`. */
+  auth: "headers" | "token" | "none";
+  user: { id: string; user: string | null; email: string | null; method: string } | null;
+}
+
+export const me = async () => (await sendTo("GET", "/api/me")).json() as Promise<Me>;
 
 /** A project on a hub, as `GET /api/projects` lists it. */
 export interface HubProject {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, hubApi, PROJECT_ID, type HubProject } from "./api";
 import { mcpSetup } from "./mcp";
+import { SignedInAs } from "./Me";
 import { useTheme } from "./theme";
 
 const workbench = (id: string) => `/p/${encodeURIComponent(id)}/`;
@@ -75,6 +76,7 @@ export default function Hub() {
             <button className="btn primary" onClick={() => setNewOpen(true)}>+ Project</button>
           </>
         )}
+        <SignedInAs />
         <button className="btn ghost icon-btn" onClick={toggleTheme} title="Toggle theme">{dark ? "☀" : "☾"}</button>
       </header>
 
