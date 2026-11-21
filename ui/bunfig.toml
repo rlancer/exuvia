@@ -4,3 +4,8 @@
 # `bunx` ignores this, so run binaries with `bun run <bin>` instead.
 [run]
 bun = true
+
+# Link packages out of bun's cache instead of copying them (copying is the
+# default on Windows). With the cache on another drive it copies anyway.
+[install]
+backend = "hardlink"

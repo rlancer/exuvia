@@ -12,13 +12,20 @@ PYTHONUNBUFFERED = "1"
 
 # NOTE: mise on Windows only executes the first line of a multi-line `run`,
 # so multi-step tasks are chained on one line with `&&`.
+# sync, ui-build and demo go through scripts/dev.py, which keeps uv's and
+# bun's caches and the built UI in the clone's git dir, shared by every
+# worktree: a fresh worktree is ready in seconds.
 [tasks.sync]
 description = "Install Python (uv) and UI (bun) dependencies"
-run = "uv sync --extra dev && cd ui && bun install"
+run = "python scripts/dev.py sync"
 
 [tasks.ui-build]
-description = "Build the UI into exuvia/static (served by `exuvia serve`)"
-run = "cd ui && bun run build"
+description = "Build the UI into exuvia/static (served by `exuvia serve`), reusing the build of an identical ui/"
+run = "python scripts/dev.py ui-build"
+
+[tasks.ui-typecheck]
+description = "Typecheck the UI (`bun run build`, as CI runs it, typechecks too)"
+run = "cd ui && bun run typecheck"
 
 [tasks.ui-test]
 description = "Views runtime unit tests (Vitest; `bun test` would run bun's own runner instead)"
@@ -49,8 +56,8 @@ env = { SITE_URL = "https://exuvia.lobster.mp" }
 run = "cd site && bun install --frozen-lockfile && bun run build && bun run deploy"
 
 [tasks.demo]
-description = "Serve the example markets project on http://127.0.0.1:7420"
-run = "uv run exuvia serve examples/markets"
+description = "Build the UI if needed and serve the example markets project on http://127.0.0.1:7420"
+run = "python scripts/dev.py demo"
 
 [tasks.test]
 description = "Run the Python test suite"
