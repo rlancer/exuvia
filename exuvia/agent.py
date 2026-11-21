@@ -14,6 +14,7 @@ import uuid
 from importlib import metadata
 from typing import Any, AsyncIterator
 
+from . import feedback
 from .llm import Provider, resolve_provider
 from .project import NODE_NAME, coerce_param
 from .report import node_report
@@ -290,6 +291,33 @@ TOOLS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "report_issue",
+        "description": (
+            "Tell the exuvia maintainers something is wrong or missing: a bug in exuvia itself, a tool that fails "
+            "on valid input, instructions that are wrong or confusing, a feature the user needs that does not "
+            "exist, or plain feedback. Reports are welcome, so use this when you hit a problem that is exuvia's, "
+            "not one in the user's own code or data. Sends nothing: it returns a draft GitHub issue and a link "
+            "that opens it prefilled, for the user to read and submit. Describe what you did, what happened and "
+            "what you expected, with the exact error text; leave out secrets and the user's data."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "one line, specific: the symptom, not 'it broke'"},
+                "details": {
+                    "type": "string",
+                    "description": (
+                        "Markdown: what you were doing, what happened (exact error), what you expected, and "
+                        "the smallest steps that reproduce it"
+                    ),
+                },
+                "kind": {"type": "string", "enum": ["bug", "idea", "feedback"], "description": "default bug"},
+            },
+            "required": ["title", "details"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -354,6 +382,10 @@ def rolling_vol(returns):
 - Data comes from `exuvia`: `useTable(node)` / `useJson(node)` (a read node's current output), `useQuery(sql)` (DuckDB over the read nodes only, `<node>__runs` for history), each `{data, error, loading}` and reloading when an output changes; `rows(table)` turns an Arrow table into plain objects; `useParams()` gives `[values, setParams, declared]` (setting parameters changes what is shown, it never runs nodes); `useDark()`. Style with the page's CSS variables (`var(--text)`, `--muted`, `--line`, `--panel`, `--accent`, `--mono`), which follow light and dark mode.
 - Only write views when the user asks for one.
 
+## When exuvia itself is the problem
+- If a tool fails on valid input, exuvia contradicts this guide, this guide is wrong or unclear, or the user needs something exuvia cannot do, say so plainly and offer to report it with report_issue. The maintainers want these reports and the project is young, so do not stay quiet about a rough edge. Do not use it for errors in the user's own nodes or data: fix those.
+- report_issue sends nothing. It returns a draft GitHub issue (github.com/rlancer/exuvia) and a link that opens it prefilled; the user reads it and submits. Put in the exact error and the smallest steps to reproduce, never secrets or the user's data.
+
 ## Run parameters
 {params}{notes}"""
 
@@ -413,7 +445,10 @@ class Agent:
         try:
             return await self._call(name, args, origin)
         except Exception as e:  # surface tool crashes to the model, not the user
-            return False, f"{type(e).__name__}: {e}", {}
+            return False, (
+                f"{type(e).__name__}: {e}\n\n(An unexpected error inside exuvia. If your input was valid, "
+                "this is a bug: tell the user and offer to report it with `report_issue`.)"
+            ), {}
 
     async def _call(self, name: str, args: dict[str, Any], origin: str = "agent") -> tuple[bool, str, dict[str, Any]]:
         """Returns (ok, text-for-model, ui-extra). Code the tool changes is
@@ -529,6 +564,8 @@ class Agent:
                 return False, str(e), {}
             ws.set_param(args["name"], spec)
             return True, json.dumps({"defined": args["name"], **spec, "value_now": ws.resolve_params()[args["name"]]}), {}
+        if name == "report_issue":
+            return True, json.dumps(feedback.draft(args["title"], args["details"], args.get("kind") or "bug", origin)), {}
         return False, f"unknown tool {name}", {}
 
     def _view_tool(self, name: str, args: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
