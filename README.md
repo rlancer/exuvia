@@ -575,8 +575,8 @@ Both commands include the workbench; neither needs a separate frontend.
 
 | | `exuvia serve <dir>` (one project) | `exuvia hub <dir>` (many projects) |
 |---|---|---|
-| Open in a browser | `<url>/` | `<url>/p/<project>/` (`<url>/` lists the projects) |
-| First visit with `EXUVIA_API_TOKEN` set | `<url>/?token=<token>` | `<url>/p/<project>/?token=<token>` |
+| Open in a browser | `<url>/` | `<url>/`, the hub's home: create, open and delete projects; each one's workbench is at `<url>/p/<project>/` |
+| First visit with `EXUVIA_API_TOKEN` set | `<url>/?token=<token>` | `<url>/?token=<token>`, or open `<url>/` and enter the token |
 | Project API prefix | `<url>/api` | `<url>/p/<project>/api` |
 | Server-wide API | none | `<url>/api` (`/api/projects`, `/api/schedule/tick`, ...) |
 | `exuvia mcp --url` | `<url>` | `<url>/p/<project>` |
@@ -609,10 +609,9 @@ kubectl -n exuvia apply -f https://raw.githubusercontent.com/rlancer/exuvia/main
 kubectl -n exuvia port-forward service/exuvia-hub 7420:7420
 
 curl http://localhost:7420/healthz
-curl -H "Authorization: Bearer change-me" -H "Content-Type: application/json" \
-     -X POST http://localhost:7420/api/projects -d '{"id": "demo"}'
-# the workbench: open once with the token, the browser keeps it in a cookie
-open "http://localhost:7420/p/demo/?token=change-me"
+# the hub's home page: open once with the token (the browser keeps it in a
+# cookie), then create a project and open its workbench from there
+open "http://localhost:7420/?token=change-me"
 ```
 
 `EXUVIA_IMAGE` (Compose and Swarm) or the Deployment's `image` picks another
@@ -635,8 +634,9 @@ record must point at your cluster's ingress or your host). On Docker the agent u
 and Compose otherwise. Besides deploying and checking the hub, the agent creates
 a first project on it, connects itself to that project over
 [MCP](#mcp-the-agents-tools-in-your-own-agent), as the local prompt does,
-and gives you the project's workbench URL. The hub serves the web UI itself,
-so that one deploy is the whole thing.
+and gives you the hub's home page, where you open that project's workbench
+or create more. The hub serves the web UI itself, so that one deploy is the
+whole thing.
 
 ```text
 Deploy exuvia (https://github.com/rlancer/exuvia, a
@@ -691,7 +691,8 @@ there is no separate frontend to build or deploy.
    POST /p/smoke/api/run {"wait": 60} returns "ok": true,
    GET /p/smoke/api/nodes/hello/data returns the column
    `answer` and rows [[42]]; GET /p/smoke/ returns the
-   workbench page (HTML); then DELETE /api/projects/smoke.
+   workbench page (HTML) and GET / the hub's home page;
+   then DELETE /api/projects/smoke.
    If /p/smoke/ is a 404, the image predates the built-in
    UI (/healthz "version" below 0.3.5): pull
    ghcr.io/rlancer/exuvia:latest again and redeploy. Don't
@@ -730,10 +731,12 @@ there is no separate frontend to build or deploy.
    this machine reaches the hub at.
 8. Report the hub URL, where the token is stored, the
    verification output, the project the MCP server is
-   connected to, and the workbench to open in a browser:
-   <hub url>/p/my-research/?token=<token> (the token is
-   needed once; the browser keeps it in a cookie). Tell me
-   to open it that way rather than printing the token.
+   connected to, and the hub's home page to open in a
+   browser: <hub url>/ (it lists my-research, creates and
+   deletes projects, and opens each one's workbench). It
+   asks for the token once and the browser keeps it in a
+   cookie; tell me to paste it from the file from step 2
+   rather than printing it.
 ```
 
 ### One container with docker run
@@ -1041,11 +1044,13 @@ or a system cron.
 ## Hub: many projects from one process
 
 `exuvia hub <dir>` serves every project under one directory, each with the
-full API under its own prefix and the web UI at `/p/<project>/`; `/` lists
-the projects with a link to each. It is the shape a multi-tenant host needs:
-one process (or one container) per tenant, one project per workflow. With
-`EXUVIA_API_TOKEN` set, a browser opens `/?token=<token>` or
-`/p/<project>/?token=<token>` once and gets the cookie.
+full API under its own prefix and the web UI at `/p/<project>/`. `/` is the
+hub's home page: it lists the projects, creates one (from a template, when
+the hub has any) and opens its workbench, and deletes one. It is the shape a
+multi-tenant host needs: one process (or one container) per tenant, one
+project per workflow. With `EXUVIA_API_TOKEN` set, the home page asks for the
+token, or a browser opens `/?token=<token>` or `/p/<project>/?token=<token>`
+once; either way it gets the cookie.
 
 ```bash
 exuvia hub ./projects --templates ./templates --scheduler external
@@ -1053,7 +1058,7 @@ exuvia hub ./projects --templates ./templates --scheduler external
 
 | Route | |
 |---|---|
-| `GET /` | the project list, a link to each project's workbench |
+| `GET /` | the hub's home page (the web UI): list, create, open and delete projects |
 | `GET /p/{project}/` | that project's workbench (the web UI, talking to `/p/{project}/api`) |
 | `GET /api/projects` | list projects |
 | `POST /api/projects` | create one (`{id, name, template}`; templates come from `--templates` / `EXUVIA_TEMPLATES_DIR`) |

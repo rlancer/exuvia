@@ -27,7 +27,7 @@ const handoffs = [
   {
     id: "server",
     label: "On a server",
-    body: "Paste this into an agent that can reach your Docker host or Kubernetes cluster, a cloud VM or GKE, EKS or AKS, leave Docker or Kubernetes on the first line, whichever you use, and put your hostname on the second. On Docker it uses Swarm when the host is a Swarm manager and Compose otherwise. It deploys a hub from the published image behind a generated API token, puts it on your hostname with TLS, checks it end to end, then creates a project, connects itself to it and hands you the project's workbench URL.",
+    body: "Paste this into an agent that can reach your Docker host or Kubernetes cluster, a cloud VM or GKE, EKS or AKS, leave Docker or Kubernetes on the first line, whichever you use, and put your hostname on the second. On Docker it uses Swarm when the host is a Swarm manager and Compose otherwise. It deploys a hub from the published image behind a generated API token, puts it on your hostname with TLS, checks it end to end, then creates a project, connects itself to it and hands you the hub's home page, where you open that project or create more.",
     href: "/docs/deploying/#hand-it-to-an-agent",
     prompt: codeFigure(h, agentDeployPrompt(), "text"),
   },

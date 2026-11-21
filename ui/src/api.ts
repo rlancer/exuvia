@@ -112,20 +112,35 @@ export interface Preview {
  * `/` with its API at `/api`; a hub serves each project's workbench at
  * `/p/<id>/` with its API at `/p/<id>/api`.
  */
-export const API_BASE = (() => {
+/** The hub project this page is the workbench of, or null under `exuvia serve`. */
+export const HUB_PROJECT = (() => {
   const m = typeof location === "undefined" ? null : /^\/p\/([^/]+)\//.exec(location.pathname);
-  return m ? `/p/${m[1]}/api` : "/api";
+  return m ? decodeURIComponent(m[1]) : null;
 })();
+
+export const API_BASE = HUB_PROJECT ? `/p/${encodeURIComponent(HUB_PROJECT)}/api` : "/api";
 
 /** A project API path written as `/api/...`, resolved against {@link API_BASE}. */
 export const apiUrl = (path: string) => (path.startsWith("/api/") ? API_BASE + path.slice(4) : path);
 
-/** Send one request; an error answer is thrown with the server's own message. */
-async function send(method: string, url: string, body?: unknown, accept?: string): Promise<Response> {
+/** An error answer, with the server's own message and the HTTP status. */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
+/** Send one request to a project API path; an error answer is thrown as an {@link ApiError}. */
+function send(method: string, url: string, body?: unknown, accept?: string): Promise<Response> {
+  return sendTo(method, apiUrl(url), body, accept);
+}
+
+async function sendTo(method: string, url: string, body?: unknown, accept?: string, auth?: string): Promise<Response> {
   const headers: Record<string, string> = {};
   if (accept) headers.Accept = accept;
+  if (auth) headers.Authorization = `Bearer ${auth}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const res = await fetch(apiUrl(url), { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
+  const res = await fetch(url, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   if (!res.ok) {
     let msg = res.statusText;
     try {
@@ -133,7 +148,7 @@ async function send(method: string, url: string, body?: unknown, accept?: string
     } catch {
       /* not json */
     }
-    throw new Error(msg);
+    throw new ApiError(msg, res.status);
   }
   return res;
 }
@@ -195,6 +210,29 @@ export const api = {
   cancel: (id: string) => req("POST", `/api/runs/${id}/cancel`),
   query: (sql: string) => queryRows(sql),
   resetAgent: (id: string) => req("DELETE", `/api/agent/${id}`),
+};
+
+/** A project on a hub, as `GET /api/projects` lists it. */
+export interface HubProject {
+  id: string;
+  name: string;
+  nodes: number;
+  loaded: boolean;
+}
+
+/** Project ids a hub accepts (exuvia/hub.py PROJECT_ID). */
+export const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+/** The hub's own API (`/api/projects`), for the hub's home page at `/`. */
+export const hubApi = {
+  /** Every project and template; `token` checks a token before the browser keeps it. */
+  projects: async (token?: string) =>
+    (await sendTo("GET", "/api/projects", undefined, undefined, token)).json() as Promise<{ projects: HubProject[]; templates: string[] }>,
+  create: async (b: { id: string; name?: string; template?: string }) =>
+    (await sendTo("POST", "/api/projects", b)).json() as Promise<{ id: string; name: string }>,
+  remove: async (id: string) => {
+    await sendTo("DELETE", `/api/projects/${encodeURIComponent(id)}`);
+  },
 };
 
 export type AgentEvent =

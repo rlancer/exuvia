@@ -336,16 +336,22 @@ def fake_ui(tmp_path, monkeypatch) -> None:
 
 
 def test_hub_serves_the_workbench_per_project(tmp_path, monkeypatch):
-    """Each project's UI is at /p/<id>/ (it talks to /p/<id>/api); / lists them."""
+    """Each project's UI is at /p/<id>/ (it talks to /p/<id>/api); / is the
+    hub's home page, the same UI marked as the home, which lists them over
+    /api/projects."""
+    from exuvia.server import HUB_HOME_META
+
     fake_ui(tmp_path, monkeypatch)
     with TestClient(create_hub_app(tmp_path / "hub", template(tmp_path))) as hub:
-        assert "No projects yet" in hub.get("/").text
+        home = hub.get("/")
+        assert home.status_code == 200 and home.headers["content-type"].startswith("text/html")
+        assert HUB_HOME_META in home.text and "workbench" in home.text
         hub.post("/api/projects", json={"id": "wf", "name": "Put <selling>", "template": "dated"})
-        index = hub.get("/").text
-        assert 'href="/p/wf/"' in index and "Put &lt;selling&gt;" in index
+        assert [(p["id"], p["name"]) for p in hub.get("/api/projects").json()["projects"]] == [("wf", "Put <selling>")]
 
         page = hub.get("/p/wf/")
         assert page.status_code == 200 and "workbench" in page.text
+        assert HUB_HOME_META not in page.text  # a workbench, not the home
         assert hub.get("/p/wf/views").text == page.text  # client-side paths fall back to the page
         assert hub.get("/p/wf", follow_redirects=False).headers["location"] == "/p/wf/"
         assert hub.get("/assets/app.js").text == "/*app*/"
@@ -364,7 +370,9 @@ def test_hub_workbench_with_a_token(tmp_path, monkeypatch):
         # The page itself is public (like `exuvia serve`'s); its API is not.
         assert hub.get("/p/wf/").status_code == 200
         assert hub.get("/p/wf/api/project").status_code == 401
-        assert "needs its API token" in hub.get("/").text and "/p/wf/" not in hub.get("/").text
+        # So is the home page; the project list it reads is not.
+        assert hub.get("/").status_code == 200
+        assert hub.get("/api/projects").status_code == 401
         # Without the token a missing project looks like any other page.
         assert hub.get("/p/nope/").status_code == 200
 
@@ -373,5 +381,10 @@ def test_hub_workbench_with_a_token(tmp_path, monkeypatch):
         assert r.status_code in (302, 307) and r.headers["location"] == "/p/wf/"
         assert hub.cookies.get("exuvia_token") == "s3cret"
         assert hub.get("/p/wf/api/project").status_code == 200
-        assert 'href="/p/wf/"' in hub.get("/").text
+        assert [p["id"] for p in hub.get("/api/projects").json()["projects"]] == ["wf"]
+        # The home page's sign-in: /?token= keeps the token and goes back to /.
+        hub.cookies.clear()
+        r = hub.get("/?token=s3cret", follow_redirects=False)
+        assert r.status_code in (302, 307) and r.headers["location"] == "/"
+        assert hub.get("/api/projects").status_code == 200
         assert hub.get("/p/nope/").status_code == 404

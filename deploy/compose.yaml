@@ -15,8 +15,9 @@
 # Then: curl http://localhost:7420/healthz
 #       curl -H "Authorization: Bearer change-me" -X POST http://localhost:7420/api/projects \
 #            -H "Content-Type: application/json" -d '{"id": "demo"}'
-#       open http://localhost:7420/p/demo/?token=change-me   (the workbench;
-#       the token is needed once, the browser keeps it in a cookie)
+#       open http://localhost:7420/?token=change-me   (the hub's home page, where
+#       you open demo's workbench or create projects; the token is needed
+#       once, the browser keeps it in a cookie)
 #
 # Variables (put them in a .env next to this file, or export them):
 #   EXUVIA_API_TOKEN   required: clients send `Authorization: Bearer <token>`
