@@ -1,48 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { api, apiUrl, type Project } from "./api";
+import { api, apiUrl, HUB_PROJECT, type Project } from "./api";
 import { Canvas } from "./Canvas";
 import { Inspector, Overview } from "./Inspector";
 import { AgentPanel, type AgentHandle } from "./AgentPanel";
 import { NewNodeDialog } from "./NewNodeDialog";
 import { Views } from "./Views";
+import { useTheme } from "./theme";
 
 const embed = new URLSearchParams(location.search).has("embed");
 
 type Mode = "graph" | "views";
 const modeFromHash = (): Mode => (location.hash === "#views" ? "views" : "graph");
-
-function useTheme(): [boolean, () => void] {
-  const media = window.matchMedia("(prefers-color-scheme: dark)");
-  const [pref, setPref] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem("exuvia-theme");
-    } catch {
-      return null;
-    }
-  });
-  const [sysDark, setSysDark] = useState(media.matches);
-  useEffect(() => {
-    const on = (e: MediaQueryListEvent) => setSysDark(e.matches);
-    media.addEventListener("change", on);
-    return () => media.removeEventListener("change", on);
-  }, [media]);
-  const dark = pref ? pref === "dark" : sysDark;
-  useEffect(() => {
-    if (pref) document.documentElement.dataset.theme = pref;
-    else delete document.documentElement.dataset.theme;
-  }, [pref]);
-  const toggle = () => {
-    const next = dark ? "light" : "dark";
-    setPref(next);
-    try {
-      localStorage.setItem("exuvia-theme", next);
-    } catch {
-      /* private mode */
-    }
-  };
-  return [dark, toggle];
-}
 
 export default function App() {
   const [project, setProject] = useState<Project | null>(null);
@@ -121,7 +90,8 @@ export default function App() {
           <svg width="20" height="20" viewBox="0 0 32 32" aria-hidden>
             <path d="M5 9c9 0 11 14 22 14M5 23c9 0 11-14 22-14" stroke="var(--accent)" strokeWidth="3.2" fill="none" strokeLinecap="round" />
           </svg>
-          exuvia <span className="proj">/ {project?.name ?? "…"}</span>
+          {HUB_PROJECT ? <a className="home-link" href="/" title="All projects">exuvia</a> : "exuvia"}{" "}
+          <span className="proj">/ {project?.name ?? "…"}</span>
         </div>
         <div className="seg mode-seg" role="tablist">
           <button className={mode === "graph" ? "on" : ""} onClick={() => setMode("graph")} role="tab" aria-selected={mode === "graph"}>

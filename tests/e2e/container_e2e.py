@@ -221,6 +221,8 @@ def exercise(http: Http, demo: str, scratch: str, from_template: bool) -> None:
     # The hub serves the web UI itself: no separate frontend to deploy.
     status, _, body = http.request("GET", f"/p/{demo}/")
     check(status == 200 and b'<div id="root">' in body, "the project's workbench page is served", status)
+    status, _, body = http.request("GET", "/")
+    check(status == 200 and b'name="exuvia-hub" content="home"' in body, "the hub's home page is served at /", status)
 
     view = http.json("GET", f"{api}/views/vol_board")
     paths = {s["path"] for s in view["sources"]}

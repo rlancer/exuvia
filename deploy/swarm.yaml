@@ -10,8 +10,9 @@
 #   docker stack deploy -c swarm.yaml --detach=false exuvia
 #
 # Then: curl http://<any node>:7420/healthz
-#       open http://<host>:7420/p/<project>/?token=<token>   (the workbench;
-#       the token is needed once, the browser keeps it in a cookie)
+#       open http://<host>:7420/?token=<token>   (the hub's home page: create
+#       and open projects; the token is needed once, the browser keeps it in a
+#       cookie)
 #
 # The token: the API token lives in the Swarm secret `exuvia_api_token` and
 # reaches exuvia as a file (EXUVIA_API_TOKEN_FILE), so it never shows in
