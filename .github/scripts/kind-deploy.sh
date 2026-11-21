@@ -9,5 +9,7 @@ set -euo pipefail
 kind load docker-image exuvia:ci --name exuvia
 kubectl create namespace exuvia
 kubectl -n exuvia create secret generic exuvia --from-literal=api-token=ci-token
-sed 's#ghcr.io/rlancer/exuvia:latest#exuvia:ci#' deploy/kubernetes.yaml | kubectl -n exuvia apply -f -
+# The image was loaded above and is in no registry, so the kubelet must not pull it.
+sed -e 's#ghcr.io/rlancer/exuvia:latest#exuvia:ci#' -e 's#imagePullPolicy: Always#imagePullPolicy: Never#' \
+  deploy/kubernetes.yaml | kubectl -n exuvia apply -f -
 kubectl -n exuvia rollout status deployment/exuvia-hub --timeout=180s
