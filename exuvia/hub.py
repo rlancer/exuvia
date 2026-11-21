@@ -250,6 +250,9 @@ class Hub:
                     stored = shared.stored_paths()
                 else:
                     stored = stored_paths_at(copy) if copy is not None else set()
+                # nodes/ marks a project folder for restore(); it is added on its
+                # own because a project with no nodes has no file inside it.
+                tar.add(base / "nodes", arcname=f"{pid}/nodes", recursive=False)
                 for path in sorted(base.rglob("*")):
                     rel = path.relative_to(base)
                     if not path.is_file() or SKIP_DIRS & set(rel.parts):
