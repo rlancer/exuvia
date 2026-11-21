@@ -117,6 +117,13 @@ a graph: https://github.com/rlancer/exuvia
    from step 3 has to be running whenever I use it.
 6. Run the `hello` node with the `run_node` tool to check the
    setup, then ask me what I want to build.
+
+If exuvia itself goes wrong at any point (a step here
+fails, a tool errors on valid input, the guide is wrong or
+unclear), tell me and offer to report it: call the
+`report_issue` tool, or before the tools are available
+open https://github.com/rlancer/exuvia/issues. Reports are
+welcome. Show me the text first, and leave out secrets.
 ```
 
 What you end up with:
@@ -703,7 +710,8 @@ The agent runs a tool loop over the live workspace: `list_nodes`, `read_node`,
 `delete_file` (shared helpers under `lib/`), `list_views` / `read_view` /
 `write_view` / `write_view_file` / `delete_view_file` / `delete_view` (see
 "Views"), `run_node`, `define_param`, and
-`query_data` (DuckDB over every node's current output). It looks at real column names before writing, runs
+`query_data` (DuckDB over every node's current output), and `report_issue`
+(see "MCP"). It looks at real column names before writing, runs
 what it writes, reads the traceback when something fails, and fixes it. Every
 tool call shows up in the chat, and nodes it touches flash on the canvas.
 
@@ -806,6 +814,19 @@ Code the client changes is recorded with the origin `mcp`, and nodes it runs
 with the trigger `mcp`, so the history shows which changes came from your
 agent. A tool that fails returns its error (a traceback's last lines, an
 invalid input) as the tool result, for the model to read and fix.
+
+**Reporting problems.** When the problem is exuvia's rather than your
+project's (a tool fails on valid input, the instructions are wrong or
+unclear, something you need is missing), your agent can say so with the
+`report_issue` tool. It takes a `title`, the `details` (what it did, the exact
+error, what it expected) and a `kind` (`bug`, `idea` or `feedback`), and it
+**sends nothing**: it returns a draft issue, with the exuvia, Python and OS
+versions added, and a link that opens it prefilled at
+[github.com/rlancer/exuvia/issues](https://github.com/rlancer/exuvia/issues).
+You read it and press Submit, or tell the agent to file it with `gh`. The
+agent's instructions ask it to offer this whenever exuvia is at fault, and to
+leave secrets and your data out. Issues from anyone are welcome, with or
+without an agent.
 
 ## Headless
 
@@ -1113,6 +1134,10 @@ the package to public once (package settings → Change visibility).
 
 Prototype. Not yet: multi-user auth (only a shared token; the hub leaves tenancy to its
 host), executor autoscaling, incremental nodes (run parameters cover date partitions), non-Python runtimes, secrets management beyond env vars.
+
+Found a bug, or something missing? Open an issue at
+[github.com/rlancer/exuvia/issues](https://github.com/rlancer/exuvia/issues). Your agent can draft one
+for you with `report_issue` (see "MCP").
 
 ## License
 
