@@ -14,6 +14,7 @@ moves the (often multi-second) pandas/duckdb import off the critical path.
 from __future__ import annotations
 
 import hashlib
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -138,10 +139,58 @@ def save_artifact(value: Any, out_dir: Path) -> dict[str, Any]:
             tmp_path.unlink()
 
 
+class _FromSource(importlib.machinery.SourceFileLoader):
+    """Compiles a project module from its source on every import, never from
+    ``__pycache__``. Python trusts a cached .pyc whose source has the same
+    size and modification time (in whole seconds), so a node or helper edited
+    twice within a second to the same size would otherwise run the old code.
+    Project files are small, so compiling them each run costs little, and
+    nothing is written into the project's folders."""
+
+    def get_code(self, fullname: str) -> Any:
+        return self.source_to_code(self.get_data(self.path), self.path)
+
+
+_SKIP_PARTS = {"site-packages", "dist-packages", "node_modules", "__pycache__"}
+
+
+def _import_project_from_source(root: Path) -> None:
+    """Route imports from the project's folders (``lib/`` helpers and the
+    like) through ``_FromSource``. Hidden folders and installed packages
+    inside the project, such as a ``.venv``, keep their normal bytecode cache."""
+    root = root.resolve()
+
+    def ours(entry: str) -> bool:
+        try:
+            p = Path(entry or ".").resolve()
+        except (OSError, ValueError):
+            return False
+        if not p.is_relative_to(root):
+            return False
+        return not any(part.startswith(".") or part in _SKIP_PARTS for part in p.relative_to(root).parts)
+
+    finder = importlib.machinery.FileFinder.path_hook(
+        (importlib.machinery.ExtensionFileLoader, importlib.machinery.EXTENSION_SUFFIXES),
+        (_FromSource, importlib.machinery.SOURCE_SUFFIXES),
+        (importlib.machinery.SourcelessFileLoader, importlib.machinery.BYTECODE_SUFFIXES),
+    )
+
+    def hook(entry: str) -> Any:
+        if not ours(entry):
+            raise ImportError("not a project folder")
+        return finder(entry)
+
+    sys.path_hooks.insert(0, hook)
+    for entry in [e for e in sys.path_importer_cache if ours(e)]:
+        del sys.path_importer_cache[entry]  # found before the hook (the warm imports scan the cwd)
+
+
 def _load_python_node(root: Path, path: Path, name: str):
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))  # lets nodes import shared helpers from the project
-    spec = importlib.util.spec_from_file_location(f"exuvia_nodes.{name}", path)
+    _import_project_from_source(root)
+    mod = f"exuvia_nodes.{name}"
+    spec = importlib.util.spec_from_file_location(mod, path, loader=_FromSource(mod, str(path)))
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
