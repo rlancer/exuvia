@@ -311,7 +311,6 @@ wheels = [
 
 [[package]]
 name = "exuvia"
-version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -353,7 +352,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
     { name = "watchfiles", specifier = ">=0.24" },
 ]
-provides-extras = ["dev", "postgres", "mcp"]
+provides-extras = ["dev", "mcp", "postgres"]
 
 [[package]]
 name = "fastapi"

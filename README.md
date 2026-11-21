@@ -1055,27 +1055,32 @@ site/           the website: landing page + docs portal (Astro, static)
 
 ### Releasing
 
-A release is one merged pull request that bumps the version: set `version`
-in `pyproject.toml` and `__version__` in `exuvia/__init__.py`, run `uv lock`,
-and merge. Nothing else is done by hand.
+Nobody bumps a version. The package's version is its latest `v*` git tag
+(hatch-vcs), and every push to `main` that changes the package (`exuvia/`,
+`ui/`, `pyproject.toml`, `uv.lock`, the Dockerfile) is released as the next
+patch version by `.github/workflows/release.yml`. It tags the merged commit
+and starts two workflows on that tag:
 
-On every push to `main`, `.github/workflows/release.yml` looks for a
-`v<version>` tag. When there is none, it tags the merged commit and starts
-two workflows on that tag:
+- `publish.yml` builds exactly the tag's version, runs the tests, bundles the
+  UI into the wheel and publishes to PyPI. It uses trusted publishing, so no
+  token is stored anywhere.
+- `image.yml` builds the container image for linux/amd64 and linux/arm64,
+  with the tag's version passed in as `EXUVIA_VERSION`, and pushes it to
+  `ghcr.io/rlancer/exuvia` as `<version>`, `<major>.<minor>` and `latest`.
 
-- `publish.yml` checks the tag matches the version, runs the tests, bundles
-  the UI into the wheel and publishes to PyPI. It uses trusted publishing, so
-  no token is stored anywhere.
-- `image.yml` builds the container image for linux/amd64 and linux/arm64 and
-  pushes it to `ghcr.io/rlancer/exuvia` as `<version>`, `<major>.<minor>` and
-  `latest`.
+A push that changes only docs, tests, the site or CI releases nothing. A
+label on the pull request changes the bump: `release:minor` (0.3.1 → 0.4.0),
+`release:major` (0.3.1 → 1.0.0) or `release:skip` (nothing now; the change
+goes out with the next release). Actions → Release → Run workflow releases
+`main` as it is, with the bump you pick.
 
-A push that does not change the version finds its tag already there and
-releases nothing. Pushing a `vX.Y.Z` tag by hand still starts both workflows,
-and each can be started on an existing tag from the Actions tab, which is how
-to retry one that failed. A version cannot be released twice: `v*` tags
-cannot be moved or deleted, and PyPI refuses a version it already has, so a
-bad release is fixed by the next version.
+Between releases, a checkout reports a development version such as
+`0.3.2.dev4+g1a2b3c4`, and a build without git history (a plain
+`docker build`) reports `0.0.0`. Pushing a `vX.Y.Z` tag by hand still
+starts both workflows, and each can be started on an existing tag from the
+Actions tab, which is how to retry one that failed. A version cannot be
+released twice: `v*` tags cannot be moved or deleted, and PyPI refuses a
+version it already has, so a bad release is fixed by the next version.
 
 GHCR creates a new package as private. After the first image is pushed, set
 the package to public once (package settings → Change visibility).
