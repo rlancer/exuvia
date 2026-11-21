@@ -160,7 +160,10 @@ class Workspace:
             self.graph = self.project.load()
             origin = _ORIGIN.get()
             # A change nobody claimed was a hand edit, whoever is signed in.
-            self.record_code(origin or "file", author=auth.current_id() if origin else None)
+            if origin:
+                self.record_code(origin, author=auth.current_id(), author_user=auth.current_uid())
+            else:
+                self.record_code("file")
         self.bus.publish({"type": "graph"})
 
     # -- code revisions ------------------------------------------------------
@@ -183,10 +186,11 @@ class Workspace:
                 files[name] = (None, None, p)
         return files
 
-    def record_code(self, origin: str, author: str | None = None) -> int:
+    def record_code(self, origin: str, author: str | None = None, author_user: str | None = None) -> int:
         """Store a revision for every versioned file whose content differs
         from its latest revision, and for every one that disappeared, saved
-        by ``author`` (a signed-in person) through ``origin``. Returns how
+        by ``author`` (a signed-in person's name; ``author_user`` their user
+        id) through ``origin``. Returns how
         many were recorded."""
         latest = self.store.latest_code()
         changes: list[CodeChange] = []
@@ -202,7 +206,7 @@ class Workspace:
         for rel, digest in latest.items():
             if digest is not None and rel not in files:
                 changes.append((rel, _node_of(rel), _view_of(rel), None, None))
-        n = self.store.record_code(changes, origin, author=author)
+        n = self.store.record_code(changes, origin, author=author, author_user=author_user)
         if n:
             self.bus.touch()
         return n
@@ -598,12 +602,12 @@ class Workspace:
         batch = uuid.uuid4().hex[:8]
         # Whoever is signed in started it; a cascade task inherits the context
         # of the run it follows, so it names the same person.
-        started_by = auth.current_id()
+        started_by, started_by_user = auth.current_id(), auth.current_uid()
         run_ids: dict[str, str] = {}
         keys: dict[str, str] = {}
         for n in plan:
             own, keys[n] = self.node_params(n, params)
-            run_ids[n] = self.store.create_run(n, batch, trigger, own, keys[n], started_by)
+            run_ids[n] = self.store.create_run(n, batch, trigger, own, keys[n], started_by, started_by_user)
             self._inflight[(n, keys[n])] = run_ids[n]
             self._emit_run(run_ids[n])
         prev_artifacts = {n: status[n]["artifact_id"] for n in plan}

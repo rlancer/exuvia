@@ -38,6 +38,9 @@ PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 SKIP_DIRS = {"__pycache__", "node_modules"}
 DB_REL = ".exuvia/exuvia.db"
 PACKAGES_REL = ".exuvia/packages/"
+# The hub's user list (users.py), under the hub's directory beside the
+# projects, unless EXUVIA_DB holds it. Exports carry it at the same path.
+HUB_USERS_DB = ".exuvia/hub.db"
 # Pauses between attempts to remove a folder (see _remove_tree).
 REMOVE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8)
 
@@ -58,6 +61,8 @@ class Hub:
         self._export_path: Path | None = None
         # How to label code changes found when a project next loads.
         self._load_origin: dict[str, str] = {}
+        # Everyone who has signed in (set by create_hub_app when people sign in).
+        self.users: Any = None
 
     # -- projects ------------------------------------------------------------
     def exists(self, project_id: str) -> bool:
@@ -177,6 +182,8 @@ class Hub:
         async with self._lock:
             for pid in list(self._ctxs):
                 await self._unload(pid)
+        if self.users is not None:
+            self.users.close()
 
     # -- scheduling ------------------------------------------------------------
     async def tick(self) -> dict[str, Any]:
@@ -244,6 +251,9 @@ class Hub:
                     stored = shared.stored_paths()
                 else:
                     stored = stored_paths_at(copy) if copy is not None else set()
+                # nodes/ marks a project folder for restore(); it is added on its
+                # own because a project with no nodes has no file inside it.
+                tar.add(base / "nodes", arcname=f"{pid}/nodes", recursive=False)
                 for path in sorted(base.rglob("*")):
                     rel = path.relative_to(base)
                     if not path.is_file() or SKIP_DIRS & set(rel.parts):
@@ -260,6 +270,11 @@ class Hub:
                     tar.add(path, arcname=f"{pid}/{posix}")
                 if copy is not None:
                     tar.add(copy, arcname=f"{pid}/{DB_REL}")
+            # The user list, unless a shared database holds it.
+            if self.users is not None and not database_url():
+                users = Path(scratch) / "hub.db"
+                self.users.dump_to(users)
+                tar.add(users, arcname=HUB_USERS_DB)
         if self._export_path and self._export_path != out:
             self._export_path.unlink(missing_ok=True)
         self._export_path = out
@@ -276,8 +291,13 @@ class Hub:
             found = sorted(
                 p.name for p in Path(scratch).iterdir() if p.is_dir() and PROJECT_ID.match(p.name) and (p / "nodes").is_dir()
             )
+            users = Path(scratch) / HUB_USERS_DB
             if not found:
                 raise ValueError("the archive contains no projects")
+            # The archive's user list replaces this hub's (roles and disabled
+            # users included), unless a shared database holds it.
+            if users.is_file() and self.users is not None and not database_url():
+                self.users.replace_from(users)
             async with self._lock:
                 try:
                     for pid in found:

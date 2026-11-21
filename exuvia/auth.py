@@ -35,12 +35,16 @@ MAX_VALUE = 256
 
 @dataclass(frozen=True)
 class Identity:
-    """A signed-in person. ``id`` is what records name them by: the user
-    name, or the email when the proxy sends no user name."""
+    """A signed-in person. ``id`` is the name records show them by: the user
+    name, or the email when the proxy sends no user name. ``uid`` and
+    ``role`` come from the user list (users.py) once the sign-in is recorded:
+    the stable id records link to, and ``admin`` or ``member``."""
 
     user: str | None
     email: str | None
     method: str
+    uid: str | None = None
+    role: str | None = None
 
     @property
     def id(self) -> str:
@@ -95,6 +99,12 @@ def mode() -> str:
     return m
 
 
+def identifies_people() -> bool:
+    """Whether this server signs people in (and so keeps a user list): any
+    mode but ``token``."""
+    return mode() != "token"
+
+
 def header_auth() -> HeaderAuth | None:
     """The header settings when ``EXUVIA_AUTH=headers``, else None."""
     if mode() != "headers":
@@ -124,8 +134,15 @@ def current() -> Identity | None:
 
 
 def current_id() -> str | None:
+    """The signed-in person's name, as records show it."""
     ident = _IDENTITY.get()
     return ident.id if ident else None
+
+
+def current_uid() -> str | None:
+    """The signed-in person's stable user id (users.py), for records to link to."""
+    ident = _IDENTITY.get()
+    return ident.uid if ident else None
 
 
 @contextmanager

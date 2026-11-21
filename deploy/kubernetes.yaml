@@ -108,6 +108,9 @@ spec:
             #   value: X-Forwarded-Email
             # - name: EXUVIA_AUTH_TRUSTED_PROXIES
             #   value: 10.0.0.0/8
+            # Who is always an admin (manages everyone else under Users):
+            # - name: EXUVIA_ADMINS
+            #   value: you@example.com
             # - name: ANTHROPIC_API_KEY
             #   valueFrom:
             #     secretKeyRef: {name: exuvia, key: anthropic-api-key}

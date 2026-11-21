@@ -191,6 +191,14 @@ def test_export_and_restore_round_trip(tmp_path, hub):
         assert rows.json()["rows"] == [["2026-03-02", 2]]
 
 
+def test_export_and_restore_a_project_with_no_nodes(tmp_path, hub):
+    assert hub.post("/api/projects", json={"id": "a", "name": "Empty"}).status_code == 200
+    blob = hub.get("/api/hub/export").content
+    with TestClient(create_hub_app(tmp_path / "elsewhere")) as fresh:
+        assert fresh.post("/api/hub/import", content=blob).json() == {"ok": True, "projects": ["a"]}
+        snap = fresh.get("/p/a/api/project").json()
+        assert snap["name"] == "Empty" and snap["nodes"] == []
+
 
 def locked_rmtree(monkeypatch, name: str, times: float):
     """Make removing a folder called ``name`` leave a file behind ``times``
