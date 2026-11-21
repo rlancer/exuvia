@@ -25,7 +25,7 @@ const handoffs = [
   {
     id: "server",
     label: "On a server",
-    body: "Paste this into an agent that can reach your Docker host or Kubernetes cluster, a cloud VM or GKE, EKS or AKS, and change the first line to your platform. It deploys a hub from the published image behind a generated API token, checks it end to end, then creates a project and connects itself to it.",
+    body: "Paste this into an agent that can reach your Docker host or Kubernetes cluster, a cloud VM or GKE, EKS or AKS, and change the first line to your platform. It deploys a hub from the published image behind a generated API token, checks it end to end, then creates a project, connects itself to it and hands you the project's workbench URL.",
     href: "/docs/deploying/#hand-it-to-an-agent",
     prompt: codeFigure(h, agentDeployPrompt(), "text"),
   },

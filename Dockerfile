@@ -2,8 +2,9 @@
 #   executor (default):  docker run -p 8080:8080 -e EXUVIA_EXECUTOR_TOKEN=... exuvia
 #   control plane:       docker run -p 7420:7420 -v $PWD/my-project:/project exuvia \
 #                          exuvia serve /project --host 0.0.0.0 --port 7420
-#   headless hub:        docker run -p 7420:7420 -v exuvia-data:/data exuvia \
+#   hub:                 docker run -p 7420:7420 -v exuvia-data:/data exuvia \
 #                          exuvia hub /data --host 0.0.0.0 --port 7420
+#                        (every project's API, and its UI at /p/<id>/)
 #
 # `bun run build` also builds the views runtime (exuvia/static/view-runtime/),
 # and static/ is copied in before `uv sync`, so the installed wheel ships it and

@@ -1,6 +1,7 @@
-# exuvia as a headless hub: many projects behind one API, each under
-# /p/<project>/api (README "Hub"). Works with Docker Compose, Podman Compose
-# and Docker Swarm.
+# exuvia as a hub: many projects, each with its API under /p/<project>/api
+# and the web UI at /p/<project>/ (README "Hub"). The UI is built into the
+# image, so this one service is the whole deployment: there is no separate
+# frontend. Works with Docker Compose, Podman Compose and Docker Swarm.
 #
 # This file is all you need, no clone:
 #   curl -O https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/compose.yaml
@@ -11,6 +12,8 @@
 # Then: curl http://localhost:7420/healthz
 #       curl -H "Authorization: Bearer change-me" -X POST http://localhost:7420/api/projects \
 #            -H "Content-Type: application/json" -d '{"id": "demo"}'
+#       open http://localhost:7420/p/demo/?token=change-me   (the workbench;
+#       the token is needed once, the browser keeps it in a cookie)
 #
 # Variables (put them in a .env next to this file, or export them):
 #   EXUVIA_API_TOKEN   required: clients send `Authorization: Bearer <token>`
@@ -21,7 +24,7 @@
 #   EXUVIA_PORT        host port, default 7420
 #   ANTHROPIC_API_KEY  optional: turns on the built-in agent (or OPENROUTER_API_KEY)
 #
-# For one project with the web UI instead of a hub, replace `command` with
+# For a single project at / instead of a hub, replace `command` with
 #   ["exuvia", "serve", "/data/project", "--host", "0.0.0.0", "--port", "7420"]
 #
 # Records (SQLite) and outputs live in the `exuvia-data` volume. Run one

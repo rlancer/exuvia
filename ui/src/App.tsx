@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { api, type Project } from "./api";
+import { api, apiUrl, type Project } from "./api";
 import { Canvas } from "./Canvas";
 import { Inspector, Overview } from "./Inspector";
 import { AgentPanel, type AgentHandle } from "./AgentPanel";
@@ -74,7 +74,7 @@ export default function App() {
   useEffect(() => {
     refresh();
     api.config().then(setCfg);
-    const es = new EventSource("/api/events");
+    const es = new EventSource(apiUrl("/api/events"));
     es.onopen = () => setConn(true);
     es.onerror = () => setConn(false);
     es.onmessage = (m) => {
