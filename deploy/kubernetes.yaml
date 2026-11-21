@@ -10,6 +10,7 @@
 #   kubectl -n exuvia port-forward service/exuvia-hub 7420:7420
 #   curl http://localhost:7420/healthz
 #   open http://localhost:7420/?token=change-me   (the hub's home: create and open projects)
+#   (on a private network, EXUVIA_BROWSER_AUTH below lets browsers in without the token)
 #
 # The image defaults to ghcr.io/rlancer/exuvia:latest (public, no login). To pin
 # a release (ghcr.io/rlancer/exuvia:0.3) or use an image with your nodes'

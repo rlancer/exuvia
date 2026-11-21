@@ -588,7 +588,7 @@ Both commands include the workbench; neither needs a separate frontend.
 | | `exuvia serve <dir>` (one project) | `exuvia hub <dir>` (many projects) |
 |---|---|---|
 | Open in a browser | `<url>/` | `<url>/`, the hub's home: create, open and delete projects; each one's workbench is at `<url>/p/<project>/` |
-| First visit with `EXUVIA_API_TOKEN` set | `<url>/?token=<token>` | `<url>/?token=<token>`, or open `<url>/` and enter the token |
+| First visit with `EXUVIA_API_TOKEN` set | `<url>/?token=<token>` (just `<url>/` with `EXUVIA_BROWSER_AUTH=open`) | `<url>/?token=<token>`, or open `<url>/` and enter the token (just `<url>/` with `EXUVIA_BROWSER_AUTH=open`) |
 | Project API prefix | `<url>/api` | `<url>/p/<project>/api` |
 | Server-wide API | none | `<url>/api` (`/api/projects`, `/api/schedule/tick`, ...) |
 | `exuvia mcp --url` | `<url>` | `<url>` (every project), or `<url>/p/<project>` (just that one) |
@@ -625,6 +625,11 @@ curl http://localhost:7420/healthz
 # cookie), then create a project and open its workbench from there
 open "http://localhost:7420/?token=change-me"
 ```
+
+On a hub that only a private network can reach, `EXUVIA_BROWSER_AUTH=open`
+lets browsers in without the token ([auth](#schedules-auth-and-settings)):
+put it in Compose's `.env`, in front of `docker stack deploy` on Swarm (the
+file reads it from the shell), or uncomment it in `kubernetes.yaml`.
 
 `EXUVIA_IMAGE` (Compose and Swarm) or the Deployment's `image` picks another
 image: a pinned release such as `ghcr.io/rlancer/exuvia:0.3`, a copy in your
@@ -823,10 +828,18 @@ everything through that hostname.
    Connect agent sets up MCP for any other agent). It
    asks for the token once and the browser keeps it in a
    cookie; tell me to paste it from the file from step 2
-   rather than printing it. Also tell me that if the hub
-   is only reachable on a private network, setting
-   EXUVIA_BROWSER_AUTH=open on it lets browsers in without
-   the token (agents and the API still need it).
+   rather than printing it. Also tell me how to let
+   browsers in without the token, for a hub only a private
+   network can reach (agents and the API still need it),
+   and if I asked for that, do it now and check that
+   GET /api/projects without the token still returns 401:
+   - Compose: EXUVIA_BROWSER_AUTH=open in the .env, then
+     step 4's command again.
+   - Swarm: EXUVIA_BROWSER_AUTH=open in front of step 4's
+     `docker stack deploy`, with the other variables it
+     was deployed with set again.
+   - Kubernetes: uncomment EXUVIA_BROWSER_AUTH in
+     kubernetes.yaml and apply it again.
 ```
 
 ### One container with docker run

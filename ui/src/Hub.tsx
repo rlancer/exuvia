@@ -165,6 +165,9 @@ function TokenForm() {
     <form className="hub-card" onSubmit={submit}>
       <h2>Sign in to this hub</h2>
       <p>Enter the hub's API token. This browser keeps it in a cookie, so you only enter it once.</p>
+      <p className="hub-muted connect-note">
+        Hub on a private network? Setting <code>EXUVIA_BROWSER_AUTH=open</code> on it lets browsers in without the token.
+      </p>
       <div className="field">
         <label htmlFor="hub-token">API token</label>
         <input id="hub-token" type="password" className="mono" autoFocus autoComplete="current-password" value={token} onChange={(e) => setToken(e.target.value)} />

@@ -12,7 +12,7 @@
 # Then: curl http://<any node>:7420/healthz
 #       open http://<host>:7420/?token=<token>   (the hub's home page: create
 #       and open projects; the token is needed once, the browser keeps it in a
-#       cookie)
+#       cookie; not at all with EXUVIA_BROWSER_AUTH=open, below)
 #
 # The token: the API token lives in the Swarm secret `exuvia_api_token` and
 # reaches exuvia as a file (EXUVIA_API_TOKEN_FILE), so it never shows in
