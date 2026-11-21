@@ -57,8 +57,8 @@ description = "Run the Python test suite"
 run = "uv run pytest -q"
 
 [tasks.lint-actions]
-description = "Lint the GitHub Actions workflows with actionlint (and shellcheck)"
-run = "actionlint"
+description = "Lint the GitHub Actions workflows with actionlint, and their scripts with shellcheck"
+run = "actionlint && shellcheck .github/scripts/bg.sh .github/scripts/kind-deploy.sh"
 
 [tasks.e2e]
 description = "Build the container image and drive a hub in it over HTTP (podman, else docker; CONTAINER_ENGINE overrides)"
