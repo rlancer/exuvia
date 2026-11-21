@@ -202,6 +202,38 @@ def test_editing_a_helper_stales_only_the_nodes_that_import_it(tmp_path):
     assert out == {"deleted": "lib/base.py", "was_used_by": ["scaled"]}
 
 
+
+def test_an_edit_in_the_same_second_and_size_runs_the_new_code(tmp_path):
+    """Python trusts a cached .pyc whose source has the same size and mtime
+    (whole seconds); a fast edit must still run the new code, for helpers and
+    for the node file itself."""
+    stamp = (1_700_000_000, 1_700_000_000)
+    helper = tmp_path / "lib" / "stats.py"
+    node_file = tmp_path / "nodes" / "scaled.py"
+    source = textwrap.dedent(SCALED).lstrip()
+
+    def write(path, text):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        os.utime(path, stamp)
+
+    write(helper, "def factor():\n    return 2\n")
+    write(node_file, source.replace("[factor()]", "[factor()+1]"))
+    ws = Workspace(tmp_path)
+
+    def value():
+        ws.reload()
+        finals = run(ws, ["scaled"])
+        assert finals["scaled"]["status"] == "success", finals
+        return ws.preview("scaled", params=ws.resolve_params())["rows"]
+
+    assert value() == [[3]]
+    write(helper, "def factor():\n    return 5\n")  # same size, same mtime
+    assert value() == [[6]]
+    write(node_file, source.replace("[factor()]", "[factor()*3]"))  # same size, same mtime
+    assert value() == [[15]]
+    assert not list(tmp_path.rglob("__pycache__"))  # nothing cached in the project
+
 # -- HTTP + agent ----------------------------------------------------------------------
 def test_files_routes(tmp_path):
     node(tmp_path, "scaled", SCALED)
