@@ -284,6 +284,53 @@ def test_a_database_from_before_scopes_is_upgraded_in_place(tmp_path, monkeypatc
     assert {"code_blobs", "code_revisions"} <= tables
 
 
+@pytest.mark.skipif(not PG_URL, reason="needs EXUVIA_TEST_POSTGRES_URL")
+def test_processes_creating_the_postgres_schema_at_once_all_succeed():
+    """Postgres does not make ``create table if not exists`` atomic: two
+    connections creating the same table in an empty schema at once can fail
+    with a duplicate ``pg_type`` key. Several hub replicas starting together on
+    a new database do exactly that, so every one of them has to come up."""
+    import threading
+
+    from exuvia.db import PostgresDatabase
+    from exuvia.store import TABLES, Store
+
+    admin = PostgresDatabase(PG_URL)
+    sep = "&" if "?" in PG_URL else "?"
+    try:
+        for _ in range(5):  # the race is timing-dependent: try it a few times
+            schema = f"race_{uuid.uuid4().hex[:12]}"
+            admin.query(f"create schema {schema}")
+            url = f"{PG_URL}{sep}options=-csearch_path%3D{schema}"
+            dbs = [PostgresDatabase(url) for _ in range(8)]
+            start = threading.Barrier(len(dbs))
+            errors: list[BaseException] = []
+
+            def open_store(db):
+                start.wait()
+                try:
+                    Store(db, scope="s", owns_db=False)
+                except BaseException as e:  # noqa: BLE001 - reported below
+                    errors.append(e)
+
+            threads = [threading.Thread(target=open_store, args=(db,)) for db in dbs]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            try:
+                assert errors == []
+                assert set(TABLES) <= {r["table_name"] for r in admin.query(
+                    "select table_name from information_schema.tables where table_schema = ?", (schema,)
+                )}
+            finally:
+                for db in dbs:
+                    db.close()
+                admin.query(f"drop schema {schema} cascade")
+    finally:
+        admin.close()
+
+
 def test_postgres_placeholders():
     assert _pg_placeholders("select * from t where a=? and b like 'x%'") == (
         "select * from t where a=%s and b like 'x%%'"

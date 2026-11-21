@@ -162,12 +162,25 @@ def revision_id() -> str:
 
 _prepared: "weakref.WeakSet[Any]" = weakref.WeakSet()
 
+# Postgres advisory lock key that serializes schema creation and upgrades
+# across processes. Any fixed 64-bit value works; this one is "exuvia" in hex.
+SCHEMA_LOCK_KEY = 0x657875766961
+
 
 def prepare(db: Database) -> None:
-    """Create or upgrade the schema once per database connection."""
+    """Create or upgrade the schema once per database connection.
+
+    Postgres does not make ``create table if not exists`` atomic: two
+    processes creating the same table at once (hub replicas starting together
+    on a new database) can fail with a duplicate ``pg_type`` key. A
+    transaction-level advisory lock makes every other process wait until the
+    first commits, then find the tables (and upgraded columns) in place.
+    SQLite's ``begin immediate`` already serializes the whole block."""
     if db in _prepared:
         return
     with db.transaction():
+        if db.dialect == "postgres":
+            db.query(f"select pg_advisory_xact_lock({SCHEMA_LOCK_KEY})")
         _upgrade_legacy(db)
         for ddl in TABLES.values():
             db.query(ddl)

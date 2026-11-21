@@ -85,15 +85,15 @@ jobs:
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
-      # One pytest worker per core (pytest-xdist), each test file on one
-      # worker: only tests/test_revisions.py uses Postgres, and two workers
-      # creating the schema in the empty database at once collide ("duplicate
-      # key ... pg_type_typname_nsp_index"). xdist is added here rather than to
-      # the `dev` extra: a change to pyproject.toml or uv.lock is a release.
+      # One pytest worker per core (pytest-xdist). Workers share the empty
+      # Postgres database and create its schema at the same moment, which
+      # also exercises the advisory lock in store.prepare. xdist is added here
+      # rather than to the `dev` extra: a change to pyproject.toml or uv.lock
+      # is a release.
       - name: Python tests
         env:
           EXUVIA_TEST_POSTGRES_URL: postgresql://postgres:ci@127.0.0.1:5432/postgres
-        run: uv sync --extra dev --extra postgres --python 3.12 && uv run --with pytest-xdist==3.8.0 pytest -q -n auto --dist loadfile
+        run: uv sync --extra dev --extra postgres --python 3.12 && uv run --with pytest-xdist==3.8.0 pytest -q -n auto
 
       # The bun version matches mise.toml; the cache is bun's package cache,
       # keyed on the lockfile.
