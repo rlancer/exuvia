@@ -38,7 +38,8 @@ const poly = (points: number[][], fill: string) =>
   `<path d="M${points.map(([x, y]) => `${n(x)} ${n(y)}`).join("L")}Z" fill="${fill}"/>`;
 
 // ---- the surface, and the light that comes through it ----
-const SURFACE = 96;
+// The surface is the top edge of the card: nothing is above the water.
+const SURFACE = 0;
 const shafts = [150, 470, 760, 1040].map((x, i) => {
   const [wide, long] = [between(40, 110), H * between(0.6, 0.95)];
   const lean = long * 0.34;
@@ -127,7 +128,6 @@ const drift = [
   <rect width={W} height={H} fill="rgba(22,38,84,0.34)"></rect>
   <rect width={W} height={H} fill="url(#day)"></rect>
   <Fragment set:html={shafts.join("")} />
-  <rect width={W} height={SURFACE} fill={rgba(LIGHT, 0.16)}></rect>
   <Fragment set:html={surface.join("")} />
   <Fragment set:html={drift.join("")} />
   <Fragment set:html={bubbles.join("")} />
