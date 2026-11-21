@@ -377,3 +377,143 @@ button {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* ---- triptychs -----------------------------------------------------------
+   Three panels side by side, each a line drawing over a name and a few lines
+   of text, the last one (.now) being exuvia. Used by Evolution.astro and
+   Workflows.astro. */
+.stages {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.75rem;
+  margin: 2rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.stages > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto 1fr;
+  align-content: start;
+}
+.stages svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: var(--border);
+  border-radius: 0.6rem;
+  background: var(--panel);
+}
+.stages h3 {
+  margin-top: 1.25rem;
+  font-size: 1.75rem;
+}
+.stages .what {
+  margin-top: 0.25rem;
+  font-weight: 600;
+}
+.stages li > p:last-child {
+  margin-top: 0.5rem;
+  color: var(--muted);
+}
+
+.stages text {
+  font-family: var(--mono);
+  font-size: 12px;
+  fill: var(--text);
+}
+.stages .tab rect {
+  fill: var(--text);
+}
+.stages .tab text {
+  fill: var(--bg);
+  font-weight: 700;
+}
+.stages .cell {
+  fill: var(--bg);
+  stroke: var(--text);
+  stroke-width: 1.5;
+}
+.stages .count {
+  font-weight: 700;
+}
+.stages .kernel {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+}
+.stages .thread {
+  fill: none;
+  stroke: var(--faint);
+  stroke-width: 1.2;
+  stroke-dasharray: 2 3;
+}
+.stages .var {
+  fill: var(--text);
+}
+.stages .arc {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.5;
+}
+.stages marker path {
+  fill: var(--text);
+}
+
+/* The third panel is the destination: a darker ground and an edge in the accent. */
+.stages .now svg {
+  border-color: var(--accent);
+  background: var(--bg-deep);
+}
+.stages .now .tab text {
+  fill: var(--bg-deep);
+}
+.stages .now .cell {
+  fill: var(--panel);
+}
+.stages .now .shed {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1.2;
+}
+.stages .now .state {
+  fill: var(--fresh);
+}
+.stages .clock circle {
+  fill: var(--bg-deep);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+.stages .clock path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.stages .agent rect {
+  fill: var(--accent);
+}
+.stages .now .agent text {
+  fill: var(--accent-ink);
+  font-weight: 700;
+}
+.stages .agent path {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+.stages .view .bar {
+  fill: var(--text);
+}
+.stages .view .mark {
+  fill: var(--accent);
+}
+
+@media (max-width: 900px) {
+  .stages {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2.5rem;
+    max-width: 30rem;
+  }
+}
