@@ -679,8 +679,10 @@ there is no separate frontend to build or deploy.
    or `grok mcp add`. The server's command:
    `uvx exuvia mcp --url <hub url>/p/my-research`
    (`pipx run exuvia mcp ...` without uv), with the
-   environment variable EXUVIA_API_TOKEN set to the token.
-   <hub url> is the address this machine reaches the hub at.
+   environment variable EXUVIA_API_TOKEN_FILE set to the
+   path of the file from step 2, so the token itself stays
+   out of the MCP configuration. <hub url> is the address
+   this machine reaches the hub at.
 8. Report the hub URL, where the token is stored, the
    verification output, the project the MCP server is
    connected to, and the workbench to open in a browser:
@@ -795,6 +797,7 @@ empty file, stops exuvia with an error.
 | `EXUVIA_EXECUTOR_URL` / `EXUVIA_EXECUTOR_TOKEN` | local pool | remote executor + its token |
 | `EXUVIA_SCHEDULER` | `internal` | `external` = only `POST /api/schedule/tick` advances schedules |
 | `EXUVIA_API_TOKEN` | off | shared-secret auth for the control plane API |
+| `<NAME>_FILE` | — | read a secret setting from a file, e.g. `EXUVIA_API_TOKEN_FILE=/run/secrets/exuvia_api_token` (see "Secrets from files" above) |
 | `EXUVIA_FAILURE_WEBHOOK` | off | URL that failed runs are POSTed to, for projects without their own `failure_webhook` |
 | `EXUVIA_FAILURE_TRIGGERS` | `schedule,cascade` | which failed runs the env webhook reports (`all`, or any of `schedule`, `cascade`, `manual`, `backfill`) |
 | `EXUVIA_PUBLIC_URL` | — | where this server is reachable (e.g. `https://exuvia.example.com`), for run links in failure webhooks |
@@ -958,7 +961,8 @@ be a project (`exuvia init` makes one). While `exuvia serve` has the project
 open, use `--url` instead: the server stays the only process that owns the
 project, its UI shows every change and run as it happens, and the tools reach
 it through `POST /api/tools/{name}`. `EXUVIA_API_TOKEN` is sent as a bearer
-token when set.
+token when set; `EXUVIA_API_TOKEN_FILE` (a path) keeps the token itself out of
+the MCP client's configuration.
 
 Code the client changes is recorded with the origin `mcp`, and nodes it runs
 with the trigger `mcp`, so the history shows which changes came from your
