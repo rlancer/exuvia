@@ -40,21 +40,31 @@ const card = Astro.site ? new URL(url("/og.png"), Astro.site).href : url("/og.pn
     </main>
     <Footer />
     <script>
-      // Copy buttons on code blocks: the button says what happened.
+      // Copy buttons on code blocks (lib/highlight.ts): the icon becomes a tick,
+      // and the note inside the button tells a screen reader what happened.
       document.addEventListener("click", async (event) => {
         const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-copy]");
         if (!button) return;
         const scope = button.closest("[data-code]");
         const text = button.dataset.copy || scope?.querySelector("pre")?.textContent || "";
+        const note = button.querySelector(".copy-note");
+        const say = (state: string, words: string) => {
+          button.dataset.state = state;
+          if (note) note.textContent = words;
+        };
         try {
           await navigator.clipboard.writeText(text.trimEnd());
-          button.textContent = "Copied";
+          say("copied", "Copied");
         } catch {
-          button.textContent = "Press Ctrl+C";
+          // The text is selected instead, ready for the keyboard.
+          say("failed", "Press Ctrl+C");
           const pre = scope?.querySelector("pre");
           if (pre) getSelection()?.selectAllChildren(pre);
         }
-        setTimeout(() => (button.textContent = "Copy"), 1600);
+        setTimeout(() => {
+          delete button.dataset.state;
+          if (note) note.textContent = "";
+        }, 1600);
       });
     </script>
   </body>

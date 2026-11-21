@@ -10,7 +10,7 @@ import Workbench from "../components/Workbench.astro";
 import ViewAnatomy from "../components/ViewAnatomy.astro";
 import agentPanel from "../assets/shots/agent-panel.png";
 import { agentSetupPrompt } from "../lib/docs";
-import { codeFigure, getHighlighter } from "../lib/highlight";
+import { codeFigure, copyButton, getHighlighter } from "../lib/highlight";
 import { url } from "../lib/paths";
 
 const h = await getHighlighter();
@@ -117,7 +117,7 @@ const steps = [
           <a class="btn btn-primary" href={url("/docs/getting-started/")}>Get started</a>
           <div class="install" data-code>
             <pre class="mono"><span aria-hidden="true">$ </span>pip install exuvia</pre>
-            <button class="copy" type="button" data-copy="pip install exuvia">Copy</button>
+            <Fragment set:html={copyButton("pip install exuvia")} />
           </div>
         </div>
         <p class="handoff-link">
@@ -325,7 +325,7 @@ const steps = [
     display: inline-flex;
     align-items: center;
     gap: 0.9rem;
-    padding: 0 0.5rem 0 1rem;
+    padding: 0 0.4rem 0 1rem;
     border: var(--border-strong);
     border-radius: 0.5rem;
     background: var(--panel);
@@ -338,12 +338,15 @@ const steps = [
   .install pre span {
     color: var(--accent);
   }
-  .install .copy {
-    border-color: var(--line-strong);
+  .install :global(.copy) {
+    border-color: transparent;
     background: transparent;
     color: var(--text);
   }
-  .install .copy:hover {
+  .install :global(.copy[data-state="copied"]) {
+    color: var(--fresh);
+  }
+  .install :global(.copy:not([data-state="copied"]):hover) {
     background: var(--text);
     color: var(--bg);
   }
