@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { me, usersApi, type Me, type UserRow } from "./api";
 import { ago } from "./util";
+import { Dialog } from "./Dialog";
 
 /** The person a sign-in proxy says this is (EXUVIA_AUTH=headers), for the
  * top bar. An admin also gets the Users button, which manages the user list. */
@@ -45,9 +46,7 @@ function UsersDialog(props: { self: string | null; onClose: () => void }) {
     }
   };
   return (
-    <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && props.onClose()}>
-      <div className="dialog users-dialog" role="dialog" aria-label="Users">
-        <h3>Users</h3>
+    <Dialog title="Users" className="users-dialog" onClose={props.onClose}>
         <p className="hint">
           Everyone who has signed in. A disabled user is turned away even when the sign-in proxy lets them in.
           People named in <span className="mono">EXUVIA_ADMINS</span> are always admins.
@@ -81,6 +80,7 @@ function UsersDialog(props: { self: string | null; onClose: () => void }) {
                       <td>
                         <select
                           value={u.role}
+                          aria-label={`Role of ${u.name}`}
                           disabled={locked}
                           title={u.pinned_admin ? "Named in EXUVIA_ADMINS" : self ? "Another admin can change your role" : ""}
                           onChange={(e) => change(u, { role: e.target.value as "admin" | "member" })}
@@ -109,7 +109,6 @@ function UsersDialog(props: { self: string | null; onClose: () => void }) {
         <div className="actions">
           <button className="btn" onClick={props.onClose}>Close</button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

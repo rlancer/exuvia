@@ -4,7 +4,16 @@ import { python } from "@codemirror/lang-python";
 import { sql } from "@codemirror/lang-sql";
 import embed from "vega-embed";
 import { api, type Column, type GraphNode, type Preview, type RunRow } from "./api";
-import { ago, dur, fmtCell, fmtNum, until } from "./util";
+import { ago, dur, fmtCell, fmtNum, pressable, until } from "./util";
+import { Dialog } from "./Dialog";
+import { IconClock, IconPlay, IconSpark, IconTrash, MOD } from "./icons";
+import { failed } from "./toast";
+
+/** A chart's series colours: the accent first, then the states' hues and four more, per theme. */
+const SERIES = {
+  dark: ["#6f9bff", "#f2b84b", "#4cc38a", "#ef6b62", "#b48cf2", "#4fc1d6", "#e88bc4", "#a0a39a"],
+  light: ["#3b6fd8", "#c98a12", "#2f8f5b", "#c4413a", "#7d55cf", "#1f8ea6", "#c2518f", "#7d7b74"],
+};
 
 type Tab = "code" | "data" | "chart" | "runs";
 
@@ -27,6 +36,7 @@ export function Inspector(props: {
   const [saved, setSaved] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const dirty = source !== saved;
   const loadedFor = useRef<string>("");
 
@@ -74,10 +84,16 @@ export function Inspector(props: {
   };
 
   const del = async () => {
-    if (!confirm(`Delete node "${node.name}"? This removes ${node.path}.`)) return;
-    await api.remove(node.name);
-    onDeleted();
+    setConfirmDelete(false);
+    try {
+      await api.remove(node.name);
+      onDeleted();
+    } catch (e) {
+      setErr((e as Error).message);
+    }
   };
+  // Nodes that take this one as an input: they fail once it is gone.
+  const readers = props.nodes.filter((n) => n.deps.includes(node.name)).map((n) => n.name);
 
   const running = node.state === "running" || node.state === "queued";
   const problem = node.parse_error || (node.state === "failed" ? node.reason : null);
@@ -89,39 +105,41 @@ export function Inspector(props: {
           <span className="dot" />
           <h3>{node.name}</h3>
           <button className="btn primary" onClick={run} disabled={busy || running || !!node.parse_error}>
-            {running ? "Running…" : dirty ? "Save & run" : "▶ Run"}
+            {running ? "Running…" : dirty ? "Save & run" : <><IconPlay size={11} /> Run</>}
           </button>
           {running && node.last_run && (
-            <button className="btn" onClick={() => api.cancel(node.last_run!.id)}>Stop</button>
+            <button className="btn" onClick={() => api.cancel(node.last_run!.id).catch(failed("Couldn't stop the run"))}>Stop</button>
           )}
-          <button className="btn ghost icon-btn danger" title="Delete node" onClick={del}>✕</button>
+          <button className="btn ghost icon-btn danger" title="Delete node" aria-label={`Delete node ${node.name}`} onClick={() => setConfirmDelete(true)}>
+            <IconTrash />
+          </button>
         </div>
         <div className="insp-sub">
           <span className={`kind ${node.kind}`}>{node.kind}</span>
           <span className="reason">{node.state}{node.reason && node.state !== "failed" && node.state !== "error" ? ` · ${node.reason}` : ""}</span>
           {node.deps.length > 0 && <span>← {node.deps.join(", ")}</span>}
           {node.schedule && (
-            <span>
-              ⏱ <span className="mono">{node.schedule.cron}</span>{" "}
-              {!node.schedule.paused && node.schedule.next ? `(next ${until(node.schedule.next)})` : ""}{" "}
-              <button className="btn sm ghost" onClick={() => api.pause(node.name, !node.schedule!.paused)}>
+            <span className="sched">
+              <IconClock size={12} /> <span className="mono">{node.schedule.cron}</span>{" "}
+              {node.schedule.paused ? "(paused)" : node.schedule.next ? `(next ${until(node.schedule.next)})` : ""}{" "}
+              <button className="btn sm ghost" onClick={() => api.pause(node.name, !node.schedule!.paused).catch(failed("Couldn't change the schedule"))}>
                 {node.schedule.paused ? "Resume" : "Pause"}
               </button>
             </span>
           )}
           {!node.cascade && <span title="Does not auto-refresh when upstream changes">cascade off</span>}
         </div>
-        <div className="tabs">
-          <button className={`tab ${tab === "code" ? "on" : ""}`} onClick={() => setTab("code")}>
-            Code{dirty ? " •" : ""}
+        <div className="tabs" role="tablist" aria-label={`${node.name}: code, data and runs`}>
+          <button role="tab" aria-selected={tab === "code"} className={`tab ${tab === "code" ? "on" : ""}`} onClick={() => setTab("code")}>
+            Code{dirty ? <span title="Unsaved changes"> •</span> : null}
           </button>
-          <button className={`tab ${tab === "data" ? "on" : ""}`} onClick={() => setTab("data")}>
+          <button role="tab" aria-selected={tab === "data"} className={`tab ${tab === "data" ? "on" : ""}`} onClick={() => setTab("data")}>
             Data{node.rows != null && <span className="n">{fmtNum(node.rows)}</span>}
           </button>
           {node.chart && (
-            <button className={`tab ${tab === "chart" ? "on" : ""}`} onClick={() => setTab("chart")}>Chart</button>
+            <button role="tab" aria-selected={tab === "chart"} className={`tab ${tab === "chart" ? "on" : ""}`} onClick={() => setTab("chart")}>Chart</button>
           )}
-          <button className={`tab ${tab === "runs" ? "on" : ""}`} onClick={() => setTab("runs")}>Runs</button>
+          <button role="tab" aria-selected={tab === "runs"} className={`tab ${tab === "runs" ? "on" : ""}`} onClick={() => setTab("runs")}>Runs</button>
         </div>
       </div>
       <div className="insp-body">
@@ -154,7 +172,7 @@ export function Inspector(props: {
                 )}
                 {aiEnabled && !err && (
                   <button className="btn sm" onClick={() => onAskAI(`Fix \`${node.name}\` — it's failing. Read the error, fix the code, and re-run it.`)}>
-                    ✦ Fix with AI
+                    <IconSpark size={12} /> Fix with AI
                   </button>
                 )}
               </div>
@@ -171,7 +189,7 @@ export function Inspector(props: {
             <div className="code-bar">
               <span className="mono">{node.path}</span>
               <span className="spacer" />
-              <span>{dirty ? "unsaved · Ctrl+S save · Ctrl+Enter run" : "saved"}</span>
+              <span>{dirty ? `unsaved · ${MOD}S save · ${MOD}Enter run` : "saved"}</span>
               <button className="btn sm" onClick={save} disabled={!dirty}>Save</button>
             </div>
           </div>
@@ -180,6 +198,24 @@ export function Inspector(props: {
         {tab === "chart" && node.chart && <ChartTab node={node} dark={dark} />}
         {tab === "runs" && <RunsTab node={node} logs={logs} />}
       </div>
+      {confirmDelete && (
+        <Dialog title={`Delete ${node.name}?`} onClose={() => setConfirmDelete(false)}>
+          <p className="hub-muted">
+            This removes <span className="mono">{node.path}</span> from the project. Its code stays in the project's
+            history, so the node can be restored.
+          </p>
+          {readers.length > 0 && (
+            <p className="hub-muted">
+              {readers.length === 1 ? "One node reads" : `${readers.length} nodes read`} it and will fail without it:{" "}
+              <span className="mono">{readers.join(", ")}</span>.
+            </p>
+          )}
+          <div className="actions">
+            <button type="button" className="btn ghost" onClick={() => setConfirmDelete(false)}>Cancel</button>
+            <button type="button" className="btn destroy" onClick={del}>Delete node</button>
+          </div>
+        </Dialog>
+      )}
     </>
   );
 }
@@ -269,7 +305,7 @@ function ChartTab({ node, dark }: { node: GraphNode; dark: boolean }) {
           view: { stroke: null },
           axis: { labelColor: v("--muted"), titleColor: v("--muted"), gridColor: v("--line"), domainColor: v("--line-strong"), tickColor: v("--line-strong") },
           legend: { labelColor: v("--muted"), titleColor: v("--muted") },
-          range: { category: ["#f2b84b", "#6f9bff", "#4cc38a", "#ef6b62", "#b48cf2", "#4fc1d6", "#e88bc4", "#a0a39a"] },
+          range: { category: dark ? SERIES.dark : SERIES.light },
           ...(node.chart?.config as object | undefined),
         },
       };
@@ -317,7 +353,7 @@ function RunsTab({ node, logs }: { node: GraphNode; logs: Record<string, string>
     <>
       <ul className="runs">
         {runs.map((r) => (
-          <li key={r.id} className={`s-${r.status} ${r.id === sel ? "on" : ""}`} onClick={() => setSel(r.id)}>
+          <li key={r.id} className={`s-${r.status} ${r.id === sel ? "on" : ""}`} {...pressable(() => setSel(r.id))} aria-pressed={r.id === sel}>
             <span className="dot" />
             <span>{r.status}</span>
             <span className="trig">
@@ -362,6 +398,7 @@ export function Overview(props: { nodes: GraphNode[]; onSelect: (n: string) => v
         <h4>Query outputs</h4>
         <textarea
           value={q}
+          aria-label="SQL over the nodes' outputs"
           spellCheck={false}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => {
@@ -370,7 +407,7 @@ export function Overview(props: { nodes: GraphNode[]; onSelect: (n: string) => v
         />
         <div className="row">
           <button className="btn sm primary" onClick={exec}>Run query</button>
-          <span>DuckDB · every table node is a view · Ctrl+Enter</span>
+          <span>DuckDB · every table node is a view · {MOD}Enter</span>
         </div>
         {err && <div className="err-banner"><div>{err}</div></div>}
         {res && (
@@ -381,16 +418,16 @@ export function Overview(props: { nodes: GraphNode[]; onSelect: (n: string) => v
       </div>
       <div>
         <h4>Recent runs</h4>
-        <ul className="runs" style={{ border: "1px solid var(--line)", borderRadius: 6 }}>
+        <ul className="runs boxed">
           {runs.slice(0, 25).map((r) => (
-            <li key={r.id} className={`s-${r.status}`} onClick={() => props.onSelect(r.node)}>
+            <li key={r.id} className={`s-${r.status}`} {...pressable(() => props.onSelect(r.node))} title={`Open ${r.node}`}>
               <span className="dot" />
               <span>{r.status}</span>
               <span className="trig"><span className="mono">{r.node}</span> · {r.trigger}{r.started_by ? ` · ${r.started_by}` : ""}</span>
               <span className="when">{ago(r.queued_at)}</span>
             </li>
           ))}
-          {!runs.length && <li style={{ cursor: "default" }}><span /><span className="trig">No runs yet</span></li>}
+          {!runs.length && <li className="none">No runs yet. Run a node and it shows here.</li>}
         </ul>
       </div>
     </div>

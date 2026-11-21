@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { api, streamAgent, type AgentEvent, type GraphNode } from "./api";
 import { renderMarkdown } from "./util";
+import { IconAlert, IconChevronRight, IconSpark } from "./icons";
 
 type Item =
   | { kind: "user"; text: string }
@@ -184,11 +185,13 @@ export const AgentPanel = forwardRef<
     <aside className="agent">
       <div className="agent-head">
         <span className="title">
-          <span style={{ color: "var(--accent)" }}>✦</span> Agent
+          <IconSpark /> Agent
           {enabled && <span className="model">{model}</span>}
         </span>
         {items.length > 0 && <button className="btn sm ghost" onClick={reset}>New chat</button>}
-        <button className="btn sm ghost icon-btn" title="Collapse" onClick={onCollapse}>»</button>
+        <button className="btn sm ghost icon-btn collapse" title="Collapse the agent" aria-label="Collapse the agent" onClick={onCollapse}>
+          <IconChevronRight />
+        </button>
       </div>
       {!enabled ? (
         <div className="agent-off">
@@ -204,6 +207,7 @@ export const AgentPanel = forwardRef<
           <div className="msgs" ref={scroller}>
             {items.length === 0 && (
               <div className="suggest">
+                <div className="lead">Try asking</div>
                 {suggestions.map((s) => (
                   <button key={s} onClick={() => send(s)}>{s}</button>
                 ))}
@@ -211,35 +215,44 @@ export const AgentPanel = forwardRef<
             )}
             {items.map((it, i) => {
               if (it.kind === "user") return <div key={i} className="msg user">{it.text}</div>;
-              if (it.kind === "error") return <div key={i} className="msg err">⚠ {it.text}</div>;
+              if (it.kind === "error")
+                return (
+                  <div key={i} className="msg err" role="alert">
+                    <IconAlert size={13} />
+                    <span>{it.text}</span>
+                  </div>
+                );
               if (it.kind === "ai")
                 return <div key={i} className="msg ai" dangerouslySetInnerHTML={{ __html: renderMarkdown(it.text) }} />;
               const done = it.ok !== undefined;
-              return (
-                <div
-                  key={i}
-                  className={`tool ${it.node ? "link" : ""} ${done ? (it.ok ? "ok" : "bad") : ""}`}
-                  title={it.summary}
-                  onClick={() => it.node && onSelect(it.node)}
-                >
+              const body = (
+                <>
                   <span className="ic">{done ? (it.ok ? ICONS[it.name] ?? "•" : "!") : <span className="dot pulse" style={{ background: "var(--running)" }} />}</span>
                   <span className="lbl">{toolLabel(it)}</span>
-                </div>
+                </>
+              );
+              const cls = `tool ${it.node ? "link" : ""} ${done ? (it.ok ? "ok" : "bad") : ""}`;
+              // A step that touched a node opens that node.
+              return it.node ? (
+                <button key={i} className={cls} title={it.summary ?? `Open ${it.node}`} onClick={() => onSelect(it.node!)}>{body}</button>
+              ) : (
+                <div key={i} className={cls} title={it.summary}>{body}</div>
               );
             })}
             {thinking && busy && (
-              <div className="thinking"><span className="dot pulse" style={{ background: "var(--accent)" }} /> thinking…</div>
+              <div className="thinking" role="status"><span className="dot pulse" style={{ background: "var(--running)" }} /> thinking…</div>
             )}
           </div>
           <div className="composer">
             {selected && useCtx && (
               <span className="ctx-chip">
                 context: {selected.name}
-                <button onClick={() => setUseCtx(false)} title="Don't send selection">×</button>
+                <button onClick={() => setUseCtx(false)} title="Don't send the selected node" aria-label="Don't send the selected node">×</button>
               </span>
             )}
             <textarea
               value={input}
+              aria-label="Message the agent"
               placeholder={hasNodes ? "Ask for a node, a fix, a chart, an analysis…" : "Describe the pipeline you want…"}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
@@ -251,7 +264,7 @@ export const AgentPanel = forwardRef<
             />
             <div className="row">
               <span>Enter to send · Shift+Enter newline</span>
-              <span className="spacer" style={{ flex: 1 }} />
+              <span className="spacer" />
               {busy ? (
                 <button className="btn sm" onClick={() => abort.current?.abort()}>Stop</button>
               ) : (

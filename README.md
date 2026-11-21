@@ -1603,7 +1603,9 @@ site build fails when a section is added, renamed or removed without
 updating that map. The getting-started tutorial is the one hand-written page
 (`site/src/docs/getting-started.md`). `/brand/` is the brand page: the name,
 the mark, the colours, the type, the animals and every social card, all read
-from the code that draws them (`site/src/lib/brand.ts`). Every page names a
+from the code that draws them (`site/src/lib/brand.ts`). The app wears the
+same brand: `ui/src/brand.test.ts` fails when its mark (`ui/src/mark.ts`),
+its accent or its dark theme's colours stop matching the site's. Every page names a
 social card, a PNG in `site/public/og/` listed in `site/src/lib/cards.ts`: a
 picture with no words on it, one for the home page, one for the docs' front
 page, one for each group of docs pages and one for the brand page. The build

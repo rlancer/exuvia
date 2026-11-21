@@ -3,6 +3,10 @@ import { ApiError, hubApi, PROJECT_ID, type HubProject } from "./api";
 import { mcpSetup } from "./mcp";
 import { SignedInAs } from "./Me";
 import { useTheme } from "./theme";
+import { Brand, Mark } from "./Brand";
+import { Dialog } from "./Dialog";
+import { IconMoon, IconPlus, IconSun } from "./icons";
+import { Toasts } from "./toast";
 
 const workbench = (id: string) => `/p/${encodeURIComponent(id)}/`;
 
@@ -57,27 +61,27 @@ export default function Hub() {
   }, [load]);
 
   const projects = listing?.projects ?? [];
+  useEffect(() => {
+    document.title = "Projects · exuvia";
+  }, []);
 
   return (
     <div className="hub">
       <header className="topbar">
-        <div className="brand">
-          <svg width="20" height="20" viewBox="0 0 32 32" aria-hidden>
-            <path d="M5 9c9 0 11 14 22 14M5 23c9 0 11-14 22-14" stroke="var(--accent)" strokeWidth="3.2" fill="none" strokeLinecap="round" />
-          </svg>
-          exuvia <span className="proj">/ projects</span>
-        </div>
+        <Brand>projects</Brand>
         <span className="spacer" />
         {listing && (
           <>
             <button className="btn" onClick={() => setConnecting(true)} title="Connect a coding agent to every project on this hub over MCP">
               Connect agent
             </button>
-            <button className="btn primary" onClick={() => setNewOpen(true)}>+ Project</button>
+            <button className="btn primary" onClick={() => setNewOpen(true)}><IconPlus size={12} /> Project</button>
           </>
         )}
         <SignedInAs />
-        <button className="btn ghost icon-btn" onClick={toggleTheme} title="Toggle theme">{dark ? "☀" : "☾"}</button>
+        <button className="btn ghost icon-btn" onClick={toggleTheme} title={dark ? "Light theme" : "Dark theme"} aria-label={dark ? "Light theme" : "Dark theme"}>
+          {dark ? <IconSun /> : <IconMoon />}
+        </button>
       </header>
 
       <main className="hub-main">
@@ -85,16 +89,17 @@ export default function Hub() {
           <TokenForm />
         ) : err ? (
           <div className="hub-card">
-            <p className="form-err">Couldn't load the projects: {err}</p>
+            <p className="form-err" role="alert">Couldn't load the projects: {err}</p>
             <button className="btn" onClick={load}>Try again</button>
           </div>
         ) : !listing ? (
           <p className="hub-muted">Loading…</p>
         ) : projects.length === 0 ? (
           <div className="hub-card hub-empty">
+            <Mark size={40} />
             <h2>No projects yet</h2>
             <p>A project is one graph of Python and SQL nodes, with its own runs, outputs and views.</p>
-            <button className="btn primary" onClick={() => setNewOpen(true)}>+ New project</button>
+            <button className="btn primary" onClick={() => setNewOpen(true)}><IconPlus size={12} /> New project</button>
           </div>
         ) : (
           <>
@@ -139,6 +144,7 @@ export default function Hub() {
           }}
         />
       )}
+      <Toasts />
     </div>
   );
 }
@@ -165,6 +171,7 @@ function TokenForm() {
 
   return (
     <form className="hub-card" onSubmit={submit}>
+      <Mark size={40} />
       <h2>Sign in to this hub</h2>
       <p>Enter the hub's API token. This browser keeps it in a cookie, so you only enter it once.</p>
       <p className="hub-muted connect-note">
@@ -174,7 +181,7 @@ function TokenForm() {
         <label htmlFor="hub-token">API token</label>
         <input id="hub-token" type="password" className="mono" autoFocus autoComplete="current-password" value={token} onChange={(e) => setToken(e.target.value)} />
       </div>
-      {err && <div className="form-err">{err}</div>}
+      {err && <div className="form-err" role="alert">{err}</div>}
       <div className="actions">
         <button type="submit" className="btn primary" disabled={!token.trim() || busy}>Continue</button>
       </div>
@@ -213,9 +220,7 @@ function NewProjectDialog(props: { templates: string[]; taken: string[]; onClose
   };
 
   return (
-    <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && props.onClose()}>
-      <form className="dialog" onSubmit={submit}>
-        <h3>New project</h3>
+    <Dialog title="New project" onClose={props.onClose} onSubmit={submit}>
         <div className="field">
           <label htmlFor="np-name">Name</label>
           <input id="np-name" autoFocus value={name} placeholder="Market research" onChange={(e) => setName(e.target.value)} />
@@ -244,13 +249,12 @@ function NewProjectDialog(props: { templates: string[]; taken: string[]; onClose
             </select>
           </div>
         )}
-        {(problem || err) && <div className="form-err">{problem ?? err}</div>}
+        {(problem || err) && <div className="form-err" role="alert">{problem ?? err}</div>}
         <div className="actions">
           <button type="button" className="btn ghost" onClick={props.onClose}>Cancel</button>
           <button type="submit" className="btn primary" disabled={!finalId || !!problem || busy}>Create and open</button>
         </div>
-      </form>
-    </div>
+    </Dialog>
   );
 }
 
@@ -274,23 +278,20 @@ function DeleteDialog(props: { project: HubProject; onClose: () => void; onDelet
   };
 
   return (
-    <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && props.onClose()}>
-      <form className="dialog" onSubmit={submit}>
-        <h3>Delete {props.project.name || id}?</h3>
+    <Dialog title={`Delete ${props.project.name || id}?`} onClose={props.onClose} onSubmit={submit}>
         <p className="hub-muted">Its code, run history and outputs are deleted. This can't be undone.</p>
         <div className="field">
           <label htmlFor="del-id">
             Type <span className="mono">{id}</span> to confirm
           </label>
-          <input id="del-id" className="mono" autoFocus value={typed} onChange={(e) => setTyped(e.target.value)} />
+          <input id="del-id" className="mono" autoFocus spellCheck={false} autoComplete="off" value={typed} onChange={(e) => setTyped(e.target.value)} />
         </div>
-        {err && <div className="form-err">{err}</div>}
+        {err && <div className="form-err" role="alert">{err}</div>}
         <div className="actions">
           <button type="button" className="btn ghost" onClick={props.onClose}>Cancel</button>
-          <button type="submit" className="btn danger" disabled={typed !== id || busy}>Delete</button>
+          <button type="submit" className="btn destroy" disabled={typed !== id || busy}>Delete project</button>
         </div>
-      </form>
-    </div>
+    </Dialog>
   );
 }
 
@@ -309,9 +310,7 @@ function ConnectDialog(props: { auth: boolean; onClose: () => void }) {
   const current = CLIENTS.find((c) => c.id === client)!;
 
   return (
-    <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && props.onClose()}>
-      <div className="dialog connect-dialog" role="dialog" aria-label="Connect an agent to this hub">
-        <h3>Connect an agent to this hub</h3>
+    <Dialog title="Connect an agent to this hub" className="connect-dialog" onClose={props.onClose}>
         <p className="hub-muted">
           Over MCP, your coding agent works in every project here: it lists and creates projects, and reads, writes and
           runs their nodes, and you see each change in the workbench as it happens. One connection covers the whole
@@ -340,8 +339,7 @@ function ConnectDialog(props: { auth: boolean; onClose: () => void }) {
         <div className="actions">
           <button type="button" className="btn" onClick={props.onClose}>Done</button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }
 

@@ -92,7 +92,7 @@ export const APP_PALETTE = swatches(APP, [
 
 /** The colours that mean something: the one accent, and the two states of a node that the site also shows. */
 export const SIGNALS = swatches(APP, [
-  ["--accent", "Lobster blue", "The accent: the lobster, the mark, links and the one thing to do next. In the app, a node at work."],
+  ["--accent", "Lobster blue", "The accent, on the site and in the app: the lobster, the mark, links, the selection and the one thing to do next. In the app it is also a node at work."],
   ["--fresh", "Green", "A node whose output is up to date."],
   ["--stale", "Amber", "A node that needs a run. It is a state, and is never used as decoration."],
 ]);
