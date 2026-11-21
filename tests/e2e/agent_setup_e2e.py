@@ -285,6 +285,10 @@ def start_workbench(project_dir: Path, env: dict[str, str], logs: Path, port: in
 
 # -- main ---------------------------------------------------------------------
 def main() -> int:
+    # Agents' replies carry arrows and dashes; a Windows console or a
+    # redirected stdout would otherwise be cp1252 and fail on them.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
     default_agent = shutil.which("agent") or shutil.which("grok") or "agent"
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--agent-cmd", default=os.environ.get("E2E_AGENT", default_agent))
