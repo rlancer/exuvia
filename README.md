@@ -580,6 +580,18 @@ Its credentials go in the environment as above, or in the project's `.env`.
 A remote executor installs the packages itself, so it needs the index
 settings in its own environment.
 
+**The installer needs a route to the index.** uv runs on the server, in the
+hub's container (or the executor's), not on the machine of whoever clicks
+**Install**, so that container has to reach the index and every host that
+serves its package files. Those are not always the same host: PyPI's index
+is `pypi.org`, and its files come from `files.pythonhosted.org`. uv takes
+`HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` from the server's environment, so
+a hub with no direct route out installs through a proxy once those are set
+on it. An install that fails with `error resolving DNS` or `failed to lookup
+address information` never reached the index: run the check from inside the
+running hub, as in
+[Package installs on an isolated network](#package-installs-on-an-isolated-network).
+
 **Packages for every project.** What every project on a server should have
 without waiting for an install (your team's standard stack, packages that
 need system libraries) belongs in the image: see
@@ -999,6 +1011,105 @@ image: in `docker run`, or as `EXUVIA_IMAGE` or the Deployment's `image`
 (Swarm and Kubernetes pull it from a registry, so push it to one first).
 With a remote executor, the executor is the one that needs the packages.
 
+### Package installs on an isolated network
+
+A hub on a network with no route out (an internal-only Swarm overlay, a
+Kubernetes namespace whose egress is denied) can't resolve or reach a
+package index, so every install fails with `error resolving DNS`. To let
+installs out without opening the hub's network, put an HTTPS proxy that
+allows CONNECT next to it, give only the proxy a route out, and set
+`HTTPS_PROXY` on the hub. The proxy resolves and connects to the index; the
+hub only ever connects to the proxy, so the network in front of the hub (the
+sign-in proxy, or the token) stays the only way in.
+
+On Swarm, with [Squid](https://www.squid-cache.org/) allowing only the
+index and the hosts that serve its files:
+
+```text
+# squid.conf
+http_port 3128
+acl SSL_ports port 443
+acl CONNECT method CONNECT
+acl package_hosts dstdomain pypi.example.com pypi.org files.pythonhosted.org
+http_access deny CONNECT !SSL_ports
+http_access allow CONNECT package_hosts
+http_access deny all
+```
+
+```yaml
+# added to swarm.yaml
+services:
+  hub:
+    environment:
+      HTTPS_PROXY: http://egress:3128
+      NO_PROXY: localhost,127.0.0.1,.internal.example.com
+      UV_INDEX: internal=https://pypi.example.com/simple
+    networks: [exuvia]          # internal only: no route out
+  egress:
+    image: ubuntu/squid:latest  # pin a version you have checked
+    configs:
+      - source: squid
+        target: /etc/squid/squid.conf
+    networks: [exuvia, outside] # the one service that reaches out
+
+configs:
+  squid:
+    file: ./squid.conf
+
+networks:
+  exuvia:
+    driver: overlay
+    internal: true
+  outside:
+    driver: overlay
+```
+
+Delete the hub's `ports` block and reach it through a proxy on the internal
+network (Traefik or the sign-in proxy, as under "Behind a proxy" in
+`swarm.yaml`): a published port attaches the hub to Swarm networks that do
+route out.
+
+`HTTPS_PROXY` names the proxy with `http://`: that is how uv talks to the
+proxy, and the connection to the index inside it is still TLS. Put the hosts
+the hub has to reach directly in `NO_PROXY`, comma-separated (a leading dot
+covers a domain's subdomains): an index on the internal network, a
+remote executor, a model gateway or S3 endpoint inside the network (a
+`postgresql://` database is not HTTP and never goes through it). exuvia's
+own outbound HTTPS from the hub follows the same variables, so the model
+provider (`api.anthropic.com`, `openrouter.ai`, …), the artifact store,
+failure webhooks and the PyPI update check go through the proxy too: add the
+ones you use to the allowlist or to `NO_PROXY`. A proxy that decrypts TLS
+needs its CA certificate in the hub's trust store, or
+`SSL_CERT_FILE=/path/to/ca.pem` set for uv. On Kubernetes the same layout is
+a proxy Deployment and Service, a NetworkPolicy that lets only the proxy's
+pods out, and the two variables on the hub's container.
+
+Check it from inside the running hub, where installs run, not from your
+machine or the node. On the node that runs the task (`docker service ps
+exuvia_hub` names it):
+
+```bash
+docker exec -it $(docker ps -q -f name=exuvia_hub) sh -c 'env | grep -i _proxy; echo acme-models | uv pip compile --no-cache -'
+```
+
+(`kubectl -n exuvia exec deploy/exuvia-hub -- sh -c '…'` on Kubernetes.)
+With the proxy working, uv prints the resolved versions, or a resolver
+error that names the package, which means it reached the index. What the
+errors mean:
+
+- `error resolving DNS` naming the index: the hub isn't using the proxy. The
+  `env` line printed no `HTTPS_PROXY`, or the index's host matches
+  `NO_PROXY`. Variables set on the stack only reach a task started after the
+  change, so redeploy.
+- An error that names the proxy (`egress`) as the host it can't resolve or
+  connect to: the hub and the proxy aren't on a network they share, or the
+  proxy isn't running.
+- A 403 from the proxy, or the connection closed right after `CONNECT`: the
+  host isn't on the proxy's allowlist. The error names the host, often the
+  one serving the package files.
+- A 401 or 403 from the index: the network works and the credentials don't
+  (see [Packages](#packages)).
+
 ### Schedules, auth and settings
 
 **Hosts that sleep or scale to zero.** An in-process scheduler can't fire while
@@ -1191,6 +1302,7 @@ empty file, stops exuvia with an error.
 | `EXUVIA_PACKAGES_CONCURRENCY` | 2 | package installs that run at once (a hub starting with many projects to install) |
 | `EXUVIA_PACKAGES_TIMEOUT` | 900 | seconds before a package install is stopped |
 | `UV_INDEX`, `UV_INDEX_<NAME>_USERNAME` / `_PASSWORD` | PyPI only | a package index for every project, and its credentials (see "Packages") |
+| `HTTPS_PROXY` / `NO_PROXY` | direct | the proxy that package installs and exuvia's other outbound HTTPS go through, and the hosts reached without it (see "Package installs on an isolated network" above) |
 | `EXUVIA_EXECUTOR_DIR` | temp | executor scratch space |
 | `EXUVIA_PROVIDER` | auto | `anthropic`, `openrouter`, `portkey`, or `openai` (any OpenAI-compatible server) |
 | `EXUVIA_MODEL` | per provider | agent model (see below) |
