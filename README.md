@@ -521,6 +521,32 @@ again. A package that needs, say, `pandas<2` is refused with uv's
 explanation and leaves `pyproject.toml` as it was. exuvia does not read
 `uv.lock`; pins in the list are what make an install repeatable.
 
+**When a package conflicts with exuvia's versions.** The conflict is often
+a few levels down: `acme-grpc` needs `acme-proto==0.2.3`, which needs
+`python-dateutil<3`, while exuvia runs `python-dateutil==4.0.0`. uv then
+tries the package's older releases, and can stop at a different error in one
+of them (a Git URL dependency, a build that fails). When that happens exuvia
+resolves the list again without its own versions. If the newest releases
+need other versions of exuvia's packages, the error shows that conflict
+first (the `==` versions in it are exuvia's), then the error uv stopped at.
+What to do about it:
+
+- Pin a release of the package that works with exuvia's versions
+  (`acme-grpc==1.8`), if there is one.
+- Use an exuvia version that runs the version the package needs, or ask the
+  package's maintainers to widen the requirement.
+- If the requirement is narrower than it needs to be (the package works
+  with the newer version), override it in the project's `pyproject.toml`.
+  uv then takes exuvia's version and ignores what the package asked for:
+
+  ```toml
+  [tool.uv]
+  override-dependencies = ["python-dateutil"]
+  ```
+
+  Nodes then import the package with a version it never asked for, so run
+  them to check that it works.
+
 **Private package indexes.** On a hub, set the index once for every project,
 on the server:
 
