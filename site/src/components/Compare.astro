@@ -1,0 +1,86 @@
+---
+// A comparison table whose last column is exuvia, drawn as one dark panel.
+interface Props {
+  /** What the table compares, for assistive technology. */
+  label: string;
+  /** The column headings, exuvia's last. */
+  columns: string[];
+  /** One row each: its label, then a cell per column. */
+  rows: string[][];
+}
+const { label, columns, rows } = Astro.props;
+const us = (i: number) => (i === columns.length - 1 ? "us" : undefined);
+---
+
+<div class="table-scroll" tabindex="0" role="region" aria-label={label}>
+  <table class="compare">
+    <thead>
+      <tr>
+        <td></td>
+        {columns.map((name, i) => <th scope="col" class={us(i)}>{name}</th>)}
+      </tr>
+    </thead>
+    <tbody>
+      {
+        rows.map(([name, ...cells]) => (
+          <tr>
+            <th scope="row">{name}</th>
+            {cells.map((cell, i) => <td class={us(i)}>{cell}</td>)}
+          </tr>
+        ))
+      }
+    </tbody>
+  </table>
+</div>
+
+<style>
+  .table-scroll {
+    margin-top: 2.5rem;
+    overflow-x: auto;
+  }
+  .compare {
+    width: 100%;
+    min-width: 44rem;
+    border-collapse: collapse;
+    text-align: left;
+  }
+  .compare th,
+  .compare td {
+    padding: 0.75rem 1.1rem;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  .compare thead th {
+    border-bottom: var(--border);
+    font-family: var(--mono);
+    font-size: 1.3rem;
+    font-weight: 700;
+    vertical-align: bottom;
+  }
+  .compare thead td {
+    border-bottom: var(--border);
+  }
+  .compare tbody th {
+    width: 11rem;
+    padding-left: 0;
+    font-weight: 600;
+  }
+  .compare td {
+    color: var(--muted);
+  }
+  /* The exuvia column stands out as one dark panel. */
+  .compare .us {
+    border-bottom-color: var(--line);
+    background: var(--bg-deep);
+    color: var(--text);
+  }
+  .compare thead .us {
+    border-bottom-color: var(--accent);
+    border-radius: 0.6rem 0.6rem 0 0;
+    color: var(--accent);
+  }
+  .compare tbody tr:last-child .us {
+    border-bottom: 0;
+    border-radius: 0 0 0.6rem 0.6rem;
+  }
+</style>
