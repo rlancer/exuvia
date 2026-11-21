@@ -1,6 +1,8 @@
 [project]
 name = "exuvia"
-version = "0.3.0"
+# The version is the latest `v*` git tag (hatch-vcs); release.yml picks the
+# next one when a change reaches main. Nobody edits it by hand.
+dynamic = ["version"]
 description = "An AI-first, file-backed DAG workbench for analysts: Python/SQL nodes, per-node schedules, a live graph UI, and a Claude agent that builds pipelines with you."
 readme = "README.md"
 license = "Apache-2.0"
@@ -32,8 +34,18 @@ mcp = []
 exuvia = "exuvia.cli:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+# Without git metadata (the Docker build context, a copied tree) and without
+# SETUPTOOLS_SCM_PRETEND_VERSION, the build still works.
+fallback-version = "0.0.0"
+
+[tool.uv]
+# Rebuild the editable install when a commit or tag changes the version.
+cache-keys = [{ file = "pyproject.toml" }, { git = { commit = true, tags = true } }]
 
 [tool.hatch.build.targets.wheel]
 packages = ["exuvia"]

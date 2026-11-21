@@ -3,11 +3,10 @@ name: Publish
 # Releases exuvia to PyPI with trusted publishing (OIDC) — no stored token.
 # PyPI side: project exuvia → Publishing → GitHub publisher with
 #   owner rlancer, repo exuvia, workflow publish.yml, environment pypi.
-# Release: bump `version` in pyproject.toml and merge. release.yml tags the
-# merged commit `v<version>` and starts this workflow on the tag
-# (workflow_dispatch); a tag pushed by hand starts it too (push). Either way
-# it only publishes from a tag that matches the version: started on a branch,
-# the first step fails.
+# release.yml tags main `v<version>` when the package changed and starts
+# this workflow on the tag (workflow_dispatch); a tag pushed by hand starts it
+# too (push). The tag is the version: the package is built as exactly that
+# version. Started on a branch, the first step fails.
 
 on:
   push:
@@ -33,12 +32,14 @@ jobs:
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
-      - name: Tag matches pyproject version
+      # hatch-vcs would read the tag from git too; pinning it keeps the
+      # version exact even if a step leaves the tree dirty.
+      - name: Version from the tag
         run: |
-          version=$(uv version --short)
-          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
-            echo "tag ${GITHUB_REF_NAME} does not match pyproject.toml version ${version}"; exit 1
+          if [ "$GITHUB_REF_TYPE" != "tag" ] || ! printf '%s' "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "publish only runs on a vX.Y.Z tag (got ${GITHUB_REF_TYPE} ${GITHUB_REF_NAME})"; exit 1
           fi
+          echo "SETUPTOOLS_SCM_PRETEND_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
       - name: Tests
         run: uv sync --extra dev --python 3.12 && uv run pytest -q
@@ -56,6 +57,7 @@ jobs:
         run: |
           rm -rf dist && uv build
           unzip -l dist/*.whl | grep -q "exuvia/static/index.html" || { echo "wheel is missing the UI"; exit 1; }
+          ls "dist/exuvia-${SETUPTOOLS_SCM_PRETEND_VERSION}-py3-none-any.whl" || { echo "wheel is not version ${SETUPTOOLS_SCM_PRETEND_VERSION}"; exit 1; }
 
       - name: Publish
         run: uv publish --trusted-publishing always

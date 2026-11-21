@@ -20,9 +20,14 @@ and its outputs and history are kept per parameter value.
 from __future__ import annotations
 
 import time as _time
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _version
 from typing import Any, Callable
 
-__version__ = "0.3.0"
+try:  # the installed package's version, which comes from its git tag
+    __version__ = _version("exuvia")
+except PackageNotFoundError:  # imported from a source tree that is not installed
+    __version__ = "0.0.0"
 
 # When this process imported exuvia (monotonic). The server reports the time
 # since then as `uptime_s` on /healthz, so a host that starts it can tell its

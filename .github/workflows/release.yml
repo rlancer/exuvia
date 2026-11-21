@@ -1,17 +1,27 @@
 name: Release
 
-# Releases a new version when it reaches main: if `version` in pyproject.toml
-# has no `v<version>` tag yet, this tags the merged commit and starts the two
+# Releases a new version whenever what ships changes on main. Nobody bumps a
+# version by hand: the package's version is its git tag (hatch-vcs), and this
+# job picks the next tag.
+#
+# On every push to main it compares the commit with the latest `v*` tag. When
+# the package changed since then (exuvia/, ui/, pyproject.toml, uv.lock, the
+# Dockerfile), it tags the commit with the next version and starts the two
 # release workflows on that tag:
 #   publish.yml  → PyPI
 #   image.yml    → ghcr.io/rlancer/exuvia
-# So a release is one merged pull request that bumps the version. Every other
-# push to main finds the tag already there and does nothing.
+# A push that changes only docs, tests, the site or CI releases nothing.
+#
+# The next version is a patch bump (0.3.1 → 0.3.2). Labels on the merged pull
+# request change that: `release:minor` (0.3.1 → 0.4.0), `release:major`
+# (0.3.1 → 1.0.0), `release:skip` (no release now; the change goes out with
+# the next one). Run this workflow by hand (Actions → Release → Run workflow)
+# to release main as it is, with the bump you pick.
 #
 # The workflows are started with `gh workflow run` because a tag pushed with
 # the workflow's own token does not trigger `on: push: tags` (GitHub starts no
 # runs from GITHUB_TOKEN pushes; workflow_dispatch is the exception). A tag
-# pushed by hand still triggers both directly, as before.
+# pushed by hand still triggers both directly.
 #
 # The `release tags` ruleset forbids moving or deleting a `v*` tag, and PyPI
 # never takes the same version twice: a release cannot be redone, only
@@ -22,6 +32,13 @@ name: Release
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the version to raise
+        type: choice
+        options: [patch, minor, major]
+        default: patch
 
 permissions:
   contents: read
@@ -32,35 +49,73 @@ concurrency:
 
 jobs:
   tag:
-    name: Tag a new version and start its release
+    name: Tag the next version and start its release
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write # push the tag
       actions: write # start publish.yml and image.yml on it
+      pull-requests: read # the merged pull request's release:* labels
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # every tag, and the history back to the last one
 
-      - name: Tag v<version> if it is new, then publish
+      - name: Tag the next version if the package changed, then publish
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          BUMP_INPUT: ${{ inputs.bump }}
+          REPO: ${{ github.repository }}
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
-          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([a-z0-9.+-]*)$'; then
-            echo "could not read a version from pyproject.toml (got '${version}')"; exit 1
+          last=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -1)
+          last=${last:-v0.0.0}
+
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            bump=$BUMP_INPUT
+            why="started by hand with bump=${bump}"
+          else
+            changed=$(git diff --name-only "$last" HEAD -- \
+              exuvia ui pyproject.toml uv.lock Dockerfile .dockerignore LICENSE \
+              ':!ui/**/*.test.*' ':!ui/**/__tests__/**')
+            if [ -z "$changed" ]; then
+              echo "No package changes since ${last}: nothing to release." | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            printf 'Package changes since %s:\n%s\n' "$last" "$changed"
+            labels=$(gh api "repos/${REPO}/commits/${GITHUB_SHA}/pulls" --jq '.[].labels[].name' || true)
+            if printf '%s\n' "$labels" | grep -qx 'release:skip'; then
+              echo "The merged pull request is labelled release:skip: nothing to release." | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            elif printf '%s\n' "$labels" | grep -qx 'release:major'; then
+              bump="major"
+            elif printf '%s\n' "$labels" | grep -qx 'release:minor'; then
+              bump="minor"
+            else
+              bump="patch"
+            fi
+            why="package changed since ${last}, bump=${bump}"
           fi
+
+          IFS=. read -r major minor patch <<< "${last#v}"
+          patch=${patch%%[!0-9]*}
+          case "$bump" in
+            major) version="$((major + 1)).0.0" ;;
+            minor) version="${major}.$((minor + 1)).0" ;;
+            *) version="${major}.${minor}.$((patch + 1))" ;;
+          esac
           tag="v${version}"
-          existing=$(git ls-remote --tags origin "refs/tags/${tag}")
-          if [ -n "$existing" ]; then
-            echo "${tag} is already released: nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ -n "$(git ls-remote --tags origin "refs/tags/${tag}")" ]; then
+            echo "${tag} already exists: nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+
           git tag "$tag" "$GITHUB_SHA"
           git push origin "refs/tags/${tag}"
           gh workflow run publish.yml --ref "$tag"
           gh workflow run image.yml --ref "$tag"
           {
-            echo "Tagged \`${tag}\` at ${GITHUB_SHA} and started its release:"
-            echo "- [Publish](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/publish.yml) → PyPI"
-            echo "- [Image](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/image.yml) → ghcr.io/${GITHUB_REPOSITORY}"
+            echo "Tagged \`${tag}\` at ${GITHUB_SHA} (${why}) and started its release:"
+            echo "- [Publish](${GITHUB_SERVER_URL}/${REPO}/actions/workflows/publish.yml) → PyPI"
+            echo "- [Image](${GITHUB_SERVER_URL}/${REPO}/actions/workflows/image.yml) → ghcr.io/${REPO}"
           } | tee -a "$GITHUB_STEP_SUMMARY"

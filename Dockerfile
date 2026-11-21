@@ -38,7 +38,10 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY exuvia/ ./exuvia/
 COPY --from=ui /src/exuvia/static ./exuvia/static
-RUN uv sync --frozen --no-editable && rm -rf /root/.cache
+# The build context has no .git, so the version comes in as an argument
+# (image.yml passes the release tag's); a plain `docker build` gets 0.0.0.
+ARG EXUVIA_VERSION=0.0.0
+RUN SETUPTOOLS_SCM_PRETEND_VERSION=$EXUVIA_VERSION uv sync --frozen --no-editable && rm -rf /root/.cache
 
 # /data: a writable home for `exuvia hub /data` (mount a volume over it to keep it).
 RUN useradd --create-home --uid 10001 exuvia && mkdir /data && chown exuvia:exuvia /data

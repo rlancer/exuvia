@@ -149,15 +149,14 @@ def build_local_wheel(out: Path, env: dict[str, str]) -> str:
     shutil.copytree(
         REPO, src, ignore=shutil.ignore_patterns(".git", ".venv", "node_modules", "site", "ui", "__pycache__", ".pytest_cache")
     )
-    py = src / "pyproject.toml"
-    text = py.read_text(encoding="utf-8")
-    base = re.search(r'^version = "([^"]+)"', text, re.M).group(1)
+    # The version is the latest release tag (hatch-vcs), plus a local label
+    # that sorts above it; the copy has no .git, so it is passed in.
+    tags = subprocess.run(["git", "tag", "--list", "v[0-9]*", "--sort=-v:refname"], capture_output=True, text=True, cwd=REPO)
+    base = (tags.stdout.split() or ["v0.0.0"])[0].removeprefix("v")
     version = f"{base}+e2e{time.strftime('%Y%m%d%H%M%S')}"
-    py.write_text(text.replace(f'version = "{base}"', f'version = "{version}"', 1), encoding="utf-8")
-    init = src / "exuvia" / "__init__.py"  # /api/config reports this one
-    init.write_text(init.read_text(encoding="utf-8").replace(f'__version__ = "{base}"', f'__version__ = "{version}"', 1), encoding="utf-8")
     wheels = out / "wheels"
-    subprocess.run(["uv", "build", "--wheel", "--out-dir", str(wheels), str(src)], check=True, env=env, cwd=out)
+    build_env = {**env, "SETUPTOOLS_SCM_PRETEND_VERSION": version}
+    subprocess.run(["uv", "build", "--wheel", "--out-dir", str(wheels), str(src)], check=True, env=build_env, cwd=out)
     env["UV_FIND_LINKS"] = str(wheels)
     return version
 
