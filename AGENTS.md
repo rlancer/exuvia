@@ -25,5 +25,10 @@ reference for what exuvia is and how it is built, run and deployed.
   `release:minor`, `release:major` or `release:skip` label on the PR
   changes the bump; add one only when asked to. If GitHub says "Auto merge
   is not allowed for this repository", leave the PR open and say so.
-- Report the PR link when you finish, with whether auto-merge is on, what
-  you tested and what you did not.
+- **Fix red CI.** After opening the PR, watch its checks
+  (`gh pr checks <number> --watch`). If one fails, read the log, fix it on
+  the same branch and push; auto-merge picks the PR up once it is green.
+  Fix what the failure points at, nothing more. Stop after 3 failed
+  attempts and report which check fails and why.
+- Report the PR link when you finish, with whether auto-merge is on, whether
+  CI is green, what you tested and what you did not.
