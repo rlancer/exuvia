@@ -14,7 +14,7 @@ PYTHONUNBUFFERED = "1"
 # so multi-step tasks are chained on one line with `&&`.
 [tasks.sync]
 description = "Install Python (uv) and UI (npm) dependencies"
-run = "uv sync --extra dev --extra mcp && cd ui && npm install"
+run = "uv sync --extra dev && cd ui && npm install"
 
 [tasks.ui-build]
 description = "Build the UI into exuvia/static (served by `exuvia serve`)"
@@ -56,3 +56,7 @@ run = "actionlint"
 [tasks.e2e]
 description = "Build the container image and drive a hub in it over HTTP (podman, else docker; CONTAINER_ENGINE overrides)"
 run = "python tests/e2e/container_e2e.py"
+
+[tasks.agent-e2e]
+description = "Hand the README setup prompt to a coding agent (Grok 4.5 by default) and check the project, MCP server and an analysis it builds"
+run = "python tests/e2e/agent_setup_e2e.py"

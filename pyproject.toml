@@ -17,15 +17,16 @@ dependencies = [
     "anthropic>=1.0",
     "openai>=1.40",
     "httpx>=0.27",
+    "mcp>=2.3,<3",  # `exuvia mcp`: the 2.x server API (exuvia/mcp_server.py)
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 # EXUVIA_DB=postgresql://... (see exuvia/db.py)
 postgres = ["psycopg[binary]>=3.2"]
-mcp = [
-    "mcp>=2.3,<3",  # the 2.x server API (exuvia/mcp_server.py)
-]
+# The MCP SDK is a core dependency now; the extra stays so that
+# `exuvia[mcp]` in existing install commands and MCP configs still resolves.
+mcp = []
 
 [project.scripts]
 exuvia = "exuvia.cli:main"
