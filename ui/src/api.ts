@@ -267,9 +267,32 @@ export interface Me {
     uid: string | null;
     role: "admin" | "member" | null;
   } | null;
+  /** Whether people can make agent tokens here (a server with a user list). */
+  tokens?: boolean;
 }
 
 export const me = async () => (await sendTo("GET", "/api/me")).json() as Promise<Me>;
+
+/** One of the signed-in person's agent tokens: never the token itself. */
+export interface AgentToken {
+  id: string;
+  name: string;
+  /** Its last 4 characters. */
+  hint: string;
+  created_at: number;
+  last_used: number | null;
+}
+
+/** The signed-in person's agent tokens (`/api/me/tokens`, not under a project). */
+export const tokensApi = {
+  list: async () => ((await sendTo("GET", "/api/me/tokens")).json() as Promise<{ tokens: AgentToken[] }>).then((r) => r.tokens),
+  /** A new token; `token` is in this answer only. */
+  create: async (name: string) =>
+    (await sendTo("POST", "/api/me/tokens", { name })).json() as Promise<AgentToken & { token: string }>,
+  revoke: async (id: string) => {
+    await sendTo("DELETE", `/api/me/tokens/${encodeURIComponent(id)}`);
+  },
+};
 
 /** Someone in the user list (`GET /api/users`, admins only). */
 export interface UserRow {

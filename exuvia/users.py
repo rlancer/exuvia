@@ -17,6 +17,12 @@ hub can't lock out its last admin. Admins can make others admins and disable
 or re-enable anyone else; a disabled user is turned away even when the
 sign-in proxy lets them through.
 
+A user can also hold *agent tokens*: personal bearer tokens for MCP clients
+and scripts that can't pass through the sign-in proxy. A request with one is
+signed in as its user (method ``token``), so a disabled user's tokens stop
+working with them. Only a hash of each token is kept; the token itself is
+shown once, when it is created.
+
 Users belong to the server, not to a project: one table for a whole hub (in
 ``.exuvia/hub.db`` under the hub's directory, or the shared ``EXUVIA_DB``
 under ``EXUVIA_DB_SCOPE``), the project's own database for ``exuvia serve``.
@@ -24,7 +30,9 @@ under ``EXUVIA_DB_SCOPE``), the project's own database for ``exuvia serve``.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import secrets
 import sqlite3
 import threading
 import time
@@ -43,6 +51,10 @@ ROLES = ("admin", "member")
 # (and last_seen written) again. Also how long another replica can take to
 # notice that a user was disabled.
 SEEN_EVERY = 60.0
+# Agent tokens start with this, so a bearer token is looked up in the user
+# list only when it can be one (the shared EXUVIA_API_TOKEN is anything else).
+TOKEN_PREFIX = "exv_"
+MAX_TOKEN_NAME = 80
 
 TABLES = {
     "users": """create table if not exists users (
@@ -66,11 +78,25 @@ TABLES = {
     last_seen double precision not null,
     primary key (scope, method, subject)
 )""",
+    "user_tokens": """create table if not exists user_tokens (
+    scope text not null default '',
+    id text not null,
+    user_id text not null,
+    name text not null,          -- what it is for: "laptop", "Claude Code", ...
+    hash text not null,          -- sha256 of the token; the token itself is never kept
+    hint text not null,          -- its last 4 characters, to tell tokens apart
+    created_at double precision not null,
+    last_used double precision,
+    primary key (scope, id)
+)""",
 }
 INDEXES = (
     "create index if not exists users_email on users(scope, email)",
     "create index if not exists user_identities_user on user_identities(scope, user_id)",
+    "create unique index if not exists user_tokens_hash on user_tokens(scope, hash)",
+    "create index if not exists user_tokens_user on user_tokens(scope, user_id)",
 )
+TOKEN_COLS = "id, name, hint, created_at, last_used"
 USER_COLS = "id, name, email, role, disabled, created_at, last_seen"
 
 _prepared: "weakref.WeakSet[Any]" = weakref.WeakSet()
@@ -84,7 +110,7 @@ def _prepare(db: Database) -> None:
     on a new database wait for the first one."""
     if db in _prepared:
         return
-    if not (db.columns("users") and db.columns("user_identities")):
+    if not all(db.columns(t) for t in TABLES):
         with db.transaction():
             if db.dialect == "postgres":
                 db.query(f"select pg_advisory_xact_lock({SCHEMA_LOCK_KEY})")
@@ -134,6 +160,15 @@ def _user(r: dict[str, Any]) -> User:
     return User(r["id"], r["name"], r["email"], r["role"], bool(r["disabled"]), r["created_at"], r["last_seen"])
 
 
+def _hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def looks_like_token(value: str) -> bool:
+    """Whether a bearer value can be an agent token (and so is worth a lookup)."""
+    return value.startswith(TOKEN_PREFIX) and 20 < len(value) <= 200
+
+
 class UserStore:
     def __init__(self, db: Database, scope: str = "", owns_db: bool = False):
         self.db = db
@@ -142,6 +177,8 @@ class UserStore:
         _prepare(db)
         self._lock = threading.Lock()
         self._seen: dict[tuple[str, str], tuple[User, float]] = {}
+        # Agent tokens answered from memory: token hash -> (user, when read).
+        self._tokens: dict[str, tuple[User, float]] = {}
 
     def close(self) -> None:
         if self._owns_db:
@@ -265,7 +302,67 @@ class UserStore:
             self._q(f"update users set {', '.join(sets)} where scope=? and id=?", (*args, self.scope, uid))
             with self._lock:
                 self._seen.clear()  # the next request reads the change
+                self._tokens.clear()
         return self.get(uid)  # type: ignore[return-value]
+
+    # -- agent tokens ------------------------------------------------------------
+    def create_token(self, uid: str, name: str = "", now: float | None = None) -> tuple[dict[str, Any], str]:
+        """A new agent token for this user: its row, and the token itself,
+        which is not kept and so can't be shown again. KeyError: no such user."""
+        now = time.time() if now is None else now
+        if self.get(uid) is None:
+            raise KeyError(uid)
+        name = " ".join(name.split())[:MAX_TOKEN_NAME] or "agent"
+        token = TOKEN_PREFIX + secrets.token_urlsafe(32)
+        tid = uuid.uuid4().hex[:12]
+        self._q(
+            "insert into user_tokens (scope, id, user_id, name, hash, hint, created_at, last_used) "
+            "values (?,?,?,?,?,?,?,?)",
+            (self.scope, tid, uid, name, _hash(token), token[-4:], now, None),
+        )
+        return {"id": tid, "name": name, "hint": token[-4:], "created_at": now, "last_used": None}, token
+
+    def tokens(self, uid: str) -> list[dict[str, Any]]:
+        """This user's agent tokens, newest first (never the tokens themselves)."""
+        return self._q(
+            f"select {TOKEN_COLS} from user_tokens where scope=? and user_id=? order by created_at desc, id",
+            (self.scope, uid),
+        )
+
+    def revoke_token(self, uid: str, tid: str) -> bool:
+        """Delete one of this user's tokens; False when they have no such token."""
+        with self.db.transaction():
+            found = self._q("select 1 from user_tokens where scope=? and user_id=? and id=?", (self.scope, uid, tid))
+            if found:
+                self._q("delete from user_tokens where scope=? and user_id=? and id=?", (self.scope, uid, tid))
+        with self._lock:
+            self._tokens.clear()  # this replica turns it away at once; others within SEEN_EVERY
+        return bool(found)
+
+    def by_token(self, token: str, now: float | None = None) -> User | None:
+        """The user an agent token belongs to (None: no such token). Answered
+        from memory for SEEN_EVERY, like a sign-in, and ``last_used`` is
+        written at most that often."""
+        if not looks_like_token(token):
+            return None
+        now = time.time() if now is None else now
+        h = _hash(token)
+        with self._lock:
+            hit = self._tokens.get(h)
+        if hit and now - hit[1] < SEEN_EVERY:
+            return hit[0]
+        rows = self._q(
+            "select t.id as token_id, " + ", ".join(f"u.{c}" for c in USER_COLS.split(", ")) +
+            " from user_tokens t join users u on u.scope=t.scope and u.id=t.user_id where t.scope=? and t.hash=?",
+            (self.scope, h),
+        )
+        if not rows:
+            return None
+        self._q("update user_tokens set last_used=? where scope=? and id=?", (now, self.scope, rows[0]["token_id"]))
+        user = _user(rows[0])
+        with self._lock:
+            self._tokens[h] = (user, now)
+        return user
 
     # -- hub export / import ------------------------------------------------------
     def dump_to(self, target: Path) -> None:
@@ -289,7 +386,10 @@ class UserStore:
         con = sqlite3.connect(source)
         con.row_factory = sqlite3.Row
         try:
-            data = {t: [dict(r) for r in con.execute(f"select * from {t}")] for t in TABLES}
+            present = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+            # An archive from before agent tokens has no user_tokens: nobody has one.
+            data = {t: [dict(r) for r in con.execute(f"select * from {t}")] if t in present or t != "user_tokens" else []
+                    for t in TABLES}
         except sqlite3.OperationalError as e:
             raise ValueError(f"the archive's user list is unreadable: {e}") from e
         finally:
@@ -303,6 +403,7 @@ class UserStore:
                     self._q(f"insert into {table} ({cols}) values ({', '.join('?' * len(r))})", tuple(r.values()))
         with self._lock:
             self._seen.clear()
+            self._tokens.clear()
         return len(data["users"])
 
 

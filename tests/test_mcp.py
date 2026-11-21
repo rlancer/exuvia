@@ -302,7 +302,7 @@ def test_a_hub_url_needs_the_token(hub_served):
         backend = await remote_backend(hub_served, None)
         await backend.start()
 
-    with pytest.raises(RuntimeError, match="needs its API token"):
+    with pytest.raises(RuntimeError, match="turned the token away"):
         asyncio.run(go())
 
 

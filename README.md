@@ -1044,7 +1044,8 @@ with an auth step) and passes who they are in request headers, set
 `EXUVIA_AUTH_USER_HEADER` and `EXUVIA_AUTH_EMAIL_HEADER` to read other
 headers (say `Remote-User`). Either header is enough to be signed in. A
 request without them gets a 401, the page and the API alike; `/healthz`
-stays open. The signed-in person is named in the workbench's top bar, on each
+stays open. The signed-in person is named in the account menu (the profile
+icon at the end of the top bar), on each
 run they start (`started_by`; a cascade it sets off names them too, a
 scheduled run names nobody) and on each code revision they save (`author`).
 `GET /api/me` says who a request is from.
@@ -1057,6 +1058,28 @@ else. The proxy must also drop any of these headers a client sends itself.
 `EXUVIA_API_TOKEN` still works alongside: agents and MCP clients that
 cannot pass through the proxy send the token instead, and are recorded as
 nobody. `EXUVIA_BROWSER_AUTH` has no effect in this mode.
+
+**Agent tokens.** Signed-in people connect their own agents with a token of
+their own, so nobody has to handle the shared `EXUVIA_API_TOKEN`. In the
+account menu (the profile icon in the top bar) on a hub, **Connect an
+agent** makes one (name it for where it goes, such as "Claude Code on my laptop") and shows the commands for Claude Code,
+Codex, a JSON `mcpServers` entry or a prompt for any agent, with the token
+already in them: copy one, paste it, done. The token (`exv_...`) is sent as
+`Authorization: Bearer`, through `EXUVIA_API_TOKEN` in the MCP server's
+environment, and signs the agent in as the person who made it, whatever its
+address: runs and revisions name them, an admin's token is an admin and a
+member's is a member, and disabling the person shuts out their tokens too.
+It is shown once (exuvia keeps only a hash), and the same dialog lists each
+person's tokens, with when each was last used, and revokes them. A request
+made with a token cannot make or revoke tokens, so a leaked one cannot mint
+more. Scripts use the routes behind it: `GET`/`POST /api/me/tokens` and
+`DELETE /api/me/tokens/{id}`, signed in through the proxy. If the agents
+reach exuvia through the sign-in proxy, the proxy has to pass requests
+that carry an `Authorization: Bearer` header through to exuvia untouched
+(oauth2-proxy's `--skip-auth-route` or an ingress rule, say), since exuvia
+checks the token itself. A hub that nobody signs in to keeps the
+**Connect agent** button in its top bar, for the shared token. Hub exports carry the tokens' hashes with the user
+list, so tokens keep working after an import.
 
 **Users and admins.** Everyone who signs in is recorded in a user list on
 their first request, with no approval step: the sign-in proxy already
@@ -1072,7 +1095,7 @@ later does not split anyone in two.
 `EXUVIA_ADMINS` (user names or emails, comma-separated) names the first
 admins. They are admins whenever they sign in, and nobody can demote or
 disable them through exuvia, so the hub always has a way back in. An admin
-sees a **Users** button in the top bar: everyone who has signed in, where
+finds **Users** in the account menu: everyone who has signed in, where
 they can make others admins or members and disable or re-enable them. A
 disabled user gets a 403 even though the proxy lets them through, which
 locks them out of exuvia without touching the company sign-in. Nobody can
@@ -1305,9 +1328,10 @@ project, its UI shows every change and run as it happens, and the tools reach
 it through `POST /api/tools/{name}`. `EXUVIA_API_TOKEN` is sent as a bearer
 token when set; `EXUVIA_API_TOKEN_FILE` (a path; `~` is your home directory)
 keeps the token itself out of the MCP client's configuration. A server with
-`EXUVIA_AUTH=headers` turns away callers without the sign-in proxy's headers,
-so give it an `EXUVIA_API_TOKEN` too and an MCP client that connects to it
-directly uses that.
+`EXUVIA_AUTH=headers` turns away callers without the sign-in proxy's headers:
+there, each person's own agent token goes in `EXUVIA_API_TOKEN` (see "Agent
+tokens" under [auth](#schedules-auth-and-settings)), and the agent works as
+them.
 
 **A whole hub.** Given a hub's own address (its `/healthz` says `"mode":
 "hub"`), `exuvia mcp --url` serves every project on it: `list_projects`,
@@ -1315,7 +1339,8 @@ directly uses that.
 (the project's id); `guide` with `project` returns that project's
 instructions, and without it describes the hub and lists its projects. One
 MCP server then covers all of them, including ones created later. A hub's
-home page writes this setup out (**Connect agent**). For an agent that should
+home page writes this setup out (**Connect agent**), with a person's own
+agent token already in it on a hub where people sign in. For an agent that should
 see only one project, give `<hub>/p/<project>` instead.
 
 This needs exuvia 0.3.11 or newer on the agent's machine, so the hub's
@@ -1371,7 +1396,7 @@ token, or a browser opens `/?token=<token>` or `/p/<project>/?token=<token>`
 once; either way it gets the cookie. With `EXUVIA_BROWSER_AUTH=open` as well,
 it gets the cookie without asking. With `EXUVIA_AUTH=headers`, the sign-in
 proxy in front of the hub says who each browser is, so the home page and
-every workbench open without a token, and the top bar names the person (see
+every workbench open without a token, and the account menu names the person (see
 "Signed-in users from a proxy" under
 [Schedules, auth and settings](#schedules-auth-and-settings)).
 
