@@ -17,7 +17,8 @@
 #            -H "Content-Type: application/json" -d '{"id": "demo"}'
 #       open http://localhost:7420/?token=change-me   (the hub's home page, where
 #       you open demo's workbench or create projects; the token is needed
-#       once, the browser keeps it in a cookie)
+#       once, the browser keeps it in a cookie; not at all with
+#       EXUVIA_BROWSER_AUTH=open, below)
 #
 # Variables (put them in a .env next to this file, or export them):
 #   EXUVIA_API_TOKEN   required: clients send `Authorization: Bearer <token>`
@@ -25,6 +26,9 @@
 #                      pin a release with ghcr.io/rlancer/exuvia:0.3, or name an
 #                      image with your nodes' packages (README "Deploying")
 #   EXUVIA_PORT        host port, default 7420
+#   EXUVIA_BROWSER_AUTH  `open`: browsers get in without entering the token
+#                      (agents and the API still need it); only for a hub that
+#                      only a private network can reach
 #   ANTHROPIC_API_KEY  optional: turns on the built-in agent (or OPENROUTER_API_KEY)
 #
 # For a single project at / instead of a hub, replace `command` with
@@ -64,6 +68,7 @@ services:
       - "${EXUVIA_PORT:-7420}:7420"
     environment:
       EXUVIA_API_TOKEN: ${EXUVIA_API_TOKEN:?set EXUVIA_API_TOKEN}
+      EXUVIA_BROWSER_AUTH: ${EXUVIA_BROWSER_AUTH:-token}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes:

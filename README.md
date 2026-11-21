@@ -588,7 +588,7 @@ Both commands include the workbench; neither needs a separate frontend.
 | | `exuvia serve <dir>` (one project) | `exuvia hub <dir>` (many projects) |
 |---|---|---|
 | Open in a browser | `<url>/` | `<url>/`, the hub's home: create, open and delete projects; each one's workbench is at `<url>/p/<project>/` |
-| First visit with `EXUVIA_API_TOKEN` set | `<url>/?token=<token>` | `<url>/?token=<token>`, or open `<url>/` and enter the token |
+| First visit with `EXUVIA_API_TOKEN` set | `<url>/?token=<token>` (just `<url>/` with `EXUVIA_BROWSER_AUTH=open`) | `<url>/?token=<token>`, or open `<url>/` and enter the token (just `<url>/` with `EXUVIA_BROWSER_AUTH=open`) |
 | Project API prefix | `<url>/api` | `<url>/p/<project>/api` |
 | Server-wide API | none | `<url>/api` (`/api/projects`, `/api/schedule/tick`, ...) |
 | `exuvia mcp --url` | `<url>` | `<url>` (every project), or `<url>/p/<project>` (just that one) |
@@ -625,6 +625,11 @@ curl http://localhost:7420/healthz
 # cookie), then create a project and open its workbench from there
 open "http://localhost:7420/?token=change-me"
 ```
+
+On a hub that only a private network can reach, `EXUVIA_BROWSER_AUTH=open`
+lets browsers in without the token ([auth](#schedules-auth-and-settings)):
+put it in Compose's `.env`, in front of `docker stack deploy` on Swarm (the
+file reads it from the shell), or uncomment it in `kubernetes.yaml`.
 
 `EXUVIA_IMAGE` (Compose and Swarm) or the Deployment's `image` picks another
 image: a pinned release such as `ghcr.io/rlancer/exuvia:0.3`, a copy in your
@@ -823,7 +828,18 @@ everything through that hostname.
    Connect agent sets up MCP for any other agent). It
    asks for the token once and the browser keeps it in a
    cookie; tell me to paste it from the file from step 2
-   rather than printing it.
+   rather than printing it. Also tell me how to let
+   browsers in without the token, for a hub only a private
+   network can reach (agents and the API still need it),
+   and if I asked for that, do it now and check that
+   GET /api/projects without the token still returns 401:
+   - Compose: EXUVIA_BROWSER_AUTH=open in the .env, then
+     step 4's command again.
+   - Swarm: EXUVIA_BROWSER_AUTH=open in front of step 4's
+     `docker stack deploy`, with the other variables it
+     was deployed with set again.
+   - Kubernetes: uncomment EXUVIA_BROWSER_AUTH in
+     kubernetes.yaml and apply it again.
 ```
 
 ### One container with docker run
@@ -914,7 +930,12 @@ not sent.
 
 **Auth.** Set `EXUVIA_API_TOKEN` on a hosted control plane: API clients send
 `Authorization: Bearer <token>`; browsers open `/?token=<token>` once and get
-an HttpOnly cookie. Always set `EXUVIA_EXECUTOR_TOKEN` on a networked executor
+an HttpOnly cookie. On a hub that only a private network can reach, set
+`EXUVIA_BROWSER_AUTH=open` so people never handle the token: every page load
+hands the browser that cookie (`SameSite=Lax`, so other websites can't send
+requests with it), while API calls without the cookie or the token still get
+a 401, so agents and MCP clients keep using the token. It lets in anyone who
+can load the page, so use it only behind a VPN or an internal-only address. Always set `EXUVIA_EXECUTOR_TOKEN` on a networked executor
 — it runs arbitrary code by design.
 
 **Secrets from files.** Each setting that holds a secret can come from a file
@@ -932,6 +953,7 @@ empty file, stops exuvia with an error.
 | `EXUVIA_EXECUTOR_URL` / `EXUVIA_EXECUTOR_TOKEN` | local pool | remote executor + its token |
 | `EXUVIA_SCHEDULER` | `internal` | `external` = only `POST /api/schedule/tick` advances schedules |
 | `EXUVIA_API_TOKEN` | off | shared-secret auth for the control plane API |
+| `EXUVIA_BROWSER_AUTH` | `token` | `open` = every page load gives the browser the auth cookie, so people never enter the token (private networks only; see "Auth" above) |
 | `<NAME>_FILE` | — | read a secret setting from a file, e.g. `EXUVIA_API_TOKEN_FILE=/run/secrets/exuvia_api_token` (see "Secrets from files" above) |
 | `EXUVIA_FAILURE_WEBHOOK` | off | URL that failed runs are POSTed to, for projects without their own `failure_webhook` |
 | `EXUVIA_FAILURE_TRIGGERS` | `schedule,cascade` | which failed runs the env webhook reports (`all`, or any of `schedule`, `cascade`, `manual`, `backfill`) |
@@ -1158,7 +1180,8 @@ create), never from its own config. It is the shape a
 multi-tenant host needs: one process (or one container) per tenant, one
 project per workflow. With `EXUVIA_API_TOKEN` set, the home page asks for the
 token, or a browser opens `/?token=<token>` or `/p/<project>/?token=<token>`
-once; either way it gets the cookie.
+once; either way it gets the cookie. With `EXUVIA_BROWSER_AUTH=open` as well,
+it gets the cookie without asking.
 
 ```bash
 exuvia hub ./projects --templates ./templates --scheduler external

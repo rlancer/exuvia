@@ -12,7 +12,7 @@
 # Then: curl http://<any node>:7420/healthz
 #       open http://<host>:7420/?token=<token>   (the hub's home page: create
 #       and open projects; the token is needed once, the browser keeps it in a
-#       cookie)
+#       cookie; not at all with EXUVIA_BROWSER_AUTH=open, below)
 #
 # The token: the API token lives in the Swarm secret `exuvia_api_token` and
 # reaches exuvia as a file (EXUVIA_API_TOKEN_FILE), so it never shows in
@@ -28,6 +28,9 @@
 #                      every node can pull from
 #   EXUVIA_PORT        published port, default 7420 (see "Behind a proxy")
 #   EXUVIA_SECRET      name of the token secret, default exuvia_api_token
+#   EXUVIA_BROWSER_AUTH  `open`: browsers get in without entering the token
+#                      (agents and the API still need it); only for a hub that
+#                      only a private network can reach. Default `token`
 #
 # One task, one node: a hub owns its directory, and the `exuvia-data` volume
 # is local to the node it was created on. The placement constraint keeps the
@@ -56,6 +59,7 @@ services:
     command: ["exuvia", "hub", "/data", "--host", "0.0.0.0", "--port", "7420"]
     environment:
       EXUVIA_API_TOKEN_FILE: /run/secrets/exuvia_api_token
+      EXUVIA_BROWSER_AUTH: ${EXUVIA_BROWSER_AUTH:-token}
       # ANTHROPIC_API_KEY_FILE: /run/secrets/anthropic_api_key
     secrets:
       - source: exuvia_api_token
