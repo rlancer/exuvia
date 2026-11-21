@@ -35,6 +35,9 @@
 #                      SSO, oauth2-proxy) says who each person is in
 #                      X-Forwarded-User / X-Forwarded-Email; requests without
 #                      them get a 401 unless they carry the token (agents).
+#                      The proxy has to let /mcp and /p/<project>/mcp through
+#                      without signing in: MCP clients send an agent token,
+#                      which exuvia checks itself (README "Agent tokens").
 #                      Only when nothing but that proxy can reach the hub.
 #                      Default `token`
 #   EXUVIA_AUTH_USER_HEADER / EXUVIA_AUTH_EMAIL_HEADER  other header names

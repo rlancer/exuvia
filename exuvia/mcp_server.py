@@ -26,6 +26,10 @@ API token, or a person's agent token (``exv_...``, made in the hub's Connect
 agent), which signs the session in as them.
 
 Changes and runs are recorded with the origin ``mcp``.
+
+The servers themselves also speak MCP over HTTP at ``/mcp`` (mcp_http.py), so
+a client that supports remote servers needs none of this; the relay is for
+clients that only run commands, and for reading the token from a file.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -85,6 +90,37 @@ HUB_GUIDE_TOOL = {
     ),
     "input_schema": {"type": "object", "properties": {"project": PROJECT_ARG}, "additionalProperties": False},
 }
+
+
+def hub_tool_list(project_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A hub's tools: its own, then each project tool with a required ``project``."""
+    out = list(HUB_TOOLS)
+    for t in project_tools:
+        schema = dict(t["input_schema"])
+        schema["properties"] = {"project": PROJECT_ARG, **schema.get("properties", {})}
+        schema["required"] = ["project", *schema.get("required", [])]
+        out.append({"name": t["name"], "description": t["description"], "input_schema": schema})
+    return out
+
+
+def hub_instructions(url: str, projects: list[dict[str, Any]] | str) -> str:
+    """What an agent connected to a whole hub is told; ``projects`` is the
+    hub's project list, or why it is not available."""
+    if isinstance(projects, str):
+        listing = f"(The project list is not available: {projects}.)"
+    elif not projects:
+        listing = "It has no projects yet: create_project makes one."
+    else:
+        rows = "\n".join(f"- {p['id']}: {p['name']} ({p['nodes']} nodes)" for p in projects)
+        listing = f"Its projects:\n{rows}"
+    return (
+        f"An exuvia hub at {url}: many exuvia projects (DAG workbenches of Python and SQL nodes), each "
+        f"with its own nodes, runs, outputs and views, and its workbench at {url}/p/<project>/. "
+        "Every project tool takes the project's id as `project`. Before you write or change anything in a "
+        "project, call `guide` with that `project`: it says how exuvia works and holds the project's own "
+        "parameters and notes. Use the project the user names; when it is unclear which one, ask, or call "
+        f"list_projects. {listing}"
+    )
 
 
 class Backend(Protocol):
@@ -263,13 +299,7 @@ class HubBackend:
         return [{"name": t["name"], "description": t["description"], "input_schema": t["input_schema"]} for t in TOOLS]
 
     async def tools(self) -> list[dict[str, Any]]:
-        out = list(HUB_TOOLS)
-        for t in self._project_tools or []:
-            schema = dict(t["input_schema"])
-            schema["properties"] = {"project": PROJECT_ARG, **schema.get("properties", {})}
-            schema["required"] = ["project", *schema.get("required", [])]
-            out.append({**t, "input_schema": schema})
-        return out
+        return hub_tool_list(self._project_tools or [])
 
     async def _projects(self) -> tuple[bool, dict[str, Any] | str]:
         import httpx
@@ -284,21 +314,7 @@ class HubBackend:
 
     async def instructions(self) -> str:
         ok, listing = await self._projects()
-        if not ok:
-            projects = f"(The project list is not available: {listing}.)"
-        elif not listing["projects"]:  # type: ignore[index]
-            projects = "It has no projects yet: create_project makes one."
-        else:
-            rows = "\n".join(f"- {p['id']}: {p['name']} ({p['nodes']} nodes)" for p in listing["projects"])  # type: ignore[index]
-            projects = f"Its projects:\n{rows}"
-        return (
-            f"An exuvia hub at {self.url}: many exuvia projects (DAG workbenches of Python and SQL nodes), each "
-            f"with its own nodes, runs, outputs and views, and its workbench at {self.url}/p/<project>/. "
-            "Every project tool takes the project's id as `project`. Before you write or change anything in a "
-            "project, call `guide` with that `project`: it says how exuvia works and holds the project's own "
-            "parameters and notes. Use the project the user names; when it is unclear which one, ask, or call "
-            f"list_projects. {projects}"
-        )
+        return hub_instructions(self.url, listing["projects"] if ok else str(listing))  # type: ignore[index]
 
     async def guide(self, args: dict[str, Any]) -> tuple[bool, str]:
         import httpx
@@ -366,12 +382,32 @@ async def remote_backend(url: str, token: str | None) -> RemoteBackend | HubBack
     return RemoteBackend(url, token)
 
 
-def build_server(backend: Backend, instructions: str) -> Any:
-    """The MCP server for ``backend``: its tools plus ``guide``."""
+def build_server(backend: Backend, instructions: str | Callable[[], str]) -> Any:
+    """The MCP server for ``backend``: its tools plus ``guide``. Given a
+    function, the instructions are worked out again at each ``initialize``
+    (the HTTP endpoint, exuvia/mcp_http.py, serves many clients from one
+    server, and a hub's projects come and go)."""
     from importlib.metadata import version
 
     import mcp.types as types
     from mcp.server.lowlevel import Server
+
+    if callable(instructions):
+        live = instructions
+
+        class LiveServer(Server):  # type: ignore[misc]
+            @property
+            def instructions(self) -> str:  # type: ignore[override]
+                return live()
+
+            @instructions.setter
+            def instructions(self, _: Any) -> None:  # Server.__init__ sets it
+                pass
+
+        server_cls: Any = LiveServer
+        instructions = ""
+    else:
+        server_cls = Server
 
     guide_tool = getattr(backend, "guide_tool", GUIDE_TOOL)
 
@@ -389,7 +425,7 @@ def build_server(backend: Backend, instructions: str) -> Any:
             ok, text = await backend.call(params.name, params.arguments or {})
         return types.CallToolResult(content=[types.TextContent(text=text)], is_error=not ok)
 
-    return Server(
+    return server_cls(
         "exuvia",
         version=version("exuvia"),
         instructions=instructions,

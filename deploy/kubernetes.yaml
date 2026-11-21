@@ -99,6 +99,8 @@ spec:
             # X-Forwarded-User / X-Forwarded-Email, and requests without them
             # (or the token) get a 401. TRUSTED_PROXIES: the proxy's pod or
             # node CIDR; identity headers from anywhere else are ignored.
+            # Let /mcp and /p/<project>/mcp past the proxy without signing in:
+            # MCP clients send an agent token, which exuvia checks itself.
             # README "Schedules, auth and settings".
             # - name: EXUVIA_AUTH
             #   value: headers

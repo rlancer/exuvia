@@ -11,7 +11,7 @@ const CLIENTS: { id: Client; label: string; hint: string }[] = [
   { id: "prompt", label: "Ask your agent", hint: "Paste this into Claude Code, Cursor, Codex, Grok or any coding agent with a terminal: it adds the server itself." },
   { id: "claude", label: "Claude Code", hint: "Run this in a terminal. The tools are there from your next session." },
   { id: "codex", label: "Codex", hint: "Run this in a terminal. The tools are there from your next session." },
-  { id: "json", label: "JSON config", hint: "Add this under mcpServers in your client's MCP config (Cursor, Claude Desktop, Windsurf, ...)." },
+  { id: "json", label: "JSON config", hint: "Add this under mcpServers in your client's MCP config (Cursor, a project's .mcp.json, ...)." },
 ];
 
 /**
@@ -35,8 +35,16 @@ export function ConnectDialog(props: { auth?: boolean; onClose: () => void }) {
         <p className="hub-muted">
           Over MCP, your coding agent works in every project here: it lists and creates projects, and reads, writes and
           runs their nodes, and you see each change in the workbench as it happens. One connection covers the whole
-          hub. It needs <a href="https://docs.astral.sh/uv/" target="_blank" rel="noreferrer">uv</a>{" "}
-          (or pipx) on its machine.
+          hub.{" "}
+          {setup.endpoint ? (
+            <>
+              The hub is the MCP server, at <span className="mono">{setup.endpoint}</span>: nothing to install.
+            </>
+          ) : (
+            <>
+              It needs <a href="https://docs.astral.sh/uv/" target="_blank" rel="noreferrer">uv</a> (or pipx) on its machine.
+            </>
+          )}
         </p>
         {who === undefined ? (
           <p className="hub-muted">Loading…</p>
@@ -61,6 +69,19 @@ export function ConnectDialog(props: { auth?: boolean; onClose: () => void }) {
                 </button>
               ))}
             </div>
+            {client === "codex" && setup.codexToken && (
+              <>
+                <div className="hub-muted connect-note">
+                  Codex reads the token from the <span className="mono">EXUVIA_API_TOKEN</span> environment variable. On macOS
+                  or Linux, add this to your shell profile (<span className="mono">~/.zshrc</span>,{" "}
+                  <span className="mono">~/.bashrc</span>) and open a new terminal:
+                </div>
+                <Code text={setup.codexToken.posix} />
+                <div className="hub-muted connect-note">On Windows, run this, then open a new terminal:</div>
+                <Code text={setup.codexToken.windows} />
+                <div className="hub-muted connect-note">Then add the server:</div>
+              </>
+            )}
             <Code text={setup[client]} wrap={client === "prompt"} />
             <div className="hub-muted connect-note">
               {current.hint}

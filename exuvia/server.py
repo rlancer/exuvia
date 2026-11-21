@@ -32,7 +32,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import _STARTED, __version__, about as about_mod, auth
+from . import _STARTED, __version__, about as about_mod, auth, mcp_http
 from .agent import TOOLS, Agent
 from .arrowstream import MEDIA_TYPE as ARROW_STREAM, ArrowStream, wants_arrow
 from .packages import PackagesError
@@ -819,6 +819,7 @@ HUB_GUIDE_HINT = (
 
 # A hub project's API; its workbench page (/p/<id>/) is not API.
 _HUB_API = re.compile(r"^/p/[^/]+/api(/|$)")
+_MCP_PATH = re.compile(r"^(/p/[^/]+)?/mcp/?$")  # mcp_http.py: auth as the API
 
 
 def _token_ok(request: Request, api_token: str) -> bool:
@@ -952,7 +953,7 @@ def _install_common(app: FastAPI, users: UserStore | None, command: str = "serve
         return resp
 
     def is_api(path: str) -> bool:
-        return path.startswith("/api/") or bool(_HUB_API.match(path))
+        return path.startswith("/api/") or bool(_HUB_API.match(path)) or bool(_MCP_PATH.match(path))
 
     def unidentified(path: str) -> Any:
         assert headers is not None
@@ -1022,10 +1023,16 @@ def create_app(root: str | Path) -> FastAPI:
     ws = Workspace(root)
     ctx = Ctx(ws, Agent(ws))
 
+    async def this_project(_scope: dict[str, Any]) -> Ctx:
+        return ctx
+
+    mcp = mcp_http.project_endpoint(this_project)
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         await ws.start()
-        yield
+        async with mcp.running():
+            yield
         await ws.stop()
 
     app = FastAPI(title="exuvia", lifespan=lifespan)
@@ -1035,6 +1042,7 @@ def create_app(root: str | Path) -> FastAPI:
     app.state.users = users
     app.state.ws = ws
     app.include_router(project_router(lambda: ctx), prefix="/api")
+    mcp_http.add_routes(app, "", mcp)  # MCP over HTTP (mcp_http.py), before the UI's catch-all
 
     # Liveness for container platforms (no auth, like the hub's and the executor's).
     @app.get("/healthz")
@@ -1059,6 +1067,15 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
 
     hub = Hub(root, templates)
 
+    async def path_project(scope: dict[str, Any]) -> Any:
+        project = scope.get("path_params", {}).get("project", "")
+        if not PROJECT_ID.match(project) or not hub.exists(project):
+            return JSONResponse({"detail": f"no project {project}"}, status_code=404)
+        return await hub.get(project)
+
+    # MCP over HTTP (mcp_http.py): /mcp for every project, /p/<id>/mcp for one.
+    hub_mcp, project_mcp = mcp_http.hub_endpoint(hub), mcp_http.project_endpoint(path_project)
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         if SCHEDULER == "internal":
@@ -1066,7 +1083,8 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
             # to be loaded. With an external scheduler they load on demand.
             for pid in hub.ids():
                 await hub.get(pid)
-        yield
+        async with hub_mcp.running(), project_mcp.running():
+            yield
         await hub.close()
 
     app = FastAPI(title="exuvia hub", lifespan=lifespan)
@@ -1082,6 +1100,8 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
         return await hub.get(project)
 
     app.include_router(project_router(get_ctx), prefix="/p/{project}/api")
+    mcp_http.add_routes(app, "", hub_mcp)
+    mcp_http.add_routes(app, "/p/{project}", project_mcp)
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
