@@ -37,6 +37,12 @@ from .store import Store, project_scope, stored_paths_at
 PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 SKIP_DIRS = {"__pycache__", "node_modules"}
 DB_REL = ".exuvia/exuvia.db"
+# Pauses between attempts to remove a folder (see _remove_tree).
+REMOVE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8)
+
+
+class StillInUse(OSError):
+    """A folder could not be removed because a file in it is still open."""
 
 
 class Hub:
@@ -130,7 +136,7 @@ class Hub:
             for path in (target / "nodes").iterdir():
                 if path.is_file() and path.name not in keep:
                     path.unlink()
-            shutil.rmtree(target / VIEW_DIR, ignore_errors=True)
+            await _remove_tree(target / VIEW_DIR)
             shutil.copytree(
                 source, target, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", ".exuvia")
             )
@@ -151,12 +157,14 @@ class Hub:
     async def delete(self, project_id: str) -> None:
         async with self._lock:
             await self._unload(project_id)
-            shutil.rmtree(self.root / project_id, ignore_errors=True)
+            try:
+                await _remove_tree(self.root / project_id)
+            finally:
+                self._structural += 1
             shared = _shared_store(project_id)
             if shared is not None:
                 shared.delete_all()
             self._load_origin.pop(project_id, None)
-            self._structural += 1
         store = artifact_store()
         if store is not None:
             try:
@@ -268,13 +276,32 @@ class Hub:
             if not found:
                 raise ValueError("the archive contains no projects")
             async with self._lock:
-                for pid in found:
-                    await self._unload(pid)
-                    shutil.rmtree(self.root / pid, ignore_errors=True)
-                    shutil.move(str(Path(scratch) / pid), str(self.root / pid))
-                    self._load_origin[pid] = "import"
-                self._structural += 1
+                try:
+                    for pid in found:
+                        await self._unload(pid)
+                        # The target must be gone: moving onto a folder that
+                        # survived would put the project inside it, at pid/pid.
+                        await _remove_tree(self.root / pid)
+                        shutil.move(str(Path(scratch) / pid), str(self.root / pid))
+                        self._load_origin[pid] = "import"
+                finally:
+                    self._structural += 1
         return found
+
+
+async def _remove_tree(path: Path) -> None:
+    """Remove ``path`` completely, or raise ``StillInUse``. On Windows a file
+    closed a moment ago (the run database, a file watcher's handle, a virus
+    scanner reading a new file) can stay locked briefly, so removal is retried
+    with a short backoff. A folder that survives every attempt is an error,
+    never a silent half-removal that a later copy or move lands inside."""
+    for delay in (*REMOVE_RETRY_DELAYS, None):
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
+            return
+        if delay is not None:
+            await asyncio.sleep(delay)
+    raise StillInUse(f"could not remove {path.name}: a file in it is still in use; try again")
 
 
 def _backup_db(src: Path, dst: Path) -> None:

@@ -191,6 +191,51 @@ def test_export_and_restore_round_trip(tmp_path, hub):
         assert rows.json()["rows"] == [["2026-03-02", 2]]
 
 
+
+def locked_rmtree(monkeypatch, name: str, times: float):
+    """Make removing a folder called ``name`` leave a file behind ``times``
+    times, as a file still open on Windows does."""
+    import exuvia.hub
+
+    real = exuvia.hub.shutil.rmtree
+    left = {"n": times}
+
+    def rmtree(path, ignore_errors=False, **kw):
+        real(path, ignore_errors=ignore_errors, **kw)
+        path = Path(path)
+        if path.name == name and left["n"] > 0:
+            left["n"] -= 1
+            path.mkdir(exist_ok=True)
+            (path / "locked.db").write_text("x", encoding="utf-8")
+
+    monkeypatch.setattr(exuvia.hub.shutil, "rmtree", rmtree)
+    monkeypatch.setattr(exuvia.hub, "REMOVE_RETRY_DELAYS", (0, 0))
+
+
+def test_delete_and_import_wait_for_a_briefly_locked_folder(tmp_path, hub, monkeypatch):
+    hub.post("/api/projects", json={"id": "wf", "template": "dated"})
+    blob = hub.get("/api/hub/export").content
+    locked_rmtree(monkeypatch, "wf", 2)
+    assert hub.delete("/api/projects/wf").json() == {"ok": True}
+    assert not (tmp_path / "hub" / "wf").exists()
+    locked_rmtree(monkeypatch, "wf", 2)
+    assert hub.post("/api/hub/import", content=blob).json() == {"ok": True, "projects": ["wf"]}
+    assert hub.get("/p/wf/api/project").status_code == 200
+    assert not (tmp_path / "hub" / "wf" / "wf").exists()
+
+
+def test_a_folder_that_stays_locked_is_an_error_not_a_nested_project(tmp_path, hub, monkeypatch):
+    hub.post("/api/projects", json={"id": "wf", "template": "dated"})
+    blob = hub.get("/api/hub/export").content
+    locked_rmtree(monkeypatch, "wf", float("inf"))
+    r = hub.post("/api/hub/import", content=blob)
+    assert r.status_code == 409 and "still in use" in r.json()["detail"]
+    assert not (tmp_path / "hub" / "wf" / "wf").exists()  # not moved inside the leftover folder
+    hub.post("/api/projects", json={"id": "other", "template": "dated"})
+    assert hub.delete("/api/projects/other").status_code == 200
+    (tmp_path / "hub" / "wf" / "nodes").mkdir(exist_ok=True)  # still a project, so delete is allowed
+    assert hub.delete("/api/projects/wf").status_code == 409
+
 def test_params_can_be_declared_over_http(hub):
     hub.post("/api/projects", json={"id": "blank"})
     base = "/p/blank/api"
