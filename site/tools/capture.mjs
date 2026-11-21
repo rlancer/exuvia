@@ -69,7 +69,7 @@ async function app() {
   // 1. The workbench: graph on the left, a node's chart on the right.
   await page.goto(base);
   await page.locator(".bnode", { hasText: "rolling_vol" }).click();
-  await page.getByRole("button", { name: "Chart", exact: true }).click();
+  await page.getByRole("tab", { name: "Chart", exact: true }).click();
   await page.locator(".insp-body canvas, .insp-body svg").first().waitFor();
   await page.waitForTimeout(800);
   await shot("workbench");

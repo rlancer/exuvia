@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type GraphNode, type Project, type ProjectParam, type ProjectView } from "./api";
 import { ViewBridge, frameDocument, type FrameStatus } from "./views/host";
 import type { Params, ParamsState } from "./views/protocol";
+import { IconPlay } from "./icons";
 
 /** Overrides → the parameter set a view sees (resolved values + declarations). */
 function paramsState(params: ProjectParam[]): ParamsState {
@@ -76,6 +77,7 @@ export function Views(props: {
         {views.map((v) => (
           <button
             key={v.name}
+            aria-current={view?.name === v.name}
             className={`views-item ${VIEW_STATE_CLASS[v.state]} ${view?.name === v.name ? "on" : ""}`}
             onClick={() => setSelected(v.name)}
             title={v.reason ?? v.description}
@@ -186,7 +188,7 @@ function ViewPane(props: {
           })}
           {toRun.length > 0 && (
             <button className="btn sm" onClick={runReads} title="Run the read nodes that are missing or stale, for these parameters">
-              ▶ Run {toRun.length === 1 ? toRun[0] : `${toRun.length} nodes`}
+              <IconPlay size={10} /> Run {toRun.length === 1 ? toRun[0] : `${toRun.length} nodes`}
             </button>
           )}
         </div>
@@ -248,7 +250,7 @@ function ParamBar(props: { specs: ProjectParam[]; overrides: Params; onChange: (
               />
             )}
             {custom && (
-              <button className="reset" onClick={() => set(p.name, null)} title={`Back to the default (${String(p.default)})`}>
+              <button className="reset" onClick={() => set(p.name, null)} title={`Back to the default (${String(p.default)})`} aria-label={`Reset ${p.name} to its default`}>
                 ×
               </button>
             )}

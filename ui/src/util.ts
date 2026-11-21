@@ -89,3 +89,18 @@ export function renderMarkdown(src: string): string {
   });
   return out.join("");
 }
+
+/** Props that make a row act as a button: it takes the focus, and Enter or Space press it. */
+export function pressable(fn: () => void) {
+  return {
+    tabIndex: 0,
+    role: "button",
+    onClick: fn,
+    onKeyDown: (e: { key: string; preventDefault: () => void }) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        fn();
+      }
+    },
+  } as const;
+}

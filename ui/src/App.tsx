@@ -9,11 +9,25 @@ import { PackagesDialog } from "./PackagesDialog";
 import { Views } from "./Views";
 import { SignedInAs } from "./Me";
 import { useTheme } from "./theme";
+import { Brand, Mark } from "./Brand";
+import { IconMoon, IconPackage, IconPlay, IconPlus, IconSpark, IconSun } from "./icons";
+import { failed, Toasts } from "./toast";
 
 const embed = new URLSearchParams(location.search).has("embed");
 
 type Mode = "graph" | "views";
 const modeFromHash = (): Mode => (location.hash === "#views" ? "views" : "graph");
+
+/** Whether the agent panel starts open: as it was left, else open where there is room beside the graph. */
+function agentStartsOpen(): boolean {
+  try {
+    const kept = localStorage.getItem("exuvia-agent");
+    if (kept) return kept === "open";
+  } catch {
+    /* private mode */
+  }
+  return window.matchMedia("(min-width: 1101px)").matches;
+}
 
 export default function App() {
   const [project, setProject] = useState<Project | null>(null);
@@ -22,7 +36,15 @@ export default function App() {
   const [logs, setLogs] = useState<Record<string, string>>({});
   const [flash, setFlash] = useState<Record<string, number>>({});
   const [newOpen, setNewOpen] = useState(false);
-  const [agentOpen, setAgentOpen] = useState(true);
+  const [agentOpen, setAgentOpenState] = useState(agentStartsOpen);
+  const setAgentOpen = useCallback((open: boolean) => {
+    setAgentOpenState(open);
+    try {
+      localStorage.setItem("exuvia-agent", open ? "open" : "closed");
+    } catch {
+      /* private mode */
+    }
+  }, []);
   const [conn, setConn] = useState(true);
   const [mode, setModeState] = useState<Mode>(modeFromHash);
   const setMode = useCallback((m: Mode) => {
@@ -69,7 +91,7 @@ export default function App() {
   useEffect(() => {
     if (!rerun.length || !pkgs) return;
     if (pkgs.status === "ready" || pkgs.status === "remote") {
-      rerun.forEach((name) => api.run(name).catch(() => {}));
+      rerun.forEach((name) => api.run(name).catch(failed(`Couldn't run ${name}`)));
       setRerun([]);
     } else if (pkgs.status === "failed") {
       setRerun([]);
@@ -84,6 +106,9 @@ export default function App() {
   };
 
   const nodes = useMemo(() => project?.nodes ?? [], [project]);
+  useEffect(() => {
+    if (project?.name) document.title = `${project.name} · exuvia`;
+  }, [project?.name]);
   const sel = nodes.find((n) => n.name === selected) ?? null;
   useEffect(() => {
     if (selected && project && !nodes.some((n) => n.name === selected)) setSelected(null);
@@ -111,14 +136,8 @@ export default function App() {
   return (
     <div className={`app ${embed ? "embed" : ""}`}>
       <header className="topbar">
-        <div className="brand">
-          <svg width="20" height="20" viewBox="0 0 32 32" aria-hidden>
-            <path d="M5 9c9 0 11 14 22 14M5 23c9 0 11-14 22-14" stroke="var(--accent)" strokeWidth="3.2" fill="none" strokeLinecap="round" />
-          </svg>
-          {HUB_PROJECT ? <a className="home-link" href="/" title="All projects">exuvia</a> : "exuvia"}{" "}
-          <span className="proj">/ {project?.name ?? "…"}</span>
-        </div>
-        <div className="seg mode-seg" role="tablist">
+        <Brand home={HUB_PROJECT ? "/" : undefined}>{project?.name ?? "…"}</Brand>
+        <div className="seg mode-seg" role="tablist" aria-label="Mode">
           <button className={mode === "graph" ? "on" : ""} onClick={() => setMode("graph")} role="tab" aria-selected={mode === "graph"}>
             Graph
           </button>
@@ -130,29 +149,41 @@ export default function App() {
           {(["fresh", "stale", "new", "failed", "error", "running"] as const).map((s) =>
             counts[s] ? (
               <span key={s} className={`s-${s}`}>
-                <span className="dot" /> {counts[s]} {s}
+                <span className="dot" /> {counts[s]} <span className="word">{s}</span>
               </span>
             ) : null,
           )}
-          {!conn && <span style={{ color: "var(--failed)" }}>· reconnecting…</span>}
+          {!conn && <span className="offline" role="status">reconnecting…</span>}
         </div>
         <span className="spacer" />
-        <button className="btn" onClick={() => api.runStale()} disabled={!staleCount} title="Run every stale, new, or failed node">
-          ▶ Run stale{staleCount ? ` (${staleCount})` : ""}
-        </button>
-        <button className="btn" onClick={() => setNewOpen(true)}>+ Node</button>
         <button
-          className={`btn pk-btn pk-${pkgs?.status ?? "none"}`}
+          className="btn has-icon"
+          onClick={() => api.runStale().catch(failed("Couldn't start the run"))}
+          disabled={!staleCount}
+          title={staleCount ? "Run every stale, new, or failed node" : "Every node is up to date"}
+          aria-label="Run stale"
+        >
+          <IconPlay size={11} /> <span className="lbl">Run stale</span>
+          {staleCount ? <span>({staleCount})</span> : null}
+        </button>
+        <button className="btn has-icon" onClick={() => setNewOpen(true)} title="Add a node to the graph" aria-label="New node">
+          <IconPlus size={12} /> <span className="lbl">Node</span>
+        </button>
+        <button
+          className={`btn has-icon pk-btn pk-${pkgs?.status ?? "none"}`}
           onClick={() => setPkgOpen(true)}
           title={pkgs?.requests.length ? "The agent is waiting for you to approve packages" : "The packages your nodes import"}
+          aria-label="Packages"
         >
-          Packages
+          <IconPackage /> <span className="lbl">Packages</span>
           {pkgs?.requests.length ? <span className="pk-badge">{pkgs.requests.length}</span> : null}
           {pkgs?.status === "installing" || pkgs?.status === "pending" ? <span className="pk-spin" /> : null}
           {pkgs?.status === "failed" ? <span className="pk-bang">!</span> : null}
         </button>
         <SignedInAs />
-        <button className="btn ghost icon-btn" onClick={toggleTheme} title="Toggle theme">{dark ? "☀" : "☾"}</button>
+        <button className="btn ghost icon-btn" onClick={toggleTheme} title={dark ? "Light theme" : "Dark theme"} aria-label={dark ? "Light theme" : "Dark theme"}>
+          {dark ? <IconSun /> : <IconMoon />}
+        </button>
       </header>
 
       <div className={mainCls}>
@@ -175,11 +206,12 @@ export default function App() {
               {project && nodes.length === 0 && (
                 <div className="empty-canvas">
                   <div className="empty-card">
+                    <Mark size={40} />
                     <h2>An empty graph</h2>
                     <p>
                       {aiOn ? "Describe a pipeline to the agent, or add a node by hand." : "Add your first node — a Python function or a SQL query."}
                     </p>
-                    <button className="btn primary" onClick={() => setNewOpen(true)}>+ New node</button>
+                    <button className="btn primary" onClick={() => setNewOpen(true)}><IconPlus size={12} /> New node</button>
                   </div>
                 </div>
               )}
@@ -218,9 +250,9 @@ export default function App() {
             onCollapse={() => setAgentOpen(false)}
           />
         ) : (
-          <div className="agent-collapsed-rail" onClick={() => setAgentOpen(true)}>
-            <span style={{ color: "var(--accent)" }}>✦</span> Agent
-          </div>
+          <button className="agent-collapsed-rail" onClick={() => setAgentOpen(true)} title="Open the agent">
+            <IconSpark /> Agent
+          </button>
         )}
       </div>
 
@@ -237,6 +269,7 @@ export default function App() {
           }}
         />
       )}
+      <Toasts />
     </div>
   );
 }

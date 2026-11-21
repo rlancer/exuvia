@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api, type PackagesState } from "./api";
+import { Dialog } from "./Dialog";
 
 const STATUS: Record<PackagesState["status"], string> = {
   none: "no packages listed",
@@ -54,17 +55,17 @@ export function PackagesDialog(props: { state: PackagesState | null; onChange: (
 
   const status = state?.status ?? "none";
   return (
-    <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="dialog wide packages">
-        <div className="pk-head">
-          <h3>Packages</h3>
-          <span className={`pk-status pk-${status}`}>
-            <span className="dot" /> {STATUS[status]}
-            {status === "ready" && state?.installed ? ` · ${state.installed} on top of exuvia's own` : ""}
-          </span>
-          <span className="spacer" />
-          <button className="btn ghost icon-btn" onClick={onClose} title="Close">✕</button>
-        </div>
+    <Dialog
+      title="Packages"
+      className="wide packages"
+      onClose={onClose}
+      head={
+        <span className={`pk-status pk-${status}`} role="status">
+          <span className="dot" /> {STATUS[status]}
+          {status === "ready" && state?.installed ? ` · ${state.installed} on top of exuvia's own` : ""}
+        </span>
+      }
+    >
         <p className="pk-note">
           The packages your nodes import beyond those exuvia comes with, from the project's <code>pyproject.toml</code>.
           A package added without a version is pinned to the one installed.
@@ -89,6 +90,8 @@ export function PackagesDialog(props: { state: PackagesState | null; onChange: (
           <input
             className="mono"
             autoFocus
+            spellCheck={false}
+            aria-label="Packages to add"
             value={adding}
             placeholder="scikit-learn, acme-models>=2"
             onChange={(e) => setAdding(e.target.value)}
@@ -144,7 +147,7 @@ export function PackagesDialog(props: { state: PackagesState | null; onChange: (
         </div>
         {editing !== null && (
           <div className="pk-editor">
-            <textarea className="mono" spellCheck={false} value={editing} onChange={(e) => setEditing(e.target.value)} />
+            <textarea className="mono" spellCheck={false} aria-label="pyproject.toml" value={editing} onChange={(e) => setEditing(e.target.value)} />
             <div className="actions">
               <button
                 className="btn primary sm"
@@ -159,7 +162,6 @@ export function PackagesDialog(props: { state: PackagesState | null; onChange: (
           </div>
         )}
         {showLog && state?.log && <pre className="log pk-log">{state.log}</pre>}
-      </div>
-    </div>
+    </Dialog>
   );
 }

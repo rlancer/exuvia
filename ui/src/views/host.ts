@@ -24,11 +24,11 @@ declare const __EXUVIA_BUILD__: string;
 /** The theme variables a view's CSS can use (`var(--text)`), light and dark. */
 const BASE_CSS = `
 :root{--bg:#f6f5f1;--panel:#fff;--panel-2:#f0eee8;--line:#e2dfd6;--text:#1b1c1f;--muted:#6c6a63;--faint:#9a978d;
---accent:#c98a12;--fresh:#2f8f5b;--stale:#c98a12;--failed:#c4413a;--running:#3b6fd8;
+--accent:#3b6fd8;--fresh:#2f8f5b;--stale:#c98a12;--failed:#c4413a;--running:#3b6fd8;
 --mono:"JetBrains Mono","Cascadia Code",ui-monospace,SFMono-Regular,Consolas,monospace;
 --sans:"Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:light}
 :root[data-theme=dark]{--bg:#111214;--panel:#17181b;--panel-2:#1d1f23;--line:#2a2c31;--text:#e9e7e1;--muted:#9b998f;
---faint:#6d6b64;--accent:#f2b84b;--fresh:#4cc38a;--stale:#f2b84b;--failed:#ef6b62;--running:#6f9bff;color-scheme:dark}
+--faint:#6d6b64;--accent:#6f9bff;--fresh:#4cc38a;--stale:#f2b84b;--failed:#ef6b62;--running:#6f9bff;color-scheme:dark}
 *{box-sizing:border-box}html,body{margin:0}
 body{background:var(--bg);color:var(--text);font:13px/1.45 var(--sans);-webkit-font-smoothing:antialiased}
 .exv-error{margin:16px;padding:10px 12px;border:1px solid var(--failed);border-radius:6px;color:var(--text)}

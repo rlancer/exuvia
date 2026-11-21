@@ -18,6 +18,7 @@ import {
 import dagre from "@dagrejs/dagre";
 import type { GraphNode } from "./api";
 import { ago, fmtNum, until } from "./util";
+import { IconClock } from "./icons";
 
 const W = 232;
 const H = 92;
@@ -42,7 +43,7 @@ const Card = memo(function Card({ data }: NodeProps<Node<CardData>>) {
         {g.output_kind && g.output_kind !== "table" && <span>{g.output_kind}</span>}
         {g.schedule && (
           <span className={`sched ${g.schedule.paused ? "paused" : ""}`} title={`cron ${g.schedule.cron}`}>
-            ⏱ {g.schedule.paused ? "paused" : until(g.schedule.next) || g.schedule.cron}
+            <IconClock size={11} /> {g.schedule.paused ? "paused" : until(g.schedule.next) || g.schedule.cron}
           </span>
         )}
         {!g.schedule && g.finished_at && !busy && <span>{ago(g.finished_at)}</span>}
