@@ -107,12 +107,25 @@ export interface Preview {
   value?: unknown;
 }
 
+/**
+ * Where this page's project API lives. `exuvia serve` serves one project at
+ * `/` with its API at `/api`; a hub serves each project's workbench at
+ * `/p/<id>/` with its API at `/p/<id>/api`.
+ */
+export const API_BASE = (() => {
+  const m = typeof location === "undefined" ? null : /^\/p\/([^/]+)\//.exec(location.pathname);
+  return m ? `/p/${m[1]}/api` : "/api";
+})();
+
+/** A project API path written as `/api/...`, resolved against {@link API_BASE}. */
+export const apiUrl = (path: string) => (path.startsWith("/api/") ? API_BASE + path.slice(4) : path);
+
 /** Send one request; an error answer is thrown with the server's own message. */
 async function send(method: string, url: string, body?: unknown, accept?: string): Promise<Response> {
   const headers: Record<string, string> = {};
   if (accept) headers.Accept = accept;
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const res = await fetch(url, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
+  const res = await fetch(apiUrl(url), { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   if (!res.ok) {
     let msg = res.statusText;
     try {
@@ -200,7 +213,7 @@ export async function streamAgent(
   onEvent: (e: AgentEvent) => void,
   signal: AbortSignal,
 ): Promise<void> {
-  const res = await fetch("/api/agent", {
+  const res = await fetch(apiUrl("/api/agent"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

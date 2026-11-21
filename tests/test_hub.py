@@ -278,3 +278,55 @@ def test_guide_serves_the_agent_instructions(hub):
     assert "Prices come from the test fixture." in guide["instructions"]
     assert "@exuvia.node" in guide["instructions"]
     assert {"write_node", "run_node", "define_param"} <= {t["name"] for t in guide["tools"]}
+
+
+def fake_ui(tmp_path, monkeypatch) -> None:
+    from exuvia import server
+
+    static = tmp_path / "static"
+    (static / "assets").mkdir(parents=True)
+    (static / "index.html").write_text("<!doctype html><title>workbench</title>", encoding="utf-8")
+    (static / "assets" / "app.js").write_text("/*app*/", encoding="utf-8")
+    monkeypatch.setattr(server, "STATIC", static)
+
+
+def test_hub_serves_the_workbench_per_project(tmp_path, monkeypatch):
+    """Each project's UI is at /p/<id>/ (it talks to /p/<id>/api); / lists them."""
+    fake_ui(tmp_path, monkeypatch)
+    with TestClient(create_hub_app(tmp_path / "hub", template(tmp_path))) as hub:
+        assert "No projects yet" in hub.get("/").text
+        hub.post("/api/projects", json={"id": "wf", "name": "Put <selling>", "template": "dated"})
+        index = hub.get("/").text
+        assert 'href="/p/wf/"' in index and "Put &lt;selling&gt;" in index
+
+        page = hub.get("/p/wf/")
+        assert page.status_code == 200 and "workbench" in page.text
+        assert hub.get("/p/wf/views").text == page.text  # client-side paths fall back to the page
+        assert hub.get("/p/wf", follow_redirects=False).headers["location"] == "/p/wf/"
+        assert hub.get("/assets/app.js").text == "/*app*/"
+        assert hub.get("/p/nope/").status_code == 404
+        # The API keeps its own answers, 404s included.
+        assert hub.get("/p/wf/api/project").json()["name"] == "Put <selling>"
+        assert hub.get("/p/wf/api/no-such-route").status_code == 404
+
+
+def test_hub_workbench_with_a_token(tmp_path, monkeypatch):
+    fake_ui(tmp_path, monkeypatch)
+    monkeypatch.setenv("EXUVIA_API_TOKEN", "s3cret")
+    with TestClient(create_hub_app(tmp_path / "hub", template(tmp_path))) as hub:
+        auth = {"Authorization": "Bearer s3cret"}
+        hub.post("/api/projects", json={"id": "wf"}, headers=auth)
+        # The page itself is public (like `exuvia serve`'s); its API is not.
+        assert hub.get("/p/wf/").status_code == 200
+        assert hub.get("/p/wf/api/project").status_code == 401
+        assert "needs its API token" in hub.get("/").text and "/p/wf/" not in hub.get("/").text
+        # Without the token a missing project looks like any other page.
+        assert hub.get("/p/nope/").status_code == 200
+
+        assert hub.get("/p/wf/?token=wrong", follow_redirects=False).status_code == 401
+        r = hub.get("/p/wf/?token=s3cret", follow_redirects=False)
+        assert r.status_code in (302, 307) and r.headers["location"] == "/p/wf/"
+        assert hub.cookies.get("exuvia_token") == "s3cret"
+        assert hub.get("/p/wf/api/project").status_code == 200
+        assert 'href="/p/wf/"' in hub.get("/").text
+        assert hub.get("/p/nope/").status_code == 404

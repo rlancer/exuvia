@@ -2,7 +2,7 @@
 
     exuvia init <dir>            scaffold a new project
     exuvia serve [dir]           run the UI + API + scheduler
-    exuvia hub <dir>             serve every project under <dir> (headless API)
+    exuvia hub <dir>             serve every project under <dir> (API + UI at /p/<id>/)
     exuvia run [dir] [node...]   run nodes headlessly (CI / cron friendly);
                                  --param as_of=2026-03-02 replays a parameter set
     exuvia status [dir]          print node freshness

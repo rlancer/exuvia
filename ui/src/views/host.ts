@@ -5,7 +5,7 @@
  * request to the view-scoped routes (`/api/views/{name}/data/{node}`,
  * `/api/views/{name}/query`), which refuse other nodes on the server too.
  */
-import { api, type ProjectView } from "../api";
+import { api, apiUrl, type ProjectView } from "../api";
 import {
   CHANNEL,
   isToHost,
@@ -37,7 +37,7 @@ body{background:var(--bg);color:var(--text);font:13px/1.45 var(--sans);-webkit-f
 /** Where the page fetches the runtime script (built into exuvia/static/view-runtime/, served under the API). */
 export function runtimeUrl(): string {
   const build = typeof __EXUVIA_BUILD__ === "string" ? __EXUVIA_BUILD__ : "dev";
-  return `/api/view-runtime/runtime.js?b=${build}`;
+  return apiUrl(`/api/view-runtime/runtime.js?b=${build}`);
 }
 
 let runtimeSource: Promise<string> | null = null;

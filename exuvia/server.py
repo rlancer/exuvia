@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import html
 import json
 import os
+import re
 import time as _time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -25,7 +27,7 @@ from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -724,6 +726,18 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
     return r
 
 
+# A hub project's API; its workbench page (/p/<id>/) is not API.
+_HUB_API = re.compile(r"^/p/[^/]+/api(/|$)")
+
+
+def _token_ok(request: Request, api_token: str) -> bool:
+    """Whether the request carries the API token (header, or the browser cookie)."""
+    header = request.headers.get("authorization", "")
+    cookie = request.cookies.get("exuvia_token", "")
+    return hmac.compare_digest(header.encode(), f"Bearer {api_token}".encode()) or \
+        hmac.compare_digest(cookie.encode(), api_token.encode())
+
+
 def _install_common(app: FastAPI) -> None:
     """CORS and the optional shared-secret auth, for both app shapes."""
     origins = [o for o in os.environ.get("EXUVIA_CORS_ORIGINS", "").split(",") if o]
@@ -738,7 +752,7 @@ def _install_common(app: FastAPI) -> None:
         return
 
     def is_api(path: str) -> bool:
-        return path.startswith("/api/") or path.startswith("/p/")
+        return path.startswith("/api/") or bool(_HUB_API.match(path))
 
     @app.middleware("http")
     async def require_token(request: Request, call_next: Callable[[Request], Awaitable[Any]]):
@@ -751,13 +765,8 @@ def _install_common(app: FastAPI) -> None:
             resp.set_cookie("exuvia_token", api_token, httponly=True, samesite="lax",
                             secure=request.url.scheme == "https")
             return resp
-        if is_api(path):
-            header = request.headers.get("authorization", "")
-            cookie = request.cookies.get("exuvia_token", "")
-            ok = hmac.compare_digest(header.encode(), f"Bearer {api_token}".encode()) or \
-                hmac.compare_digest(cookie.encode(), api_token.encode())
-            if not ok:
-                return JSONResponse({"detail": "unauthorized"}, status_code=401)
+        if is_api(path) and not _token_ok(request, api_token):
+            return JSONResponse({"detail": "unauthorized"}, status_code=401)
         return await call_next(request)
 
 
@@ -886,4 +895,58 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
             raise HTTPException(400, str(e)) from e
         return {"ok": True, "projects": restored}
 
+    # The workbench, one per project: the same UI `exuvia serve` serves, at
+    # /p/<id>/, talking to /p/<id>/api. Registered last, so the API routes win.
+    if (STATIC / "index.html").is_file():
+        app.mount("/assets", StaticFiles(directory=STATIC / "assets"), name="assets")
+
+        def authorized(request: Request) -> bool:
+            token = os.environ.get("EXUVIA_API_TOKEN")
+            return not token or _token_ok(request, token)
+
+        @app.get("/", response_class=HTMLResponse)
+        def hub_index(request: Request) -> HTMLResponse:
+            return HTMLResponse(_hub_index_page(hub.list() if authorized(request) else None))
+
+        @app.get("/p/{project}", include_in_schema=False)
+        def project_page_slash(project: str) -> RedirectResponse:
+            return RedirectResponse(f"/p/{project}/")
+
+        @app.get("/p/{project}/{path:path}", include_in_schema=False)
+        def project_page(project: str, path: str, request: Request) -> FileResponse:
+            # Unknown API routes stay 404s; a missing project is only
+            # reported to a caller that may see the project list.
+            if path == "api" or path.startswith("api/") or not PROJECT_ID.match(project):
+                raise HTTPException(404, "not found")
+            if authorized(request) and not hub.exists(project):
+                raise HTTPException(404, f"no project {project}")
+            return FileResponse(STATIC / "index.html")
+
     return app
+
+
+def _hub_index_page(projects: list[dict[str, Any]] | None) -> str:
+    """The hub's front page: a link to each project's workbench. ``None``
+    means the browser has no token yet."""
+    if projects is None:
+        body = ("<p>This hub needs its API token. Open <code>/?token=&lt;token&gt;</code> once; "
+                "the browser keeps it in a cookie.</p>")
+    elif not projects:
+        body = ('<p>No projects yet. Create one with <code>POST /api/projects {"id": "my-research"}</code>, '
+                "then reload.</p>")
+    else:
+        items = "".join(
+            f'<li><a href="/p/{html.escape(p["id"])}/">{html.escape(p["name"] or p["id"])}</a>'
+            f' <span>{html.escape(p["id"])} · {p["nodes"]} node{"" if p["nodes"] == 1 else "s"}</span></li>'
+            for p in projects
+        )
+        body = f"<ul>{items}</ul>"
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>exuvia hub</title>
+<style>:root{{color-scheme:light dark;--bg:#f7f6f2;--text:#1c1b19;--muted:#6d6b64;--accent:#a8701a;--line:#dedbd2}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#111214;--text:#e9e7e1;--muted:#9b998f;--accent:#f2b84b;--line:#2a2c31}}}}
+body{{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,sans-serif}}
+main{{max-width:640px;margin:48px auto;padding:0 16px}}h1{{font-size:20px}}ul{{list-style:none;padding:0}}
+li{{padding:10px 0;border-bottom:1px solid var(--line)}}a{{color:var(--accent);font-weight:600}}
+span,p{{color:var(--muted)}}code{{font-size:13px}}</style></head>
+<body><main><h1>exuvia hub</h1>{body}</main></body></html>"""

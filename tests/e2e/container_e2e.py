@@ -218,6 +218,10 @@ def exercise(http: Http, demo: str, scratch: str, from_template: bool) -> None:
     ctype = {k.lower(): v for k, v in headers.items()}.get("content-type", "")
     check(status == 200 and "javascript" in ctype and len(body) > 10_000, f"the views runtime is served ({len(body)} bytes)", status)
 
+    # The hub serves the web UI itself: no separate frontend to deploy.
+    status, _, body = http.request("GET", f"/p/{demo}/")
+    check(status == 200 and b'<div id="root">' in body, "the project's workbench page is served", status)
+
     view = http.json("GET", f"{api}/views/vol_board")
     paths = {s["path"] for s in view["sources"]}
     check({"view.json", "App.tsx"} <= paths, "the view's files are readable", sorted(paths))
