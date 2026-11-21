@@ -212,3 +212,119 @@ def test_refuses_a_directory_that_is_not_a_project(tmp_path, capsys):
     with pytest.raises(SystemExit, match="not an exuvia project"):
         main(str(tmp_path), None)
     assert not (tmp_path / "nodes").exists()
+
+
+def _serve(app):
+    """An app on a real port, in a thread; returns (url, server, thread)."""
+    import uvicorn
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 30
+    while not server.started:
+        assert time.monotonic() < deadline, "server did not start"
+        time.sleep(0.05)
+    return f"http://127.0.0.1:{port}", server, thread
+
+
+@pytest.fixture
+def hub_served(tmp_path, monkeypatch):
+    """`exuvia hub` with a token on a real port."""
+    from exuvia.server import create_hub_app
+
+    monkeypatch.setenv("EXUVIA_API_TOKEN", "s3cret")
+    url, server, thread = _serve(create_hub_app(tmp_path / "hub"))
+    yield url
+    server.should_exit = True
+    thread.join(timeout=10)
+
+
+def test_a_hub_url_relays_to_every_project(hub_served):
+    """`exuvia mcp --url <hub>`: one server for the whole hub. The agent
+    lists and creates projects, and names the project on every tool call."""
+    from exuvia.mcp_server import HubBackend, remote_backend
+
+    async def go():
+        backend = await remote_backend(hub_served, "s3cret")
+        assert isinstance(backend, HubBackend)
+        await backend.start()
+        try:
+            server = build_server(backend, await backend.instructions())
+            async with Client(server) as client:
+                tools = {t.name: t for t in (await client.list_tools()).tools}
+                empty = text(await client.call_tool("list_projects", {}))
+                made = await client.call_tool("create_project", {"id": "books", "name": "Books"})
+                await client.call_tool("create_project", {"id": "other"})
+                dup = await client.call_tool("create_project", {"id": "books"})
+                wrote = await client.call_tool("write_node", {"project": "books", "name": "nums", "kind": "python", "source": SRC})
+                ran = await client.call_tool("run_node", {"project": "books", "name": "nums"})
+                other = await client.call_tool("list_nodes", {"project": "other"})
+                no_project = await client.call_tool("list_nodes", {})
+                missing = await client.call_tool("list_nodes", {"project": "nope"})
+                hub_guide = text(await client.call_tool("guide", {}))
+                book_guide = await client.call_tool("guide", {"project": "books"})
+                listing = json.loads(text(await client.call_tool("list_projects", {})))
+            return locals() | {"instructions": server.instructions}
+        finally:
+            await backend.stop()
+
+    seen = asyncio.run(go())
+    tools = seen["tools"]
+    assert set(tools) == {"guide", "list_projects", "create_project", *(t["name"] for t in TOOLS)}
+    run_schema = tools["run_node"].input_schema
+    assert run_schema["required"] == ["project", "name"] and "project" in run_schema["properties"]
+    assert "project" not in tools["guide"].input_schema.get("required", [])
+    assert "no projects yet" in seen["instructions"]
+    assert json.loads(seen["empty"])["projects"] == []
+
+    assert not seen["made"].is_error
+    assert json.loads(text(seen["made"])) == {"id": "books", "name": "Books", "workbench": f"{hub_served}/p/books/"}
+    assert seen["dup"].is_error and "already exists" in text(seen["dup"])
+    assert not seen["wrote"].is_error
+    assert not seen["ran"].is_error and json.loads(text(seen["ran"]))["rows"] == 3
+    assert json.loads(text(seen["other"])) == []  # each project is its own
+    assert seen["no_project"].is_error and "name the project" in text(seen["no_project"])
+    assert seen["missing"].is_error and "no project nope" in text(seen["missing"])
+
+    assert "Every project tool takes the project's id" in seen["hub_guide"] and "- books: Books" in seen["hub_guide"]
+    assert not seen["book_guide"].is_error and "How exuvia works" in text(seen["book_guide"])
+    assert {p["id"]: p["nodes"] for p in seen["listing"]["projects"]} == {"books": 1, "other": 0}
+
+
+def test_a_hub_url_needs_the_token(hub_served):
+    from exuvia.mcp_server import remote_backend
+
+    async def go():
+        backend = await remote_backend(hub_served, None)
+        await backend.start()
+
+    with pytest.raises(RuntimeError, match="needs its API token"):
+        asyncio.run(go())
+
+
+def test_which_urls_relay_to_a_whole_hub(hub_served, served):
+    """Only a hub's own address; a hub project or an `exuvia serve` is one project."""
+    from exuvia.mcp_server import HubBackend, remote_backend
+
+    async def kinds():
+        out = []
+        for url in (hub_served, hub_served + "/", f"{hub_served}/p/books", served[0], "http://127.0.0.1:1"):
+            b = await remote_backend(url, "s3cret")
+            out.append(type(b).__name__)
+            await b.http.aclose()
+        return out
+
+    assert asyncio.run(kinds()) == ["HubBackend", "HubBackend", "RemoteBackend", "RemoteBackend", "RemoteBackend"]
+    assert HubBackend  # imported for the names above
+
+
+def test_hub_tools_route(tmp_path):
+    from exuvia.server import create_hub_app
+
+    with TestClient(create_hub_app(tmp_path / "hub")) as hub:
+        tools = hub.get("/api/tools").json()["tools"]
+        assert {t["name"] for t in tools} == TOOL_NAMES - {"guide"}

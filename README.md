@@ -579,7 +579,7 @@ Both commands include the workbench; neither needs a separate frontend.
 | First visit with `EXUVIA_API_TOKEN` set | `<url>/?token=<token>` | `<url>/?token=<token>`, or open `<url>/` and enter the token |
 | Project API prefix | `<url>/api` | `<url>/p/<project>/api` |
 | Server-wide API | none | `<url>/api` (`/api/projects`, `/api/schedule/tick`, ...) |
-| `exuvia mcp --url` | `<url>` | `<url>/p/<project>` |
+| `exuvia mcp --url` | `<url>` | `<url>` (every project), or `<url>/p/<project>` (just that one) |
 | Read-only check | `GET <url>/api/project` | `GET <url>/p/<project>/api/project` |
 | `GET <url>/healthz` answers | `"mode": "serve"` | `"mode": "hub"` |
 
@@ -720,20 +720,23 @@ there is no separate frontend to build or deploy.
    POST /api/projects {"id": "my-research"}.
    Then add an MCP server named `exuvia` to your own
    configuration, so you have exuvia's tools natively from
-   your next session on. Use your CLI's own command for it
-   if it has one, such as `claude mcp add`, `codex mcp add`
+   your next session on, for every project on the hub. Use
+   your CLI's own command for it if it has one, such as
+   `claude mcp add` (with --scope user), `codex mcp add`
    or `grok mcp add`. The server's command:
-   `uvx exuvia mcp --url <hub url>/p/my-research`
+   `uvx exuvia mcp --url <hub url>`
    (`pipx run exuvia mcp ...` without uv), with the
    environment variable EXUVIA_API_TOKEN_FILE set to the
    path of the file from step 2, so the token itself stays
    out of the MCP configuration. <hub url> is the address
-   this machine reaches the hub at.
+   this machine reaches the hub at. Check that its
+   list_projects tool shows my-research.
 8. Report the hub URL, where the token is stored, the
-   verification output, the project the MCP server is
-   connected to, and the hub's home page to open in a
+   verification output, the MCP server you added, and the
+   hub's home page to open in a
    browser: <hub url>/ (it lists my-research, creates and
-   deletes projects, and opens each one's workbench). It
+   deletes projects, opens each one's workbench, and under
+   Connect agent sets up MCP for any other agent). It
    asks for the token once and the browser keeps it in a
    cookie; tell me to paste it from the file from step 2
    rather than printing it.
@@ -980,7 +983,7 @@ instructions, and `guide` returns them for clients that don't pass those on.
 
 ```bash
 exuvia mcp my-project                                # open the project in this process
-exuvia mcp --url http://127.0.0.1:7420               # relay to a running `exuvia serve`
+exuvia mcp --url http://127.0.0.1:7420               # relay to a running `exuvia serve`, or every project of a hub
 exuvia mcp --url http://127.0.0.1:7420/p/my-project  # ...or to one project of a hub
 ```
 
@@ -1009,8 +1012,17 @@ be a project (`exuvia init` makes one). While `exuvia serve` has the project
 open, use `--url` instead: the server stays the only process that owns the
 project, its UI shows every change and run as it happens, and the tools reach
 it through `POST /api/tools/{name}`. `EXUVIA_API_TOKEN` is sent as a bearer
-token when set; `EXUVIA_API_TOKEN_FILE` (a path) keeps the token itself out of
-the MCP client's configuration.
+token when set; `EXUVIA_API_TOKEN_FILE` (a path; `~` is your home directory)
+keeps the token itself out of the MCP client's configuration.
+
+**A whole hub.** Given a hub's own address (its `/healthz` says `"mode":
+"hub"`), `exuvia mcp --url` serves every project on it: `list_projects`,
+`create_project`, and each project tool with a required `project` argument
+(the project's id); `guide` with `project` returns that project's
+instructions, and without it describes the hub and lists its projects. One
+MCP server then covers all of them, including ones created later. A hub's
+home page writes this setup out (**Connect agent**). For an agent that should
+see only one project, give `<hub>/p/<project>` instead.
 
 Code the client changes is recorded with the origin `mcp`, and nodes it runs
 with the trigger `mcp`, so the history shows which changes came from your
@@ -1046,7 +1058,13 @@ or a system cron.
 `exuvia hub <dir>` serves every project under one directory, each with the
 full API under its own prefix and the web UI at `/p/<project>/`. `/` is the
 hub's home page: it lists the projects, creates one (from a template, when
-the hub has any) and opens its workbench, and deletes one. It is the shape a
+the hub has any) and opens its workbench, and deletes one. Its **Connect
+agent** button gives the [MCP](#mcp-the-agents-tools-in-your-own-agent) setup
+for the whole hub (one server for every project): a prompt that has your
+coding agent add the server itself, the `claude mcp add` and `codex mcp add`
+commands, and `mcpServers` JSON for other clients. Each reads the hub's token
+from a file (`~/.config/exuvia/<host>.token`, which the page shows how to
+create), never from its own config. It is the shape a
 multi-tenant host needs: one process (or one container) per tenant, one
 project per workflow. With `EXUVIA_API_TOKEN` set, the home page asks for the
 token, or a browser opens `/?token=<token>` or `/p/<project>/?token=<token>`
@@ -1060,7 +1078,8 @@ exuvia hub ./projects --templates ./templates --scheduler external
 |---|---|
 | `GET /` | the hub's home page (the web UI): list, create, open and delete projects |
 | `GET /p/{project}/` | that project's workbench (the web UI, talking to `/p/{project}/api`) |
-| `GET /api/projects` | list projects |
+| `GET /api/projects` | list projects (`{projects, templates, auth}`; `auth`: whether clients need the API token) |
+| `GET /api/tools` | the project tools, as each project's `/guide` lists them (for `exuvia mcp --url <hub>`) |
 | `POST /api/projects` | create one (`{id, name, template}`; templates come from `--templates` / `EXUVIA_TEMPLATES_DIR`) |
 | `PUT /api/projects/{project}/template` | replace its code with a template's (`{template}`): node files and views not in the template are removed (each view folder is replaced whole), the name, run history and stored outputs are kept, and removed files stay restorable from their revisions |
 | `DELETE /api/projects/{project}` | remove one |

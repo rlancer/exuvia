@@ -227,7 +227,7 @@ export const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 export const hubApi = {
   /** Every project and template; `token` checks a token before the browser keeps it. */
   projects: async (token?: string) =>
-    (await sendTo("GET", "/api/projects", undefined, undefined, token)).json() as Promise<{ projects: HubProject[]; templates: string[] }>,
+    (await sendTo("GET", "/api/projects", undefined, undefined, token)).json() as Promise<{ projects: HubProject[]; templates: string[]; auth: boolean }>,
   create: async (b: { id: string; name?: string; template?: string }) =>
     (await sendTo("POST", "/api/projects", b)).json() as Promise<{ id: string; name: string }>,
   remove: async (id: string) => {
