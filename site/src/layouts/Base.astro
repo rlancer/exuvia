@@ -68,6 +68,30 @@ const card = Astro.site ? new URL(url("/og.png"), Astro.site).href : url("/og.pn
           if (note) note.textContent = "";
         }, 1600);
       });
+
+      // Tabs (`[data-tabs]`, on the landing page): click or arrow keys move the
+      // selection, one panel shows.
+      for (const root of document.querySelectorAll<HTMLElement>("[data-tabs]")) {
+        const tabs = [...root.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+        const select = (tab: HTMLButtonElement, focus = false) => {
+          for (const t of tabs) {
+            const on = t === tab;
+            t.setAttribute("aria-selected", String(on));
+            t.tabIndex = on ? 0 : -1;
+            document.getElementById(t.getAttribute("aria-controls")!)!.hidden = !on;
+          }
+          if (focus) tab.focus();
+        };
+        tabs.forEach((tab, i) => {
+          tab.addEventListener("click", () => select(tab));
+          tab.addEventListener("keydown", (e) => {
+            const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+            if (!step) return;
+            e.preventDefault();
+            select(tabs[(i + step + tabs.length) % tabs.length], true);
+          });
+        });
+      }
     </script>
   </body>
 </html>
