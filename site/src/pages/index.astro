@@ -9,6 +9,7 @@ import NodeAnatomy from "../components/NodeAnatomy.astro";
 import Workbench from "../components/Workbench.astro";
 import ViewAnatomy from "../components/ViewAnatomy.astro";
 import Compare from "../components/Compare.astro";
+import Workflows from "../components/Workflows.astro";
 import agentPanel from "../assets/shots/agent-panel.png";
 import { agentDeployPrompt, agentSetupPrompt } from "../lib/docs";
 import { codeFigure, copyButton, getHighlighter } from "../lib/highlight";
@@ -258,13 +259,11 @@ const steps = [
       <header>
         <h2>Between a chat answer and a one-off app</h2>
         <p>
-          A chat with data connectors answers fast, but it can only assemble what fits in a conversation, and a
-          good answer cannot be run again. A coding agent can build a far stronger analysis, but each one becomes
-          an app of its own, with nothing kept of what it said last week. exuvia gives the agent a place to build:
-          the analysis is a graph you can rerun, every run is kept, and the interface is a view over stored
-          outputs.
+          There are two usual ways to do an analysis with a model, and each gives something up. exuvia gives the
+          agent a place to build instead. Here is one analysis done all three ways.
         </p>
       </header>
+      <Workflows />
       <Compare
         label="exuvia beside AI chat and coding agents"
         columns={["AI chat with connectors", "A coding agent on its own", "exuvia"]}
