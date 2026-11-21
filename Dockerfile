@@ -5,7 +5,7 @@
 #   headless hub:        docker run -p 7420:7420 -v exuvia-data:/data exuvia \
 #                          exuvia hub /data --host 0.0.0.0 --port 7420
 #
-# `npm run build` also builds the views runtime (exuvia/static/view-runtime/),
+# `bun run build` also builds the views runtime (exuvia/static/view-runtime/),
 # and static/ is copied in before `uv sync`, so the installed wheel ships it and
 # every role serves /api/view-runtime/runtime.js. tests/e2e/container_e2e.py
 # builds this image and drives the hub role over HTTP.
@@ -18,13 +18,13 @@
 #   USER exuvia
 
 # The UI bundle is the same on every platform, so it builds natively even in a
-# multi-arch build (see .github/workflows/image.yml).
-FROM --platform=$BUILDPLATFORM node:24-slim AS ui
+# multi-arch build (see .github/workflows/image.yml), with the bun mise.toml pins.
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.5-slim AS ui
 WORKDIR /src/ui
-COPY ui/package.json ui/package-lock.json ./
-RUN npm ci --no-audit --no-fund
+COPY ui/package.json ui/bun.lock ui/bunfig.toml ./
+RUN bun install --frozen-lockfile
 COPY ui/ ./
-RUN npm run build   # writes ../exuvia/static
+RUN bun run build   # writes ../exuvia/static
 
 FROM python:3.12-slim
 COPY --from=ghcr.io/astral-sh/uv:0.9.2 /uv /usr/local/bin/uv

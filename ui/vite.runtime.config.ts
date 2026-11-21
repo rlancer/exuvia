@@ -3,7 +3,7 @@
 // not reach a local server, and its CSP names no URL): the page fetches this
 // file and posts its source to the frame's bootstrap, which evaluates it. So
 // it has to be a single IIFE with every dependency inside, no chunks.
-// Built after the app (`npm run build`), into exuvia/static/view-runtime/.
+// Built after the app (`bun run build`), into exuvia/static/view-runtime/.
 import { defineConfig } from "vite";
 
 export default defineConfig({

@@ -1007,24 +1007,33 @@ hosts that attach credentials at the network edge).
 ## Contributing
 
 This section is for working on exuvia itself: everything in it runs from a
-clone. [mise](https://mise.jdx.dev/) supplies the tools (uv, Python, Node,
+clone. [mise](https://mise.jdx.dev/) supplies the tools (uv, Python, bun,
 actionlint) from `mise.toml`.
 
 ```bash
 git clone https://github.com/rlancer/exuvia
 cd exuvia
-mise run sync      # uv sync + npm install
+mise run sync      # uv sync + bun install
 mise run ui-dev    # Vite on :5180 proxying /api → :7420
 mise run demo      # exuvia serve examples/markets
 mise run ui-build  # bundle the UI and the views runtime into exuvia/static
 mise run test
-cd ui && npm test  # views runtime unit tests (Vitest)
+mise run ui-test   # views runtime unit tests (Vitest)
 mise run e2e       # build the container image and drive a hub in it over HTTP
 mise run agent-e2e # hand the setup prompt to a coding agent and check its work
 mise run lint-actions # actionlint + shellcheck over .github/workflows
 mise run site-dev   # the website on :4380
 mise run site-build # typecheck + static build into site/dist
 ```
+
+The UI and the website use [bun](https://bun.sh/) and no Node: `bun install`
+installs from `bun.lock`, and `bun run <script>` runs Vite, Vitest, Astro and
+wrangler on bun itself (each folder's `bunfig.toml`). Run a package binary
+as `bun run <bin>`, not `bunx`, which would pick up a Node on PATH, and the
+UI tests as `bun run test`: plain `bun test` is bun's own test runner. The
+one step on Node is `wrangler dev` (`mise run site-cf-dev`), whose local
+Workers runtime does not start under bun; mise installs Node for that task
+alone.
 
 The views runtime is a second build (`ui/vite.runtime.config.ts`): one
 self-contained script, because the page hands it to the frame as text and

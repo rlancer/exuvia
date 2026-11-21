@@ -8,8 +8,7 @@
     "build": "astro check && astro build",
     "preview": "astro preview",
     "typecheck": "astro check",
-    "capture": "node tools/capture.mjs",
-    "cf:dev": "wrangler dev",
+    "capture": "bun tools/capture.mjs",
     "deploy": "wrangler deploy"
   },
   "dependencies": {

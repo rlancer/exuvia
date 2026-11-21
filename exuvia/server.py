@@ -422,7 +422,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         the runtime that matches the server it talks to."""
         f = STATIC / "view-runtime" / "runtime.js"
         if not f.is_file():
-            raise HTTPException(404, "the views runtime is not built: run `npm run build` in exuvia/ui")
+            raise HTTPException(404, "the views runtime is not built: run `bun run build` in exuvia/ui")
         return FileResponse(f, media_type="text/javascript", headers={"Cache-Control": "no-cache"})
 
     # What a view's iframe may read: only the nodes in its manifest's `reads`.

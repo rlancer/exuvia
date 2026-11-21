@@ -81,17 +81,23 @@ jobs:
           EXUVIA_TEST_POSTGRES_URL: postgresql://postgres:ci@127.0.0.1:5432/postgres
         run: uv sync --extra dev --extra postgres --python 3.12 && uv run pytest -q
 
-      - uses: actions/setup-node@v5
+      # The bun version matches mise.toml; the cache is bun's package cache,
+      # keyed on the lockfile.
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
+          bun-version: "1.4.5"
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: bun-ui-${{ runner.os }}-${{ hashFiles('ui/bun.lock') }}
+          restore-keys: bun-ui-${{ runner.os }}-
 
       - name: UI typecheck + build
-        run: cd ui && npm ci && npm run build
+        run: cd ui && bun install --frozen-lockfile && bun run build
 
       - name: Views runtime unit tests
-        run: cd ui && npm test
+        run: cd ui && bun run test
 
       - name: CLI smoke (run example DAG headless)
         run: uv run exuvia run examples/markets && uv run exuvia status examples/markets

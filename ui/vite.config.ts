@@ -10,7 +10,7 @@ export default defineConfig({
     port: 5180,
     proxy: {
       // Includes the views runtime (`/api/view-runtime/runtime.js`), a
-      // separate build (vite.runtime.config.ts): run `npm run build` once.
+      // separate build (vite.runtime.config.ts): run `bun run build` once.
       "/api": { target: "http://127.0.0.1:7420", changeOrigin: true },
     },
   },

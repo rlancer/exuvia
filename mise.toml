@@ -1,5 +1,5 @@
 [tools]
-node = "24.12.0"
+bun = "1.4.5"
 python = "3.12.11"
 uv = "latest"
 # Lints .github/workflows (`mise run lint-actions`); actionlint runs
@@ -13,33 +13,40 @@ PYTHONUNBUFFERED = "1"
 # NOTE: mise on Windows only executes the first line of a multi-line `run`,
 # so multi-step tasks are chained on one line with `&&`.
 [tasks.sync]
-description = "Install Python (uv) and UI (npm) dependencies"
-run = "uv sync --extra dev && cd ui && npm install"
+description = "Install Python (uv) and UI (bun) dependencies"
+run = "uv sync --extra dev && cd ui && bun install"
 
 [tasks.ui-build]
 description = "Build the UI into exuvia/static (served by `exuvia serve`)"
-run = "cd ui && npm run build"
+run = "cd ui && bun run build"
+
+[tasks.ui-test]
+description = "Views runtime unit tests (Vitest; `bun test` would run bun's own runner instead)"
+run = "cd ui && bun run test"
 
 [tasks.ui-dev]
 description = "Vite dev server on :5180, proxying /api to exuvia on :7420"
-run = "cd ui && npm run dev"
+run = "cd ui && bun run dev"
 
 [tasks.site-dev]
 description = "Website (landing page + docs) dev server on :4380"
-run = "cd site && npm install && npm run dev"
+run = "cd site && bun install && bun run dev"
 
 [tasks.site-build]
 description = "Typecheck and build the website into site/dist"
-run = "cd site && npm install && npm run build"
+run = "cd site && bun install && bun run build"
 
 [tasks.site-cf-dev]
 description = "Build the website and serve it with wrangler on :8787"
-run = "cd site && npm install && npm run build && npm run cf:dev"
+# The one step on Node: `wrangler dev`'s local Workers runtime answers 503
+# when wrangler itself runs on bun (`wrangler deploy` is fine on bun).
+tools = { node = "24.12.0" }
+run = "cd site && bun install && bun run build && node node_modules/wrangler/bin/wrangler.js dev"
 
 [tasks.site-deploy]
 description = "Build the website and deploy it to https://exuvia.lobster.mp/ (needs `wrangler login`)"
 env = { SITE_URL = "https://exuvia.lobster.mp" }
-run = "cd site && npm ci && npm run build && npm run deploy"
+run = "cd site && bun install --frozen-lockfile && bun run build && bun run deploy"
 
 [tasks.demo]
 description = "Serve the example markets project on http://127.0.0.1:7420"
