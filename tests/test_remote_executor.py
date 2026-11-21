@@ -120,6 +120,28 @@ def test_remote_nodes_never_see_the_executors_token(remote_ws, tmp_path):
     assert (tmp_path / art["artifact_path"]).read_text(encoding="utf-8") == '{"token": null}'
 
 
+def test_remote_log_is_capped_and_keeps_the_traceback(remote_ws, tmp_path, monkeypatch):
+    from exuvia import executor
+
+    monkeypatch.setattr(executor, "MAX_LOG_BYTES", 8 * 1024)  # executor service runs in-process
+    write(tmp_path, "nodes/base.py", '''
+        import exuvia
+
+        @exuvia.node()
+        def base():
+            for i in range(20000):
+                print("spam", i)
+            raise RuntimeError("remote noisy boom")
+    ''')
+    remote_ws.reload()
+    finals = run(remote_ws, ["base"])
+    assert "remote noisy boom" in finals["base"]["error"]
+    log = remote_ws.store.run(finals["base"]["id"])["log"]
+    assert len(log.encode()) < 8 * 1024 + 500
+    assert log.startswith("spam 0") and "dropped" in log
+    assert "Traceback" in log and "remote noisy boom" in log
+
+
 def test_executor_requires_token(executor_url):
     assert httpx.get(f"{executor_url}/healthz").json()["auth"] is True
     assert httpx.head(f"{executor_url}/v1/bundles/{'0' * 24}").status_code == 401

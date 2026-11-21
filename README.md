@@ -1611,7 +1611,10 @@ it at start.
   on), killable timeouts (`EXUVIA_RUN_TIMEOUT`, default 1800 s; per node,
   `timeout=<seconds>`, SQL `-- timeout: 300`). A run that times out fails
   with `timed out after ...`; a runner killed from outside says so (a
-  SIGKILL exuvia did not send is usually the out-of-memory killer).
+  SIGKILL exuvia did not send is usually the out-of-memory killer). A run's
+  log is capped (`EXUVIA_MAX_LOG_KB`, default 1024, per attempt): past the
+  cap, a marker line says so, the middle is dropped, and the end, where a
+  traceback lands, is kept.
 - **Stopping a run.** A queued or running run can be stopped from the
   workbench (Stop), the MCP `cancel_run` tool, `exuvia cancel <run id> --url
   <project>` or `POST /api/runs/{id}/cancel`: a running attempt is killed, a
@@ -2889,6 +2892,7 @@ empty file, stops exuvia with an error.
 | `EXUVIA_MAX_PARALLEL` | 4 | concurrent node runs (control plane and executor) |
 | `EXUVIA_HUB_WARM_RUNNERS` | `EXUVIA_MAX_PARALLEL` | on a hub: runners kept warm for all its projects together (about 55 MB each; see "Architecture: control plane + executors") |
 | `EXUVIA_RUN_TIMEOUT` | 1800 | seconds before a node run is killed |
+| `EXUVIA_MAX_LOG_KB` | 1024 | log kept per run attempt: the first ¾ as it streams, the last ¼ when the attempt ends, the middle dropped (`0` = no cap); exuvia's own lines are kept whole |
 | `EXUVIA_RUNNER_WAIT` | 3600 | seconds a run of a `runs_on` node waits for a runner to take it before it fails (see "Runners") |
 | `EXUVIA_RUNNER_SILENCE` | 120 | seconds without a heartbeat after which a run a runner took fails |
 | `EXUVIA_BUNDLE_MAX_MB` | 50 | max project size shipped to a remote executor |
