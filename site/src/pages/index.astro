@@ -11,7 +11,7 @@ import ViewAnatomy from "../components/ViewAnatomy.astro";
 import Compare from "../components/Compare.astro";
 import Workflows from "../components/Workflows.astro";
 import agentPanel from "../assets/shots/agent-panel.png";
-import { agentDeployPrompt, agentSetupPrompt } from "../lib/docs";
+import { DEPLOY_TARGETS, EXAMPLE_HOSTNAME, agentDeployPrompt, agentSetupPrompt } from "../lib/docs";
 import { codeFigure, copyButton, getHighlighter } from "../lib/highlight";
 import { url } from "../lib/paths";
 
@@ -20,15 +20,15 @@ const handoffs = [
   {
     id: "local",
     label: "On your machine",
-    body: "Paste this into Claude Code, Cursor, Codex, Grok or any coding agent with a terminal. It installs exuvia, creates a project, starts the workbench and connects itself to the graph. No model key is needed: the model is the one your agent already runs on.",
-    href: "/docs/agent-setup/",
+    body: "Paste this into Claude Code, Cursor, Codex, Grok or any coding agent with a terminal. It fetches the setup steps from this site and runs them: it installs exuvia, creates a project, starts the workbench and connects itself to the graph. No model key is needed: the model is the one your agent already runs on.",
+    steps: "/agent/setup.txt",
     prompt: codeFigure(h, agentSetupPrompt(), "text"),
   },
   {
     id: "server",
     label: "On a server",
-    body: "Paste this into an agent that can reach your Docker host or Kubernetes cluster, a cloud VM or GKE, EKS or AKS, leave Docker or Kubernetes on the first line, whichever you use, and put your hostname on the second. On Docker it uses Swarm when the host is a Swarm manager and Compose otherwise. It deploys a hub from the published image behind a generated API token, puts it on your hostname with TLS, checks it end to end, then creates a project, connects itself to it and hands you the hub's home page, where you open that project or create more.",
-    href: "/docs/deploying/#hand-it-to-an-agent",
+    body: "Pick how you deploy and type your hostname, then paste this into an agent that can reach your Docker host or Kubernetes cluster: a cloud VM, or GKE, EKS or AKS. It deploys a hub from the published image behind a generated API token, puts it on your hostname with TLS, checks it end to end, then creates a project, connects itself to it and hands you the hub's home page.",
+    steps: `/agent/deploy/${DEPLOY_TARGETS[0].id}.txt`,
     prompt: codeFigure(h, agentDeployPrompt(), "text"),
   },
 ];
@@ -349,13 +349,46 @@ const steps = [
             <div
               class="handoff-panel"
               role="tabpanel"
+              data-deploy={item.id === "server" ? "" : undefined}
               id={`handoff-${item.id}`}
               aria-labelledby={`handoff-tab-${item.id}`}
               hidden={i !== 0}
             >
               <div class="handoff-text">
                 <p>{item.body}</p>
-                <a href={url(item.href)}>What the prompt does</a>
+                {item.id === "server" && (
+                  <div class="deploy-options">
+                    <fieldset>
+                      <legend>Deploy with</legend>
+                      <div class="choices">
+                        {DEPLOY_TARGETS.map((target, t) => (
+                          <label>
+                            <input type="radio" name="deploy-target" value={target.id} checked={t === 0} />
+                            <span>{target.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </fieldset>
+                    <label class="hostname">
+                      <span>Hostname for the UI</span>
+                      <input
+                        type="text"
+                        name="hostname"
+                        placeholder={EXAMPLE_HOSTNAME}
+                        autocomplete="off"
+                        autocapitalize="off"
+                        spellcheck="false"
+                        inputmode="url"
+                      />
+                    </label>
+                    <a class="which" href={url("/docs/deploying/#compose-swarm-and-kubernetes")}>
+                      Not sure which to pick?
+                    </a>
+                  </div>
+                )}
+                <a href={url(item.steps)} data-steps-link>
+                  Read the steps it follows
+                </a>
               </div>
               <Fragment set:html={item.prompt} />
             </div>
@@ -371,6 +404,39 @@ const steps = [
     </div>
   </section>
 </Base>
+
+<script>
+  import { DEPLOY_TARGETS, EXAMPLE_HOSTNAME } from "../lib/targets";
+
+  // The deploy prompt (README, "Hand it to an agent") names the example host
+  // and the first target's steps file. The picker and the hostname field swap
+  // those for the reader's, in the prompt that is copied and in the link.
+  const panel = document.querySelector<HTMLElement>("[data-deploy]");
+  const code = panel?.querySelector("[data-code] pre code");
+  if (panel && code) {
+    const template = code.textContent ?? "";
+    const link = panel.querySelector<HTMLAnchorElement>("[data-steps-link]")!;
+    const host = panel.querySelector<HTMLInputElement>('input[name="hostname"]')!;
+    const ids = DEPLOY_TARGETS.map((t) => t.id).join("|");
+    const steps = new RegExp(`/agent/deploy/(?:${ids})\\.txt`);
+    const update = () => {
+      const target = panel.querySelector<HTMLInputElement>('input[name="deploy-target"]:checked')?.value ?? DEPLOY_TARGETS[0].id;
+      // What a person pastes is often a URL: keep its host (and port) only.
+      const name = host.value
+        .trim()
+        .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
+        .replace(/[/?#].*$/, "")
+        .replace(/[^A-Za-z0-9.:-]/g, "");
+      code.textContent = template
+        .replace(steps, `/agent/deploy/${target}.txt`)
+        .replace(EXAMPLE_HOSTNAME, name || EXAMPLE_HOSTNAME);
+      link.href = link.href.replace(steps, `/agent/deploy/${target}.txt`);
+    };
+    panel.addEventListener("input", update);
+    panel.addEventListener("change", update);
+    update();
+  }
+</script>
 
 <style>
   /* ---- hero --------------------------------------------------------------- */
@@ -702,6 +768,79 @@ const steps = [
     margin-top: 0.75rem;
     text-decoration-color: var(--accent);
     text-decoration-thickness: 2px;
+  }
+  .deploy-options {
+    display: grid;
+    gap: 1rem;
+    margin-top: 1.25rem;
+  }
+  .deploy-options fieldset {
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+  .deploy-options legend,
+  .hostname > span {
+    display: block;
+    margin-bottom: 0.4rem;
+    font-weight: 600;
+  }
+  .choices {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  /* Radio buttons drawn as the same segmented control as the tabs. */
+  .choices label {
+    position: relative;
+  }
+  .choices input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .choices span {
+    display: inline-block;
+    padding: 0.25rem 0.8rem 0.3rem;
+    border: var(--border-strong);
+    border-radius: 0.45rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .choices span:hover {
+    background: var(--panel);
+  }
+  .choices input:checked + span {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+  .choices input:focus-visible + span {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .hostname input {
+    width: 100%;
+    max-width: 22rem;
+    padding: 0.4rem 0.65rem;
+    border: var(--border-strong);
+    border-radius: 0.45rem;
+    background: var(--panel);
+    color: var(--text);
+    font: inherit;
+    font-family: var(--mono);
+  }
+  .hostname input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .handoff .which {
+    margin-top: 0;
+    justify-self: start;
+  }
+  .handoff-text > a {
+    display: block;
+    width: fit-content;
   }
   .next {
     display: flex;

@@ -11,6 +11,10 @@ import path from "node:path";
 import { Marked, type Tokens } from "marked";
 import { codeFigure, escapeHtml, getHighlighter } from "./highlight";
 import { absolute, markdownPath, url } from "./paths";
+import { SITE } from "./project";
+import { DEPLOY_TARGETS, EXAMPLE_HOSTNAME } from "./targets";
+
+export { DEPLOY_TARGETS, EXAMPLE_HOSTNAME };
 
 type PageSpec = {
   slug: string;
@@ -23,7 +27,8 @@ type PageSpec = {
 };
 
 /** README sections (and, within one, the `### ` subsection) whose first ```text
- * block is a prompt the landing page offers to copy. */
+ * block is a prompt the landing page offers to copy, and whose ```text file=…
+ * block is the steps that prompt has the agent fetch from this site. */
 const AGENT_SETUP = "Set up with your agent";
 const DEPLOY = { heading: "Deploying", subheading: "Hand it to an agent" };
 
@@ -187,16 +192,23 @@ function readmeSections(): Map<string, string> {
   return sections;
 }
 
-/** The first ```text block of a README section, or of one `### ` subsection of it. */
-function textBlock(heading: string, subheading?: string): string {
-  const where = subheading ? `"## ${heading}" > "### ${subheading}"` : `"## ${heading}"`;
+/** A README section, or one `### ` subsection of it. */
+function readmeText(heading: string, subheading?: string): string {
   let text = (readmeSections().get(heading) ?? "").replace(/\r\n/g, "\n");
   if (subheading) {
     const start = text.split("\n").findIndex((line) => line.trimEnd() === `### ${subheading}`);
     text = start < 0 ? "" : text.split("\n").slice(start + 1).join("\n").split(/^### /m)[0];
   }
-  const block = /^```text\n([\s\S]*?)\n```$/m.exec(text);
-  if (!block) throw new Error(`README.md ${where} has no \`\`\`text block for the landing page to show.`);
+  return text;
+}
+
+/** The first ```text block of a README section (`file` unset), or its ```text file=<file> block. */
+function textBlock(heading: string, subheading?: string, file?: string): string {
+  const where = subheading ? `"## ${heading}" > "### ${subheading}"` : `"## ${heading}"`;
+  const info = file ? `text file=${file}` : "text";
+  const open = info.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const block = new RegExp(`^\`\`\`${open}\n([\\s\\S]*?)\n\`\`\`$`, "m").exec(readmeText(heading, subheading));
+  if (!block) throw new Error(`README.md ${where} has no \`\`\`${info} block.`);
   return block[1];
 }
 
@@ -205,12 +217,93 @@ function textBlock(heading: string, subheading?: string): string {
  * so the landing page and the docs page show one text.
  */
 export function agentSetupPrompt(): string {
-  return textBlock(AGENT_SETUP);
+  return checkPrompt(textBlock(AGENT_SETUP));
 }
 
 /** The prompt that has an agent deploy a hub to a server or cluster, read from the README. */
 export function agentDeployPrompt(): string {
-  return textBlock(DEPLOY.heading, DEPLOY.subheading);
+  const prompt = checkPrompt(textBlock(DEPLOY.heading, DEPLOY.subheading));
+  // The landing page fills in the reader's hostname and target by swapping these.
+  if (!prompt.includes(EXAMPLE_HOSTNAME) || !prompt.includes(`${SITE}/agent/deploy/${DEPLOY_TARGETS[0].id}.txt`)) {
+    throw new Error(
+      `The README's deploy prompt must name the host ${EXAMPLE_HOSTNAME} and ` +
+        `${SITE}/agent/deploy/${DEPLOY_TARGETS[0].id}.txt: the landing page replaces them.`,
+    );
+  }
+  return prompt;
+}
+
+export type AgentFile = { path: string; text: string };
+
+/**
+ * The steps the prompts send an agent to, as plain text files under /agent/:
+ * the setup steps as written, and the deploy steps once per target.
+ */
+export function agentFiles(): AgentFile[] {
+  const deploy = textBlock(DEPLOY.heading, DEPLOY.subheading, "agent/deploy/<target>.txt");
+  return [
+    { path: "/agent/setup.txt", text: textBlock(AGENT_SETUP, undefined, "agent/setup.txt") + "\n" },
+    ...DEPLOY_TARGETS.map((target) => ({
+      path: `/agent/deploy/${target.id}.txt`,
+      text: stepsFor(deploy, target.label).replaceAll("<target>", target.name) + "\n",
+    })),
+  ];
+}
+
+/** Fails the build when a prompt sends the agent to a file under this site that the build does not make. */
+function checkPrompt(prompt: string): string {
+  const site = SITE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const made = new Set([
+    "/agent/setup.txt",
+    ...DEPLOY_TARGETS.map((t) => `/agent/deploy/${t.id}.txt`),
+  ]);
+  for (const m of prompt.matchAll(new RegExp(`${site}(/\\S*)`, "g"))) {
+    if (!made.has(m[1])) throw new Error(`A README prompt links to ${m[0]}, which the site does not serve.`);
+  }
+  return prompt;
+}
+
+const TARGET_ITEM = /^( +)- ((?:Compose|Swarm|Kubernetes)(?:(?:, | and )(?:Compose|Swarm|Kubernetes))*): (.*)$/;
+
+/**
+ * One target's copy of the deploy steps. A list item that starts with target
+ * names (`- Compose: …`, `- Compose and Swarm: …`) belongs to those targets:
+ * the others' items are dropped, and the target's own loses its label and
+ * becomes a plain line of its step. Every run of such items has to cover each
+ * target exactly once, so a step can't leave one out by mistake.
+ */
+function stepsFor(steps: string, label: string): string {
+  const lines = steps.split("\n");
+  const out: string[] = [];
+  let run: string[] = [];
+  const closeRun = (where: string) => {
+    if (!run.length) return;
+    for (const t of DEPLOY_TARGETS) {
+      const n = run.filter((l) => l === t.label).length;
+      if (n !== 1) {
+        throw new Error(`The README's deploy steps name ${t.label} ${n} times in the items before "${where}".`);
+      }
+    }
+    run = [];
+  };
+  for (let i = 0; i < lines.length; ) {
+    const m = TARGET_ITEM.exec(lines[i]);
+    if (!m) {
+      closeRun(lines[i].trim());
+      out.push(lines[i++]);
+      continue;
+    }
+    const [, indent, names, first] = m;
+    const labels = names.split(/, | and /);
+    run.push(...labels);
+    const body = [indent + first];
+    for (i++; i < lines.length && lines[i].trim() && lines[i].search(/\S/) > indent.length; i++) {
+      body.push(lines[i].replace(/^  /, ""));
+    }
+    if (labels.includes(label)) out.push(...body);
+  }
+  closeRun("the end");
+  return out.join("\n");
 }
 
 /**

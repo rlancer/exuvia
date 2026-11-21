@@ -1,5 +1,5 @@
 import type { APIRoute } from "astro";
-import { GROUPS, getDocs } from "../lib/docs";
+import { DEPLOY_TARGETS, GROUPS, getDocs } from "../lib/docs";
 import { absolute, markdownPath } from "../lib/paths";
 import { GITHUB, PYPI, SUMMARY } from "../lib/project";
 
@@ -20,6 +20,10 @@ export const GET: APIRoute = async () => {
       "exuvia is a Python package (`pip install exuvia`) with a browser workbench, a command line,",
       "an HTTP API and an MCP server. Each docs page below is plain Markdown. To have a coding agent",
       "install and set up exuvia, start with Agent setup.",
+      "",
+      "Steps written for an agent to follow, as plain text:",
+      `- ${absolute("/agent/setup.txt")}: set exuvia up on this machine`,
+      ...DEPLOY_TARGETS.map((t) => `- ${absolute(`/agent/deploy/${t.id}.txt`)}: deploy a hub with ${t.name}`),
       "",
       `Source code: ${GITHUB}`,
       `Package: ${PYPI}`,
