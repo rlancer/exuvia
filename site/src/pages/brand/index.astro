@@ -460,9 +460,10 @@ const pictureOf = (file: string) => url(`/brand/${file}`);
         <header class="say">
           <h2>Social cards</h2>
           <p>
-            The picture a link to exuvia unfolds into when it is shared. Every page has its own, at {CARD.width} by{" "}
-            {CARD.height} pixels. The home page's is under water, like the page; the rest wear the app's palette, and
-            each part of the docs has one of the animals on it, oldest first.
+            The picture a link to exuvia unfolds into when it is shared, at {CARD.width} by {CARD.height} pixels. A
+            card has no words on it: the title and the description come from the page. The home page's is under
+            water, like the page; the rest are on the app's canvas, and each part of the docs has one of the animals,
+            oldest first.
           </p>
         </header>
         <figure class="card first">
@@ -470,7 +471,7 @@ const pictureOf = (file: string) => url(`/brand/${file}`);
             <img src={url(home.src)} width={CARD.width} height={CARD.height} alt={home.alt} />
           </a>
           <figcaption>
-            <a href={url(home.page)}>Home page</a>
+            <a href={url(home.page)}>{home.label}</a>
             <a class="mono" href={url(home.src)} download={`exuvia-${home.name}.png`}>{home.name}.png</a>
           </figcaption>
         </figure>
@@ -483,7 +484,7 @@ const pictureOf = (file: string) => url(`/brand/${file}`);
                     <img src={url(card.src)} width={CARD.width} height={CARD.height} alt={card.alt} loading="lazy" />
                   </a>
                   <figcaption>
-                    <a href={url(card.page)}>{card.crumb && card.look === "doc" ? card.title : card.crumb}</a>
+                    <a href={url(card.page)}>{card.label}</a>
                     <a class="mono" href={url(card.src)} download={`exuvia-${card.name}.png`}>
                       {card.name}.png
                     </a>

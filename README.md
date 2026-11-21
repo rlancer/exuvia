@@ -1198,9 +1198,11 @@ site build fails when a section is added, renamed or removed without
 updating that map. The getting-started tutorial is the one hand-written page
 (`site/src/docs/getting-started.md`). `/brand/` is the brand page: the name,
 the mark, the colours, the type, the animals and every social card, all read
-from the code that draws them (`site/src/lib/brand.ts`). Every page has a
-social card of its own, a PNG in `site/public/og/` listed in
-`site/src/lib/cards.ts`; the build fails when a page's card is missing.
+from the code that draws them (`site/src/lib/brand.ts`). Every page names a
+social card, a PNG in `site/public/og/` listed in `site/src/lib/cards.ts`: a
+picture with no words on it, one for the home page, one for the docs' front
+page, one for each group of docs pages and one for the brand page. The build
+fails when a page's card is missing.
 `site/tools/capture.mjs` retakes the product screenshots from a running
 `exuvia serve`, and photographs the social cards from the site's own
 `/card/` pages, which exist only under `astro dev`. The animals on the landing page are low-poly models built in code
