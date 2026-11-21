@@ -170,20 +170,27 @@ def wait_settled(pk: packages.Packages, timeout: float = 60) -> dict:
     raise AssertionError(f"still {st['status']}")
 
 
-def test_add_pins_a_bare_name_and_prebuilds(project):
+def test_add_pins_a_bare_name_and_prebuilds(project, monkeypatch):
+    from importlib import metadata
+
     root, index, ws = project
     pyproject(root, index, [])
+    # One of exuvia's own packages, served locally at its installed version
+    # (uv runs offline, so resolving it cannot reach PyPI).
+    links = root.parent / "links"
+    make_wheel(links, "tzdata", metadata.version("tzdata"), "")
+    monkeypatch.setenv("UV_FIND_LINKS", str(links))
     events = []
     pk = packages.Packages(root, publish=events.append)
-    st = pk.add(["acme-internal", "pandas"])
+    st = pk.add(["acme-internal", "tzdata"])
     text = (root / "pyproject.toml").read_text(encoding="utf-8")
     assert '"acme-internal==1.0"' in text  # pinned to the version that resolved
-    assert '"pandas"' in text  # exuvia's own: left to follow exuvia
+    assert '"tzdata"' in text  # exuvia's own: left to follow exuvia
     st = wait_settled(pk)  # installed in the background, before any run
     assert st["status"] == "ready" and st["installed"] == 1
     rows = {p["name"]: (p["version"], p["source"]) for p in st["packages"]}
     assert rows["acme-internal"] == ("1.0", "project")
-    assert rows["pandas"][1] == "exuvia"
+    assert rows["tzdata"][1] == "exuvia"
     assert {"type": "packages"} in events
 
 
