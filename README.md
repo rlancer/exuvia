@@ -117,6 +117,13 @@ a graph: https://github.com/rlancer/exuvia
    from step 3 has to be running whenever I use it.
 6. Run the `hello` node with the `run_node` tool to check the
    setup, then ask me what I want to build.
+
+If exuvia itself goes wrong at any point (a step here
+fails, a tool errors on valid input, the guide is wrong or
+unclear), tell me and offer to report it: call the
+`report_issue` tool, or before the tools are available
+open https://github.com/rlancer/exuvia/issues. Reports are
+welcome. Show me the text first, and leave out secrets.
 ```
 
 What you end up with:
@@ -571,38 +578,62 @@ placement.
 
 ### Hand it to an agent
 
-Paste this into a coding agent (Claude Code, Cursor, ...) that has access to
-your Docker host or cluster. Change the first line to the platform you want.
+Paste this into a coding agent (Claude Code, Cursor, Codex, Grok, ...) that
+has access to your Docker host or cluster: a cloud VM with Docker, or a
+managed Kubernetes such as GKE, EKS or AKS. Change the first line to the
+platform you want. Besides deploying and checking the hub, the agent creates
+a first project on it and connects itself to that project over
+[MCP](#mcp-the-agents-tools-in-your-own-agent), as the local prompt does.
 
 ```text
-Deploy exuvia (https://github.com/rlancer/exuvia, a file-backed DAG workbench
-with an HTTP API) as a headless hub on: Docker Compose | Docker Swarm | Kubernetes.
+Deploy exuvia (https://github.com/rlancer/exuvia, a
+file-backed DAG workbench with an HTTP API) as a headless
+hub on: Docker Compose | Docker Swarm | Kubernetes.
 
-1. Get the deploy file from the repo: deploy/compose.yaml for Compose or Swarm,
-   deploy/kubernetes.yaml for Kubernetes
-   (https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/<file>).
-   Read the comments at the top of the file; they are the instructions.
-2. Generate a random API token (e.g. `openssl rand -hex 32`). Store it as the
-   EXUVIA_API_TOKEN variable (Compose/Swarm) or as `api-token` in a secret
-   named `exuvia` (Kubernetes). Don't print it in logs or commit it.
-3. Image: ghcr.io/rlancer/exuvia:latest, public, no login needed. If the hosts
-   can't reach ghcr.io, copy it to a registry they can reach (docker pull, tag,
-   push) and set EXUVIA_IMAGE (Compose/Swarm) or the Deployment's image.
+1. Download the deploy file: compose.yaml for Compose or
+   Swarm, kubernetes.yaml for Kubernetes, from
+   https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/
+   Read the comments at the top of the file; they are the
+   instructions.
+2. Generate a random API token (e.g. `openssl rand -hex 32`).
+   Store it as the EXUVIA_API_TOKEN variable (Compose/Swarm)
+   or as `api-token` in a secret named `exuvia` (Kubernetes).
+   Don't print it in logs or commit it.
+3. Image: ghcr.io/rlancer/exuvia:latest, public, no login
+   needed. If the hosts can't reach ghcr.io, copy it to a
+   registry they can reach (docker pull, tag, push) and set
+   EXUVIA_IMAGE (Compose/Swarm) or the Deployment's image.
 4. Bring it up and wait until it is healthy:
    - Compose: `docker compose -f compose.yaml up -d --wait`
-   - Swarm:   `docker stack deploy -c compose.yaml exuvia`
-   - Kubernetes: `kubectl create namespace exuvia`, create the secret,
-     `kubectl -n exuvia apply -f kubernetes.yaml`,
+   - Swarm: `docker stack deploy -c compose.yaml exuvia`
+   - Kubernetes: `kubectl create namespace exuvia`, create
+     the secret, `kubectl -n exuvia apply -f kubernetes.yaml`,
      `kubectl -n exuvia rollout status deployment/exuvia-hub`
-5. Verify: GET /healthz returns {"ok": true, "mode": "hub"}. With
-   `Authorization: Bearer <token>`: POST /api/projects {"id": "smoke"},
-   PUT /p/smoke/api/nodes/hello {"source": "select 42 as answer", "kind": "sql"},
+5. Verify: GET /healthz returns {"ok": true, "mode": "hub"}.
+   With `Authorization: Bearer <token>`:
+   POST /api/projects {"id": "smoke"},
+   PUT /p/smoke/api/nodes/hello
+     {"source": "select 42 as answer", "kind": "sql"},
    POST /p/smoke/api/run {"wait": 60} returns "ok": true,
-   GET /p/smoke/api/nodes/hello/data returns the column `answer` and rows [[42]];
-   then DELETE /api/projects/smoke.
-6. Keep one replica (the hub owns its volume). Don't expose it publicly
-   without TLS in front (an Ingress, a load balancer or a reverse proxy).
-7. Report the URL, where the token is stored, and the verification output.
+   GET /p/smoke/api/nodes/hello/data returns the column
+   `answer` and rows [[42]]; then DELETE /api/projects/smoke.
+6. Keep one replica (the hub owns its volume). Don't expose
+   it publicly without TLS in front (an Ingress, a load
+   balancer or a reverse proxy).
+7. Create a project for me:
+   POST /api/projects {"id": "my-research"}.
+   Then add an MCP server named `exuvia` to your own
+   configuration, so you have exuvia's tools natively from
+   your next session on. Use your CLI's own command for it
+   if it has one, such as `claude mcp add`, `codex mcp add`
+   or `grok mcp add`. The server's command:
+   `uvx exuvia mcp --url <hub url>/p/my-research`
+   (`pipx run exuvia mcp ...` without uv), with the
+   environment variable EXUVIA_API_TOKEN set to the token.
+   <hub url> is the address this machine reaches the hub at.
+8. Report the URL, where the token is stored, the
+   verification output, and the project the MCP server is
+   connected to.
 ```
 
 ### One container with docker run
@@ -679,7 +710,8 @@ The agent runs a tool loop over the live workspace: `list_nodes`, `read_node`,
 `delete_file` (shared helpers under `lib/`), `list_views` / `read_view` /
 `write_view` / `write_view_file` / `delete_view_file` / `delete_view` (see
 "Views"), `run_node`, `define_param`, and
-`query_data` (DuckDB over every node's current output). It looks at real column names before writing, runs
+`query_data` (DuckDB over every node's current output), and `report_issue`
+(see "MCP"). It looks at real column names before writing, runs
 what it writes, reads the traceback when something fails, and fixes it. Every
 tool call shows up in the chat, and nodes it touches flash on the canvas.
 
@@ -782,6 +814,19 @@ Code the client changes is recorded with the origin `mcp`, and nodes it runs
 with the trigger `mcp`, so the history shows which changes came from your
 agent. A tool that fails returns its error (a traceback's last lines, an
 invalid input) as the tool result, for the model to read and fix.
+
+**Reporting problems.** When the problem is exuvia's rather than your
+project's (a tool fails on valid input, the instructions are wrong or
+unclear, something you need is missing), your agent can say so with the
+`report_issue` tool. It takes a `title`, the `details` (what it did, the exact
+error, what it expected) and a `kind` (`bug`, `idea` or `feedback`), and it
+**sends nothing**: it returns a draft issue, with the exuvia, Python and OS
+versions added, and a link that opens it prefilled at
+[github.com/rlancer/exuvia/issues](https://github.com/rlancer/exuvia/issues).
+You read it and press Submit, or tell the agent to file it with `gh`. The
+agent's instructions ask it to offer this whenever exuvia is at fault, and to
+leave secrets and your data out. Issues from anyone are welcome, with or
+without an agent.
 
 ## Headless
 
@@ -1094,6 +1139,10 @@ the package to public once (package settings → Change visibility).
 
 Prototype. Not yet: multi-user auth (only a shared token; the hub leaves tenancy to its
 host), executor autoscaling, incremental nodes (run parameters cover date partitions), non-Python runtimes, secrets management beyond env vars.
+
+Found a bug, or something missing? Open an issue at
+[github.com/rlancer/exuvia/issues](https://github.com/rlancer/exuvia/issues). Your agent can draft one
+for you with `report_issue` (see "MCP").
 
 ## License
 

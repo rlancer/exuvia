@@ -1,6 +1,7 @@
 ---
 import Mark from "./Mark.astro";
 import { url } from "../lib/paths";
+import { GITHUB, PYPI } from "../lib/project";
 ---
 
 <footer class="reverse">
@@ -28,7 +29,9 @@ import { url } from "../lib/paths";
     </nav>
     <nav aria-label="Project">
       <h2>Project</h2>
-      <a href="https://pypi.org/project/exuvia/" rel="noopener">exuvia on PyPI</a>
+      <a href={GITHUB} rel="noopener">Source on GitHub</a>
+      <a href={PYPI} rel="noopener">exuvia on PyPI</a>
+      <a href={url("/llms.txt")}>llms.txt for agents</a>
       <a href={url("/brand/")}>Brand</a>
       <a href="https://www.apache.org/licenses/LICENSE-2.0" rel="noopener">Apache-2.0 license</a>
     </nav>

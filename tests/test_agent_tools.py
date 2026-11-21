@@ -69,3 +69,46 @@ def test_input_validation():
     assert "one of" in _validate("write_node", {"name": "a", "kind": "rust", "source": "x"})
     assert "unexpected" in _validate("read_node", {"name": "a", "extra": 1})
     assert "unknown tool" in _validate("rm_rf", {})
+
+
+def test_report_issue_drafts_but_sends_nothing(tmp_path):
+    from urllib.parse import parse_qs, urlsplit
+
+    agent = Agent(Workspace(tmp_path))
+    ok, text, _ = call(agent, "report_issue", {"title": "write_node  fails\non  valid input", "details": "Steps: ...\n\nError: KeyError 'x'"})
+    out = json.loads(text)
+    assert ok and out["title"] == "write_node fails on valid input"
+    assert out["labels"] == ["bug"] and "Error: KeyError 'x'" in out["body"]
+    assert "exuvia:" in out["body"] and "Python:" in out["body"]  # environment is added
+    assert "NOTHING HAS BEEN SENT" in out["next"] and "gh issue create --repo rlancer/exuvia" in out["next"]
+
+    url = urlsplit(out["url"])
+    assert f"{url.scheme}://{url.netloc}{url.path}" == "https://github.com/rlancer/exuvia/issues/new"
+    query = parse_qs(url.query)
+    assert query["title"] == [out["title"]] and query["body"] == [out["body"]] and query["labels"] == ["bug"]
+
+    ok, text, _ = call(agent, "report_issue", {"title": "a chart helper", "details": "d", "kind": "idea"})
+    assert json.loads(text)["labels"] == ["enhancement"]
+    ok, text, _ = call(agent, "report_issue", {"title": "t", "details": "d", "kind": "feedback"})
+    assert json.loads(text)["labels"] == [] and "labels=" not in json.loads(text)["url"]
+
+
+def test_report_issue_link_stays_within_what_github_accepts(tmp_path):
+    agent = Agent(Workspace(tmp_path))
+    ok, text, _ = call(agent, "report_issue", {"title": "huge traceback", "details": "line é\n" * 5000})
+    out = json.loads(text)
+    assert ok and len(out["url"]) <= 7000 and "Shortened" in out["url"].replace("%20", " ")
+    assert out["body"].count("line é") == 5000  # the draft itself is whole
+    assert "prefer `gh`" in out["next"]
+
+
+def test_report_issue_validates_its_input(tmp_path):
+    agent = Agent(Workspace(tmp_path))
+    assert not asyncio.run(agent.call_tool("report_issue", {"title": "x"}))[0]
+    ok, text, _ = asyncio.run(agent.call_tool("report_issue", {"title": "x", "details": "y", "kind": "rant"}))
+    assert not ok and "must be one of" in text
+
+
+def test_the_guide_tells_the_agent_where_to_report(tmp_path):
+    text = Agent(Workspace(tmp_path)).instructions()
+    assert "report_issue" in text and "github.com/rlancer/exuvia" in text

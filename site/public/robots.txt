@@ -1,2 +1,5 @@
 User-agent: *
 Allow: /
+
+# For language models: /llms.txt indexes the docs as Markdown, and
+# /llms-full.txt is every docs page in one file.

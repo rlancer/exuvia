@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Marked, type Tokens } from "marked";
 import { codeFigure, escapeHtml, getHighlighter } from "./highlight";
-import { url } from "./paths";
+import { absolute, markdownPath, url } from "./paths";
 
 type PageSpec = {
   slug: string;
@@ -22,8 +22,10 @@ type PageSpec = {
   summary: string;
 };
 
-/** The README section whose first ```text block is the prompt the landing page offers to copy. */
+/** README sections (and, within one, the `### ` subsection) whose first ```text
+ * block is a prompt the landing page offers to copy. */
 const AGENT_SETUP = "Set up with your agent";
+const DEPLOY = { heading: "Deploying", subheading: "Hand it to an agent" };
 
 const PAGES: PageSpec[] = [
   {
@@ -146,6 +148,8 @@ export type DocPage = {
   toc: TocEntry[];
   /** Plain text for the search index. */
   text: string;
+  /** The page as standalone Markdown for agents, served at /docs/<slug>.md. */
+  markdown: string;
 };
 
 const SITE_ROOT = process.cwd();
@@ -183,15 +187,60 @@ function readmeSections(): Map<string, string> {
   return sections;
 }
 
+/** The first ```text block of a README section, or of one `### ` subsection of it. */
+function textBlock(heading: string, subheading?: string): string {
+  const where = subheading ? `"## ${heading}" > "### ${subheading}"` : `"## ${heading}"`;
+  let text = (readmeSections().get(heading) ?? "").replace(/\r\n/g, "\n");
+  if (subheading) {
+    const start = text.split("\n").findIndex((line) => line.trimEnd() === `### ${subheading}`);
+    text = start < 0 ? "" : text.split("\n").slice(start + 1).join("\n").split(/^### /m)[0];
+  }
+  const block = /^```text\n([\s\S]*?)\n```$/m.exec(text);
+  if (!block) throw new Error(`README.md ${where} has no \`\`\`text block for the landing page to show.`);
+  return block[1];
+}
+
 /**
  * The setup prompt people paste into their coding agent, read from the README
  * so the landing page and the docs page show one text.
  */
 export function agentSetupPrompt(): string {
-  const section = readmeSections().get(AGENT_SETUP);
-  const block = section && /^```text\n([\s\S]*?)\n```$/m.exec(section.replace(/\r\n/g, "\n"));
-  if (!block) throw new Error(`README.md "## ${AGENT_SETUP}" has no \`\`\`text block for the landing page to show.`);
-  return block[1];
+  return textBlock(AGENT_SETUP);
+}
+
+/** The prompt that has an agent deploy a hub to a server or cluster, read from the README. */
+export function agentDeployPrompt(): string {
+  return textBlock(DEPLOY.heading, DEPLOY.subheading);
+}
+
+/**
+ * The page's Markdown as an agent reads it on its own: a `# title` and the
+ * summary on top, README headings moved up a level to sit under that title,
+ * and README `#anchor` links pointed at the Markdown page that holds them.
+ * Code fences are left exactly as written.
+ */
+function agentMarkdown(spec: PageSpec, title: string, markdown: string, anchors: Map<string, string>): string {
+  const fromReadme = "heading" in spec.source;
+  let fenced = false;
+  const body = markdown
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => {
+      const fence = line.trimStart().startsWith("```");
+      if (fence) fenced = !fenced;
+      if (fenced || fence) return line;
+      if (fromReadme) line = line.replace(/^#(#{2,5}) /, "$1 ");
+      // The HTML renderer has already failed the build on an anchor no page holds.
+      return line.replace(/\]\(#([^)\s]+)\)/g, (_, id: string) => {
+        const [page, hash] = anchors.get(id)!.split("#");
+        if (page === `/docs/${spec.slug}/`) return `](#${id})`;
+        const slug = page.replace(/^\/docs\/|\/$/g, "");
+        return `](${absolute(markdownPath(slug))}${hash ? `#${hash}` : ""})`;
+      });
+    })
+    .join("\n")
+    .trim();
+  return `# ${title}\n\n> ${spec.summary}\n\n${body}\n`;
 }
 
 function inlineText(tokens: Tokens.Generic[] | undefined): string {
@@ -297,6 +346,15 @@ async function build(): Promise<DocPage[]> {
       .replace(/&amp;/g, "&")
       .replace(/\s+/g, " ")
       .trim();
-    return { slug: spec.slug, group: spec.group, title, summary: spec.summary, html, toc, text };
+    return {
+      slug: spec.slug,
+      group: spec.group,
+      title,
+      summary: spec.summary,
+      html,
+      toc,
+      text,
+      markdown: agentMarkdown(spec, title, markdown, anchors),
+    };
   });
 }

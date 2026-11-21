@@ -1,7 +1,7 @@
 ---
 import Base from "./Base.astro";
 import { GROUPS, getDocs, type DocPage } from "../lib/docs";
-import { url } from "../lib/paths";
+import { markdownPath, url } from "../lib/paths";
 
 interface Props {
   title: string;
@@ -17,6 +17,8 @@ const prev = index > 0 ? docs[index - 1] : undefined;
 const next = index >= 0 && index < docs.length - 1 ? docs[index + 1] : undefined;
 const toc = page?.toc ?? [];
 const top = toc.length ? Math.min(...toc.map((t) => t.depth)) : 0;
+const markdown = page ? url(markdownPath(page.slug)) : undefined;
+const icon = (d: string) => `<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">${d}</svg>`;
 ---
 
 <Base
@@ -26,6 +28,7 @@ const top = toc.length ? Math.min(...toc.map((t) => t.depth)) : 0;
   card={page ? `docs-${page.slug}` : "docs"}
   kind={page ? "article" : "website"}
 >
+  {markdown && <link slot="head" rel="alternate" type="text/markdown" href={markdown} title="This page as Markdown" />}
   <div class="wrap shell">
     <aside class="side">
       <div class="search" data-search data-index={url("/docs/search.json")}>
@@ -61,6 +64,26 @@ const top = toc.length ? Math.min(...toc.map((t) => t.depth)) : 0;
         <p class="crumb">{page?.group}</p>
         <h1>{title}</h1>
       </slot>
+      {
+        markdown && (
+          <div class="actions" role="group" aria-label="This page for an agent">
+            <button type="button" class="action" data-copy-page={markdown}>
+              <Fragment set:html={icon(`<path d="M5.5 5.5h8v8h-8z"/><path d="M10.5 5.5v-3h-8v8h3"/>`)} />
+              <span data-label>Copy page</span>
+            </button>
+            <a class="action" href={markdown}>
+              <Fragment set:html={icon(`<path d="M2 3.5h12v9H2z"/><path d="M4.5 10V6l1.75 2L8 6v4M10.5 6v4M9.25 8.75 10.5 10l1.25-1.25"/>`)} />
+              View as Markdown
+            </a>
+            <a class="action" data-ask="claude" target="_blank" rel="noopener" hidden>
+              Open in Claude <span aria-hidden="true">↗</span>
+            </a>
+            <a class="action" data-ask="chatgpt" target="_blank" rel="noopener" hidden>
+              Open in ChatGPT <span aria-hidden="true">↗</span>
+            </a>
+          </div>
+        )
+      }
       <div class="prose">
         <slot />
       </div>
@@ -257,6 +280,50 @@ const top = toc.length ? Math.min(...toc.map((t) => t.depth)) : 0;
   }
   .prose {
     margin-top: 1.75rem;
+  }
+
+  /* The page for an agent: its Markdown, copied or opened, or handed to a chat. */
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 1rem;
+  }
+  .action {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.3rem 0.7rem 0.35rem;
+    border: var(--border);
+    border-radius: 0.4rem;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.95rem;
+    line-height: 1.3;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .action[hidden] {
+    display: none;
+  }
+  .action:hover,
+  .action:focus-visible {
+    border-color: var(--line-strong);
+    background: var(--panel);
+    color: var(--text);
+  }
+  .action :global(svg) {
+    flex: none;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .action[data-state="copied"] {
+    border-color: var(--fresh);
+    color: var(--fresh);
   }
   .prose :global(> * + *) {
     margin-top: 1.1rem;
@@ -507,6 +574,57 @@ const top = toc.length ? Math.min(...toc.map((t) => t.depth)) : 0;
         input.focus();
       }
     });
+  }
+
+  // "Copy page" copies the page's Markdown twin. The fetch is handed to the
+  // clipboard as a promise so Safari still counts it as part of the click.
+  const copyPage = document.querySelector<HTMLButtonElement>("[data-copy-page]");
+  if (copyPage) {
+    const label = copyPage.querySelector<HTMLElement>("[data-label]")!;
+    copyPage.addEventListener("click", async () => {
+      const text = fetch(copyPage.dataset.copyPage!).then((r) => {
+        if (!r.ok) throw new Error(`${r.status}`);
+        return r.text();
+      });
+      const show = (state: string, words: string) => {
+        copyPage.dataset.state = state;
+        label.textContent = words;
+        setTimeout(() => {
+          delete copyPage.dataset.state;
+          label.textContent = "Copy page";
+        }, 1600);
+      };
+      const viaItem = async () => {
+        const blob = text.then((t) => new Blob([t], { type: "text/plain" }));
+        await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+      };
+      const viaText = async () => navigator.clipboard.writeText(await text);
+      try {
+        // Browsers that cannot take a promised ClipboardItem get the plain call.
+        await (typeof ClipboardItem !== "undefined" ? viaItem().catch(viaText) : viaText());
+        show("copied", "Copied");
+      } catch {
+        // "View as Markdown" sits next to it for copying by hand.
+        show("failed", "Could not copy");
+      }
+    });
+  }
+
+  // The chat links need this page's absolute Markdown address, which a preview
+  // build only learns in the browser, so they are filled in (and shown) here.
+  const asks = document.querySelectorAll<HTMLAnchorElement>("[data-ask]");
+  const md = document.querySelector<HTMLAnchorElement>('link[rel="alternate"][type="text/markdown"]');
+  if (md && asks.length) {
+    const index = document.querySelector<HTMLLinkElement>('link[title="llms.txt"]')!.href;
+    const prompt = `Read ${md.href} so you can answer questions about it. It is a page of the exuvia docs; the rest are indexed at ${index}.`;
+    const chats: Record<string, string> = {
+      claude: "https://claude.ai/new?q=",
+      chatgpt: "https://chatgpt.com/?hints=search&q=",
+    };
+    for (const a of asks) {
+      a.href = chats[a.dataset.ask!] + encodeURIComponent(prompt);
+      a.hidden = false;
+    }
   }
 
   // On a phone the docs menu starts closed so the page content comes first.
