@@ -727,6 +727,12 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
 
 # Marks the page a hub serves at / as the hub's home (ui/src/main.tsx).
 HUB_HOME_META = '<meta name="exuvia-hub" content="home">'
+# Kept under 300 characters with its JSON: an old client shows only that much.
+HUB_GUIDE_HINT = (
+    "This is an exuvia hub. MCP for a whole hub needs exuvia 0.3.11 or newer: "
+    "use `uvx exuvia@latest mcp --url <hub>`, or run `uv tool upgrade exuvia` or `pipx upgrade exuvia`. "
+    "For one project, use <hub>/p/<project>."
+)
 
 # A hub project's API; its workbench page (/p/<id>/) is not API.
 _HUB_API = re.compile(r"^/p/[^/]+/api(/|$)")
@@ -842,6 +848,14 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
         from .agent import TOOLS
 
         return {"tools": [{"name": t["name"], "description": t["description"], "input_schema": t["input_schema"]} for t in TOOLS]}
+
+    @app.get("/api/guide", include_in_schema=False)
+    def hub_guide() -> None:
+        """A project's guide is at /p/<id>/api/guide. Asked here, the caller is
+        an `exuvia mcp --url <hub>` from before hub-wide MCP (0.3.10 and older):
+        it takes the hub for one project and stops on anything but a 200,
+        showing the start of the body, so the 404 says what to do."""
+        raise HTTPException(404, HUB_GUIDE_HINT)
 
     @app.get("/api/projects")
     def projects() -> dict[str, Any]:

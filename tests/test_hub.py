@@ -325,6 +325,15 @@ def test_guide_serves_the_agent_instructions(hub):
     assert {"write_node", "run_node", "define_param"} <= {t["name"] for t in guide["tools"]}
 
 
+def test_an_old_mcp_client_is_told_to_upgrade(hub):
+    """exuvia 0.3.10 and older take a hub's address for one project and ask it
+    for /api/guide; they show the first 300 characters of the answer."""
+    r = hub.get("/api/guide")
+    assert r.status_code == 404
+    assert len(r.text) <= 300
+    assert "exuvia hub" in r.text and "uv tool upgrade exuvia" in r.text and "exuvia@latest" in r.text
+
+
 def fake_ui(tmp_path, monkeypatch) -> None:
     from exuvia import server
 

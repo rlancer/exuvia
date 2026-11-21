@@ -9,16 +9,16 @@ describe("MCP setup for a hub", () => {
     expect(s.server).toBe("exuvia");
     expect(s.url).toBe("https://exuvia.example.com");
     expect(s.claude).toBe(
-      'claude mcp add exuvia --scope user --env EXUVIA_API_TOKEN_FILE="$HOME/.config/exuvia/exuvia.example.com.token" -- uvx exuvia mcp --url https://exuvia.example.com',
+      'claude mcp add exuvia --scope user --env EXUVIA_API_TOKEN_FILE="$HOME/.config/exuvia/exuvia.example.com.token" -- uvx exuvia@latest mcp --url https://exuvia.example.com',
     );
     expect(s.codex).toBe(
-      'codex mcp add exuvia --env EXUVIA_API_TOKEN_FILE="$HOME/.config/exuvia/exuvia.example.com.token" -- uvx exuvia mcp --url https://exuvia.example.com',
+      'codex mcp add exuvia --env EXUVIA_API_TOKEN_FILE="$HOME/.config/exuvia/exuvia.example.com.token" -- uvx exuvia@latest mcp --url https://exuvia.example.com',
     );
     expect(JSON.parse(s.json)).toEqual({
       mcpServers: {
         exuvia: {
           command: "uvx",
-          args: ["exuvia", "mcp", "--url", "https://exuvia.example.com"],
+          args: ["exuvia@latest", "mcp", "--url", "https://exuvia.example.com"],
           env: { EXUVIA_API_TOKEN_FILE: "~/.config/exuvia/exuvia.example.com.token" },
         },
       },
@@ -27,13 +27,14 @@ describe("MCP setup for a hub", () => {
     expect(s.prompt).toContain("every project on it");
     expect(s.prompt).toContain("EXUVIA_API_TOKEN_FILE to ~/.config/exuvia/exuvia.example.com.token");
     expect(s.prompt).toContain("never print it");
+    expect(s.prompt).toContain("`uvx exuvia@latest mcp --url https://exuvia.example.com`");
   });
 
   it("leaves the token out when the hub has none", () => {
     const s = mcpSetup({ ...base, auth: false });
     expect(s.tokenFile).toBeNull();
     expect(s.saveToken).toBeNull();
-    expect(s.claude).toBe("claude mcp add exuvia --scope user -- uvx exuvia mcp --url https://exuvia.example.com");
+    expect(s.claude).toBe("claude mcp add exuvia --scope user -- uvx exuvia@latest mcp --url https://exuvia.example.com");
     expect(JSON.parse(s.json).mcpServers.exuvia.env).toBeUndefined();
     expect(s.prompt).not.toContain("TOKEN");
   });

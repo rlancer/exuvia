@@ -4,7 +4,7 @@
  * list_projects, create_project, and each project tool with a `project`
  * argument). The token never appears: clients read it from a file only the
  * user can read (EXUVIA_API_TOKEN_FILE; `~` there is the home directory,
- * exuvia/cli.py).
+ * exuvia/cli.py). The same file name is in the README's deploy prompt.
  */
 export interface McpSetup {
   /** The MCP server's name in the client. */
@@ -32,7 +32,9 @@ export function mcpSetup(o: { origin: string; host: string; auth: boolean }): Mc
   // In a shell, `~` after `=` is not expanded; $HOME is (inside double quotes).
   const shellFile = tokenFile && `"$HOME${tokenFile.slice(1)}"`;
   const env = (flag: string) => (shellFile ? ` ${flag} EXUVIA_API_TOKEN_FILE=${shellFile}` : "");
-  const command = ["uvx", "exuvia", "mcp", "--url", url];
+  // @latest: a plain `uvx exuvia` runs an exuvia installed with `uv tool
+  // install` when there is one, whatever its version, and hub-wide MCP is new.
+  const command = ["uvx", "exuvia@latest", "mcp", "--url", url];
 
   const prompt = [
     `Connect yourself over MCP to the exuvia hub at ${url}, so you have its tools natively from your next session on: every project on it (list_projects, create_project, and each project's tools).`,

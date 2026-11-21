@@ -621,7 +621,8 @@ its directory, so run one replica; to scale out or to survive losing the
 volume, point `EXUVIA_DB` at Postgres and `EXUVIA_ARTIFACT_STORE` at a bucket
 (table below). The comments at the top of each file cover the rest: the
 agent's API key, one project at `/` instead of a hub, a hostname with TLS
-(an Ingress on Kubernetes, Traefik labels on Swarm), and on Swarm the
+(an Ingress on Kubernetes, Traefik labels on Swarm, Caddy or Traefik on
+Compose), and on Swarm the
 secrets, the volume's node and stop-first updates.
 
 ### Hand it to an agent
@@ -632,9 +633,9 @@ managed Kubernetes such as GKE, EKS or AKS. Leave Docker or Kubernetes on the
 first line, whichever you use, and put your hostname on the second (its DNS
 record must point at your cluster's ingress or your host). On Docker the agent uses Swarm when the host is a Swarm manager
 and Compose otherwise. Besides deploying and checking the hub, the agent creates
-a first project on it, connects itself to that project over
-[MCP](#mcp-the-agents-tools-in-your-own-agent), as the local prompt does,
-and gives you the hub's home page, where you open that project's workbench
+a first project on it, connects itself to the hub over
+[MCP](#mcp-the-agents-tools-in-your-own-agent) (one server for every
+project, as the hub's **Connect agent** sets up), and gives you the hub's home page, where you open that project's workbench
 or create more. The hub serves the web UI itself, so that one deploy is the
 whole thing.
 
@@ -664,8 +665,11 @@ there is no separate frontend to build or deploy.
    - Swarm: pipe it into
      `docker secret create exuvia_api_token -`.
    - Kubernetes: `api-token` in a secret named `exuvia`.
-   Also keep it in a file only I can read on this machine:
-   the MCP server (step 7) and my browser need it.
+   Also keep it on this machine in
+   ~/.config/exuvia/<hostname>.token (the file the hub's
+   Connect agent uses), readable only by me: `mkdir -p
+   ~/.config/exuvia`, then write it with `umask 077`. The
+   MCP server (step 7) and my browser need it.
 3. Image: ghcr.io/rlancer/exuvia:latest, public, no login
    needed. If the hosts can't reach ghcr.io, copy it to a
    registry they can reach (docker pull, tag, push) and set
@@ -724,10 +728,11 @@ there is no separate frontend to build or deploy.
    your CLI's own command for it if it has one, such as
    `claude mcp add` (with --scope user), `codex mcp add`
    or `grok mcp add`. The server's command:
-   `uvx exuvia mcp --url <hub url>`
-   (`pipx run exuvia mcp ...` without uv), with the
-   environment variable EXUVIA_API_TOKEN_FILE set to the
-   path of the file from step 2, so the token itself stays
+   `uvx exuvia@latest mcp --url <hub url>`
+   (`pipx run exuvia mcp ...` without uv; @latest because
+   an older exuvia installed here can't serve a whole hub),
+   with the environment variable EXUVIA_API_TOKEN_FILE set
+   to the file from step 2, so the token itself stays
    out of the MCP configuration. <hub url> is the address
    this machine reaches the hub at. Check that its
    list_projects tool shows my-research.
@@ -1023,6 +1028,12 @@ instructions, and without it describes the hub and lists its projects. One
 MCP server then covers all of them, including ones created later. A hub's
 home page writes this setup out (**Connect agent**). For an agent that should
 see only one project, give `<hub>/p/<project>` instead.
+
+This needs exuvia 0.3.11 or newer on the agent's machine, so the hub's
+commands say `uvx exuvia@latest`: a plain `uvx exuvia` runs the `exuvia`
+installed with `uv tool install` when there is one, however old. An older
+exuvia given a hub's address doesn't start, and says to upgrade
+(`uv tool upgrade exuvia` or `pipx upgrade exuvia`).
 
 Code the client changes is recorded with the origin `mcp`, and nodes it runs
 with the trigger `mcp`, so the history shows which changes came from your
