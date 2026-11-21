@@ -7,7 +7,10 @@
 # This file is all you need, no clone:
 #   curl -O https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/compose.yaml
 #
-#   EXUVIA_API_TOKEN=change-me docker compose up -d --wait
+#   EXUVIA_API_TOKEN=change-me docker compose up -d --wait --pull always
+#
+# `--pull always` fetches the current `latest` even when the host already has
+# an older one (Compose otherwise reuses it).
 #
 # Then: curl http://localhost:7420/healthz
 #       curl -H "Authorization: Bearer change-me" -X POST http://localhost:7420/api/projects \

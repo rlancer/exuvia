@@ -596,7 +596,7 @@ runs the end-to-end test against it. You need the one file, not the repo:
 ```bash
 # Docker Compose or Podman Compose, on one host
 curl -O https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/compose.yaml
-EXUVIA_API_TOKEN=change-me docker compose up -d --wait
+EXUVIA_API_TOKEN=change-me docker compose up -d --wait --pull always
 # Docker Swarm, on a manager: the token as a Swarm secret, the data on one labelled node
 curl -O https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/swarm.yaml
 printf change-me | docker secret create exuvia_api_token -
@@ -644,14 +644,15 @@ as a hub on: Docker | Kubernetes.
 The hub serves the API and the web UI from one container:
 there is no separate frontend to build or deploy.
 
-1. Pick the deploy file from
-   https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/
-   - Kubernetes: kubernetes.yaml.
+1. Pick one deploy file and download it (curl -O):
+   - Kubernetes: https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/kubernetes.yaml
    - Docker: run `docker info --format
      '{{.Swarm.LocalNodeState}} {{.Swarm.ControlAvailable}}'`.
-     `active true` means a Swarm manager: use swarm.yaml.
-     Anything else: compose.yaml, with Docker Compose or
-     Podman Compose. Don't create a Swarm for this.
+     `active true` means a Swarm manager: use
+     https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/swarm.yaml
+     Anything else, with Docker Compose or Podman Compose:
+     https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/compose.yaml
+     Don't create a Swarm for this.
    Read the comments at the top of the file; they are the
    instructions.
 2. Generate a random API token (e.g. `openssl rand -hex 32`)
@@ -668,7 +669,9 @@ there is no separate frontend to build or deploy.
    registry they can reach (docker pull, tag, push) and set
    EXUVIA_IMAGE (Compose/Swarm) or the Deployment's image.
 4. Bring it up and wait until it is healthy:
-   - Compose: `docker compose -f compose.yaml up -d --wait`
+   - Compose: `docker compose -f compose.yaml up -d --wait
+     --pull always` (so an older `latest` already on the
+     host is not reused)
    - Swarm: label the node that keeps the data
      (`docker node update --label-add exuvia=true <node>`),
      then `docker stack deploy -c swarm.yaml --detach=false
@@ -687,6 +690,10 @@ there is no separate frontend to build or deploy.
    GET /p/smoke/api/nodes/hello/data returns the column
    `answer` and rows [[42]]; GET /p/smoke/ returns the
    workbench page (HTML); then DELETE /api/projects/smoke.
+   If /p/smoke/ is a 404, the image predates the built-in
+   UI (/healthz "version" below 0.3.5): pull
+   ghcr.io/rlancer/exuvia:latest again and redeploy. Don't
+   build or deploy a separate frontend.
 6. Keep one replica (the hub owns its volume). Don't expose
    it publicly without TLS in front (an Ingress, a load
    balancer or a reverse proxy). If outputs go to an
