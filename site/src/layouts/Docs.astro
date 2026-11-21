@@ -19,7 +19,13 @@ const toc = page?.toc ?? [];
 const top = toc.length ? Math.min(...toc.map((t) => t.depth)) : 0;
 ---
 
-<Base title={`${title} | exuvia docs`} description={description} current="docs">
+<Base
+  title={`${title} | exuvia docs`}
+  description={description}
+  current="docs"
+  card={page ? `docs-${page.slug}` : "docs"}
+  kind={page ? "article" : "website"}
+>
   <div class="wrap shell">
     <aside class="side">
       <div class="search" data-search data-index={url("/docs/search.json")}>

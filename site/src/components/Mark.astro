@@ -1,13 +1,16 @@
 ---
-// The exuvia mark: two paths that cross, the app's icon, drawn in its amber.
+// The exuvia mark: two paths that cross, the app's icon, drawn in the page's
+// accent. Its shape is in src/lib/brand.ts.
+import { MARK } from "../lib/brand";
+
 interface Props {
   size?: number;
 }
 const { size = 28 } = Astro.props;
 ---
 
-<svg class="mark" width={size} height={size} viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-  <path d="M7 9c8 0 10 14 18 14M7 23c8 0 10-14 18-14" stroke-width="3" fill="none" stroke-linecap="square"></path>
+<svg class="mark" width={size} height={size} viewBox={`0 0 ${MARK.box} ${MARK.box}`} aria-hidden="true" focusable="false">
+  <path d={MARK.path} stroke-width={MARK.stroke} fill="none" stroke-linecap="square"></path>
 </svg>
 
 <style>

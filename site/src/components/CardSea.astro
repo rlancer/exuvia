@@ -1,0 +1,143 @@
+---
+// The sea of the landing page (components/Sea.astro) as one still picture,
+// for the home page's social card: the surface along the top with light
+// coming through it, bubbles, two of the old shells adrift, and the ridges
+// of the sea floor with their kelp. Drawn while the site is built, from the
+// same colours and the same dice, so it comes out the same every time.
+import { CARD } from "../lib/cards";
+import { polySvg } from "../lib/polysvg";
+
+type RGB = [number, number, number];
+const { width: W, height: H } = CARD;
+const LIGHT: RGB = [111, 155, 255];
+const RIDGES: RGB[] = [
+  [26, 38, 70],
+  [19, 28, 52],
+  [12, 17, 33],
+];
+const KELP: RGB[] = [
+  [24, 50, 72],
+  [20, 58, 62],
+  [15, 46, 48],
+];
+const rgba = ([r, g, b]: RGB, a: number) => `rgba(${r},${g},${b},${+a.toFixed(3)})`;
+const tint = ([r, g, b]: RGB, k: number): RGB => [Math.round(r * k), Math.round(g * k), Math.round(b * k)];
+const n = (v: number) => +v.toFixed(1);
+
+function dice(seed: number) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const random = dice(11);
+const between = (a: number, b: number) => a + (b - a) * random();
+const poly = (points: number[][], fill: string) =>
+  `<path d="M${points.map(([x, y]) => `${n(x)} ${n(y)}`).join("L")}Z" fill="${fill}"/>`;
+
+// ---- the surface, and the light that comes through it ----
+const SURFACE = 96;
+const shafts = [150, 470, 760, 1040].map((x, i) => {
+  const [wide, long] = [between(40, 110), H * between(0.6, 0.95)];
+  const lean = long * 0.34;
+  return `<path d="M${x} ${SURFACE}h${n(wide)}L${n(x + wide * 2.2 - lean)} ${n(SURFACE + long)}H${n(x - wide * 0.4 - lean)}Z" fill="url(#shaft)" opacity="${n(0.6 + 0.1 * i)}"/>`;
+});
+const STEP = 84;
+const waves = Array.from({ length: Math.ceil(W / STEP) + 3 }, () => ({ drop: between(22, 60), glow: between(0.4, 1), shine: random() }));
+const surface = waves.slice(0, -1).flatMap((wave, i) => {
+  const at = (j: number) => [(j - 1) * STEP + 30, SURFACE];
+  const under = (j: number) => [(j - 0.5) * STEP + 30, SURFACE + waves[j].drop];
+  return [
+    poly([at(i), at(i + 1), under(i)], rgba(LIGHT, 0.09 + 0.1 * wave.glow * wave.shine)),
+    poly([under(i), under(i + 1), at(i + 1)], rgba(LIGHT, 0.05 + 0.1 * wave.glow * (1 - wave.shine))),
+  ];
+});
+
+// ---- bubbles, six-sided like everything else here ----
+const bubbles = Array.from({ length: 22 }, () => {
+  const [x, y, r, turn] = [between(40, W - 40), between(SURFACE + 60, H - 150), between(2.5, 9), between(0, 6.28)];
+  const corners = Array.from({ length: 6 }, (_, j) => {
+    const angle = turn + (j / 6) * Math.PI * 2;
+    return `${n(x + Math.cos(angle) * r)} ${n(y + Math.sin(angle) * r)}`;
+  });
+  return `<path d="M${corners.join("L")}Z" fill="none" stroke="${rgba(LIGHT, 0.4)}"/>`;
+});
+
+// ---- the sea floor: three ridges of facets, the nearest last ----
+const ridges = RIDGES.map((colour, k) => {
+  const gap = between(120, 165) - k * 12;
+  const tall = 172 - k * 46;
+  const count = Math.ceil(W / gap) + 2;
+  const x = (i: number) => (i - 0.5) * gap;
+  const top = Array.from({ length: count }, () => H - tall * between(0.5, 1));
+  const mid = top.map((y, i) => [x(i) + between(-0.3, 0.3) * gap, y + (H - y) * between(0.35, 0.6)]);
+  const shade = () => rgba(tint(colour, between(0.78, 1.22)), 1);
+  const facets: string[] = [];
+  for (let i = 0; i < count - 1; i++) {
+    facets.push(
+      poly([[x(i), top[i]], [x(i + 1), top[i + 1]], mid[i]], shade()),
+      poly([mid[i], mid[i + 1], [x(i + 1), top[i + 1]]], shade()),
+      poly([mid[i], mid[i + 1], [x(i), H + 2]], shade()),
+      poly([[x(i), H + 2], [x(i + 1), H + 2], mid[i + 1]], shade()),
+    );
+  }
+  // Kelp grows from some of the peaks: a ribbon of joints, each leaning a little further.
+  const kelp = top.flatMap((y, i) => {
+    if (random() > 0.5) return [];
+    return Array.from({ length: 1 + Math.floor(random() * 3) }, () => {
+      let [fx, fy, angle] = [x(i) + between(-18, 18), y + 14, -Math.PI / 2];
+      const [joints, reach, phase] = [Math.round(between(4, 8) + k), between(11, 17) * (0.8 + k * 0.15), between(0, 6.28)];
+      return Array.from({ length: joints }, (_, j) => {
+        const wide = 6 * (1 - j / joints) + 1.5;
+        angle += Math.sin(phase + j * 0.5) * 0.11 + 0.02;
+        const [nx, ny] = [fx + Math.cos(angle) * reach, fy + Math.sin(angle) * reach];
+        const joint = poly([[fx - wide, fy], [fx + wide, fy], [nx + wide * 0.8, ny], [nx - wide * 0.8, ny]], rgba(tint(KELP[k], j % 2 ? 0.8 : 1.1), 1));
+        [fx, fy] = [nx, ny];
+        return joint;
+      }).join("");
+    });
+  });
+  return kelp.join("") + facets.join("");
+});
+
+// ---- two of the old shells, adrift ----
+const drift = [
+  { name: "Eryma", x: 80, y: 372, unit: 13, yaw: -0.3 },
+  { name: "Waptia", x: 452, y: 116, unit: 10, yaw: Math.PI + 0.5 },
+].map((shell) => {
+  const { svg } = polySvg(shell.name, { yaw: shell.yaw, unit: shell.unit, line: rgba(LIGHT, 0.2) });
+  return `<g transform="translate(${shell.x} ${shell.y})">${svg}</g>`;
+});
+---
+
+<svg class="sea" viewBox={`0 0 ${W} ${H}`} width={W} height={H} aria-hidden="true">
+  <defs>
+    <linearGradient id="day" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color={rgba(LIGHT, 0.26)}></stop>
+      <stop offset="0.8" stop-color={rgba(LIGHT, 0)}></stop>
+    </linearGradient>
+    <linearGradient id="shaft" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color={rgba(LIGHT, 0.16)}></stop>
+      <stop offset="1" stop-color={rgba(LIGHT, 0)}></stop>
+    </linearGradient>
+  </defs>
+  <rect width={W} height={H} fill="#0f131c"></rect>
+  <rect width={W} height={H} fill="rgba(22,38,84,0.34)"></rect>
+  <rect width={W} height={H} fill="url(#day)"></rect>
+  <Fragment set:html={shafts.join("")} />
+  <rect width={W} height={SURFACE} fill={rgba(LIGHT, 0.16)}></rect>
+  <Fragment set:html={surface.join("")} />
+  <Fragment set:html={drift.join("")} />
+  <Fragment set:html={bubbles.join("")} />
+  <Fragment set:html={ridges.join("")} />
+</svg>
+
+<style>
+  .sea {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+  }
+</style>

@@ -1,0 +1,369 @@
+---
+// The source of the social cards (src/lib/cards.ts): /card/<name>/ is one
+// card at its real size, 1200 x 630, and /card/ is all of them on one sheet.
+// `node tools/capture.mjs cards <site url>` photographs each into
+// public/og/<name>.png. These pages exist only under `astro dev`: a build
+// makes none of them.
+//
+// /card/<lockup>/ is the mark beside the name on nothing at all, which the
+// same command saves as a see-through PNG in public/brand/.
+import "../../styles/global.css";
+import CardSea from "../../components/CardSea.astro";
+import Mark from "../../components/Mark.astro";
+import { APP_PALETTE, LOBSTER, SIGNALS } from "../../lib/brand";
+import { CARD, HOST, LOCKUPS, getCards, type Card, type Lockup } from "../../lib/cards";
+import { url } from "../../lib/paths";
+import { STAGES } from "../../lib/poly";
+import { polySvg } from "../../lib/polysvg";
+
+export async function getStaticPaths() {
+  if (!import.meta.env.DEV) return [];
+  return [
+    { params: { name: undefined }, props: {} },
+    ...(await getCards()).map((card) => ({ params: { name: card.name }, props: { card } })),
+    ...LOCKUPS.map((lockup) => ({ params: { name: lockup.name }, props: { lockup } })),
+  ];
+}
+
+interface Props {
+  card?: Card;
+  lockup?: Lockup;
+}
+const { card, lockup } = Astro.props;
+const sheet = card || lockup ? [] : await getCards();
+const look = card ? ["card", card.look] : lockup ? ["plate"] : ["sheet"];
+
+const stage = card && STAGES.find((s) => s.name === card.animal)!;
+// The lobster, lit; and an animal as the shell it left, big enough to run off the card.
+const lobster = (unit: number) => polySvg("Homarus", { unit, solid: LOBSTER }).svg;
+const shell = (name: string, size: { unit?: number; fit?: number }, width = 1.5) => polySvg(name, { ...size, lineWidth: width }).svg;
+const swatches = [...SIGNALS, ...APP_PALETTE.filter((s) => ["--text", "--muted", "--line-strong", "--panel-2", "--bg-deep"].includes(s.token))];
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="robots" content="noindex" />
+    <title>{card ? `Card: ${card.name}` : lockup ? `Lockup: ${lockup.name}` : "Social cards"}</title>
+  </head>
+
+  <body class:list={look} style={lockup && `--ink:${lockup.ink};--accent:${lockup.mark}`}>
+    {
+      lockup && (
+        <div class="lockup" data-shot>
+          <Mark size={168} />
+          <span>exuvia</span>
+        </div>
+      )
+    }
+
+    {
+      card && (
+        <>
+        {card.look === "sea" && <CardSea />}
+
+        <header>
+          <span class="brand">
+            <Mark size={60} />
+            <span>exuvia</span>
+          </span>
+          {card.crumb && <span class="crumb">{card.crumb}</span>}
+        </header>
+
+        <div class="middle">
+          <div class="words">
+            <h1>{card.title}</h1>
+            {card.look !== "sea" && <p>{card.summary}</p>}
+          </div>
+
+          {card.look === "sea" && <div class="art lobster" set:html={lobster(31)} />}
+          {
+            card.look === "docs" && (
+              <div class="art molts">
+                <ol>
+                  {STAGES.slice(0, -1).map((s) => (
+                    <li>
+                      <Fragment set:html={shell(s.name, { unit: 7.7 })} />
+                      <span>{s.age}</span>
+                    </li>
+                  ))}
+                </ol>
+                <Fragment set:html={lobster(25)} />
+              </div>
+            )
+          }
+          {
+            card.look === "doc" && stage && (
+              <div class="art shell">
+                <Fragment set:html={shell(stage.name, { fit: 470 }, 1.6)} />
+                <span>
+                  {stage.name}, {stage.age}
+                </span>
+              </div>
+            )
+          }
+          {
+            card.look === "brand" && (
+              <div class="art plate-art">
+                <Mark size={230} />
+                <ul>
+                  {swatches.map((s) => (
+                    <li style={`background:${s.value}`} />
+                  ))}
+                </ul>
+              </div>
+            )
+          }
+        </div>
+
+        <footer>
+          <span>{card.look === "sea" ? card.summary : `${HOST}${card.page}`}</span>
+          <b>
+            <i>$</i> pip install exuvia
+          </b>
+        </footer>
+        </>
+      )
+    }
+
+    {
+      !card && !lockup && (
+        <>
+        <h1>Social cards</h1>
+        <p>
+          Each is a page at its real size. <code>node tools/capture.mjs cards {Astro.url.origin}</code> saves them to
+          <code>public/og/</code>, and the lockups to <code>public/brand/</code>.
+        </p>
+        <ul>
+          {sheet.map((c) => (
+            <li>
+              <a href={url(`/card/${c.name}/`)} data-card={c.name}>
+                {c.name}
+              </a>
+              <div class="frame">
+                <iframe src={url(`/card/${c.name}/`)} width={CARD.width} height={CARD.height} title={c.name} loading="lazy" />
+              </div>
+            </li>
+          ))}
+          {LOCKUPS.map((l) => (
+            <li>
+              <a href={url(`/card/${l.name}/`)} data-lockup={l.name}>
+                {l.name}
+              </a>
+            </li>
+          ))}
+        </ul>
+        </>
+      )
+    }
+  </body>
+</html>
+
+<style is:global>
+  /* ---- one card ----------------------------------------------------------- */
+  body.card {
+    position: relative;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    width: 1200px;
+    height: 630px;
+    padding: 0 64px;
+    overflow: hidden;
+    font-size: 16px;
+  }
+  .card header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 96px;
+    padding-top: 6px;
+  }
+  .card .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 16px;
+    font-family: var(--mono);
+    font-size: 40px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.04em;
+  }
+  .card .crumb {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 24px;
+    font-weight: 500;
+  }
+  .card .middle {
+    position: relative;
+    display: flex;
+    align-items: center;
+    min-height: 0;
+  }
+  .card .words {
+    position: relative;
+    z-index: 1;
+    width: 610px;
+  }
+  .card h1 {
+    font-size: 76px;
+    line-height: 1.06;
+  }
+  .card .words p {
+    margin-top: 22px;
+    color: var(--muted);
+    font-size: 29px;
+    line-height: 1.36;
+  }
+  .card footer {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 32px;
+    padding: 18px 0 34px;
+    border-top: 1px solid var(--line-strong);
+    color: var(--muted);
+    font-size: 23px;
+    white-space: nowrap;
+  }
+  .card footer b {
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 22px;
+  }
+  .card footer i {
+    color: var(--accent);
+    font-style: normal;
+  }
+  .card .art {
+    position: absolute;
+  }
+  .card .art svg {
+    display: block;
+    max-width: none;
+  }
+
+  /* The home page's card: under water, like the page. */
+  .card.sea h1 {
+    width: 600px;
+    font-size: 61px;
+    line-height: 1.08;
+  }
+  .card.sea .lobster {
+    right: -30px;
+    top: 50%;
+    translate: 0 -54%;
+  }
+  .card.sea footer {
+    border-top-color: rgb(111 155 255 / 0.28);
+    color: #c3cadb;
+  }
+
+  /* The docs' cards wear the app's palette. Their ground is the app's canvas. */
+  .card.docs footer span,
+  .card.doc footer span,
+  .card.brand footer span {
+    font-family: var(--mono);
+    font-size: 21px;
+  }
+  .card.docs .molts {
+    right: -8px;
+    top: 50%;
+    width: 480px;
+    translate: 0 -50%;
+  }
+  .molts ol {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    margin: 0 0 22px;
+    padding: 0 6px;
+    list-style: none;
+    color: var(--muted);
+  }
+  .molts li {
+    display: grid;
+    justify-items: center;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 14px;
+  }
+  .card.doc .shell {
+    right: -6px;
+    top: 50%;
+    display: grid;
+    justify-items: center;
+    gap: 20px;
+    translate: 0 -50%;
+    color: var(--muted);
+  }
+  .card.doc .shell span {
+    font-family: var(--mono);
+    font-size: 17px;
+  }
+  .card.brand .plate-art {
+    right: 20px;
+    top: 50%;
+    display: grid;
+    justify-items: center;
+    gap: 34px;
+    translate: 0 -50%;
+  }
+  .plate-art ul {
+    display: grid;
+    grid-template-columns: repeat(8, 46px);
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .plate-art li {
+    height: 46px;
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+  }
+
+  /* ---- a lockup: the mark and the name, on nothing ------------------------ */
+  body.plate {
+    width: max-content;
+    padding: 40px;
+    background: none;
+  }
+  .lockup {
+    display: inline-flex;
+    align-items: center;
+    gap: 50px;
+    padding: 30px 40px;
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 112px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.04em;
+  }
+
+  /* ---- the sheet ---------------------------------------------------------- */
+  body.sheet {
+    padding: 2rem;
+  }
+  .sheet ul {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, 400px);
+    gap: 1.5rem;
+    padding: 0;
+    list-style: none;
+  }
+  .sheet .frame {
+    width: 400px;
+    height: 210px;
+    margin-top: 0.4rem;
+    overflow: hidden;
+    border: var(--border-strong);
+  }
+  .sheet iframe {
+    border: 0;
+    transform: scale(0.3333);
+    transform-origin: 0 0;
+  }
+</style>

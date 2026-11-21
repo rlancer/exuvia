@@ -339,6 +339,24 @@ export function tone(root: HTMLElement, name: string): number[] {
   return (text.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
 }
 
+/**
+ * The colour of one lit facet, from `shade` in shadow to `ink` in the light.
+ * `a`, `b` and `c` are where its corners start in `screen` (as `project` lays
+ * them out).
+ */
+export function facet(screen: Float32Array, a: number, b: number, c: number, ink: number[], shade: number[]): string {
+  const [ux, uy, uz] = [screen[b] - screen[a], screen[b + 1] - screen[a + 1], screen[b + 2] - screen[a + 2]];
+  const [wx, wy, wz] = [screen[c] - screen[a], screen[c + 1] - screen[a + 1], screen[c + 2] - screen[a + 2]];
+  let [nx, ny, nz] = [uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx];
+  const length = Math.hypot(nx, ny, nz) || 1;
+  if (nz < 0) [nx, ny, nz] = [-nx, -ny, -nz]; // both sides of a facet take the light
+  const lit = clamp((nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2]) / length);
+  const light = 0.04 + 0.96 * lit;
+  const glint = clamp((lit - 0.78) * 1.6);
+  const channel = (i: number) => Math.round((shade[i] + (ink[i] - shade[i]) * light) * (1 - glint) + 255 * glint);
+  return `rgb(${channel(0)},${channel(1)},${channel(2)})`;
+}
+
 /** Draws meshes of one topology on a canvas: `place` one, then paint it `solid` or as a `shell`. */
 export function painter(ctx: CanvasRenderingContext2D, { v, tris, edges }: Mesh) {
   const screen = new Float32Array(v.length);
@@ -361,16 +379,7 @@ export function painter(ctx: CanvasRenderingContext2D, { v, tris, edges }: Mesh)
       ctx.lineJoin = "round";
       for (const f of order) {
         const [a, b, c] = [tris[f * 3] * 3, tris[f * 3 + 1] * 3, tris[f * 3 + 2] * 3];
-        const [ux, uy, uz] = [screen[b] - screen[a], screen[b + 1] - screen[a + 1], screen[b + 2] - screen[a + 2]];
-        const [wx, wy, wz] = [screen[c] - screen[a], screen[c + 1] - screen[a + 1], screen[c + 2] - screen[a + 2]];
-        let [nx, ny, nz] = [uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx];
-        const length = Math.hypot(nx, ny, nz) || 1;
-        if (nz < 0) [nx, ny, nz] = [-nx, -ny, -nz]; // both sides of a facet take the light
-        const lit = clamp((nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2]) / length);
-        const light = 0.04 + 0.96 * lit;
-        const glint = clamp((lit - 0.78) * 1.6);
-        const channel = (i: number) => Math.round((shade[i] + (ink[i] - shade[i]) * light) * (1 - glint) + 255 * glint);
-        ctx.fillStyle = ctx.strokeStyle = `rgb(${channel(0)},${channel(1)},${channel(2)})`;
+        ctx.fillStyle = ctx.strokeStyle = facet(screen, a, b, c, ink, shade);
         ctx.beginPath();
         ctx.moveTo(screen[a], screen[a + 1]);
         ctx.lineTo(screen[b], screen[b + 1]);

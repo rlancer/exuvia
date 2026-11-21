@@ -1,15 +1,15 @@
 /**
- * Captures the site's product screenshots from a running exuvia, and renders
- * the social card from tools/card.html. Uses the Chrome (or Edge) already on
- * the machine, so there is no browser download.
+ * Captures the site's product screenshots from a running exuvia, and the
+ * social cards from the site's own /card/ pages. Uses the Chrome (or Edge)
+ * already on the machine, so there is no browser download.
  *
  *   # in exuvia/: serve a scratch copy of the example, with an agent key set
  *   cp -r examples/markets /tmp/markets && uv run exuvia serve /tmp/markets --port 7431
  *   # in exuvia/site/
  *   node tools/capture.mjs app http://127.0.0.1:7431    -> src/assets/shots/{workbench,views,agent,agent-panel}.png
- *   node tools/capture.mjs card                         -> public/og.png
- *   # with the site itself running (npm run dev)
- *   node tools/capture.mjs art http://localhost:4321    -> tools/card-art.png, the hero's model for the card
+ *   # with the site itself running (npm run dev): the card pages exist only under `astro dev`
+ *   node tools/capture.mjs cards http://localhost:4380  -> public/og/<card>.png, one for every card in
+ *                                                          src/lib/cards.ts, and public/brand/<lockup>.png
  *
  * The agent shot sends one real prompt, so it changes the project it runs
  * against (the agent writes a node) and spends a few cents of model credit.
@@ -17,15 +17,17 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
+import sharp from "sharp";
 
 const SITE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [mode, base, ...flags] = process.argv.slice(2);
-if (!["app", "card", "art"].includes(mode) || (mode !== "card" && !base)) {
-  console.error("usage: node tools/capture.mjs app <exuvia url> [--no-agent] | card | art <site url>");
+const [mode, address, ...flags] = process.argv.slice(2);
+if (!["app", "cards"].includes(mode) || !address) {
+  console.error("usage: node tools/capture.mjs app <exuvia url> [--no-agent] | cards <site url>");
   process.exit(2);
 }
+const base = address.replace(/\/+$/, "");
 
 async function launch() {
   for (const channel of ["chrome", "msedge"]) {
@@ -41,8 +43,7 @@ async function launch() {
 const browser = await launch();
 try {
   if (mode === "app") await app();
-  else if (mode === "art") await art();
-  else await card();
+  else await cards();
 } finally {
   await browser.close();
 }
@@ -95,28 +96,44 @@ async function app() {
   console.log("wrote agent.png, agent-panel.png");
 }
 
-/** Saves the hero's canvas at its last frame: the lobster, with the older shells above it. */
-async function art() {
-  const context = await browser.newContext({
-    viewport: { width: 1280, height: 900 },
-    deviceScaleFactor: 2,
-    reducedMotion: "reduce",
-  });
-  const page = await context.newPage();
-  await page.goto(base);
-  await page.evaluate(() => document.fonts.ready);
-  await page.waitForTimeout(500);
-  const png = await page.locator("[data-poly] canvas").evaluate((canvas) => canvas.toDataURL("image/png"));
-  await fs.writeFile(path.join(SITE, "tools/card-art.png"), Buffer.from(png.split(",")[1], "base64"));
-  console.log("wrote card-art.png");
-}
+/**
+ * Photographs every social card, and the lockups, from the site's /card/
+ * pages. A PNG whose card is gone is deleted, so public/og/ holds the cards
+ * of src/lib/cards.ts and nothing else.
+ */
+async function cards() {
+  const og = path.join(SITE, "public/og");
+  const brand = path.join(SITE, "public/brand");
+  await fs.mkdir(og, { recursive: true });
+  await fs.mkdir(brand, { recursive: true });
+  const open = async (page, name = "") => {
+    const response = await page.goto(`${base}/card/${name && `${name}/`}`);
+    if (!response?.ok()) throw new Error(`${base}/card/${name} answered ${response?.status()}: is this the site under astro dev?`);
+    await page.evaluate(() => document.fonts.ready);
+    await page.waitForTimeout(200);
+  };
 
-async function card() {
   const context = await browser.newContext({ viewport: { width: 1200, height: 630 }, deviceScaleFactor: 1 });
   const page = await context.newPage();
-  await page.goto(pathToFileURL(path.join(SITE, "tools/card.html")).href);
-  await page.evaluate(() => document.fonts.ready);
-  await page.waitForTimeout(300);
-  await page.screenshot({ path: path.join(SITE, "public/og.png") });
-  console.log("wrote og.png");
+  await open(page);
+  const names = await page.locator("a[data-card]").evaluateAll((links) => links.map((a) => a.dataset.card));
+  const lockups = await page.locator("a[data-lockup]").evaluateAll((links) => links.map((a) => a.dataset.lockup));
+  for (const name of names) {
+    await open(page, name);
+    // A card is flat colour and a few gradients: 256 colours hold it at a fraction of the size.
+    const shot = await page.screenshot();
+    await sharp(shot).png({ palette: true, colours: 256, effort: 10 }).toFile(path.join(og, `${name}.png`));
+  }
+  for (const file of await fs.readdir(og)) {
+    if (!names.includes(path.basename(file, ".png"))) await fs.rm(path.join(og, file));
+  }
+  console.log(`wrote ${names.length} cards to public/og/`);
+
+  // The lockups: twice the size and on nothing, so they sit on any ground.
+  const large = await (await browser.newContext({ deviceScaleFactor: 2 })).newPage();
+  for (const name of lockups) {
+    await open(large, name);
+    await large.locator("[data-shot]").screenshot({ path: path.join(brand, `${name}.png`), omitBackground: true });
+  }
+  console.log(`wrote ${lockups.length} lockups to public/brand/`);
 }
