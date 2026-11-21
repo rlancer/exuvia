@@ -662,7 +662,9 @@ it, connects itself to the hub over
 project, as the hub's **Connect agent** sets up), and gives you the hub's
 home page, where you open that project's workbench
 or create more. The hub serves the web UI itself, so that one deploy is the
-whole thing. If you pick Swarm and the host is not a Swarm manager, the agent
+whole thing. The agent puts it on your hostname with TLS before it verifies
+anything, and checks every request through that hostname, so done means the
+UI opens in your browser. If you pick Swarm and the host is not a Swarm manager, the agent
 stops and tells you rather than create a Swarm; if you pick Compose on a
 Swarm manager, it deploys with Compose and mentions that Swarm is an option.
 
@@ -675,10 +677,19 @@ Deploy exuvia (https://github.com/rlancer/exuvia, a
 file-backed DAG workbench with a web UI and an HTTP API)
 as a hub on <target>, at the hostname for the UI I gave
 you. The hub serves the API and the web UI from one
-container: there is no separate frontend to build or
-deploy.
+container on port 7420: there is no separate frontend to
+build, deploy or route.
 
-1. Check the host and download the deploy file (curl -O):
+Done means: I open https://<hostname>/ in my browser and
+get the hub's home page over TLS, and you are connected to
+the hub over MCP. A healthy container is not enough: the
+hostname has to route to it (step 5), and step 6 checks
+everything through that hostname.
+
+1. If I gave you no hostname, or the placeholder
+   exuvia.example.com, ask me for mine before going on.
+   Then check the host and download the deploy file
+   (curl -O):
    - Compose: check that `docker compose version` (or
      `podman compose version`) runs, then download
      https://raw.githubusercontent.com/rlancer/exuvia/main/deploy/compose.yaml
@@ -728,7 +739,49 @@ deploy.
    - Kubernetes: `kubectl -n exuvia apply -f kubernetes.yaml`,
      then `kubectl -n exuvia rollout status
      deployment/exuvia-hub`
-5. Verify: GET /healthz returns {"ok": true, "mode": "hub"}.
+   Keep one replica (the hub owns its volume). If outputs
+   go to an existing bucket (EXUVIA_ARTIFACT_STORE), use a
+   prefix only this hub writes to, e.g.
+   s3://<bucket>/exuvia-prod.
+5. Route the hostname to the hub, with TLS. This is how I
+   reach the UI, so don't skip it or leave it for later:
+   - Compose: set EXUVIA_HOST=<hostname> in the .env. If
+     nothing listens on ports 80 and 443, uncomment the
+     `caddy` service and the `caddy-data` volume (Caddy
+     gets the certificate itself). If a Traefik runs on the
+     host, uncomment the hub's Traefik labels and the
+     `proxy` network instead, with the entrypoint, cert
+     resolver and network names that Traefik uses (`docker
+     inspect` on its container shows them). Then bind the
+     hub's port to 127.0.0.1 and run step 4's command again.
+   - Swarm: set EXUVIA_HOST=<hostname>, uncomment the
+     Traefik labels and the Traefik network in swarm.yaml,
+     with the network, entrypoint and cert resolver names
+     of the swarm's Traefik (`docker service inspect` on
+     it), delete the `ports` block and deploy again. No
+     Traefik on the swarm: stop and tell me.
+   - Kubernetes: uncomment the Ingress at the bottom of
+     kubernetes.yaml, put the hostname in `tls` and
+     `rules`, set `ingressClassName` and the annotations
+     for the cluster's ingress controller (`kubectl get
+     ingressclass`; cert-manager's issuer if it has one)
+     and apply again. No ingress controller: stop and tell
+     me.
+   The comments at the top of the file say more. The UI is
+   not a separate service or path: route the whole host
+   (every path: /, /p/..., /api/..., /assets/...) to the
+   hub. Point the hostname's DNS at the proxy or the
+   ingress controller's external address (tell me the
+   record to add if you can't), then wait until
+   https://<hostname>/healthz answers with a valid
+   certificate. From then on <hub url> is
+   https://<hostname>. If I tell you I have no hostname,
+   keep the hub private instead (port-forward, or an SSH
+   tunnel to localhost:7420), use that address as <hub url>
+   and say so in the report: never expose it without TLS.
+6. Verify through <hub url>, not localhost or a
+   port-forward (unless I told you I have no hostname):
+   GET /healthz returns {"ok": true, "mode": "hub"}.
    GET /api/projects without the token returns 401; if it
    doesn't, the hub has no auth: take it down and stop.
    With `Authorization: Bearer <token>`:
@@ -739,30 +792,13 @@ deploy.
    GET /p/smoke/api/nodes/hello/data returns the column
    `answer` and rows [[42]]; GET /p/smoke/ returns the
    workbench page (HTML) and GET / the hub's home page;
-   then DELETE /api/projects/smoke.
+   then DELETE /api/projects/smoke. A request that works
+   directly but fails through the hostname means the route
+   from step 5 is wrong: fix it before going on.
    If /p/smoke/ is a 404, the image predates the built-in
    UI (/healthz "version" below 0.3.5): pull
    ghcr.io/rlancer/exuvia:latest again and redeploy. Don't
    build or deploy a separate frontend.
-6. Give it the hostname, with TLS, before step 7:
-   - Compose: the `caddy` service in compose.yaml if nothing
-     listens on ports 80 and 443, or its Traefik labels if
-     a Traefik runs on the host.
-   - Swarm: the Traefik labels in swarm.yaml, with the
-     network, entrypoint and cert resolver names of the
-     swarm's Traefik. No Traefik there: tell me.
-   - Kubernetes: uncomment the Ingress at the bottom of
-     kubernetes.yaml, set the host, apply it again.
-   The comments at the top of the file say how. Make
-   the hostname's DNS point at the ingress controller or
-   proxy (tell me the record to add if you can't), then
-   check that https://<hostname>/healthz answers. From
-   then on <hub url> is https://<hostname>. Without a
-   hostname, keep it private (port-forward or localhost):
-   never expose it without TLS. Keep one replica (the hub
-   owns its volume). If outputs go to an existing bucket
-   (EXUVIA_ARTIFACT_STORE), use a prefix only this hub
-   writes to, e.g. s3://<bucket>/exuvia-prod.
 7. Create a project for me:
    POST /api/projects {"id": "my-research"}.
    Then add an MCP server named `exuvia` to your own
@@ -779,7 +815,7 @@ deploy.
    out of the MCP configuration. <hub url> is the address
    this machine reaches the hub at. Check that its
    list_projects tool shows my-research.
-8. Report the hub URL, where the token is stored, the
+8. Report the hub URL (https://<hostname>), where the token is stored, the
    verification output, the MCP server you added, and the
    hub's home page to open in a
    browser: <hub url>/ (it lists my-research, creates and
