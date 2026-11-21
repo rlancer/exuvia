@@ -56,6 +56,9 @@ services:
     command: ["exuvia", "hub", "/data", "--host", "0.0.0.0", "--port", "7420"]
     environment:
       EXUVIA_API_TOKEN_FILE: /run/secrets/exuvia_api_token
+      # Only if the hub is reachable on a private network alone: browsers get
+      # in without entering the token (agents and the API still need it).
+      # EXUVIA_BROWSER_AUTH: open
       # ANTHROPIC_API_KEY_FILE: /run/secrets/anthropic_api_key
     secrets:
       - source: exuvia_api_token

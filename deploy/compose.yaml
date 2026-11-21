@@ -25,6 +25,9 @@
 #                      pin a release with ghcr.io/rlancer/exuvia:0.3, or name an
 #                      image with your nodes' packages (README "Deploying")
 #   EXUVIA_PORT        host port, default 7420
+#   EXUVIA_BROWSER_AUTH  `open`: browsers get in without entering the token
+#                      (agents and the API still need it); only for a hub that
+#                      only a private network can reach
 #   ANTHROPIC_API_KEY  optional: turns on the built-in agent (or OPENROUTER_API_KEY)
 #
 # For a single project at / instead of a hub, replace `command` with
@@ -64,6 +67,7 @@ services:
       - "${EXUVIA_PORT:-7420}:7420"
     environment:
       EXUVIA_API_TOKEN: ${EXUVIA_API_TOKEN:?set EXUVIA_API_TOKEN}
+      EXUVIA_BROWSER_AUTH: ${EXUVIA_BROWSER_AUTH:-token}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes:

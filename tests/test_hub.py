@@ -400,3 +400,42 @@ def test_hub_workbench_with_a_token(tmp_path, monkeypatch):
         assert r.status_code in (302, 307) and r.headers["location"] == "/"
         assert hub.get("/api/projects").status_code == 200
         assert hub.get("/p/nope/").status_code == 404
+
+
+def test_hub_open_to_browsers(tmp_path, monkeypatch):
+    # EXUVIA_BROWSER_AUTH=open: a page load hands out the cookie, so nobody
+    # types the token; the API still needs the cookie or the token.
+    fake_ui(tmp_path, monkeypatch)
+    monkeypatch.setenv("EXUVIA_API_TOKEN", "s3cret")
+    monkeypatch.setenv("EXUVIA_BROWSER_AUTH", "open")
+    with TestClient(create_hub_app(tmp_path / "hub", template(tmp_path))) as hub:
+        assert hub.get("/api/projects").status_code == 401
+        r = hub.get("/")
+        assert r.status_code == 200 and hub.cookies.get("exuvia_token") == "s3cret"
+        cookie = r.headers["set-cookie"].lower()
+        assert "httponly" in cookie and "samesite=lax" in cookie
+        assert hub.get("/api/projects").json()["auth"] is True  # MCP clients still need the token
+        assert hub.post("/api/projects", json={"id": "wf"}).status_code == 200
+        assert hub.get("/p/wf/api/project").status_code == 200
+        # A browser's first stop can be a workbench, too.
+        hub.cookies.clear()
+        assert hub.get("/p/nope/").status_code == 404
+        assert hub.get("/p/wf/api/project").status_code == 200
+        # A wrong cookie is replaced by the next page load, not trusted.
+        hub.cookies.clear()
+        hub.cookies.set("exuvia_token", "wrong")
+        assert hub.get("/api/projects").status_code == 401
+        hub.get("/")
+        assert hub.get("/api/projects").status_code == 200
+        # An API caller without either is still turned away.
+        hub.cookies.clear()
+        assert hub.get("/p/wf/api/project").status_code == 401
+        assert hub.get("/p/wf/api/project", headers={"Authorization": "Bearer s3cret"}).status_code == 200
+
+
+def test_browser_auth_rejects_unknown_modes(tmp_path, monkeypatch):
+    fake_ui(tmp_path, monkeypatch)
+    monkeypatch.setenv("EXUVIA_API_TOKEN", "s3cret")
+    monkeypatch.setenv("EXUVIA_BROWSER_AUTH", "opne")
+    with pytest.raises(SystemExit, match="token or open"):
+        create_hub_app(tmp_path / "hub", template(tmp_path))

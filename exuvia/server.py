@@ -746,6 +746,14 @@ def _token_ok(request: Request, api_token: str) -> bool:
         hmac.compare_digest(cookie.encode(), api_token.encode())
 
 
+def _browser_open() -> bool:
+    """EXUVIA_BROWSER_AUTH: `token` (default: a browser enters the token once) or `open`."""
+    mode = os.environ.get("EXUVIA_BROWSER_AUTH", "token").strip().lower() or "token"
+    if mode not in ("token", "open"):
+        raise SystemExit(f"EXUVIA_BROWSER_AUTH must be token or open, not {mode!r}")
+    return mode == "open"
+
+
 def _install_common(app: FastAPI) -> None:
     """CORS and the optional shared-secret auth, for both app shapes."""
     origins = [o for o in os.environ.get("EXUVIA_CORS_ORIGINS", "").split(",") if o]
@@ -754,10 +762,19 @@ def _install_common(app: FastAPI) -> None:
 
     # API clients send `Authorization: Bearer <token>`; browsers open
     # `/?token=<token>` once and get an HttpOnly cookie (EventSource can't
-    # send headers).
+    # send headers). With EXUVIA_BROWSER_AUTH=open (a hub on a private
+    # network), every page load hands out the cookie, so people never type
+    # the token; the API still turns away callers that have neither cookie
+    # nor token, and SameSite=Lax keeps other sites from riding the cookie.
     api_token = os.environ.get("EXUVIA_API_TOKEN")
     if not api_token:
         return
+    browser_open = _browser_open()
+
+    def give_cookie(request: Request, resp: Any) -> Any:
+        resp.set_cookie("exuvia_token", api_token, httponly=True, samesite="lax",
+                        secure=request.url.scheme == "https")
+        return resp
 
     def is_api(path: str) -> bool:
         return path.startswith("/api/") or bool(_HUB_API.match(path))
@@ -769,13 +786,15 @@ def _install_common(app: FastAPI) -> None:
         if qs_token is not None and not is_api(path):
             if not hmac.compare_digest(qs_token.encode(), api_token.encode()):
                 return JSONResponse({"detail": "bad token"}, status_code=401)
-            resp = RedirectResponse(path or "/")
-            resp.set_cookie("exuvia_token", api_token, httponly=True, samesite="lax",
-                            secure=request.url.scheme == "https")
-            return resp
-        if is_api(path) and not _token_ok(request, api_token):
-            return JSONResponse({"detail": "unauthorized"}, status_code=401)
-        return await call_next(request)
+            return give_cookie(request, RedirectResponse(path or "/"))
+        if is_api(path):
+            if not _token_ok(request, api_token):
+                return JSONResponse({"detail": "unauthorized"}, status_code=401)
+            return await call_next(request)
+        resp = await call_next(request)
+        if browser_open and request.cookies.get("exuvia_token") != api_token:
+            give_cookie(request, resp)
+        return resp
 
 
 def create_app(root: str | Path) -> FastAPI:
@@ -937,7 +956,7 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
 
         def authorized(request: Request) -> bool:
             token = os.environ.get("EXUVIA_API_TOKEN")
-            return not token or _token_ok(request, token)
+            return not token or _browser_open() or _token_ok(request, token)
 
         @app.get("/", response_class=HTMLResponse)
         def hub_home() -> HTMLResponse:
