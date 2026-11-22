@@ -138,6 +138,24 @@ export interface ViewSources extends ProjectView {
 /** A node's output as a view reads it: Arrow bytes of a table, or a JSON value. */
 export type ViewData = { kind: "table"; arrow: ArrayBuffer } | { kind: "json"; value: unknown } | { kind: null };
 
+/** One saved version of a code file (`GET /api/code/revisions`; exuvia/store.py code_revisions). */
+export interface CodeRevision {
+  id: number;
+  /** Project-relative, e.g. `nodes/prices.py` or `views/board/App.tsx`. */
+  path: string;
+  node: string | null;
+  view: string | null;
+  /** The text's content hash; null when this revision deleted the file. */
+  hash: string | null;
+  /** What saved it: `ui`, `agent`, `api`, `file`, `template`, `restore`, `load`, `import`, … */
+  origin: string;
+  author: string | null;
+  /** Unix seconds. */
+  saved_at: number;
+  /** This version is the file's text now. */
+  current: boolean;
+}
+
 export interface Preview {
   kind: "table" | "json" | "pickle" | "none" | null;
   columns?: Column[];
@@ -269,6 +287,22 @@ export const api = {
   cancel: (id: string) => req("POST", `/api/runs/${id}/cancel`),
   query: (sql: string) => queryRows(sql),
   resetAgent: (id: string) => req("DELETE", `/api/agent/${id}`),
+  /** Saved versions newest first: one node's, one view's files (deleted ones too), or every file's. */
+  codeRevisions: (f: { node?: string; view?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (f.node) q.set("node", f.node);
+    if (f.view) q.set("view", f.view);
+    if (f.limit) q.set("limit", String(f.limit));
+    const qs = q.toString();
+    return req<CodeRevision[]>("GET", `/api/code/revisions${qs ? `?${qs}` : ""}`);
+  },
+  /** The text of one saved version. */
+  codeBlob: async (hash: string) => (await req<{ hash: string; source: string }>("GET", `/api/code/blobs/${hash}`)).source,
+  /** Make a saved version of a node current again (a deleted node comes back). */
+  restoreNode: (name: string, hash: string) => req<Project>("POST", `/api/nodes/${name}/restore`, { hash }),
+  /** The same for one file of a view; `path` is relative to the view's folder. */
+  restoreViewFile: (name: string, path: string, hash: string) =>
+    req<ProjectView>("POST", `/api/views/${name}/restore`, { path, hash }),
   packages: () => req<PackagesState>("GET", "/api/packages"),
   /** Add requirements and/or remove packages; a list that does not resolve is an error and changes nothing. */
   packagesEdit: (b: { add?: string[]; remove?: string[] }) => req<PackagesState>("POST", "/api/packages", b),

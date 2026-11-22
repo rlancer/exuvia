@@ -1,6 +1,9 @@
 import { useEffect, useId, useRef, type FormEvent, type ReactNode } from "react";
 import { IconClose } from "./icons";
 
+/** The open dialogs, innermost last: only it answers Escape and Tab (a confirmation over a dialog). */
+const open: object[] = [];
+
 const FOCUSABLE = 'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
 /**
@@ -27,12 +30,15 @@ export function Dialog(props: {
   const opener = useRef(document.activeElement as HTMLElement | null);
 
   useEffect(() => {
+    const me = {};
+    open.push(me);
     const el = panel.current;
     // An `autoFocus` field has the focus already; otherwise take the first control.
     if (el && !el.contains(document.activeElement)) {
       (el.querySelector(".dialog-body")?.querySelector<HTMLElement>(FOCUSABLE) ?? el).focus();
     }
     const onKey = (e: KeyboardEvent) => {
+      if (open[open.length - 1] !== me) return;
       if (e.key === "Escape") {
         e.stopPropagation();
         close.current();
@@ -54,6 +60,7 @@ export function Dialog(props: {
     document.addEventListener("keydown", onKey, true);
     return () => {
       document.removeEventListener("keydown", onKey, true);
+      open.splice(open.indexOf(me), 1);
       opener.current?.focus?.();
     };
   }, []);

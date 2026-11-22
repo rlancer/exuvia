@@ -388,6 +388,10 @@ and rebuilds the view; compile errors from the new version show up under the
 editor. Unsaved edits are kept per
 file while you move between files, views and the graph, and a file the agent
 or an editor on disk changes reloads unless you have unsaved edits to it.
+The **History** tab (or **History** in the Code tab's bar, which opens it on
+the file you are editing) lists every saved version of the view's files,
+deleted files included, and restores one (see "Browsing and restoring code"
+under "Execution model").
 
 A view runs in an `<iframe sandbox="allow-scripts">` built from a `srcdoc`:
 an opaque origin, so no cookies, no API token and no access to the page. The
@@ -679,15 +683,36 @@ in the image, listed in a `pyproject.toml` of its own and installed with
   schedules. By default that is `.exuvia/exuvia.db` (SQLite) inside the
   project; see "Records: SQLite, Postgres, or your own adapter".
 - **Every version of the code is kept.** Each time a node file, a `lib/` helper,
-  a view file, `exuvia.json` or `AGENTS.md` changes, by any route (UI, API,
-  agent, an editor, a template), the new text is saved as a revision with who
-  saved it (`agent`, `ui` for the workbench, `api` or the caller's
-  `X-Exuvia-Origin`, `file`,
+  a view file, `exuvia.json`, `AGENTS.md` or `pyproject.toml` changes, by any
+  route (UI, API, agent, an editor, a template), the new text is saved as a
+  revision with who saved it (`agent`, `ui` for the workbench, `api` or the
+  caller's `X-Exuvia-Origin`, `file`,
   `template`, `import`, `restore`, `load`). A deletion is a revision too.
   Revisions are keyed by the same hash each run records, so every output can
   show the exact code that produced it, and any version can be restored (a
   restore is itself a revision). The agent has `list_revisions`,
   `read_revision`, `restore_node` and `restore_view_file`.
+
+**Browsing and restoring code.** The workbench shows the same history in
+three places:
+
+- a node's **History** tab in the inspector, next to Code, Data and Runs;
+- a view's **History** tab (also reached from **History** in its Code tab);
+- **History** in the top bar: every versioned file of the project, with a
+  **Deleted** filter that lists deleted nodes, view files and other files by
+  the last version saved before the deletion.
+
+Each lists the revisions newest first with when, who (the signed-in
+`author`, `—` without sign-in), how it was saved (`origin`) and, where
+several files are listed, the path; a file picker narrows the list to one
+file. Picking a version shows its text as a diff against the version before
+it (**vs previous**: what that save changed) or against the file now (**vs
+current**: what restoring it would change). **Restore** (with a
+confirmation) makes a node's or a view file's version current again through
+`POST /api/nodes/{name}/restore` or `POST /api/views/{name}/restore`, which
+also brings back a deleted node, file or view. Other files (`lib/`,
+`exuvia.json`, `AGENTS.md`, `pyproject.toml`) can be read and compared there
+but not restored from the workbench.
 
 ## Records: SQLite, Postgres, or your own adapter
 

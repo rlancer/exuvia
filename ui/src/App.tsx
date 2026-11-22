@@ -7,12 +7,13 @@ import { AgentPanel, type AgentHandle } from "./AgentPanel";
 import { NewNodeDialog } from "./NewNodeDialog";
 import { PackagesDialog } from "./PackagesDialog";
 import { HelpersDialog } from "./HelpersDialog";
+import { HistoryDialog } from "./History";
 import { Views } from "./Views";
 import { SignedInAs } from "./Me";
 import { HelpMenu } from "./Help";
 import { useTheme } from "./theme";
 import { Brand, Mark } from "./Brand";
-import { IconCode, IconMoon, IconPackage, IconPlay, IconPlus, IconSpark, IconSun } from "./icons";
+import { IconClock, IconCode, IconMoon, IconPackage, IconPlay, IconPlus, IconSpark, IconSun } from "./icons";
 import { failed, Toasts } from "./toast";
 
 const embed = new URLSearchParams(location.search).has("embed");
@@ -58,6 +59,7 @@ export default function App() {
   const [pkgs, setPkgs] = useState<PackagesState | null>(null);
   const [pkgOpen, setPkgOpen] = useState(false);
   const [helpersOpen, setHelpersOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   // Nodes to re-run once the packages installed for them are ready.
   const [rerun, setRerun] = useState<string[]>([]);
   const refreshPkgs = useCallback(() => api.packages().then(setPkgs).catch(() => {}), []);
@@ -113,6 +115,11 @@ export default function App() {
     if (project?.name) document.title = `${project.name} · exuvia`;
   }, [project?.name]);
   const sel = nodes.find((n) => n.name === selected) ?? null;
+  // Changes whenever any node's or view's code does: the history dialog reads its list again.
+  const codeTick = useMemo(
+    () => [...nodes.map((n) => n.code_hash), ...(project?.views ?? []).map((v) => v.hash)].join(),
+    [nodes, project],
+  );
   useEffect(() => {
     if (selected && project && !nodes.some((n) => n.name === selected)) setSelected(null);
   }, [nodes, project, selected]);
@@ -174,6 +181,14 @@ export default function App() {
         </button>
         <button className="btn has-icon" onClick={() => setHelpersOpen(true)} title="Browse the project's shared Python helpers" aria-label="Helpers">
           <IconCode /> <span className="lbl">Helpers</span>
+        </button>
+        <button
+          className="btn has-icon"
+          onClick={() => setHistoryOpen(true)}
+          title="Every saved version of the project's code, and deleted nodes and views to bring back"
+          aria-label="History"
+        >
+          <IconClock /> <span className="lbl">History</span>
         </button>
         <button
           className={`btn has-icon pk-btn pk-${pkgs?.status ?? "none"}`}
@@ -265,6 +280,17 @@ export default function App() {
 
       {pkgOpen && <PackagesDialog state={pkgs} onChange={setPkgs} onClose={() => setPkgOpen(false)} />}
       {helpersOpen && <HelpersDialog onClose={() => setHelpersOpen(false)} />}
+      {historyOpen && (
+        <HistoryDialog
+          dark={dark}
+          tick={codeTick}
+          onClose={() => setHistoryOpen(false)}
+          onRestored={(rev) => {
+            // A node brought back: show it once the graph has it.
+            refresh().then(() => rev.node && mode === "graph" && setSelected(rev.node));
+          }}
+        />
+      )}
 
       {newOpen && (
         <NewNodeDialog
