@@ -1111,54 +1111,112 @@ errors mean:
 - A 401 or 403 from the index: the network works and the credentials don't
   (see [Packages](#packages)).
 
-**Check a node's data connection.** If the package imports but the data
-request fails, check the provider from the node runner. A remote executor can
-have different network access and proxy variables from the hub. Add this as
-a temporary Python node, replace the URL with an approved HTTPS endpoint
-for your data provider, and run it in the same project as the failing node.
-Use a URL without credentials or signed query parameters.
+Requests a node makes itself, to a data provider's API, go out the same way
+but from wherever the node runs: see
+[Nodes that can't reach their data](#nodes-that-cant-reach-their-data).
+
+### Nodes that can't reach their data
+
+A package that imports and a node that can't reach its data provider are
+two different problems. The install ran on the hub, through a route to the
+package index; the node's own requests leave from wherever the node runs,
+to a host that route may not allow. Each node runs in a subprocess of the
+process that runs it, with that process's environment:
+
+- **Local executor (the default):** the server's: the hub's container, or
+  the machine running `exuvia serve`, which also reads the project's `.env`.
+- **Remote executor:** the executor container's, on the executor's network.
+  The control plane's environment never reaches it, and the bundle it
+  receives leaves out hidden files such as `.env`, so `HTTPS_PROXY`,
+  `NO_PROXY` and the provider's key have to be set on the executor itself.
+
+So a `curl` in a terminal on your machine, or `docker exec` into the hub,
+can succeed while the node fails. Check from the node instead: this one
+runs through the same path as the node that fails. Put the provider's API
+host in `HOSTS` (`host` or `host:port`: no path, no key), save it as
+`nodes/net_check.py` and run it from the workbench, so it runs on the same
+executor:
 
 ```python
-import socket
-import ssl
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
-
+"""Can nodes reach their data providers from where they run? Read-only."""
 import exuvia
+
+HOSTS = ["api.example-data.com"]
 
 
 @exuvia.node()
-def check_data_provider():
-    request = Request("https://data.example.com/", method="HEAD")
-    try:
-        with urlopen(request, timeout=10) as response:
-            return {"result": "http_response", "status": response.status}
-    except HTTPError as error:
-        return {"result": "http_response", "status": error.code}
-    except (URLError, TimeoutError) as error:
-        reason = error.reason if isinstance(error, URLError) else error
-        if str(reason).startswith("Tunnel connection failed:"):
-            return {"result": "proxy_tunnel_rejected"}
-        if isinstance(reason, socket.gaierror):
-            return {"result": "dns_error"}
-        if isinstance(reason, ssl.SSLError):
-            return {"result": "tls_error"}
-        return {"result": "connection_error"}
+def net_check():
+    import socket
+    import ssl
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    import pandas as pd
+
+    proxies = urllib.request.getproxies()  # HTTPS_PROXY / NO_PROXY, as this process sees them
+    rows = []
+    for host in HOSTS:
+        proxy = None if urllib.request.proxy_bypass(host) else proxies.get("https")
+        p = urllib.parse.urlsplit(proxy) if proxy else None
+        route = f"proxy {p.hostname}:{p.port}" if p else "direct"  # never the proxy's credentials
+        try:
+            # GET with no credentials; the body is never read.
+            with urllib.request.urlopen(f"https://{host}/", timeout=15) as r:
+                result, detail = "http", r.status
+        except urllib.error.HTTPError as e:  # the provider answered: the route works
+            result, detail = "http", e.code
+        except (urllib.error.URLError, OSError) as e:
+            err = getattr(e, "reason", e)
+            text = str(err)
+            if isinstance(err, socket.gaierror):
+                result, detail = "dns", "proxy name" if p else "provider name"
+            elif text.startswith("Tunnel connection failed"):
+                result, detail = "proxy refused", text.split(":", 1)[1].split()[0]  # the status code
+            elif isinstance(err, ssl.SSLError):
+                result, detail = "tls", type(err).__name__
+            elif isinstance(err, TimeoutError):
+                result, detail = "timeout", ""
+            else:
+                result, detail = "connect", type(err).__name__
+        rows.append({"host": host, "route": route, "result": result, "detail": str(detail),
+                     "ran_on": socket.gethostname()})
+    return pd.DataFrame(rows)
 ```
 
-- `http_response`: the HTTP request reached a server. A 401 or 403 at this
-  stage calls for checking the endpoint's access and credentials. A 405 means
-  the endpoint doesn't support HEAD.
-- `proxy_tunnel_rejected`: check the runner's proxy allowlist and any proxy
-  authentication it requires. Redirects and file downloads may need
-  additional hosts.
-- `dns_error` or `connection_error`: check the runner's DNS, route, and
-  proxy settings. With a proxy, the DNS error can be for the proxy's own host.
-- `tls_error`: check the endpoint's certificate and the runner's CA trust.
+It sends one GET with no credentials to each host and keeps only the
+status: no headers, no body. Its output has one row per host: `route` (`direct`,
+or the proxy's host and port, never its credentials), `result`, `detail`
+(a status code or an error's name) and `ran_on`, the host name of the
+machine or container it ran in, which tells you whether it ran on the
+executor you meant. Delete the node when you are done.
 
-This checks HTTPS using Python's standard library. For gRPC or other clients
-with their own transport, test with the same client the node uses and check
-its proxy support and network route separately.
+| `result` | What it means | Where to fix it |
+|---|---|---|
+| `http` | The provider answered with the status in `detail`. The route works; a 401 or 403 is the provider turning away a request with no key. | Not the network. If the node still fails, look at its key (on the executor, for a remote one) or the request it makes. |
+| `proxy refused` | The proxy took the connection and refused the tunnel; `detail` is its status. 403: the host isn't on its allowlist. 407: it wants credentials. 502, 503 or 504: the proxy itself couldn't resolve or reach the provider. | The proxy: add the host to its allowlist (the Squid example above allows only the package hosts), or fix the proxy's own route out. A provider that redirects, or serves downloads from another host, needs those hosts too. |
+| `dns`, `proxy name` | The proxy's name doesn't resolve where the node runs. | The node and the proxy aren't on a network they share: often a remote executor given the hub's `HTTPS_PROXY`. |
+| `dns`, `provider name` | The request went direct and the provider's name doesn't resolve: no route out. | `HTTPS_PROXY` where the node runs, or take the host out of `NO_PROXY`. A running server or executor doesn't see new variables: restart or redeploy it. |
+| `timeout`, `connect` | The name resolved and the connection timed out, was refused or was reset. Through a proxy, a reset or `RemoteDisconnected` is often the proxy refusing the tunnel without a status, as some do for a host or port they don't allow. | A firewall or NetworkPolicy dropping the traffic, the wrong port in `HTTPS_PROXY`, a proxy that isn't running, or the proxy's allowlist. |
+| `tls` | A proxy that decrypts TLS, whose CA isn't trusted where the node runs. | `SSL_CERT_FILE=/path/to/ca.pem` on the server or executor (`requests` reads `REQUESTS_CA_BUNDLE` instead). |
+
+The check uses Python's `urllib`, which reads `HTTPS_PROXY` and `NO_PROXY`
+much as `requests` and `httpx` do. A provider's SDK with a proxy setting of
+its own can choose differently: see its docs.
+
+**A gRPC client may need a different route.** Some providers' SDKs speak
+gRPC (`grpcio`), not HTTPS, and it finds its proxy its own way. It reads
+only the lowercase `grpc_proxy`, `https_proxy` or `http_proxy`, and
+`no_grpc_proxy` or `no_proxy`: where only `HTTPS_PROXY` is set, gRPC goes
+direct while the check above goes through the proxy, so set the lowercase
+names as well. Its tunnel is to the gRPC endpoint's own port, which isn't
+always 443 (the Squid example refuses any other port: add it to
+`SSL_ports`), and a proxy that decrypts TLS has to support HTTP/2 to carry
+it. Where the proxy can't, give the executor a direct egress rule for the
+endpoint and list it in `no_grpc_proxy`. Add the endpoint as `host:port`
+to `HOSTS` to check the tunnel: `dns`, `proxy refused` and `timeout` mean
+what they mean above, while an error past the tunnel may only be a gRPC
+server declining a plain GET.
 
 ### Schedules, auth and settings
 
@@ -1352,7 +1410,7 @@ empty file, stops exuvia with an error.
 | `EXUVIA_PACKAGES_CONCURRENCY` | 2 | package installs that run at once (a hub starting with many projects to install) |
 | `EXUVIA_PACKAGES_TIMEOUT` | 900 | seconds before a package install is stopped |
 | `UV_INDEX`, `UV_INDEX_<NAME>_USERNAME` / `_PASSWORD` | PyPI only | a package index for every project, and its credentials (see "Packages") |
-| `HTTPS_PROXY` / `NO_PROXY` | direct | the proxy that package installs and exuvia's other outbound HTTPS go through, and the hosts reached without it (see "Package installs on an isolated network" above) |
+| `HTTPS_PROXY` / `NO_PROXY` | direct | the proxy that package installs, exuvia's other outbound HTTPS and nodes' own requests go through, and the hosts reached without it (see "Package installs on an isolated network" and "Nodes that can't reach their data" above) |
 | `EXUVIA_EXECUTOR_DIR` | temp | executor scratch space |
 | `EXUVIA_PROVIDER` | auto | `anthropic`, `openrouter`, `portkey`, or `openai` (any OpenAI-compatible server) |
 | `EXUVIA_MODEL` | per provider | agent model (see below) |
