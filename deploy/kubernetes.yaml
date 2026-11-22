@@ -113,6 +113,9 @@ spec:
             # Who is always an admin (manages everyone else under Users):
             # - name: EXUVIA_ADMINS
             #   value: you@example.com
+            # Who else can open a new hub project: private, view or edit (the default):
+            # - name: EXUVIA_DEFAULT_ACCESS
+            #   value: private
             # - name: ANTHROPIC_API_KEY
             #   valueFrom:
             #     secretKeyRef: {name: exuvia, key: anthropic-api-key}

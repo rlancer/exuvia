@@ -7,6 +7,7 @@ import type { Params, ParamsState } from "./views/protocol";
 import { IconPlay, MOD } from "./icons";
 import { language } from "./lang";
 import { HistoryBrowser } from "./History";
+import { useAccess } from "./Access";
 
 /** What the main pane shows for the selected view: the rendered view, its files or their history. */
 type Pane = "view" | "code" | "history";
@@ -204,6 +205,7 @@ function ViewPane(props: {
   onFile: (path: string) => void;
 }) {
   const { view, params, dark, pane } = props;
+  const { canEdit } = useAccess();
   const [status, setStatus] = useState<FrameStatus>({ phase: "loading" });
   const [errors, setErrors] = useState<Extract<FrameStatus, { error: string }>[]>([]);
   const [runErr, setRunErr] = useState<string | null>(null);
@@ -264,7 +266,7 @@ function ViewPane(props: {
               </button>
             );
           })}
-          {toRun.length > 0 && (
+          {canEdit && toRun.length > 0 && (
             <button className="btn sm" onClick={runReads} title="Run the read nodes that are missing or stale, for these parameters">
               <IconPlay size={10} /> Run {toRun.length === 1 ? toRun[0] : `${toRun.length} nodes`}
             </button>
@@ -378,6 +380,7 @@ function ViewCode(props: {
   onHistory: () => void;
 }) {
   const { view, drafts, onDraft } = props;
+  const { canEdit } = useAccess();
   const [saved, setSaved] = useState<Record<string, string> | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -410,6 +413,7 @@ function ViewCode(props: {
   const unsaved = files.filter((f) => f in drafts);
 
   const save = async (paths: string[]) => {
+    if (!canEdit) return;
     if (!paths.length || busy) return;
     setBusy(true);
     setErr(null);
@@ -452,6 +456,8 @@ function ViewCode(props: {
             key={current}
             value={text}
             onChange={(t) => onDraft(current, t === saved?.[current] ? null : t)}
+            editable={canEdit}
+            readOnly={!canEdit}
             theme={props.dark ? "dark" : "light"}
             extensions={[...language(current), EditorView.lineWrapping]}
             basicSetup={{ foldGutter: false, highlightActiveLine: true }}
@@ -480,14 +486,18 @@ function ViewCode(props: {
               Discard
             </button>
           )}
-          {unsaved.length > 1 && (
+          {canEdit && unsaved.length > 1 && (
             <button className="btn sm" onClick={() => save(unsaved)} disabled={busy}>
               Save all ({unsaved.length})
             </button>
           )}
-          <button className="btn sm" onClick={() => save([current!])} disabled={!dirty || busy}>
-            Save
-          </button>
+          {canEdit ? (
+            <button className="btn sm" onClick={() => save([current!])} disabled={!dirty || busy}>
+              Save
+            </button>
+          ) : (
+            <span className="hint">read-only</span>
+          )}
         </div>
       </div>
     </div>

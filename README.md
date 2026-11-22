@@ -1660,6 +1660,7 @@ empty file, stops exuvia with an error.
 | `EXUVIA_AUTH_USER_HEADER` / `EXUVIA_AUTH_EMAIL_HEADER` | `X-Forwarded-User` / `X-Forwarded-Email` | the headers that carry the user name and email with `EXUVIA_AUTH=headers` |
 | `EXUVIA_AUTH_TRUSTED_PROXIES` | any peer | IPs or CIDRs (comma-separated) whose identity headers are trusted; others are ignored |
 | `EXUVIA_ADMINS` | — | user names or emails (comma-separated) who are always admins of the user list (see "Users and admins" above) |
+| `EXUVIA_DEFAULT_ACCESS` | `edit` | on a hub: what everyone signed in gets on a new project unless its creator picks otherwise (`private`, `view` or `edit`; see "Sharing projects" under [Hub](#hub-many-projects-from-one-process)) |
 | `EXUVIA_BROWSER_AUTH` | `token` | `open` = every page load gives the browser the auth cookie, so people never enter the token (private networks only; see "Auth" above) |
 | `<NAME>_FILE` | — | read a secret setting from a file, e.g. `EXUVIA_API_TOKEN_FILE=/run/secrets/exuvia_api_token` (see "Secrets from files" above) |
 | `EXUVIA_FAILURE_WEBHOOK` | off | URL that failed runs are POSTed to, for projects without their own `failure_webhook` |
@@ -1978,10 +1979,80 @@ exuvia hub ./projects --templates ./templates --scheduler external
 | `GET /api/hub/state` | whether anything is running, and a counter that changes when state does |
 | `GET /api/hub/export`, `POST /api/hub/import` | the whole directory as one archive, for hosts with no persistent disk (without outputs already in `EXUVIA_ARTIFACT_STORE`, or records already in a shared `EXUVIA_DB`). With `EXUVIA_AUTH` set it carries the user list too, which an import puts in place of the hub's |
 | `GET /api/users`, `PATCH /api/users/{id}` | the user list, for admins (see "Users and admins"): everyone who has signed in with their identities / change one's `role` or `disabled` |
+| `GET /api/people?q=` | enabled users whose name or email contains `q` (id, name, email), for choosing who to share with; for anyone signed in |
+| `GET /p/{project}/api/access` | what the request may do in the project: `role` (`viewer`, `editor`, `owner`, or null), owner, general access, whether a share link let it in, and its pending access request |
+| `GET/PATCH /api/projects/{project}/sharing` | who the project is shared with, its general access and owner (the owner also gets its links and access requests) / change `general` (`private`, `view`, `edit`) or hand it to a new `owner` (a user id) |
+| `PUT /api/projects/{project}/sharing/people`, `DELETE .../people/{principal}` | share it with someone (`{user}` or `{email}`, and `role`: `viewer` or `editor`), or change their role / stop sharing with `user:<id>` or `email:<address>`; anyone can take themselves off |
+| `POST /api/projects/{project}/sharing/links`, `DELETE .../links/{id}` | a read-only share link (`{name, expires_in_days}`; the answer carries `url`, `/s/<token>`, once) / revoke one |
+| `POST /api/projects/{project}/sharing/requests`, `POST .../requests/{user}/approve`, `DELETE .../requests/{user}` | ask the owner for access (`{role, message}`) / grant what was asked (or `{role}`) / dismiss it, or withdraw your own |
+| `GET /s/{token}` | open a share link: the browser keeps it in a cookie for that project's pages and API, and lands on its workbench |
 
 With `--scheduler external` nothing fires on its own: the host calls
 `/api/schedule/tick` when it wants schedules evaluated and can sleep until the
 `next` time it returns.
+
+### Sharing projects
+
+Each project on a hub is one workflow, and it is shared the way a document
+is. Sharing needs a hub that people get into: one where they sign in
+(`EXUVIA_AUTH=headers`, see "Signed-in users from a proxy"), or one with an
+`EXUVIA_API_TOKEN`, which can share by link only. A hub nobody has to get in
+to has no sharing: everyone can do everything.
+
+- **Owner.** Whoever creates a project owns it. The owner decides who else
+  can open it, can hand it to someone else (they stay on as an editor), and
+  is the only one besides an admin who can delete it or replace its code
+  with a template.
+- **People.** The **Share** button (in the workbench's top bar, and on each
+  project on the hub's home page) adds people as a **viewer** or an
+  **editor**, by name, or by email for someone who has never signed in: the
+  invite takes effect on their first sign-in with that email.
+- **General access.** What everyone else signed in gets: nothing ("only
+  people added here"), view, or edit. A new project starts with
+  `EXUVIA_DEFAULT_ACCESS` (default `edit`, which keeps a hub working as it
+  did before sharing) unless its creator picks otherwise in the New project
+  dialog. Projects that have no setting of their own, because they were made
+  before sharing existed or by a script with the hub token, follow the same
+  default and have no owner until an admin hands them to someone.
+- **Share links.** A link (`/s/<token>`) opens one project read-only for
+  whoever holds it, signed in or not: the graph, code, outputs, runs and
+  views, but nothing that changes them. Links are never more than view-only,
+  since an editing link would let anyone run code on the hub. Each can
+  expire, the owner sees when it was last opened, and revoking it shuts it
+  at once. exuvia keeps only a hash of each token, and the link's cookie is
+  scoped to that one project's paths.
+- **Access requests.** Someone who opens a project they can't see gets a
+  page to ask for view or edit access, with a note; a viewer can ask for
+  edit access from the banner. The owner sees requests on the hub's home
+  page and answers them in the Share dialog.
+
+What each role may do:
+
+| | viewer | editor | owner |
+|---|---|---|---|
+| Open it; read code, outputs, runs, history and views; query outputs | yes | yes | yes |
+| Change code, run nodes and backfills, packages, parameters, use the agent | | yes | yes |
+| Share it, make links, answer requests, hand it over, delete it | | | yes |
+
+Hub admins and callers with the hub's `EXUVIA_API_TOKEN` are owners of every
+project. The project list, `/api/projects`, shows only the projects a person
+can open, each with their role, its owner and its general access. The same
+rules hold for agents: an agent token works as its person, so the hub's MCP
+endpoint lists only that person's projects, and in a project they can only
+view, the agent gets only the read-only tools (`list_*`, `read_*`,
+`query_data`, `list_packages`). Hub export and import cover every project,
+so on a hub with sharing they are for admins (and the API token). The export
+carries the sharing settings beside the user list, and an import restores
+them.
+
+Behind a sign-in proxy, a share link only helps people who aren't signed in
+if the proxy lets them through to exuvia: let `/s/`, `/assets/` and
+`/p/<project>/` through for requests that carry the `exuvia_link` cookie,
+or put links behind the proxy and share them with people who can sign in
+(oauth2-proxy: `--skip-auth-route='^/s/' --skip-auth-route='^/assets/'`,
+plus `/p/` if links should work without signing in). That is safe in the
+same way as the MCP routes: exuvia turns away a request to a project without
+a valid sign-in, token or link for that project.
 
 ## Embedding / using it inside another app
 
@@ -2296,9 +2367,8 @@ the package to public once (package settings → Change visibility).
 ## Status
 
 Prototype. Not yet: SSO in exuvia itself (people are identified only by a sign-in
-proxy's headers, or share a token), per-project permissions (admins manage the user list, but everyone signed in can
-open and change every project; the hub leaves tenancy to its host), personal API tokens (an agent's changes are
-recorded as nobody's), executor autoscaling, incremental nodes (run parameters cover date partitions), non-Python runtimes, secrets management beyond env vars.
+proxy's headers, or share a token), sharing a project with groups
+rather than one person at a time, notifications when someone asks for access, executor autoscaling, incremental nodes (run parameters cover date partitions), non-Python runtimes, secrets management beyond env vars.
 
 Found a bug, or something missing? Open an issue at
 [github.com/rlancer/exuvia/issues](https://github.com/rlancer/exuvia/issues). Your agent can draft one

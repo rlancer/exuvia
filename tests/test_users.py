@@ -332,7 +332,8 @@ def test_agent_tokens_need_a_user_list(tmp_path, monkeypatch):
         assert client.post("/api/me/tokens", json={}).status_code == 404
 
 
-def test_a_hub_takes_agent_tokens_everywhere_and_exports_them(tmp_path):
+def test_a_hub_takes_agent_tokens_everywhere_and_exports_them(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXUVIA_ADMINS", "alice")  # export and import cover every project: admins only
     with TestClient(create_hub_app(tmp_path / "hub")) as hub:
         token = {"Authorization": f"Bearer {hub.post('/api/me/tokens', json={}, headers=ALICE).json()['token']}"}
         assert hub.post("/api/projects", json={"id": "a"}, headers=token).status_code == 200

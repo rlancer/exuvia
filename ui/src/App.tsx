@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { api, apiUrl, HUB_PROJECT, type CodeRevision, type PackagesState, type Project } from "./api";
+import { access, api, apiUrl, HUB_PROJECT, type Access, type CodeRevision, type PackagesState, type Project } from "./api";
+import { AccessContext, accessState, NoAccess, useAccess, ViewOnlyBanner } from "./Access";
+import { ShareDialog } from "./Share";
 import { Canvas } from "./Canvas";
 import { Inspector, Overview } from "./Inspector";
 import { AgentPanel, type AgentHandle, type SideTab } from "./AgentPanel";
@@ -14,7 +16,7 @@ import { SignedInAs } from "./Me";
 import { HelpMenu } from "./Help";
 import { useTheme } from "./theme";
 import { Brand, Mark } from "./Brand";
-import { IconClock, IconClose, IconFolder, IconMoon, IconPackage, IconPlay, IconPlus, IconSpark, IconSun } from "./icons";
+import { IconClock, IconClose, IconFolder, IconMoon, IconPackage, IconPlay, IconPlus, IconShare, IconSpark, IconSun } from "./icons";
 import { failed, Toasts } from "./toast";
 
 const embed = new URLSearchParams(location.search).has("embed");
@@ -73,7 +75,31 @@ function agentStartsOpen(): boolean {
   return window.matchMedia("(min-width: 1101px)").matches;
 }
 
+/**
+ * A project's workbench. On a hub it first asks what this page may do there
+ * (exuvia/sharing.py): someone the project isn't shared with gets a page to
+ * request access, a viewer gets the workbench without what would change it.
+ */
 export default function App() {
+  const [acc, setAcc] = useState<Access | null | undefined>(HUB_PROJECT ? undefined : null);
+  useEffect(() => {
+    // An older server has no /access: it shares nothing, so the page can do everything.
+    if (HUB_PROJECT) access().then(setAcc).catch(() => setAcc(null));
+  }, []);
+  if (acc === undefined) return null;
+  if (acc && acc.role === null) return <NoAccess access={acc} />;
+  return (
+    <AccessContext.Provider value={accessState(acc)}>
+      <Workbench />
+    </AccessContext.Provider>
+  );
+}
+
+function Workbench() {
+  const { canEdit, access: acc } = useAccess();
+  const [sharing, setSharing] = useState(false);
+  // Sharing is managed through the hub's API, which a share link alone doesn't open.
+  const canShare = !!HUB_PROJECT && !!acc?.sharing && !(acc.link && !acc.user);
   const [project, setProject] = useState<Project | null>(null);
   const [cfg, setCfg] = useState<{ ai_enabled: boolean; model: string } | null>(null);
   const [selected, setSelected] = useState<string | null>(start.node ?? null);
@@ -104,7 +130,9 @@ export default function App() {
   const [showCode, setShowCode] = useState(0);
   const [treePath, setTreePath] = useState<string | null>(null);
   const [rev, setRev] = useState<CodeRevision | null>(null);
-  const [sideTab, setSideTabState] = useState<SideTab>(sideStartsOn);
+  const [sideTabKept, setSideTabState] = useState<SideTab>(sideStartsOn);
+  // A viewer has no agent (it changes the project): the panel opens on Files.
+  const sideTab: SideTab = !canEdit && sideTabKept === "agent" ? "files" : sideTabKept;
   const setSideTab = useCallback((t: SideTab) => {
     setSideTabState(t);
     try {
@@ -230,7 +258,7 @@ export default function App() {
   const mainCls = `main ${agentOpen ? "" : "agent-collapsed"}`;
 
   return (
-    <div className={`app ${embed ? "embed" : ""}`}>
+    <div className={`app ${embed ? "embed" : ""} ${canEdit ? "" : "has-banner"}`}>
       <header className="topbar">
         <Brand home={HUB_PROJECT ? "/" : undefined}>{project?.name ?? "…"}</Brand>
         <div className="seg mode-seg" role="tablist" aria-label="Mode">
@@ -252,6 +280,12 @@ export default function App() {
           {!conn && <span className="offline" role="status">reconnecting…</span>}
         </div>
         <span className="spacer" />
+        {canShare && (
+          <button className="btn has-icon" onClick={() => setSharing(true)} title="Who can open and change this project" aria-label="Share">
+            <IconShare size={12} /> <span className="lbl">Share</span>
+          </button>
+        )}
+        {canEdit && (<>
         <button
           className="btn has-icon"
           onClick={() => api.runStale().catch(failed("Couldn't start the run"))}
@@ -276,12 +310,14 @@ export default function App() {
           {pkgs?.status === "installing" || pkgs?.status === "pending" ? <span className="pk-spin" /> : null}
           {pkgs?.status === "failed" ? <span className="pk-bang">!</span> : null}
         </button>
+        </>)}
         <HelpMenu />
         <button className="btn ghost icon-btn" onClick={toggleTheme} title={dark ? "Light theme" : "Dark theme"} aria-label={dark ? "Light theme" : "Dark theme"}>
           {dark ? <IconSun /> : <IconMoon />}
         </button>
         <SignedInAs />
       </header>
+      {!canEdit && <ViewOnlyBanner />}
 
       <div className={mainCls}>
         {mode === "helper" && helper && project ? (
@@ -332,10 +368,16 @@ export default function App() {
                   <div className="empty-card">
                     <Mark size={40} />
                     <h2>An empty graph</h2>
-                    <p>
-                      {aiOn ? "Describe a pipeline to the agent, or add a node by hand." : "Add your first node — a Python function or a SQL query."}
-                    </p>
-                    <button className="btn primary" onClick={() => setNewOpen(true)}><IconPlus size={12} /> New node</button>
+                    {canEdit ? (
+                      <>
+                        <p>
+                          {aiOn ? "Describe a pipeline to the agent, or add a node by hand." : "Add your first node — a Python function or a SQL query."}
+                        </p>
+                        <button className="btn primary" onClick={() => setNewOpen(true)}><IconPlus size={12} /> New node</button>
+                      </>
+                    ) : (
+                      <p>Nobody has added a node yet.</p>
+                    )}
                   </div>
                 </div>
               )}
@@ -367,6 +409,7 @@ export default function App() {
           <AgentPanel
             ref={agent}
             enabled={aiOn}
+            agent={canEdit}
             model={cfg?.model ?? ""}
             selected={sel}
             hasNodes={nodes.length > 0}
@@ -383,9 +426,11 @@ export default function App() {
           />
         ) : (
           <div className="agent-collapsed-rail" role="group" aria-label="Side panel">
-            <button onClick={() => openSide("agent")} title="Open the agent">
-              <IconSpark /> Agent
-            </button>
+            {canEdit && (
+              <button onClick={() => openSide("agent")} title="Open the agent">
+                <IconSpark /> Agent
+              </button>
+            )}
             <button onClick={() => openSide("files")} title="Open the files of the graph and the views">
               <IconFolder /> Files
             </button>
@@ -396,6 +441,9 @@ export default function App() {
         )}
       </div>
 
+      {sharing && HUB_PROJECT && (
+        <ShareDialog project={HUB_PROJECT} name={project?.name} self={acc?.user?.uid ?? null} onClose={() => setSharing(false)} />
+      )}
       {pkgOpen && <PackagesDialog state={pkgs} onChange={setPkgs} onClose={() => setPkgOpen(false)} />}
       {newOpen && (
         <NewNodeDialog

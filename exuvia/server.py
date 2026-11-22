@@ -33,11 +33,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import _STARTED, __version__, about as about_mod, auth, mcp_http
-from .agent import TOOLS, Agent
+from .agent import READ_TOOLS, TOOLS, Agent
 from .arrowstream import MEDIA_TYPE as ARROW_STREAM, ArrowStream, wants_arrow
 from .packages import PackagesError
 from .project import NODE_NAME, PARAM_TYPES, coerce_param
 from .report import graph_report, node_report
+from .sharing import GENERAL, GRANT_ROLES, LINK_COOKIE, MAX_LINK_DAYS, at_least, looks_like_link, open_sharing
 from .store import clean_origin
 from .users import UserStore, looks_like_token, open_users
 from .workspace import SCHEDULER, Workspace, acting_as
@@ -169,6 +170,36 @@ class ProjectCreate(BaseModel):
     id: str
     name: str | None = None
     template: str | None = None
+    # With sharing on: what everyone else signed in gets (private | view |
+    # edit; default EXUVIA_DEFAULT_ACCESS), and who owns it (a user id;
+    # default: whoever creates it).
+    access: str | None = None
+    owner: str | None = None
+
+
+class SharingPatch(BaseModel):
+    general: str | None = None  # private | view | edit
+    owner: str | None = None  # a user id: hand the project over
+
+
+class ShareReq(BaseModel):
+    user: str | None = None  # a user id, or
+    email: str | None = None  # an email, for someone who may not have signed in yet
+    role: str = "viewer"  # viewer | editor
+
+
+class LinkReq(BaseModel):
+    name: str = ""
+    expires_in_days: float | None = None  # unset: until revoked
+
+
+class AccessReq(BaseModel):
+    role: str = "viewer"
+    message: str = ""
+
+
+class ApproveReq(BaseModel):
+    role: str | None = None  # default: what was asked for
 
 
 class TemplateApply(BaseModel):
@@ -246,6 +277,14 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
             "scheduler": SCHEDULER,
             "version": __version__,
         }
+
+    @r.get("/access")
+    def access(ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """What this request may do here. A single project (``exuvia serve``)
+        has no sharing: everyone who gets in can do everything. A hub answers
+        this route itself, with the project's sharing (sharing.py)."""
+        ident = auth.current()
+        return {"role": "owner", "sharing": False, "people": False, "user": ident.as_dict() if ident else None}
 
     @r.post("/schedule/tick")
     async def schedule_tick(ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
@@ -820,6 +859,8 @@ HUB_GUIDE_HINT = (
 # A hub project's API; its workbench page (/p/<id>/) is not API.
 _HUB_API = re.compile(r"^/p/[^/]+/api(/|$)")
 _MCP_PATH = re.compile(r"^(/p/[^/]+)?/mcp/?$")  # mcp_http.py: auth as the API
+# Anything under a hub project: its workbench page and its API.
+_HUB_PROJECT_PATH = re.compile(r"^/p/([^/]+)(/|$)")
 
 
 def _token_ok(request: Request, api_token: str) -> bool:
@@ -838,11 +879,13 @@ def _browser_open() -> bool:
     return mode == "open"
 
 
-def _install_common(app: FastAPI, users: UserStore | None, command: str = "serve") -> None:
+def _install_common(app: FastAPI, users: UserStore | None, command: str = "serve", sharing: Any = None) -> None:
     """CORS, who is signed in (EXUVIA_AUTH) and the optional shared-secret
     auth, for both app shapes. ``users`` is the user list each sign-in is
     recorded in (None when nobody signs in: EXUVIA_AUTH=token). ``command``
-    is the CLI command this app is (``serve`` or ``hub``)."""
+    is the CLI command this app is (``serve`` or ``hub``). ``sharing`` is a
+    hub's sharing rules (sharing.py), whose share links let a request into
+    one project without signing in."""
     origins = [o for o in os.environ.get("EXUVIA_CORS_ORIGINS", "").split(",") if o]
     if origins:  # e.g. https://lobster.mp when embedded in another app
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"], allow_headers=["*"])
@@ -894,6 +937,18 @@ def _install_common(app: FastAPI, users: UserStore | None, command: str = "serve
         if not store.revoke_token(uid, tid):
             raise HTTPException(404, f"no token {tid}")
         return {"ok": True}
+
+    @app.get("/api/people")
+    def people(q: str = "", limit: int = 20) -> dict[str, Any]:
+        """Enabled users whose name or email contains ``q``: id, name and
+        email, for choosing who to share a project with. For anyone signed in
+        (and the operator); not for a request let in by a share link alone."""
+        if users is None:
+            raise HTTPException(404, "no user list: nobody signs in on this server (see EXUVIA_AUTH)")
+        ident = auth.current()
+        if ident is not None and not ident.uid:
+            raise HTTPException(403, "sign in to look people up")
+        return {"people": users.search(q, max(1, min(limit, 100)))}
 
     @app.get("/api/about")
     async def about(refresh: bool = False) -> dict[str, Any]:
@@ -975,11 +1030,31 @@ def _install_common(app: FastAPI, users: UserStore | None, command: str = "serve
         return HTMLResponse(f"<!doctype html><title>exuvia: disabled</title><p>{html.escape(detail)}.</p>",
                             status_code=403)
 
+    async def link_for(request: Request, path: str) -> str | None:
+        """The hub project a share link on this request opens, when the
+        request is for that project's page or API (sharing.py). Browsers
+        carry it in a cookie scoped to the project's path (set by /s/<token>);
+        scripts can send it as ``X-Exuvia-Link``. Never for MCP."""
+        if sharing is None or _MCP_PATH.match(path):
+            return None
+        m = _HUB_PROJECT_PATH.match(path)
+        token = request.cookies.get(LINK_COOKIE) or request.headers.get("x-exuvia-link")
+        if not m or not looks_like_link(token):
+            return None
+        pid = await asyncio.to_thread(sharing.link_project, token)
+        return pid if pid == m.group(1) else None
+
     @app.middleware("http")
     async def require_auth(request: Request, call_next: Callable[[Request], Awaitable[Any]]):
         path = request.url.path
         if path == "/healthz":  # liveness: no auth
             return await call_next(request)
+        # A hub with share links: the UI's static bundle (the same files the
+        # package ships) and /s/<token>, which checks the link itself, are
+        # open, so someone with a link and no sign-in can load the page.
+        if sharing is not None and (path.startswith("/assets/") or path.startswith("/s/")):
+            return await call_next(request)
+        link = await link_for(request, path)
         ident = headers.identify(request.headers, request.client.host if request.client else None) if headers else None
         if ident is not None:
             if users is not None:  # recorded in the user list (see users.py)
@@ -987,7 +1062,7 @@ def _install_common(app: FastAPI, users: UserStore | None, command: str = "serve
                 if user.disabled:
                     return disabled(path)
                 ident = dataclasses.replace(ident, uid=user.id, role=user.role)
-            with auth.signed_in(ident):
+            with auth.signed_in(dataclasses.replace(ident, link=link)):
                 return await call_next(request)
         # An agent token (users.py): signed in as the person who made it,
         # from anywhere, since MCP clients and scripts can't pass the proxy.
@@ -997,9 +1072,15 @@ def _install_common(app: FastAPI, users: UserStore | None, command: str = "serve
             if owner is not None:
                 if owner.disabled:
                     return disabled(path)
-                ident = auth.Identity(user=owner.name, email=owner.email, method="token", uid=owner.id, role=owner.role)
+                ident = auth.Identity(user=owner.name, email=owner.email, method="token", uid=owner.id, role=owner.role,
+                                      link=link)
                 with auth.signed_in(ident):
                     return await call_next(request)
+        # A share link alone: read-only access to its one project, as nobody
+        # in particular. The hub's API token, when the request has it too, wins.
+        if link is not None and not (api_token and _token_ok(request, api_token)):
+            with auth.signed_in(auth.Identity(user=None, email=None, method="link", link=link)):
+                return await call_next(request)
         if not api_token:  # header auth alone: nobody gets in without the headers
             return unidentified(path)
         qs_token = request.query_params.get("token")
@@ -1062,19 +1143,259 @@ def create_app(root: str | Path) -> FastAPI:
     return app
 
 
+# A hub project's API path, after /p/<id>/api.
+_PROJECT_API_REST = re.compile(r"^/p/[^/]+/api(/.*)?$")
+# POSTs that read and change nothing: SQL over outputs (DuckDB, read-only).
+_READ_POSTS = re.compile(r"^/(query|views/[^/]+/query)$")
+_TOOL_POST = re.compile(r"^/tools/([^/]+)$")
+
+
+def _needed_role(request: Request) -> str:
+    """The role a project API request needs (sharing.py): reading is for
+    viewers (GETs, SQL queries, the read-only tools), everything else, from
+    saving code to running a node or talking to the agent, for editors."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return "viewer"
+    m = _PROJECT_API_REST.match(request.url.path)
+    rest = (m.group(1) or "/") if m else request.url.path
+    if _READ_POSTS.match(rest):
+        return "viewer"
+    tool = _TOOL_POST.match(rest)
+    if tool and tool.group(1) in READ_TOOLS:
+        return "viewer"
+    return "editor"
+
+
+def _sharing_routes(app: FastAPI, hub: Any, require: Callable[[str, str], str], store: Callable[[], Any]) -> None:
+    """The routes that share a hub project (sharing.py): who it is shared
+    with, general access, ownership, share links and access requests. Only
+    the owner (or an admin, or the hub's API token) changes them; anyone who
+    can open the project sees who else can."""
+
+    def by() -> str | None:
+        return auth.current_uid()
+
+    def people_on(sh: Any) -> None:
+        if not sh.people:
+            raise HTTPException(400, "nobody signs in on this hub (see EXUVIA_AUTH), so it is shared by link only")
+
+    def answer(project: str) -> dict[str, Any]:
+        sh = store()
+        role = require(project, "viewer")
+        manage = role == "owner"
+        from .sharing import default_general
+
+        out: dict[str, Any] = {
+            "project": project, "you": role, "can_manage": manage, "people_enabled": sh.people,
+            "default_access": default_general(), **sh.describe(project),
+            "people": sh.members(project) if sh.people else [],
+        }
+        if manage:
+            out["links"] = sh.links(project)
+            out["requests"] = sh.requests(project) if sh.people else []
+        return out
+
+    @app.get("/api/projects/{project}/sharing")
+    def sharing_get(project: str) -> dict[str, Any]:
+        """Who the project is shared with and how. The owner also gets its
+        share links and the access requests waiting for an answer."""
+        return answer(project)
+
+    @app.patch("/api/projects/{project}/sharing")
+    def sharing_patch(project: str, body: SharingPatch) -> dict[str, Any]:
+        """Change general access (``private``, ``view``, ``edit``) or hand
+        the project to another owner (the old owner stays on as an editor)."""
+        sh = store()
+        require(project, "owner")
+        try:
+            if body.general is not None:
+                people_on(sh)
+                sh.set_general(project, body.general)
+            if body.owner is not None:
+                people_on(sh)
+                sh.set_owner(project, body.owner, by=by())
+        except KeyError:
+            raise HTTPException(404, f"no user {body.owner}") from None
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return answer(project)
+
+    @app.put("/api/projects/{project}/sharing/people")
+    def sharing_grant(project: str, body: ShareReq) -> dict[str, Any]:
+        """Share the project with someone (or change their role): ``user`` is a
+        user id, or ``email`` names someone who may not have signed in yet."""
+        sh = store()
+        require(project, "owner")
+        people_on(sh)
+        try:
+            sh.grant(project, body.role, user_id=body.user, email=body.email, by=by())
+        except KeyError:
+            raise HTTPException(404, f"no user {body.user}") from None
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return answer(project)
+
+    @app.delete("/api/projects/{project}/sharing/people/{principal}")
+    def sharing_revoke(project: str, principal: str) -> dict[str, Any]:
+        """Stop sharing with someone (``user:<id>`` or ``email:<address>``).
+        Anyone can take themselves off a project they were shared on."""
+        from .sharing import email_principal, user_principal
+
+        sh = store()
+        ident = auth.current()
+        mine = bool(ident and ident.uid) and principal in (
+            user_principal(ident.uid or ""), email_principal(ident.email or "") if ident and ident.email else "",
+        )
+        require(project, "viewer" if mine else "owner")
+        if not sh.revoke(project, principal):
+            raise HTTPException(404, f"project {project} is not shared with {principal}")
+        return answer(project) if at_least(sh.current_role(project), "viewer") else {"ok": True, "left": True}
+
+    @app.post("/api/projects/{project}/sharing/links", status_code=201)
+    def sharing_link_create(project: str, body: LinkReq, request: Request) -> dict[str, Any]:
+        """A read-only share link. ``token`` and ``url`` are in this answer only."""
+        sh = store()
+        require(project, "owner")
+        expires = None
+        if body.expires_in_days is not None:
+            if not 0 < body.expires_in_days <= MAX_LINK_DAYS:
+                raise HTTPException(400, f"expires_in_days must be more than 0 and at most {MAX_LINK_DAYS}")
+            expires = _time.time() + body.expires_in_days * 86400
+        row, token = sh.create_link(project, body.name, expires, by=by())
+        return {**row, "token": token, "url": f"/s/{token}"}
+
+    @app.delete("/api/projects/{project}/sharing/links/{lid}")
+    def sharing_link_revoke(project: str, lid: str) -> dict[str, Any]:
+        sh = store()
+        require(project, "owner")
+        if not sh.revoke_link(project, lid):
+            raise HTTPException(404, f"no link {lid}")
+        return answer(project)
+
+    @app.post("/api/projects/{project}/sharing/requests", status_code=201)
+    def sharing_request(project: str, body: AccessReq) -> dict[str, Any]:
+        """Ask the owner for ``role`` on a project you can't open (or only view)."""
+        from .hub import PROJECT_ID
+        from .sharing import RANK
+
+        sh = store()
+        people_on(sh)
+        ident = auth.current()
+        if ident is None or not ident.uid:
+            raise HTTPException(403, "sign in to request access")
+        if not PROJECT_ID.match(project) or not hub.exists(project):
+            raise HTTPException(404, f"no project {project}")
+        if body.role not in GRANT_ROLES:
+            raise HTTPException(400, f"role must be one of {', '.join(GRANT_ROLES)}")
+        role = sh.current_role(project)
+        if RANK[role] >= RANK[body.role]:
+            raise HTTPException(400, f"you already have {role} access to {project}")
+        sh.request_access(project, ident.uid, body.role, body.message)
+        return {"ok": True, "requested": sh.request_of(project, ident.uid)}
+
+    @app.post("/api/projects/{project}/sharing/requests/{uid}/approve")
+    def sharing_approve(project: str, uid: str, body: ApproveReq) -> dict[str, Any]:
+        sh = store()
+        require(project, "owner")
+        try:
+            sh.approve(project, uid, body.role, by=by())
+        except KeyError:
+            raise HTTPException(404, f"no request from {uid}") from None
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return answer(project)
+
+    @app.delete("/api/projects/{project}/sharing/requests/{uid}")
+    def sharing_dismiss(project: str, uid: str) -> dict[str, Any]:
+        """Dismiss a request (the owner), or withdraw your own."""
+        sh = store()
+        ident = auth.current()
+        mine = bool(ident and ident.uid == uid)
+        if not mine:
+            require(project, "owner")
+        if not sh.drop_request(project, uid):
+            raise HTTPException(404, f"no request from {uid}")
+        return answer(project) if not mine else {"ok": True}
+
+    @app.get("/s/{token}", include_in_schema=False)
+    def share_link(token: str, request: Request) -> Any:
+        """Open a share link: the browser keeps it in a cookie for that one
+        project's pages and API, and lands on its workbench."""
+        sh = hub.sharing
+        project = sh.link_project(token) if sh is not None else None
+        if project is None or not hub.exists(project):
+            msg = "This share link doesn't work: it was revoked, it expired, or its project is gone. Ask whoever sent it for a new one."
+            return HTMLResponse(f"<!doctype html><title>exuvia: link not found</title><p>{html.escape(msg)}</p>", status_code=404)
+        resp = RedirectResponse(f"/p/{project}/", status_code=303)
+        expires = sh.link_expiry(token)
+        max_age = int(expires - _time.time()) if expires else 400 * 86400
+        resp.set_cookie(LINK_COOKIE, token, max_age=max(max_age, 1), path=f"/p/{project}/", httponly=True,
+                        samesite="lax", secure=request.url.scheme == "https")
+        return resp
+
+
 def create_hub_app(root: str | Path, templates: str | Path | None = None) -> FastAPI:
     from .hub import HUB_USERS_DB, PROJECT_ID, Hub, StillInUse
 
     hub = Hub(root, templates)
+    # One user list for every project on the hub (see users.py), and the
+    # projects' sharing beside it (sharing.py) whenever anyone has to get in:
+    # people sign in, or there is an API token for share links to stand in for.
+    if auth.identifies_people():
+        hub.users = open_users(hub.root / HUB_USERS_DB)
+    if hub.users is not None or os.environ.get("EXUVIA_API_TOKEN"):
+        hub.sharing = open_sharing(hub.root / HUB_USERS_DB, hub.users)
+
+    def role_on(project: str) -> str | None:
+        """The request's role on a project: owner for everyone on a hub
+        without sharing (nobody has to get in)."""
+        return hub.sharing.current_role(project) if hub.sharing is not None else "owner"
+
+    def denial(project: str, role: str | None, need: str) -> str:
+        if role is None:
+            ident = auth.current()
+            ask = " or request access from its page" if ident is not None and ident.uid else ""
+            return f"you don't have access to project {project}: ask its owner to share it with you{ask}"
+        if need == "editor":
+            return f"you can view project {project} but not change it: ask its owner for edit access"
+        return f"only the owner of project {project} (or a hub admin) can do that"
+
+    def require(project: str, need: str) -> str:
+        """The request's role on an existing project, at least ``need``
+        (404: no such project; 403: not allowed)."""
+        if not PROJECT_ID.match(project) or not hub.exists(project):
+            raise HTTPException(404, f"no project {project}")
+        role = role_on(project)
+        if not at_least(role, need):
+            raise HTTPException(403, denial(project, role, need))
+        return role  # type: ignore[return-value]
+
+    def require_admin() -> None:
+        """Hub-wide operations (export, import): an admin, or the operator."""
+        ident = auth.current()
+        if ident is not None and ident.role != "admin":
+            raise HTTPException(403, "admins only: this covers every project on the hub")
+
+    def sharing_store() -> Any:
+        if hub.sharing is None:
+            raise HTTPException(404, "no sharing on this hub: nobody has to sign in or send a token to get in")
+        return hub.sharing
 
     async def path_project(scope: dict[str, Any]) -> Any:
         project = scope.get("path_params", {}).get("project", "")
         if not PROJECT_ID.match(project) or not hub.exists(project):
             return JSONResponse({"detail": f"no project {project}"}, status_code=404)
+        role = await asyncio.to_thread(role_on, project)
+        if role is None:
+            return JSONResponse({"detail": denial(project, role, "viewer")}, status_code=403)
         return await hub.get(project)
 
+    def path_role(scope: dict[str, Any]) -> str | None:
+        return role_on(scope.get("path_params", {}).get("project", ""))
+
     # MCP over HTTP (mcp_http.py): /mcp for every project, /p/<id>/mcp for one.
-    hub_mcp, project_mcp = mcp_http.hub_endpoint(hub), mcp_http.project_endpoint(path_project)
+    hub_mcp = mcp_http.hub_endpoint(hub, role_on)
+    project_mcp = mcp_http.project_endpoint(path_project, path_role)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -1088,16 +1409,36 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
         await hub.close()
 
     app = FastAPI(title="exuvia hub", lifespan=lifespan)
-    # One user list for every project on the hub (see users.py).
-    if auth.identifies_people():
-        hub.users = open_users(hub.root / HUB_USERS_DB)
-    _install_common(app, hub.users, "hub")
+    _install_common(app, hub.users, "hub", hub.sharing)
     app.state.hub = hub
 
-    async def get_ctx(project: str) -> Ctx:
+    async def get_ctx(project: str, request: Request) -> Ctx:
+        # The rules may need a database read: off the event loop (the thread
+        # gets this request's context, so it sees who is signed in).
+        await asyncio.to_thread(require, project, _needed_role(request))
+        return await hub.get(project)
+
+    @app.get("/p/{project}/api/access")
+    def project_access(project: str) -> dict[str, Any]:
+        """What this request may do in the project, for its workbench: the
+        role (null: none, and the page offers to request access), its owner
+        and general access, and whether a share link let it in."""
         if not PROJECT_ID.match(project) or not hub.exists(project):
             raise HTTPException(404, f"no project {project}")
-        return await hub.get(project)
+        ident = auth.current()
+        role = role_on(project)
+        out: dict[str, Any] = {
+            "project": project, "role": role, "sharing": hub.sharing is not None,
+            "people": bool(hub.sharing is not None and hub.sharing.people),
+            "user": ident.as_dict() if ident and ident.method != "link" else None,
+            "link": bool(ident and ident.link == project),
+        }
+        if hub.sharing is not None:
+            out.update(hub.sharing.describe(project) if role else {})
+            signed_in = bool(ident and ident.uid)
+            out["can_request"] = signed_in and hub.sharing.people and role != "owner"
+            out["requested"] = hub.sharing.request_of(project, ident.uid) if signed_in else None  # type: ignore[union-attr]
+        return out
 
     app.include_router(project_router(get_ctx), prefix="/p/{project}/api")
     mcp_http.add_routes(app, "", hub_mcp)
@@ -1125,13 +1466,38 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
 
     @app.get("/api/projects")
     def projects() -> dict[str, Any]:
-        # `auth`: whether clients need the API token (the home page's MCP setup says so).
-        return {"projects": hub.list(), "templates": hub.templates(), "auth": bool(os.environ.get("EXUVIA_API_TOKEN"))}
+        """The projects this request can open (all of them without sharing),
+        each with the caller's role, owner and general access when the hub
+        has sharing. `auth`: whether clients need the API token (the home
+        page's MCP setup says so)."""
+        out: dict[str, Any] = {
+            "projects": visible_projects(), "templates": hub.templates(),
+            "auth": bool(os.environ.get("EXUVIA_API_TOKEN")), "sharing": None,
+        }
+        if hub.sharing is not None:
+            from .sharing import default_general
+
+            out["sharing"] = {"people": hub.sharing.people, "default_access": default_general()}
+        return out
+
+    def visible_projects() -> list[dict[str, Any]]:
+        listed = hub.list()
+        if hub.sharing is None:
+            return listed
+        seen = hub.sharing.overview([p["id"] for p in listed], auth.current())
+        return [{**p, **seen[p["id"]]} for p in listed if p["id"] in seen]
+
+    hub.visible = visible_projects  # the hub's MCP lists the same projects (mcp_http.py)
 
     @app.post("/api/projects")
     async def project_create(body: ProjectCreate) -> dict[str, Any]:
+        ident = auth.current()
+        if ident is not None and not ident.uid:
+            raise HTTPException(403, "sign in to create a project")
+        if body.owner is not None and ident is not None and ident.role != "admin":
+            raise HTTPException(403, "only an admin (or the hub's API token) can create a project for someone else")
         try:
-            await hub.create(body.id, body.name, body.template)
+            await hub.create(body.id, body.name, body.template, access=body.access, owner=body.owner)
         except FileExistsError as e:
             raise HTTPException(409, f"project {body.id} already exists") from e
         except ValueError as e:
@@ -1141,8 +1507,7 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
     @app.put("/api/projects/{project}/template")
     async def project_apply_template(project: str, body: TemplateApply) -> dict[str, Any]:
         """Replace the project's code with a template's; history and outputs stay."""
-        if not PROJECT_ID.match(project) or not hub.exists(project):
-            raise HTTPException(404, f"no project {project}")
+        require(project, "owner")
         try:
             await hub.apply_template(project, body.template)
         except ValueError as e:
@@ -1154,8 +1519,7 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
 
     @app.delete("/api/projects/{project}")
     async def project_delete(project: str) -> dict[str, Any]:
-        if not PROJECT_ID.match(project) or not hub.exists(project):
-            raise HTTPException(404, f"no project {project}")
+        require(project, "owner")
         try:
             await hub.delete(project)
         except StillInUse as e:
@@ -1177,6 +1541,7 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
     @app.get("/api/hub/export")
     async def hub_export() -> FileResponse:
         """All projects with their run history and artifacts, as one .tar.gz."""
+        require_admin()
         path = await asyncio.to_thread(hub.export)
         return FileResponse(path, media_type="application/gzip", filename="exuvia-hub.tar.gz")
 
@@ -1184,6 +1549,7 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
     async def hub_import(request: Request) -> dict[str, Any]:
         """Restore projects from an export. Projects in the archive replace
         same-named ones; others are left alone."""
+        require_admin()
         blob = await request.body()
         try:
             restored = await hub.restore(blob)
@@ -1192,6 +1558,8 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
         except StillInUse as e:
             raise HTTPException(409, str(e)) from e
         return {"ok": True, "projects": restored}
+
+    _sharing_routes(app, hub, require, sharing_store)
 
     # The UI: the hub's home page at / (list, create, delete and open
     # projects, through /api/projects) and the workbench, one per project, at
