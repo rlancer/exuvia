@@ -52,6 +52,7 @@ from .executor import ExecRequest, LocalExecutor, make_executor
 from .notify import failure_webhook, payload, send
 from .packages import Packages, missing_package
 from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Project, View, _hash, _validate_cron
+from .project_secrets import ProjectSecrets, Redactor
 from .store import CodeChange, clean_origin, open_store
 
 MAX_PARALLEL = int(os.environ.get("EXUVIA_MAX_PARALLEL", "4"))
@@ -97,6 +98,8 @@ class Workspace:
         self._edit_lock = threading.RLock()
         self.store = open_store(self.project)
         self.store.fail_interrupted()
+        # The project's own secrets, outside its files (project_secrets.py).
+        self.secrets = ProjectSecrets(self.project.state_dir)
         self.bus = EventBus()
         self.graph: Graph = self.project.load()
         self.record_code(origin)
@@ -675,6 +678,8 @@ class Workspace:
     def _finish(
         self, run_id: str, name: str, key: str, *, status: str, error: str | None = None, **fields: Any
     ) -> str:
+        if error:
+            error = self.secrets.redactor().text(error)  # a traceback can quote a secret
         self.store.update_run(run_id, status=status, error=error, finished_at=time.time(), **fields)
         if self._inflight.get((name, key)) == run_id:
             del self._inflight[(name, key)]
@@ -783,7 +788,11 @@ class Workspace:
         )
         self._emit_run(run_id)
 
+        secrets = self.secrets.values()
+        redact = Redactor(secrets.values())
+
         def on_log(text: str) -> None:
+            text = redact.text(text)  # a node that prints a secret logs ***
             self.store.append_log(run_id, text)
             self.bus.publish({"type": "log", "run_id": run_id, "node": name, "text": text})
 
@@ -798,6 +807,7 @@ class Workspace:
             # Only what the node declared: reading anything else is an error,
             # because the output would not be keyed by it.
             params={p: params.get(p) for p in node.params},
+            env=secrets,
         )
         # Executors block (subprocess pipes / HTTP streams); keep them off the loop.
         res = await asyncio.to_thread(self.executor.execute, req, on_log)

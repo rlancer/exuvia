@@ -3,6 +3,10 @@
     python -m exuvia.runner <spec.json>
     python -m exuvia.runner --warm        # pre-warmed, reads spec path on stdin
 
+A warm runner reads a second line after the spec path: the project's secrets
+as a JSON object, set in ``os.environ`` before the node is loaded. They come
+over the pipe so they are never written to a file (see project_secrets.py).
+
 The parent (``workspace.py``) streams this process's stdout/stderr as the run
 log and reads the result from ``spec["result_path"]``. Running each node in
 its own process gives crash isolation, clean log capture, killable timeouts,
@@ -255,6 +259,9 @@ def main() -> None:
         if not line:  # parent shut down the pool
             return
         spec_path = line
+        secrets = sys.stdin.readline().strip()
+        if secrets:
+            os.environ.update(json.loads(secrets))
     else:
         spec_path = sys.argv[1]
     spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))

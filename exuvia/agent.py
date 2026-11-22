@@ -380,6 +380,15 @@ def _available_packages(root: Path | None = None) -> str:
     return out
 
 
+def _secrets_line(ws: Workspace) -> str:
+    """The project's secret names (never values) for the agent's instructions."""
+    names = [s["name"] for s in ws.secrets.names()]
+    where = "A person sets them in the workbench (Secrets) or through the API; you cannot set or read their values."
+    if not names:
+        return f"This project has no secrets yet. {where} Ask the user for the one a node needs, by name."
+    return f"This project's secrets: {', '.join(f'`{n}`' for n in names)}. {where}"
+
+
 def _packages_how() -> str:
     mode = agent_mode()
     if mode == "off":
@@ -402,7 +411,7 @@ SYSTEM = """You are the agent inside exuvia, a DAG workbench for analysts and da
 - Run parameters make results reproducible over time. A project declares them (see "Run parameters" below; add one with define_param). A node that reads one must declare it: `@exuvia.node(params=["as_of"])` then `exuvia.param("as_of")` (dates arrive as "YYYY-MM-DD" strings); in SQL, `-- params: as_of` then `$as_of`. A node's output is stored per value of the parameters it or its upstream nodes declare, so each date has its own output and history, and nodes without parameters are computed once and shared. A node that reads `as_of` must compute "as of that date": filter source data to rows known on or before it, and never call "now"/"today" yourself.
 - Outputs are content-hashed. Unchanged output stops a cascade. Each node runs in its own subprocess with the project root as the working directory and on sys.path.
 - Shared helpers: code several nodes need (a formula, an interpolation, a cleaning step) goes in a helper module under `lib/` instead of being copied into each node. Write it with write_file (e.g. `lib/stats.py`; packages like `lib/vol/surface.py` work too, no `__init__.py` needed) and import it in the node with a plain import statement: `from lib.stats import weighted_corr`. Helpers are Python only and are not nodes: no `@exuvia.node`, no outputs. A node's code hash covers every helper it imports (directly or through other helpers), so editing a helper makes those nodes stale; write_file returns them in `used_by` — re-run them. Imports built at runtime (importlib, `__import__`) are not tracked.
-- Secrets come from environment variables (os.environ); never hardcode credentials.
+- Secrets come from environment variables: read one with `os.environ["NAME"]` inside the node function. Never hardcode credentials, and never print, log or return a secret's value (exuvia masks known values as `***` in run logs and tool results). {secrets}
 
 ## Example Python node
 ```python
@@ -497,17 +506,21 @@ class Agent:
         (``exuvia mcp``) or ``POST /api/tools/{name}``. Inputs are validated
         first, and a bad input or a crash comes back as a failed result, so
         the caller's model can read it and try again. Code changed and nodes
-        run are recorded as ``origin``'s."""
+        run are recorded as ``origin``'s. The project's secret values are
+        masked in what comes back, whatever the tool read (a run log, an
+        output, a query result)."""
         problem = _validate(name, args)
         if problem:
             return False, f"INVALID_INPUT: {problem}", {}
         try:
-            return await self._call(name, args, origin)
+            ok, text, extra = await self._call(name, args, origin)
         except Exception as e:  # surface tool crashes to the model, not the user
-            return False, (
+            ok, text, extra = False, (
                 f"{type(e).__name__}: {e}\n\n(An unexpected error inside exuvia. If your input was valid, "
                 "this is a bug: tell the user and offer to report it with `report_issue`.)"
             ), {}
+        redact = self.ws.secrets.redactor()
+        return ok, redact.text(text), redact.obj(extra)
 
     async def _call(self, name: str, args: dict[str, Any], origin: str = "agent") -> tuple[bool, str, dict[str, Any]]:
         """Returns (ok, text-for-model, ui-extra). Code the tool changes is
@@ -699,7 +712,9 @@ class Agent:
         finally:
             self.active -= 1
             # Conversations are part of the project: they survive restarts.
-            self.ws.store.save_agent_session(session_id, history, transcript)
+            # Secret values are masked in what is kept (a pasted key, say).
+            redact = self.ws.secrets.redactor()
+            self.ws.store.save_agent_session(session_id, redact.obj(history), redact.obj(transcript))
             self.ws.bus.publish({"type": "agent", "session_id": session_id})
         yield {"type": "done"}
 
@@ -775,6 +790,7 @@ class Agent:
             SYSTEM.replace("{packages}", _available_packages(ws.project.root))
             .replace("{packages_how}", _packages_how())
             .replace("{params}", params)
+            .replace("{secrets}", _secrets_line(ws))
             .replace("{notes}", f"\n\n## Project notes\n{notes}" if notes else "")
         )
 

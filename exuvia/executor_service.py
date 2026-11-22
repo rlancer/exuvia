@@ -37,6 +37,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from . import __version__
 from .executor import ExecRequest, LocalExecutor, bundle_hash_of_zip
 from .project import NODE_NAME
+from .project_secrets import check_env
 
 RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 BUNDLE_ID = re.compile(r"^[0-9a-f]{24}$")
@@ -152,6 +153,11 @@ def create_executor_app() -> FastAPI:
         params = spec.get("params") or {}
         if not isinstance(params, dict) or not all(NODE_NAME.match(str(k)) for k in params):
             raise HTTPException(400, "bad params")
+        try:
+            # The project's secrets, for this run's process only: never stored here.
+            env = check_env(spec.get("env") or {})
+        except ValueError as e:
+            raise HTTPException(400, f"bad env: {e}") from e
         rd.mkdir(parents=True, exist_ok=True)
         req = ExecRequest(
             run_id=run_id,
@@ -162,6 +168,7 @@ def create_executor_app() -> FastAPI:
             out_dir=rd / "out",
             inputs=inputs,
             params=params,
+            env=env,
         )
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[str | None] = asyncio.Queue()

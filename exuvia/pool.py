@@ -9,11 +9,12 @@ parent dies, the workers' stdin closes and they exit on their own.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import threading
 from pathlib import Path
+
+from .project_secrets import node_environ
 
 
 class WarmPool:
@@ -25,7 +26,9 @@ class WarmPool:
         self._closed = False
 
     def _spawn(self) -> subprocess.Popen[bytes]:
-        env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
+        # exuvia's own settings (tokens, provider keys, ...) never reach a
+        # node; the project's secrets arrive with the run (runner.py).
+        env = {**node_environ(), "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         return subprocess.Popen(
             [sys.executable, "-m", "exuvia.runner", "--warm"],

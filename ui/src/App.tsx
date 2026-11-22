@@ -7,12 +7,13 @@ import { AgentPanel, type AgentHandle } from "./AgentPanel";
 import { NewNodeDialog } from "./NewNodeDialog";
 import { PackagesDialog } from "./PackagesDialog";
 import { HelpersDialog } from "./HelpersDialog";
+import { SecretsDialog } from "./SecretsDialog";
 import { Views } from "./Views";
 import { SignedInAs } from "./Me";
 import { HelpMenu } from "./Help";
 import { useTheme } from "./theme";
 import { Brand, Mark } from "./Brand";
-import { IconCode, IconMoon, IconPackage, IconPlay, IconPlus, IconSpark, IconSun } from "./icons";
+import { IconCode, IconKey, IconMoon, IconPackage, IconPlay, IconPlus, IconSpark, IconSun } from "./icons";
 import { failed, Toasts } from "./toast";
 
 const embed = new URLSearchParams(location.search).has("embed");
@@ -58,6 +59,7 @@ export default function App() {
   const [pkgs, setPkgs] = useState<PackagesState | null>(null);
   const [pkgOpen, setPkgOpen] = useState(false);
   const [helpersOpen, setHelpersOpen] = useState(false);
+  const [secretsOpen, setSecretsOpen] = useState(false);
   // Nodes to re-run once the packages installed for them are ready.
   const [rerun, setRerun] = useState<string[]>([]);
   const refreshPkgs = useCallback(() => api.packages().then(setPkgs).catch(() => {}), []);
@@ -186,6 +188,9 @@ export default function App() {
           {pkgs?.status === "installing" || pkgs?.status === "pending" ? <span className="pk-spin" /> : null}
           {pkgs?.status === "failed" ? <span className="pk-bang">!</span> : null}
         </button>
+        <button className="btn has-icon" onClick={() => setSecretsOpen(true)} title="Credentials your nodes read as environment variables" aria-label="Secrets">
+          <IconKey /> <span className="lbl">Secrets</span>
+        </button>
         <HelpMenu />
         <button className="btn ghost icon-btn" onClick={toggleTheme} title={dark ? "Light theme" : "Dark theme"} aria-label={dark ? "Light theme" : "Dark theme"}>
           {dark ? <IconSun /> : <IconMoon />}
@@ -265,6 +270,7 @@ export default function App() {
 
       {pkgOpen && <PackagesDialog state={pkgs} onChange={setPkgs} onClose={() => setPkgOpen(false)} />}
       {helpersOpen && <HelpersDialog onClose={() => setHelpersOpen(false)} />}
+      {secretsOpen && <SecretsDialog onClose={() => setSecretsOpen(false)} />}
 
       {newOpen && (
         <NewNodeDialog

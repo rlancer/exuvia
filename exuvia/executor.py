@@ -48,6 +48,7 @@ class ExecRequest:
     out_dir: Path  # where the artifact must end up (control-plane side)
     inputs: dict[str, dict[str, Any]] = field(default_factory=dict)  # dep -> {path, kind, artifact_id}
     params: dict[str, Any] = field(default_factory=dict)  # the run parameters this node declared
+    env: dict[str, str] = field(default_factory=dict)  # the project's secrets (project_secrets.py)
 
 
 @dataclass
@@ -138,6 +139,7 @@ class LocalExecutor:
             proc = self.pool.take()
             assert proc.stdin and proc.stdout
             proc.stdin.write(f"{spec_path}\n".encode())
+            proc.stdin.write(json.dumps(req.env).encode() + b"\n")  # over the pipe, never in a file
             proc.stdin.close()
             self._procs[req.run_id] = proc
             timer = threading.Timer(RUN_TIMEOUT_S, proc.kill)
@@ -241,7 +243,8 @@ class RemoteExecutor:
     HEAD /v1/bundles/{hash}                 is this project version cached?
     PUT  /v1/bundles/{hash}                 upload project zip (verified by hash)
     PUT  /v1/runs/{id}/inputs/{dep}         upload an upstream artifact
-    POST /v1/runs/{id}                      run; response is NDJSON: log lines, then a result
+    POST /v1/runs/{id}                      run (with the project's secrets in ``env``);
+                                            response is NDJSON: log lines, then a result
     GET  /v1/runs/{id}/output               download the artifact
     DELETE /v1/runs/{id}                    clean up
     POST /v1/runs/{id}/cancel
@@ -292,6 +295,7 @@ class RemoteExecutor:
                 "path": req.path,
                 "inputs": {d: {"kind": i["kind"], "has_file": bool(i.get("path"))} for d, i in req.inputs.items()},
                 "params": req.params,
+                "env": req.env,
             }
             result: dict[str, Any] | None = None
             with self.http.stream("POST", f"/v1/runs/{req.run_id}", json=spec) as resp:

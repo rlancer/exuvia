@@ -235,6 +235,44 @@ the workbench to read a module and see which nodes use it. Besides `nodes/`,
 `lib/**/*.py` and view folders (see "Views") are the only places the API and
 the agent can write.
 
+**Secrets** — a node reads credentials from environment variables, and each
+project has secrets of its own for them. Set one in the workbench
+(**Secrets**) or with `PUT /api/secrets/{name}` (`{"value": "..."}`), and the
+project's nodes read it from their next run:
+
+```python
+@exuvia.node()
+def orders():
+    import os
+    import requests
+    resp = requests.get("https://shop.example.com/orders", headers={"Authorization": os.environ["SHOP_API_KEY"]})
+    ...
+```
+
+- Secrets live in `.exuvia/secrets.json`, readable only by the server's
+  user, never in the project's files: code revisions, project bundles for a
+  remote executor and hub exports never carry them. The API lists names and
+  when each was set; a value can be replaced or deleted, never read back.
+- A run gets its own project's secrets and no other project's. They reach
+  the runner over a pipe, or a remote executor in the run request, and are
+  never written to a file on the way.
+- A node never sees exuvia's own settings: every `EXUVIA_*` and `PORTKEY_*`
+  variable, the model provider keys (`ANTHROPIC_API_KEY`,
+  `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, ...), the artifact store's AWS keys,
+  package index credentials (`UV_INDEX_<NAME>_USERNAME` / `_PASSWORD`) and the
+  `_FILE` form of each. A node that needs one of those names for itself (its
+  own Anthropic key, its own AWS keys) gets it as a project secret. The rest
+  of the server's environment (`PATH`, proxies, anything else you set,
+  including the variables in a project's `.env`) still reaches every node, so
+  a credential only one project should have belongs in its secrets.
+- Values are masked as `***` in stored run logs and errors, in what the
+  agent's tools return (to the built-in agent and to MCP clients), and in
+  saved agent conversations. The agent's instructions name the project's
+  secrets, never their values, and it cannot set them. Masking catches a value
+  as it is; code that encodes or splits a secret before printing it gets past
+  it, so the point is to keep secrets out of logs by accident, not to stop
+  node code that sets out to leak them.
+
 ## Run parameters and replays
 
 A project can declare **run parameters** in `exuvia.json`. A node that reads
@@ -578,6 +616,7 @@ acme-models = { index = "internal" }
 ```
 
 Its credentials go in the environment as above, or in the project's `.env`.
+uv gets them when it installs; nodes never do (see "Secrets" under Nodes).
 A remote executor installs the packages itself, so it needs the index
 settings in its own environment.
 
@@ -1656,7 +1695,7 @@ exuvia hub ./projects --templates ./templates --scheduler external
 | `ANY /p/{project}/api/...` | that project's API (everything in the table below) |
 | `POST /api/schedule/tick` | evaluate every project's schedules; returns what started and the next due time. A project that fails to load or tick is skipped and named under `errors` (id → reason); the others still tick |
 | `GET /api/hub/state` | whether anything is running, and a counter that changes when state does |
-| `GET /api/hub/export`, `POST /api/hub/import` | the whole directory as one archive, for hosts with no persistent disk (without outputs already in `EXUVIA_ARTIFACT_STORE`, or records already in a shared `EXUVIA_DB`). With `EXUVIA_AUTH` set it carries the user list too, which an import puts in place of the hub's |
+| `GET /api/hub/export`, `POST /api/hub/import` | the whole directory as one archive, for hosts with no persistent disk (without outputs already in `EXUVIA_ARTIFACT_STORE`, or records already in a shared `EXUVIA_DB`). With `EXUVIA_AUTH` set it carries the user list too, which an import puts in place of the hub's. Project secrets are never in the archive: an import keeps the secrets this hub already has for each project, and a hub that starts empty needs them set again |
 | `GET /api/users`, `PATCH /api/users/{id}` | the user list, for admins (see "Users and admins"): everyone who has signed in with their identities / change one's `role` or `disabled` |
 
 With `--scheduler external` nothing fires on its own: the host calls
@@ -1673,6 +1712,7 @@ headlessly or iframe the UI:
 | `GET /api/project` | graph + per-node status, and every view with its state (`?params={...}` for one parameter set) |
 | `PATCH /api/project` | rename, set the timezone |
 | `GET /api/params`, `PUT/DELETE /api/params/{name}` | run parameters and the values that have run |
+| `GET /api/secrets`, `PUT/DELETE /api/secrets/{name}` | the project's secrets (see "Secrets" under Nodes): names and when each was set / set one (`{"value"}`) / delete one. Values are never returned |
 | `GET /api/packages` | the project's packages (from its `pyproject.toml`), what is installed, the install status and log, and agent requests waiting for approval |
 | `POST /api/packages` | `{"add": [...], "remove": [...]}`: edit the list; a change that does not resolve is a 400 with uv's explanation and changes nothing. The install runs in the background (`packages` events) |
 | `PUT /api/packages/manifest` | replace `pyproject.toml` (`{"text"}`) and install from it |
@@ -1978,7 +2018,7 @@ the package to public once (package settings → Change visibility).
 Prototype. Not yet: SSO in exuvia itself (people are identified only by a sign-in
 proxy's headers, or share a token), per-project permissions (admins manage the user list, but everyone signed in can
 open and change every project; the hub leaves tenancy to its host), personal API tokens (an agent's changes are
-recorded as nobody's), executor autoscaling, incremental nodes (run parameters cover date partitions), non-Python runtimes, secrets management beyond env vars.
+recorded as nobody's), executor autoscaling, incremental nodes (run parameters cover date partitions), non-Python runtimes, secrets scoped to a person or read from a host's secret manager (project secrets are stored in plain text, readable only by the server's user).
 
 Found a bug, or something missing? Open an issue at
 [github.com/rlancer/exuvia/issues](https://github.com/rlancer/exuvia/issues). Your agent can draft one

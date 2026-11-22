@@ -103,6 +103,29 @@ def test_remote_failure_reports_traceback(remote_ws, tmp_path):
     assert "Traceback" in remote_ws.store.run(finals["base"]["id"])["log"]
 
 
+def test_remote_runs_get_the_projects_secrets_only(remote_ws, tmp_path):
+    """Secrets travel with the run request; the executor's own token stays out."""
+    write(tmp_path, "nodes/base.py", '''
+        import os
+
+        import exuvia
+
+        @exuvia.node()
+        def base():
+            print("key", os.environ["SHOP_API_KEY"])
+            return {n: os.environ.get(n) for n in ("SHOP_API_KEY", "EXUVIA_EXECUTOR_TOKEN")}
+    ''')
+    remote_ws.reload()
+    remote_ws.secrets.set("SHOP_API_KEY", "remote-secret-value")
+    finals = run(remote_ws, ["base"])
+    assert finals["base"]["status"] == "success", finals["base"].get("error")
+    art = remote_ws.store.last_success("base")
+    seen = (tmp_path / art["artifact_path"]).read_text(encoding="utf-8")
+    assert '"SHOP_API_KEY": "remote-secret-value"' in seen and '"EXUVIA_EXECUTOR_TOKEN": null' in seen
+    log = remote_ws.store.run(finals["base"]["id"])["log"]
+    assert "key ***" in log and "remote-secret-value" not in log
+
+
 def test_executor_requires_token(executor_url):
     assert httpx.get(f"{executor_url}/healthz").json()["auth"] is True
     assert httpx.head(f"{executor_url}/v1/bundles/{'0' * 24}").status_code == 401

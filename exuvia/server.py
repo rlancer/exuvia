@@ -139,6 +139,10 @@ class ParamReq(BaseModel):
     description: str = ""
 
 
+class SecretWrite(BaseModel):
+    value: str
+
+
 class SettingsReq(BaseModel):
     name: str | None = None
     timezone: str | None = None
@@ -318,6 +322,30 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
     def param_delete(name: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         ctx.ws.set_param(name, None)
         return params_list(ctx)
+
+    # -- secrets (project_secrets.py): set and listed, never read back ------------
+    @r.get("/secrets")
+    def secrets_list(ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """The project's secret names and when each was set; values are never served."""
+        return {"secrets": ctx.ws.secrets.names()}
+
+    @r.put("/secrets/{name}")
+    def secret_put(name: str, body: SecretWrite, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """Set a secret, which the project's nodes read as the environment
+        variable ``name`` from their next run."""
+        try:
+            ctx.ws.secrets.set(name, body.value)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        ctx.ws.bus.publish({"type": "secrets"})
+        return secrets_list(ctx)
+
+    @r.delete("/secrets/{name}")
+    def secret_delete(name: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        if not ctx.ws.secrets.delete(name):
+            raise HTTPException(404, f"no secret named {name}")
+        ctx.ws.bus.publish({"type": "secrets"})
+        return secrets_list(ctx)
 
     # -- packages (the project's pyproject.toml; see packages.py) -------------------
     def _packages_error(e: Exception) -> HTTPException:

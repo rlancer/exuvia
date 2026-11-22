@@ -84,6 +84,12 @@ export interface PackagesState {
   manifest: string | null;
 }
 
+/** `GET /api/secrets`: one of the project's secrets (exuvia/project_secrets.py), never its value. */
+export interface SecretRow {
+  name: string;
+  updated_at: number | null;
+}
+
 /** A view's state for one parameter set, derived from the nodes it reads. */
 export type ViewState = "ready" | "missing" | "stale" | "error";
 
@@ -259,6 +265,11 @@ export const api = {
   packagesRetry: () => req<PackagesState>("POST", "/api/packages/retry"),
   packagesApprove: (id: number) => req<PackagesState>("POST", `/api/packages/requests/${id}/approve`),
   packagesDismiss: (id: number) => req<PackagesState>("DELETE", `/api/packages/requests/${id}`),
+  secrets: () => req<{ secrets: SecretRow[] }>("GET", "/api/secrets"),
+  /** Set or replace a secret's value; nodes read it as the environment variable `name` from their next run. */
+  secretSet: (name: string, value: string) =>
+    req<{ secrets: SecretRow[] }>("PUT", `/api/secrets/${encodeURIComponent(name)}`, { value }),
+  secretDelete: (name: string) => req<{ secrets: SecretRow[] }>("DELETE", `/api/secrets/${encodeURIComponent(name)}`),
 };
 
 /** Who this page is signed in as (`GET /api/me`, on the server itself, not under a project). */

@@ -13,6 +13,8 @@ A host application (one that treats each of its documents as a project) gets:
   With a remote artifact store (``artifacts.py``) the export leaves out the
   outputs the store already holds; with a shared database (``EXUVIA_DB``,
   see ``db.py``) it leaves out the records, which already live there.
+  Project secrets (``project_secrets.py``) are never exported; a restore
+  keeps the secrets this hub already has for each project.
 """
 
 from __future__ import annotations
@@ -32,12 +34,14 @@ from typing import Any
 from .artifacts import artifact_store
 from .db import database_url, shared_database
 from .project import VIEW_DIR, Project
+from .project_secrets import FILE as SECRETS_FILE
 from .store import Store, project_scope, stored_paths_at
 
 PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 SKIP_DIRS = {"__pycache__", "node_modules"}
 DB_REL = ".exuvia/exuvia.db"
 PACKAGES_REL = ".exuvia/packages/"
+SECRETS_REL = f".exuvia/{SECRETS_FILE}"
 # The hub's user list (users.py), under the hub's directory beside the
 # projects, unless EXUVIA_DB holds it. Exports carry it at the same path.
 HUB_USERS_DB = ".exuvia/hub.db"
@@ -261,6 +265,8 @@ class Hub:
                     posix = rel.as_posix()
                     if posix.startswith(DB_REL):
                         continue  # the live database (and its -wal/-shm) is copied above
+                    if posix == SECRETS_REL:
+                        continue  # secrets stay on this server
                     if posix.startswith(PACKAGES_REL):
                         continue  # installed packages: rebuilt from pyproject.toml when the project loads
                     if rel.name.endswith((".tmp", ".part")):
@@ -302,10 +308,17 @@ class Hub:
                 try:
                     for pid in found:
                         await self._unload(pid)
+                        incoming = Path(scratch) / pid
+                        # Secrets are not in exports: keep the ones set here.
+                        kept = self.root / pid / SECRETS_REL
+                        (incoming / SECRETS_REL).unlink(missing_ok=True)
+                        if kept.is_file():
+                            (incoming / SECRETS_REL).parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(kept, incoming / SECRETS_REL)
                         # The target must be gone: moving onto a folder that
                         # survived would put the project inside it, at pid/pid.
                         await _remove_tree(self.root / pid)
-                        shutil.move(str(Path(scratch) / pid), str(self.root / pid))
+                        shutil.move(str(incoming), str(self.root / pid))
                         self._load_origin[pid] = "import"
                 finally:
                     self._structural += 1
