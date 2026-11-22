@@ -230,7 +230,8 @@ def basket_corr(returns):
 
 A node's code hash covers every `lib/` file it imports, directly or through
 other helpers, so editing a helper marks exactly those nodes stale. Only
-static `import` / `from … import` statements are tracked. Besides `nodes/`,
+static `import` / `from … import` statements are tracked. Open **Helpers** in
+the workbench to read a module and see which nodes use it. Besides `nodes/`,
 `lib/**/*.py` and view folders (see "Views") are the only places the API and
 the agent can write.
 
@@ -1109,6 +1110,55 @@ errors mean:
   one serving the package files.
 - A 401 or 403 from the index: the network works and the credentials don't
   (see [Packages](#packages)).
+
+**Check a node's data connection.** If the package imports but the data
+request fails, check the provider from the node runner. A remote executor can
+have different network access and proxy variables from the hub. Add this as
+a temporary Python node, replace the URL with an approved HTTPS endpoint
+for your data provider, and run it in the same project as the failing node.
+Use a URL without credentials or signed query parameters.
+
+```python
+import socket
+import ssl
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+import exuvia
+
+
+@exuvia.node()
+def check_data_provider():
+    request = Request("https://data.example.com/", method="HEAD")
+    try:
+        with urlopen(request, timeout=10) as response:
+            return {"result": "http_response", "status": response.status}
+    except HTTPError as error:
+        return {"result": "http_response", "status": error.code}
+    except (URLError, TimeoutError) as error:
+        reason = error.reason if isinstance(error, URLError) else error
+        if str(reason).startswith("Tunnel connection failed:"):
+            return {"result": "proxy_tunnel_rejected"}
+        if isinstance(reason, socket.gaierror):
+            return {"result": "dns_error"}
+        if isinstance(reason, ssl.SSLError):
+            return {"result": "tls_error"}
+        return {"result": "connection_error"}
+```
+
+- `http_response`: the HTTP request reached a server. A 401 or 403 at this
+  stage calls for checking the endpoint's access and credentials. A 405 means
+  the endpoint doesn't support HEAD.
+- `proxy_tunnel_rejected`: check the runner's proxy allowlist and any proxy
+  authentication it requires. Redirects and file downloads may need
+  additional hosts.
+- `dns_error` or `connection_error`: check the runner's DNS, route, and
+  proxy settings. With a proxy, the DNS error can be for the proxy's own host.
+- `tls_error`: check the endpoint's certificate and the runner's CA trust.
+
+This checks HTTPS using Python's standard library. For gRPC or other clients
+with their own transport, test with the same client the node uses and check
+its proxy support and network route separately.
 
 ### Schedules, auth and settings
 
