@@ -103,6 +103,23 @@ def test_remote_failure_reports_traceback(remote_ws, tmp_path):
     assert "Traceback" in remote_ws.store.run(finals["base"]["id"])["log"]
 
 
+def test_remote_nodes_never_see_the_executors_token(remote_ws, tmp_path):
+    write(tmp_path, "nodes/base.py", '''
+        import os
+
+        import exuvia
+
+        @exuvia.node()
+        def base():
+            return {"token": os.environ.get("EXUVIA_EXECUTOR_TOKEN")}
+    ''')
+    remote_ws.reload()
+    finals = run(remote_ws, ["base"])
+    assert finals["base"]["status"] == "success", finals["base"].get("error")
+    art = remote_ws.store.last_success("base")
+    assert (tmp_path / art["artifact_path"]).read_text(encoding="utf-8") == '{"token": null}'
+
+
 def test_executor_requires_token(executor_url):
     assert httpx.get(f"{executor_url}/healthz").json()["auth"] is True
     assert httpx.head(f"{executor_url}/v1/bundles/{'0' * 24}").status_code == 401

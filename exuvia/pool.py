@@ -5,15 +5,38 @@ on-access antivirus). Each idle worker has already paid that cost and is
 blocked on stdin; ``take()`` hands one out and immediately starts warming a
 replacement. Workers are never reused, so node isolation is unchanged. If the
 parent dies, the workers' stdin closes and they exit on their own.
+
+Workers start without exuvia's own settings (``node_environ``): node code,
+which the agent may have written, has no use for the API or executor token,
+the database URL or package index credentials, so it never sees them.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import Mapping
+
+# exuvia's own settings, which node code never needs: its tokens, database
+# URL, failure webhook and Portkey gateway (EXUVIA_*, PORTKEY_*), and a package
+# index's credentials, which only the installer uses. Each `_FILE` form too.
+OWN_PREFIXES = ("EXUVIA_", "PORTKEY_")
+INDEX_CREDENTIAL = re.compile(r"^UV_INDEX_[A-Z0-9_]+_(USERNAME|PASSWORD)(_FILE)?$")
+
+
+def node_environ(base: Mapping[str, str] | None = None, *, index: bool = True) -> dict[str, str]:
+    """``base`` (default: this process's environment) without exuvia's own
+    settings: what a node's process starts from. ``index=False`` keeps package
+    index credentials, for the installer (packages.py)."""
+    env = os.environ if base is None else base
+    return {
+        k: v for k, v in env.items()
+        if not k.startswith(OWN_PREFIXES) and not (index and INDEX_CREDENTIAL.match(k))
+    }
 
 
 class WarmPool:
@@ -25,7 +48,7 @@ class WarmPool:
         self._closed = False
 
     def _spawn(self) -> subprocess.Popen[bytes]:
-        env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
+        env = {**node_environ(), "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         return subprocess.Popen(
             [sys.executable, "-m", "exuvia.runner", "--warm"],

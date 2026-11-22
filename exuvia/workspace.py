@@ -1117,21 +1117,20 @@ class Workspace:
         parameter set it has run with, adding one ``_<param>`` column per
         parameter — the view to compare runs over time.
 
-        With ``only`` the connection is a sandbox for code that may read just
-        those nodes (a view's ``reads``): it has their views and nothing
-        else, and it is locked so the SQL cannot reach any other file, the
-        network or an extension (``read_parquet`` of another node's output,
-        ``COPY ... TO``, ``ATTACH`` of a file, ``INSTALL`` all fail) nor undo
-        the lock.
+        The connection runs in the server's process, so it is a sandbox: it
+        can read the files behind its views and nothing else, and it is
+        locked so the SQL cannot reach any other file (the server's
+        environment in ``/proc/self/environ``, another project, exuvia's
+        database), the network or an extension (``read_csv``, ``COPY ... TO``,
+        ``ATTACH`` of a file, ``INSTALL`` all fail) nor undo the lock. With
+        ``only`` it has just those nodes' views (a view's ``reads``), and
+        ``read_parquet`` of another node's output fails too.
         """
         import duckdb
 
         resolved = self.resolve_params(params)
-        sandbox = only is not None
-        con = duckdb.connect(
-            config={"autoinstall_known_extensions": False, "autoload_known_extensions": False} if sandbox else {}
-        )
-        names = [n for n in self.graph.nodes if not sandbox or n in only]
+        con = duckdb.connect(config={"autoinstall_known_extensions": False, "autoload_known_extensions": False})
+        names = [n for n in self.graph.nodes if only is None or n in only]
         views: list[tuple[str, str]] = []  # (view name, select)
         files: list[str] = []
 
@@ -1153,10 +1152,9 @@ class Workspace:
                 parts.append(read(self.artifact_path(run), cols + ", " if cols else ""))
             if parts:
                 views.append((f"{name}__runs", " union all by name ".join(parts)))
-        if sandbox:
-            # Only the files behind these views stay readable once external
-            # access is off; the lock makes every setting final.
-            con.execute("set allowed_paths = ?", [sorted({f for f in files if f})])
+        # Only the files behind these views stay readable once external
+        # access is off; the lock makes every setting final.
+        con.execute("set allowed_paths = ?", [sorted({f for f in files if f})])
         for view, select in views:
             try:
                 con.execute(f'create view "{view}" as {select}')
@@ -1164,9 +1162,8 @@ class Workspace:
                 if not view.endswith("__runs"):
                     raise
                 # incompatible schemas across runs: leave the history view out
-        if sandbox:
-            con.execute("set enable_external_access = false")
-            con.execute("set lock_configuration = true")
+        con.execute("set enable_external_access = false")
+        con.execute("set lock_configuration = true")
         return con
 
     def _view_reads(self, view: str) -> list[str]:
