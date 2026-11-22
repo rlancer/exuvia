@@ -26,6 +26,24 @@ RUN bun install --frozen-lockfile
 COPY ui/ ./
 RUN bun run build   # writes ../exuvia/static
 
+# Wheels for packages PyPI has only as source on Linux, because they link a
+# system library, built here so projects can list them without a compiler in
+# the image: gssapi (Kerberos; under requests-kerberos, pyspnego, Trino,
+# Impala, Hive and SQL Server drivers). The wheels land in /opt/exuvia/wheels,
+# not in exuvia's environment: a project that lists the package installs it
+# from there, and one that doesn't pays nothing. README.md, "Kerberos".
+#
+# The base is pinned by digest so this stage stays in the layer cache: arm64
+# builds under QEMU (image.yml), where installing a compiler and building
+# gssapi takes many minutes, so it must only run when GSSAPI_VERSION or this
+# pin changes, not whenever python:3.12-slim is republished. The wheel links
+# libgssapi_krb5.so.2, which the runtime stage installs from its own Debian.
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS wheels
+ARG GSSAPI_VERSION=1.12.0
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential libkrb5-dev \
+ && pip wheel --no-cache-dir --no-deps --wheel-dir /wheels "gssapi==${GSSAPI_VERSION}"
+
 FROM python:3.12-slim
 COPY --from=ghcr.io/astral-sh/uv:0.9.2 /uv /usr/local/bin/uv
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
@@ -43,6 +61,11 @@ WORKDIR /app
 # (ci.yml keeps the layer cache between runs).
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project --no-editable && rm -rf /root/.cache
+# libgssapi-krb5-2: the Kerberos library the gssapi wheel links (a few MB).
+# After the dependencies, so adding it left their cached layer as it was.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
+ && rm -rf /var/lib/apt/lists/*
 COPY README.md LICENSE ./
 COPY exuvia/ ./exuvia/
 COPY --from=ui /src/exuvia/static ./exuvia/static
@@ -50,6 +73,21 @@ COPY --from=ui /src/exuvia/static ./exuvia/static
 # (image.yml passes the release tag's); a plain `docker build` gets 0.0.0.
 ARG EXUVIA_VERSION=0.0.0
 RUN SETUPTOOLS_SCM_PRETEND_VERSION=$EXUVIA_VERSION uv sync --frozen --no-editable && rm -rf /root/.cache
+
+# uv's system-wide settings (uv merges them under a project's own): find the
+# wheels built above, and never build those packages from source. A newer
+# release on PyPI is source only, and building it fails here (no compiler),
+# so a project that doesn't pin gets the wheel, and one that pins a version
+# the image lacks fails at once with uv's explanation. `uv pip` (projects'
+# installs) reads only-binary; uv's project commands read no-build-package.
+COPY --from=wheels /wheels /opt/exuvia/wheels
+RUN mkdir -p /etc/uv && printf '%s\n' \
+      'find-links = ["/opt/exuvia/wheels"]' \
+      'no-build-package = ["gssapi"]' \
+      '' \
+      '[pip]' \
+      'only-binary = ["gssapi"]' \
+      > /etc/uv/uv.toml
 
 # /data: a writable home for `exuvia hub /data` (mount a volume over it to keep it).
 RUN useradd --create-home --uid 10001 exuvia && mkdir /data && chown exuvia:exuvia /data

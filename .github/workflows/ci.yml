@@ -164,6 +164,20 @@ jobs:
           for _ in $(seq 1 60); do curl -fs http://127.0.0.1:8080/healthz && exit 0; sleep 1; done
           docker logs exuvia-exec; exit 1
 
+      # The image's wheel for gssapi (Dockerfile, `wheels` stage): a project's
+      # install takes it from /opt/exuvia/wheels and it loads the system
+      # Kerberos library, and a version the image has no wheel for fails
+      # instead of being built from source.
+      - name: Kerberos wheel installs from the image
+        run: |
+          docker run --rm exuvia:ci sh -ec '
+            cd "$(mktemp -d)"
+            uv pip install --no-cache --python /opt/venv/bin/python --target pkgs gssapi
+            PYTHONPATH=pkgs python -c "import gssapi.raw; print(gssapi.__file__)"
+            if uv pip install --no-cache --python /opt/venv/bin/python --target old gssapi==1.11.1; then
+              echo "gssapi 1.11.1 installed: it should have been refused (no wheel, building disabled)"; exit 1
+            fi'
+
       - name: Run the example DAG on the container
         env:
           EXUVIA_EXECUTOR_URL: http://127.0.0.1:8080
