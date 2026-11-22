@@ -16,6 +16,13 @@ type Drafts = Record<string, Record<string, string>>;
 // back keeps unsaved edits and the open pane.
 let keptDrafts: Drafts = {};
 let keptPane: Pane = "view";
+let keptView: string | null = null;
+
+/** Open Views mode on this view, rendered (from the Files mode's "Open view"). */
+export function showViewNext(name: string) {
+  keptView = name;
+  keptPane = "view";
+}
 
 /** Overrides → the parameter set a view sees (resolved values + declarations). */
 function paramsState(params: ProjectParam[]): ParamsState {
@@ -29,7 +36,7 @@ const VIEW_STATE_LABEL: Record<ProjectView["state"], string> = {
   error: "error",
 };
 // View states mapped onto the node state colours.
-const VIEW_STATE_CLASS: Record<ProjectView["state"], string> = {
+export const VIEW_STATE_CLASS: Record<ProjectView["state"], string> = {
   ready: "s-fresh",
   missing: "s-new",
   stale: "s-stale",
@@ -51,8 +58,9 @@ export function Views(props: {
   const [overrides, setOverrides] = useState<Params>({});
   const [at, setAt] = useState<Project | null>(null);
   const [paramErr, setParamErr] = useState<string | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(keptView);
   const [pane, setPane] = useState<Pane>(keptPane);
+  useEffect(() => void (keptView = selected), [selected]);
   const [drafts, setDrafts] = useState<Drafts>(keptDrafts);
   const [openFiles, setOpenFiles] = useState<Record<string, string>>({});
   useEffect(() => void (keptDrafts = drafts), [drafts]);
