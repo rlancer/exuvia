@@ -32,17 +32,19 @@ RUN bun run build   # writes ../exuvia/static
 # Impala, Hive and SQL Server drivers). The wheels land in /opt/exuvia/wheels,
 # not in exuvia's environment: a project that lists the package installs it
 # from there, and one that doesn't pays nothing. README.md, "Kerberos".
-FROM python:3.12-slim AS wheels
+#
+# The base is pinned by digest so this stage stays in the layer cache: arm64
+# builds under QEMU (image.yml), where installing a compiler and building
+# gssapi takes many minutes, so it must only run when GSSAPI_VERSION or this
+# pin changes, not whenever python:3.12-slim is republished. The wheel links
+# libgssapi_krb5.so.2, which the runtime stage installs from its own Debian.
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS wheels
 ARG GSSAPI_VERSION=1.12.0
 RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential libkrb5-dev \
  && pip wheel --no-cache-dir --no-deps --wheel-dir /wheels "gssapi==${GSSAPI_VERSION}"
 
 FROM python:3.12-slim
-# libgssapi-krb5-2: the Kerberos library the gssapi wheel links (a few MB).
-RUN apt-get update \
- && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
- && rm -rf /var/lib/apt/lists/*
 COPY --from=ghcr.io/astral-sh/uv:0.9.2 /uv /usr/local/bin/uv
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_COMPILE_BYTECODE=1 \
@@ -59,6 +61,11 @@ WORKDIR /app
 # (ci.yml keeps the layer cache between runs).
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project --no-editable && rm -rf /root/.cache
+# libgssapi-krb5-2: the Kerberos library the gssapi wheel links (a few MB).
+# After the dependencies, so adding it left their cached layer as it was.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
+ && rm -rf /var/lib/apt/lists/*
 COPY README.md LICENSE ./
 COPY exuvia/ ./exuvia/
 COPY --from=ui /src/exuvia/static ./exuvia/static
