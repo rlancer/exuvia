@@ -264,7 +264,8 @@ TOOLS: list[dict[str, Any]] = [
             "named after the node. Use it to inspect data before writing or after running nodes. Max 50 rows returned. "
             "`params` picks which parameter set the views show (defaults otherwise). For nodes that depend on "
             "parameters, `<node>__runs` unions every parameter set that has run, with a `_<param>` column each — "
-            "use it to compare runs across dates."
+            "use it to compare runs across dates. It reads node outputs only: no other file and no network "
+            "(read a file in a node instead)."
         ),
         "input_schema": {
             "type": "object",

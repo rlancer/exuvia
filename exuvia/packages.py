@@ -44,6 +44,8 @@ from importlib import metadata
 from pathlib import Path
 from typing import Callable
 
+from .pool import node_environ
+
 PYPROJECT = "pyproject.toml"
 COMPLETE = ".complete"
 CONFLICT_HINT = "hint: the exact (==) versions are the ones exuvia itself runs with; a project's packages must work with them"
@@ -126,7 +128,9 @@ _INDEX_ENV = ("UV_INDEX", "UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_EXTRA_INDEX_UR
 
 
 def _uv_run(args: list[str], cwd: Path, edit: bool = False) -> str:
-    env = {**os.environ, "NO_COLOR": "1", "UV_NO_PROGRESS": "1"}
+    # A build backend runs code from the packages being installed, so uv gets
+    # none of exuvia's own settings; index credentials stay, uv needs them.
+    env = {**node_environ(index=False), "NO_COLOR": "1", "UV_NO_PROGRESS": "1"}
     if edit:
         for name in _INDEX_ENV:
             env.pop(name, None)

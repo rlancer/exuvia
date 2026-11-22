@@ -621,6 +621,20 @@ need system libraries) belongs in the image: see
 - **Subprocess isolation.** Every node runs in its own Python process: crash
   isolation, clean per-run logs streamed live to the UI, killable timeouts
   (`EXUVIA_RUN_TIMEOUT`, default 1800 s).
+- **Nodes don't get exuvia's own settings.** A node's process starts from the
+  server's environment minus every `EXUVIA_*` and `PORTKEY_*` variable and
+  package index credentials (`UV_INDEX_<NAME>_USERNAME` / `_PASSWORD`), with
+  their `_FILE` forms. So node code, which the agent may have written, never
+  sees the API or executor token, the database URL or the failure webhook.
+  Everything else still reaches every node (`PATH`, proxies, a project's
+  `.env`, credentials a node reads such as `AWS_*` or a model provider key).
+  The installer keeps the index credentials, because uv needs them.
+- **Ad-hoc SQL reads outputs only.** `query_data` and `POST /api/query` run
+  DuckDB in the server's process, on a connection locked like a view's (see
+  "Rendering a view"). It can read every node's outputs, but no other file
+  (the server's environment through `/proc/self/environ`, the project's
+  files, exuvia's database), no network and no extensions. Code that needs
+  another file reads it in a node.
 - **Per-node schedules + cascade.** A scheduled node is forced to re-run on its
   cron. If it produces *different* output, downstream nodes with
   `cascade=True` refresh automatically; identical output stops the cascade.
@@ -1758,7 +1772,7 @@ headlessly or iframe the UI:
 | `GET /api/code/blobs/{hash}` | the text of one saved version |
 | `POST /api/nodes/{name}/restore` | make a saved version (`{hash}`) current again; brings back a deleted node |
 | `GET /api/runs/{run_id}/source` | the exact code a run executed |
-| `POST /api/query` | DuckDB SQL over all outputs (`{sql, limit, params}`): JSON rows, or an Arrow stream (see "Binary data") |
+| `POST /api/query` | DuckDB SQL over all outputs (`{sql, limit, params}`): JSON rows, or an Arrow stream (see "Binary data"). It cannot open other files or the network (see "Execution model") |
 | `POST /api/nodes/{name}/schedule` | set, clear, pause or resume a schedule |
 | `POST /api/schedule/tick` | evaluate schedules now (for external schedulers) |
 | `GET /api/events` | SSE: graph changes, run status, live logs |
