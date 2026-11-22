@@ -209,14 +209,179 @@ server calls:
 
 The docs suggest a hook that inspects parsed statement types. They warn that
 their own sample regex for read-only access is not robust (`WITH … INSERT`
-gets past it). A local check on DuckDB 2.0.0 confirmed that a Python UDF
-registered on the serving connection with `create_function` works as either
-hook. A denied statement reached the hook three times before the client gave
-up; the docs don't mention that.
+gets past it).
 
-So a read-only token is technically possible. What remains is designing a
-policy that holds up against everything a token holder could send, and
-testing it.
+The docs also say Python UDFs registered with `create_function` "cannot be
+used as authentication or authorization callbacks". Supported callbacks are
+SQL macros, built-in functions and functions registered by an extension.
+**On DuckDB 2.0.0 Python UDFs do work as callbacks:** every test below used
+them, and Quack called them on its own fresh connection and enforced their
+answers. They are still unsupported, so the prototype checks at startup that
+its hook is enforcing.
+
+A denied statement reached the hook three times before the client gave up;
+the docs don't mention that.
+
+### Read-only policy (designed and tested)
+
+Prototype and tests: [`quack-readonly/`](quack-readonly/). Everything ran on
+DuckDB 2.0.0 with the 2.0.0 extension wheels, with the server and each client
+in separate processes.
+
+**What a DuckLake reader sends.** A logging hook recorded a workload that
+covers what readers normally do: plain and filtered reads, joins, views,
+nested schemas, partitioned tables, time travel by version and by timestamp,
+`table_changes`/`table_insertions`/`table_deletions`, `snapshots()`,
+`table_info()`, `options()`, `ducklake_list_files`, and a long-lived reader
+picking up new commits. It made 142 reader statements, 81 of them distinct.
+Every one was a single `SELECT`. They touch only:
+
+- `ducklake_*` metadata tables in the default catalog, including the
+  per-table inlined-data tables;
+- CTEs the statement defines itself (`schema_tree`, which is recursive,
+  `main_results`, `col_N_stats`);
+- `information_schema.tables`;
+- four table functions with no arguments: `duckdb_functions`,
+  `duckdb_schemas`, `duckdb_tables`, `duckdb_views`;
+- twelve plain functions: `-`, `array_agg`, `count_star`, `current_database`,
+  `length`, `list`, `list_append`, `list_value`, `max`, `min`,
+  `struct_pack`, `sum`;
+- a small set of parse-tree shapes: `SELECT`, set operations, recursive CTEs,
+  joins, subqueries, comparisons, `CASE`, `CAST`, `BETWEEN`, `IN`, `IS NULL`,
+  `COALESCE`, `ORDER BY`, `LIMIT`, `DISTINCT`.
+
+A writer also sends `CREATE TEMPORARY TABLE ducklake_staged_commit` and
+multi-statement `BEGIN TRANSACTION; INSERT …; UPDATE …` commits.
+
+The policy has three layers.
+
+1. **Tokens map to roles.** The authentication hook maps a writer token or a
+   reader token to its role and binds the role to the server-issued
+   connection id. Authorization lets writer statements through untouched.
+   Each reader statement is checked:
+   - it is parsed with `json_serialize_sql` in a private in-memory DuckDB of
+     the same build, which serializes only `SELECT`;
+   - there must be exactly one statement;
+   - the whole parse tree is walked, and anything not on the allowlist above
+     is denied, including unknown node types, so an upgrade fails closed;
+   - a table must be a `ducklake_*` table in `main` with no catalog, one of
+     the statement's own CTEs, or `information_schema.tables`;
+   - a CTE name must be a plain identifier that doesn't collide with any
+     table or view the server knows about (`pg_settings`,
+     `duckdb_databases`, …). Otherwise a reference outside the CTE's scope
+     would read the real view, or a file through a replacement scan;
+   - functions must be unqualified and on the list;
+   - a statement over 64 KB is denied;
+   - verdicts are cached per SQL text, since DuckLake repeats its queries.
+2. **The serving process is locked down** after `quack_serve`:
+   `enable_external_access = false` and `lock_configuration = true`.
+3. **A watchdog** in the control plane polls `quack_active_connections()`.
+   It cancels reader statements that run past a time limit (`quack_cancel`,
+   through its own writer connection) and drops roles of connections that
+   are gone. A connection is dropped only once it is missing from the list
+   *and* was bound more than 30 s ago. Without that grace period the
+   concurrency test lost a reader's role mid-attach: the reader
+   authenticated after the watchdog took its snapshot, so it looked gone.
+
+**Two details matter.**
+
+- **Qualify the hook names.** With the setting naming
+  `exuvia_policy_authz`, a client holding the writer token created a macro
+  of that name in the lake's `main` schema. The macro shadowed the hook, and
+  a reader `DELETE` then ran. Naming the hooks `system.main.exuvia_policy_*`
+  closed that, because no client can create functions in `system`.
+- **Parse outside the serving database.** A macro that called
+  `json_serialize_sql` inside a `CASE` was tried first, to skip the parse for
+  writers. DuckDB evaluated the `ELSE` branch anyway, so every writer
+  statement paid for a full parse (169 ms for a 3,000-column statement).
+
+**Results.**
+
+| Test | Result |
+|---|---|
+| Legitimate workload (writer plus two readers, everything listed above) | All worked, results identical to an unprotected server, 0 denials |
+| Concurrency: 6 reader processes × 25 rounds, alongside 60 writer commits | 0 errors, 0 denials, counts never went backwards, all 1,060 rows present |
+| 104 attacks with the reader token | All 104 denied by the policy, with or without the lockdown. Catalog unchanged, no file written, the secret file never read |
+| A runaway query the policy allows (an infinite recursive CTE) | Cancelled by the watchdog after about 3 s |
+| 5 plain reads with the raw reader token | All worked |
+
+The 104 attacks:
+
+| Category | Attempts |
+|---|---|
+| Catalog writes | `DELETE`, `UPDATE`, `INSERT`, `DROP`, `TRUNCATE` and `ALTER` on `ducklake_snapshot`; `CREATE TABLE`/`TEMP TABLE`/`MACRO`/`VIEW`; DML inside a CTE |
+| Statement smuggling | stacked `SELECT 1; DELETE …`; the same behind `--` plus a newline, behind `/* ; */`, and after a quoted `';'`; two harmless statements |
+| Session and server control | `BEGIN`, `CHECKPOINT`, `VACUUM`, `USE`, `ATTACH`, `SET`, `RESET`, `SET GLOBAL quack_authorization_function`, `SET VARIABLE`, `PRAGMA`, `CALL`, `INSTALL`, `LOAD`, `PREPARE`, `COPY … TO`, `EXPORT DATABASE`, `DESCRIBE`, `SUMMARIZE`, `SHOW` |
+| Files and network | `read_csv`/`read_text`/`read_blob`, `FROM '<path>'`, `glob`; the same inside a subquery, a `UNION` or a scalar subquery; a CTE named after a file path, both in scope and out of scope; an HTTP URL; `quack_query` from the server |
+| Settings, secrets, other sessions | `pg_settings`, `duckdb_settings()` (also qualified as `system.main`), `duckdb_secrets()`, `current_setting`, `getenv`, `quack_active_connections()`, `duckdb_databases`; CTEs named `pg_settings`, `duckdb_databases` and `ducklake_snapshot`; `information_schema.columns` |
+| Functions | `query()`, `query_table()`, calling the policy's own UDFs, lambdas, list comprehensions, `COLUMNS(lambda)`, quoted and upper-case names, `main.max`, `system.main.max`, window functions, `range`, a table function with arguments, `\|\|` |
+| Catalogs and shapes | the catalog qualified by name, `temp`, `system`, the policy's catalog, a Cyrillic look-alike table name, `"ducklake_snapshot.csv"`, `VALUES`, parameters, `PIVOT` |
+| DuckLake through a writable attach with the reader token | insert, update, delete, merge, create, drop, alter, `set_option`, expire snapshots, flush inlined data, merge files |
+| Plain Quack attach with the reader token | delete, create, drop |
+| Identity | a wrong token; a reader reusing the writer's `CLIENT_ID` |
+| Server takedown | `DETACH` of the catalog, `quack_stop` |
+
+**Each layer alone.** With the policy and no lockdown, all 104 attacks were
+still denied. With the lockdown and no policy, the lockdown stopped file and
+network access, `COPY`/`EXPORT`, `ATTACH`, `SET`/`RESET` and `INSTALL`. The
+reader token could still:
+
+- delete and drop the catalog tables, which left the lake unreadable;
+- create tables and macros;
+- read every setting and the secret list;
+- see other connections' SQL;
+- stop the server with `quack_stop`.
+
+The policy is the boundary. The lockdown is a second layer for anything the
+allowlist might miss.
+
+**Cost per statement**, measured by calling the hook directly over the logged
+workload:
+
+| Path | Mean | p95 |
+|---|---|---|
+| A no-op hook, for comparison | 0.76 ms | |
+| Writer statement | 0.83 ms | 0.97 ms |
+| Reader statement, first time | 3.5 ms | 6.6 ms |
+| Reader statement, with the cache | 2.2 ms | 5.1 ms |
+
+About half of a first-time check is the parse.
+
+**Caveats.**
+
+- **Python UDF callbacks are unsupported by Quack's docs** (above).
+  `self_test` runs right after `quack_serve`: if a forbidden reader statement
+  isn't denied by the hook, the server refuses to run. There are two
+  supported alternatives:
+  - the same checker compiled into a small C++ extension;
+  - a SQL macro. JSON paths such as `$..function_name` collect every
+    function or table name in the tree, so a macro can check them against
+    lists. But a macro can't record which role each connection has. It would
+    need a table of writer connection ids that the control plane fills in
+    after it connects, and attaching the served catalog file in-process as a
+    DuckLake writer fails ("Unique file handle conflict").
+- **The allowlist is tied to what DuckLake 1.1 sends.** A new extension
+  version that sends another function or table has its reads denied. That
+  fails closed, and `workload.py` run against `serve.py` is the check to
+  repeat on every DuckDB or extension upgrade.
+- **Read access is all-or-nothing.** A reader token can read every table and
+  all metadata, including per-file encryption keys if the lake uses
+  `ENCRYPTED`.
+- **The token only governs the catalog.** Data files at `DATA_PATH` are read
+  and written by clients directly, so filesystem or bucket permissions
+  protect them. exuvia's sandbox already limits reads with
+  `allowed_directories`.
+- **The lockdown has limits.** It doesn't stop SQL that writes the catalog's
+  own tables; only the policy does. Quack issue #366 reports that
+  `quack_serve` itself ignores `enable_external_access`; the prototype locks
+  down only after serving, so that doesn't affect it.
+- **Cost limits are coarse.** Readers can still run expensive queries over
+  the metadata until the watchdog's limit, which applies per statement.
+  Memory isn't limited separately.
+- **The writer token is full control.** It must never leave the control
+  plane. Quack issue #325 points out that SQL-defined callbacks can be
+  replaced by any client allowed to write; qualifying the hook names covers
+  the shadowing case.
 
 ### How it would fit exuvia
 
@@ -227,11 +392,14 @@ testing it.
   rows, and the control plane appends or merges them in one commit. The
   node's output id becomes the snapshot id, and freshness compares the
   snapshot a downstream run read with the current one.
-- **Readers get files, not the token.** Nodes and the query sandbox get a
-  snapshot's files (`ducklake_list_files`) or its change feed, written out as
-  parquet by the control plane. Inlined rows have to be flushed or written
-  out first, since they aren't in any file. That holds until a read-only
-  policy in the authorization hook is designed and tested.
+- **Readers get a reader token.** The control plane serves Quack with the
+  read-only policy, the lockdown and the watchdog. Nodes and the query/view
+  sandbox attach the lake `READ_ONLY` with a reader token. DuckLake then
+  handles snapshots, inlined rows and time travel for them. The writer token
+  never leaves the control plane. The fallback, if the policy proves too
+  brittle across upgrades, is for the control plane to hand out a snapshot's
+  files (`ducklake_list_files`) or its change feed as parquet. Inlined rows
+  would have to be flushed first.
 - **Quack's main payoff is outside readers:** remote executors, more than one
   hub replica, or analysts querying the lake from their own DuckDB or BI
   tool. If only the control plane ever touches the lake, a plain DuckDB file
@@ -269,14 +437,58 @@ testing it.
     `exuvia/artifacts.py`);
   - one catalog per project, or one per hub with a schema per project.
 
+## Upstream roadmap: anything to wait for?
+
+Checked on 2026-11-22: the DuckLake roadmap (last updated October 2026),
+the duckdb/ducklake and duckdb/duckdb-quack repositories, and the DuckDB
+release calendar.
+
+- **Access control: don't wait.** "Roles and access control" is a "Top
+  Priority" item for DuckLake 2.0. The roadmap gives no date and says there
+  are "no guarantees". I found no code for it. In 2025 a maintainer called
+  fine-grained RBAC out of scope (duckdb/ducklake#74). Quack has no planned
+  read-only mode or token scopes. Per-user principals for its callbacks are
+  a community PR that hasn't been reviewed (duckdb/duckdb-quack#347). A
+  client-side `ATTACH … (READ_ONLY)` on a plain Quack database, which never
+  blocked writes, is refused on Quack's `main` branch (#329).
+- **The DuckLake REST API could replace the SQL policy.** It merged to
+  DuckLake's `main` on 2026-11-13 (duckdb/ducklake#1930). Clients read and
+  commit through nine fixed endpoints and never send SQL, with a
+  bearer-token server, `ducklake_rest_serve`. Read-only would then mean
+  refusing the commit and compaction endpoints, instead of parsing SQL. It
+  isn't in a release yet. It probably arrives with the next DuckDB minor
+  release (2.1, planned for the first half of 2027), but that's an inference.
+  Keep the reader-token boundary behind an interface so the transport can
+  change.
+- **Expect a DuckLake 2.0 catalog migration.** `main` is at catalog version
+  `2.0-dev1`, which adds snapshot tags, branching and a new snapshot primary
+  key. The 1.1 migration was opt-in and one-way. Write the catalog only
+  through DuckLake, never with hand-written SQL, so a migration stays
+  mechanical. Snapshot tags (merged on `main`: expiry skips tagged
+  snapshots) would give readers stable pins.
+- **Nothing else to wait for.**
+  - Compaction stays manual: the control plane schedules `CHECKPOINT`.
+  - Upsert beyond `MERGE INTO` is "not for the foreseeable future"
+    (duckdb/ducklake#66).
+  - Unenforced `PRIMARY KEY` syntax and materialized views are "Future
+    Work".
+  - The change feed has shipped. Open work (#1914) concerns compaction
+    rewrites showing up in it.
+- **Quack is still beta in practice.** Its README says experimental, and on
+  Talk Python #562 its developer advised against production use for now.
+  Open issues cover heartbeats, cancellation and timeouts. Extension wheels
+  have lagged DuckDB releases by 9 to 30 days (2.0.1 has none yet), so pin
+  exact versions.
+
 ## Current leaning
 
 - Add DuckLake as the storage for a new kind of incremental node (append, or
   merge on a key). Keep ordinary per-run outputs as they are.
-- Before anything else, settle how readers get data without the writer
-  token: either a read-only policy in the authorization hook (the hook works
-  as documented; the policy is the unbuilt part), or the control plane hands
-  out snapshot files.
+- Readers get a read-only Quack token. The prototype policy is built and
+  tested. Before relying on it, decide between keeping the Python UDF hook
+  (works on 2.0.0, unsupported by the docs, guarded by a startup self-test)
+  and porting the checker to a C++ extension function. Revisit when the
+  DuckLake REST API ships.
 - Option A (`__runs` as a node input) doesn't need DuckLake and could ship
   first, depending on how soon the lake is wanted.
 
@@ -293,6 +505,11 @@ testing it.
   [cleanup of files](https://ducklake.select/docs/stable/duckdb/maintenance/cleanup_of_files),
   [choosing a catalog database](https://ducklake.select/docs/stable/duckdb/usage/choosing_a_catalog_database),
   [unsupported features](https://ducklake.select/docs/stable/duckdb/unsupported_features)
+- [DuckLake roadmap](https://ducklake.select/roadmap)
+- [DuckLake REST API PR](https://github.com/duckdb/ducklake/pull/1930)
+- Quack issues: [#325 replaceable SQL callbacks](https://github.com/duckdb/duckdb-quack/issues/325),
+  [#347 per-user principals](https://github.com/duckdb/duckdb-quack/pull/347),
+  [#366 quack_serve and enable_external_access](https://github.com/duckdb/duckdb-quack/issues/366)
 - Quack docs: [overview](https://duckdb.org/docs/2.0/quack/overview.html),
   [reference](https://duckdb.org/docs/2.0/quack/reference.html),
   [security](https://duckdb.org/docs/2.0/quack/security.html)
