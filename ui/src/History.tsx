@@ -439,7 +439,6 @@ function Note({ children }: { children: ReactNode }) {
  * The bar over the list and the bar over the diff are as tall as each other,
  * so side by side their rules meet in one line.
  */
-const WIDE = "@media (min-width: 901px)";
 const COMPACT = "@media (max-width: 900px)";
 
 const styles = stylex.create({
@@ -451,8 +450,8 @@ const styles = stylex.create({
   history: { display: "grid", gap: "1px", backgroundColor: colorVars["--color-border"] },
   stack: { gridTemplateColumns: "minmax(0, 1fr)", gridTemplateRows: "fit-content(34%) minmax(0, 1fr)" },
   side: {
-    gridTemplateColumns: { default: null, [WIDE]: "300px minmax(0, 1fr)", [COMPACT]: "minmax(0, 1fr)" },
-    gridTemplateRows: { default: null, [WIDE]: "minmax(0, 1fr)", [COMPACT]: "fit-content(36%) minmax(0, 1fr)" },
+    gridTemplateColumns: { default: "300px minmax(0, 1fr)", [COMPACT]: "minmax(0, 1fr)" },
+    gridTemplateRows: { default: "minmax(0, 1fr)", [COMPACT]: "fit-content(36%) minmax(0, 1fr)" },
   },
   list: { display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, backgroundColor: colorVars["--color-background-surface"] },
   bar: {
