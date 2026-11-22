@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, hubApi, PROJECT_ID, type HubProject } from "./api";
+import { ApiError, hubApi, PROJECT_ID, type GeneralAccess, type HubListing, type HubProject } from "./api";
+import { GENERAL_LABEL, ShareDialog } from "./Share";
 import { ConnectDialog } from "./Connect";
 import { SignedInAs } from "./Me";
 import { HelpMenu } from "./Help";
@@ -22,7 +23,12 @@ export const toProjectId = (s: string) =>
 /** The id a project name suggests: "Market research" → "market-research". */
 export const idFromName = (name: string) => toProjectId(name.trim().toLowerCase()).replace(/[-_]+$/, "");
 
-type Listing = { projects: HubProject[]; templates: string[]; auth: boolean };
+type Listing = HubListing;
+
+/** Which projects the list shows, on a hub where people sign in. */
+type Filter = "all" | "mine" | "shared";
+
+const ROLE_WORD = { viewer: "can view", editor: "can edit", owner: "owner" } as const;
 
 /**
  * The hub's home page, at `/` of `exuvia hub`: every project, with a button
@@ -35,6 +41,8 @@ export default function Hub() {
   const [err, setErr] = useState<string | null>(null);
   const [newOpen, setNewOpen] = useState(false);
   const [deleting, setDeleting] = useState<HubProject | null>(null);
+  const [sharing, setSharing] = useState<HubProject | null>(null);
+  const [filter, setFilter] = useState<Filter>("all");
   const [connecting, setConnecting] = useState(false);
   const [dark, toggleTheme] = useTheme();
   // Someone signed in reaches Connect agent from their account menu.
@@ -65,7 +73,14 @@ export default function Hub() {
     return () => document.removeEventListener("visibilitychange", onFocus);
   }, [load]);
 
-  const projects = listing?.projects ?? [];
+  const all = listing?.projects ?? [];
+  const uid = who?.user?.uid ?? null;
+  // People and roles exist where people sign in; a token hub shares by link only.
+  const people = !!listing?.sharing?.people && !!uid;
+  const mine = (p: HubProject) => !!uid && p.owner?.id === uid;
+  const projects = !people || filter === "all" ? all : all.filter((p) => (filter === "mine" ? mine(p) : !mine(p)));
+  // Without sharing everyone can delete; with it, the owner (admins are owners everywhere).
+  const canDelete = (p: HubProject) => !listing?.sharing || p.access === "owner";
   useEffect(() => {
     document.title = "Projects · exuvia";
   }, []);
@@ -102,7 +117,7 @@ export default function Hub() {
           </div>
         ) : !listing ? (
           <p className="hub-muted">Loading…</p>
-        ) : projects.length === 0 ? (
+        ) : all.length === 0 ? (
           <div className="hub-card hub-empty">
             <Mark size={40} />
             <h2>No projects yet</h2>
@@ -111,21 +126,56 @@ export default function Hub() {
           </div>
         ) : (
           <>
-            <h1 className="hub-title">
-              Projects <span className="hub-muted">{projects.length}</span>
-            </h1>
+            <div className="hub-head">
+              <h1 className="hub-title">
+                Projects <span className="hub-muted">{projects.length}</span>
+              </h1>
+              {people && (
+                <div className="seg" role="tablist" aria-label="Which projects">
+                  {(["all", "mine", "shared"] as const).map((f) => (
+                    <button key={f} role="tab" aria-selected={filter === f} className={filter === f ? "on" : ""} onClick={() => setFilter(f)}>
+                      {f === "all" ? "All" : f === "mine" ? "Owned by me" : "Shared with me"}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {projects.length === 0 && <p className="hub-muted">No projects here.</p>}
             <ul className="hub-list">
               {projects.map((p) => (
                 <li key={p.id}>
                   <a className="hub-open" href={workbench(p.id)}>
-                    <span className="hub-name">{p.name || p.id}</span>
+                    <span className="hub-name">
+                      {p.name || p.id}
+                      {p.requests ? (
+                        <span className="badge accent" title="People asking for access: open Share to answer">
+                          {p.requests} request{p.requests === 1 ? "" : "s"}
+                        </span>
+                      ) : null}
+                    </span>
                     <span className="hub-meta">
                       <span className="mono">{p.id}</span> · {p.nodes} node{p.nodes === 1 ? "" : "s"}
+                      {people && p.access && (
+                        <>
+                          {" · "}
+                          {mine(p) ? "yours" : p.owner ? `${p.owner.name}'s` : "no owner"}
+                          {!mine(p) && ` · you ${ROLE_WORD[p.access]}`}
+                          {p.general && <span title={GENERAL_LABEL[p.general]}>{" · "}{p.general === "private" ? (p.shared ? "shared" : "private") : `everyone can ${p.general}`}</span>}
+                        </>
+                      )}
+                      {!people && listing.sharing && p.shared && " · shared by link"}
                     </span>
                   </a>
-                  <button className="btn ghost sm danger" onClick={() => setDeleting(p)} title={`Delete ${p.id}`}>
-                    Delete
-                  </button>
+                  {listing.sharing && (
+                    <button className="btn ghost sm" onClick={() => setSharing(p)} title={p.access === "owner" ? `Share ${p.id}` : `Who has access to ${p.id}`}>
+                      {p.access === "owner" ? "Share" : "Access"}
+                    </button>
+                  )}
+                  {canDelete(p) && (
+                    <button className="btn ghost sm danger" onClick={() => setDeleting(p)} title={`Delete ${p.id}`}>
+                      Delete
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>
@@ -136,12 +186,16 @@ export default function Hub() {
       {newOpen && listing && (
         <NewProjectDialog
           templates={listing.templates}
-          taken={projects.map((p) => p.id)}
+          taken={all.map((p) => p.id)}
+          access={people ? listing.sharing!.default_access : null}
           onClose={() => setNewOpen(false)}
           onCreated={(id) => location.assign(workbench(id))}
         />
       )}
       {connecting && listing && <ConnectDialog auth={listing.auth} onClose={() => setConnecting(false)} />}
+      {sharing && (
+        <ShareDialog project={sharing.id} name={sharing.name} self={uid} onClose={() => setSharing(null)} onChanged={load} />
+      )}
       {deleting && (
         <DeleteDialog
           project={deleting}
@@ -197,8 +251,16 @@ function TokenForm() {
   );
 }
 
-function NewProjectDialog(props: { templates: string[]; taken: string[]; onClose: () => void; onCreated: (id: string) => void }) {
+function NewProjectDialog(props: {
+  templates: string[];
+  taken: string[];
+  /** On a hub where people sign in: the default for who else can open it. */
+  access: GeneralAccess | null;
+  onClose: () => void;
+  onCreated: (id: string) => void;
+}) {
   const [name, setName] = useState("");
+  const [access, setAccess] = useState<GeneralAccess>(props.access ?? "edit");
   const [id, setId] = useState("");
   const [idEdited, setIdEdited] = useState(false);
   const [template, setTemplate] = useState("");
@@ -219,7 +281,12 @@ function NewProjectDialog(props: { templates: string[]; taken: string[]; onClose
     setErr(null);
     setBusy(true);
     try {
-      await hubApi.create({ id: finalId, name: name.trim() || undefined, template: template || undefined });
+      await hubApi.create({
+        id: finalId,
+        name: name.trim() || undefined,
+        template: template || undefined,
+        access: props.access ? access : undefined,
+      });
       props.onCreated(finalId);
     } catch (e) {
       setBusy(false);
@@ -253,6 +320,16 @@ function NewProjectDialog(props: { templates: string[]; taken: string[]; onClose
               <option value="">An empty graph</option>
               {props.templates.map((t) => (
                 <option key={t} value={t}>Template: {t}</option>
+              ))}
+            </select>
+          </div>
+        )}
+        {props.access && (
+          <div className="field">
+            <label htmlFor="np-access">Who else can open it</label>
+            <select id="np-access" value={access} onChange={(e) => setAccess(e.target.value as GeneralAccess)}>
+              {(Object.keys(GENERAL_LABEL) as GeneralAccess[]).map((g) => (
+                <option key={g} value={g}>{g === "private" ? "Only me, and people I share it with" : GENERAL_LABEL[g]}</option>
               ))}
             </select>
           </div>

@@ -11,7 +11,9 @@ The tools run in this process, as ``POST /api/tools/{name}`` does: nothing is
 relayed. The endpoint sits behind the same auth as the API (server.py
 ``require_auth``): the shared ``EXUVIA_API_TOKEN`` or a person's agent token
 as ``Authorization: Bearer``, so the client works as that person. Changes and
-runs are recorded with the origin ``mcp``.
+runs are recorded with the origin ``mcp``. On a hub with sharing
+(sharing.py) a client sees only the projects its person can open, and in a
+project they can only view it gets the read-only tools.
 
 The session manager is stateless: every POST stands alone, so any replica can
 answer it and a restart drops nothing. The tools never ask the client
@@ -33,6 +35,21 @@ from .mcp_server import HUB_GUIDE_TOOL, ORIGIN, build_server, hub_instructions, 
 # and so see the request's values (and its signed-in person, auth.py).
 _ctx: contextvars.ContextVar[Any] = contextvars.ContextVar("exuvia_mcp_ctx", default=None)
 _base_url: contextvars.ContextVar[str] = contextvars.ContextVar("exuvia_mcp_base_url", default="")
+# The request's role in the project a /p/<id>/mcp request is about (sharing.py).
+_role: contextvars.ContextVar[str | None] = contextvars.ContextVar("exuvia_mcp_role", default="owner")
+
+
+def _may(role: str | None, tool: str) -> bool:
+    """Whether ``role`` may call ``tool``: viewers only the read-only ones."""
+    from .agent import READ_TOOLS
+    from .sharing import at_least
+
+    return tool in READ_TOOLS if not at_least(role, "editor") else True
+
+
+def _view_only(project: str | None) -> str:
+    where = f"project {project}" if project else "this project"
+    return f"PERMISSION: you can view {where} but not change it; ask its owner for edit access"
 
 
 def _tool_defs() -> list[dict[str, Any]]:
@@ -52,9 +69,12 @@ class ProjectBackend:
         return self.instructions_now()
 
     async def tools(self) -> list[dict[str, Any]]:
-        return _tool_defs()
+        role = _role.get()
+        return [t for t in _tool_defs() if _may(role, t["name"])]
 
     async def call(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
+        if not _may(_role.get(), name):
+            return False, _view_only(None)
         ok, text, _ = await _ctx.get().agent.call_tool(name, args, ORIGIN)
         return ok, text
 
@@ -65,11 +85,12 @@ class HubLocalBackend:
 
     guide_tool = HUB_GUIDE_TOOL
 
-    def __init__(self, hub: Any):
+    def __init__(self, hub: Any, role_of: Callable[[str], str | None] | None = None):
         self.hub = hub
+        self.role_of = role_of or (lambda _project: "owner")
 
     def instructions_now(self) -> str:
-        return hub_instructions(_base_url.get(), self.hub.list())
+        return hub_instructions(_base_url.get(), self.hub.visible())
 
     async def instructions(self) -> str:
         return self.instructions_now()
@@ -84,6 +105,8 @@ class HubLocalBackend:
             return None, "INVALID_INPUT: name the project as `project` (its id; list_projects shows them)"
         if not PROJECT_ID.match(project) or not self.hub.exists(project):
             return None, f"no project {project} on this hub: list_projects shows them"
+        if self.role_of(project) is None:
+            return None, f"PERMISSION: you don't have access to project {project}; ask its owner to share it with you"
         return await self.hub.get(project), None
 
     async def guide(self, args: dict[str, Any]) -> tuple[bool, str]:
@@ -94,7 +117,7 @@ class HubLocalBackend:
 
     async def call(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
         if name == "list_projects":
-            return True, json.dumps({"projects": self.hub.list(), "templates": self.hub.templates()}, indent=1)
+            return True, json.dumps({"projects": self.hub.visible(), "templates": self.hub.templates()}, indent=1)
         if name == "create_project":
             pid, display, template = args.get("id"), args.get("name"), args.get("template")
             if not isinstance(pid, str) or not all(v is None or isinstance(v, str) for v in (display, template)):
@@ -108,9 +131,12 @@ class HubLocalBackend:
             made = await self.hub.get(pid)
             return True, json.dumps({"id": pid, "name": made.ws.project.name, "workbench": f"{_base_url.get()}/p/{pid}/"})
         args = dict(args)
-        ctx, problem = await self._project(args.pop("project", None))
+        project = args.pop("project", None)
+        ctx, problem = await self._project(project)
         if problem:
             return False, problem
+        if not _may(self.role_of(project), name):
+            return False, _view_only(project)
         ok, text, _ = await ctx.agent.call_tool(name, args, ORIGIN)
         return ok, text
 
@@ -131,9 +157,13 @@ class McpEndpoint:
     """The ASGI app at an MCP path. ``resolve`` turns the request into the
     project it is about (a Response instead: the request ends there)."""
 
-    def __init__(self, backend: Any, resolve: Callable[[dict[str, Any]], Awaitable[Any]] | None = None):
+    def __init__(
+        self, backend: Any, resolve: Callable[[dict[str, Any]], Awaitable[Any]] | None = None,
+        role: Callable[[dict[str, Any]], str | None] | None = None,
+    ):
         self.server = build_server(backend, backend.instructions_now)
         self.resolve = resolve
+        self.role = role
         self.manager: Any = None
 
     @asynccontextmanager
@@ -162,11 +192,13 @@ class McpEndpoint:
                 await ctx(scope, receive, send)
                 return
         ctx_token, url_token = _ctx.set(ctx), _base_url.set(_base(scope))
+        role_token = _role.set(self.role(scope) if self.role is not None else "owner")
         try:
             await self.manager.handle_request(scope, receive, send)
         finally:
             _ctx.reset(ctx_token)
             _base_url.reset(url_token)
+            _role.reset(role_token)
 
 
 MCP_METHODS = ["GET", "POST", "DELETE"]
@@ -180,9 +212,13 @@ def add_routes(app: Any, prefix: str, endpoint: McpEndpoint) -> None:
         app.router.routes.append(Route(path, endpoint=endpoint, methods=MCP_METHODS, include_in_schema=False))
 
 
-def project_endpoint(get_ctx: Callable[[dict[str, Any]], Awaitable[Any]]) -> McpEndpoint:
-    return McpEndpoint(ProjectBackend(), get_ctx)
+def project_endpoint(
+    get_ctx: Callable[[dict[str, Any]], Awaitable[Any]], role: Callable[[dict[str, Any]], str | None] | None = None,
+) -> McpEndpoint:
+    """``role`` says what the request may do in the project (sharing.py);
+    unset: everything (``exuvia serve``)."""
+    return McpEndpoint(ProjectBackend(), get_ctx, role)
 
 
-def hub_endpoint(hub: Any) -> McpEndpoint:
-    return McpEndpoint(HubLocalBackend(hub))
+def hub_endpoint(hub: Any, role_of: Callable[[str], str | None] | None = None) -> McpEndpoint:
+    return McpEndpoint(HubLocalBackend(hub, role_of))

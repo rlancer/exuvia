@@ -356,6 +356,13 @@ VIEW_TOOLS = {
     "list_views", "read_view", "write_view", "write_view_file", "delete_view_file", "delete_view", "restore_view_file",
 }
 
+# Tools that change nothing in the project: all a viewer of a shared hub
+# project may call (sharing.py). Every other tool needs an editor.
+READ_TOOLS = frozenset({
+    "list_nodes", "read_node", "list_files", "read_file", "list_revisions", "read_revision",
+    "list_views", "read_view", "query_data", "list_packages", "report_issue",
+})
+
 
 def _available_packages(root: Path | None = None) -> str:
     """The data packages exuvia's environment has, plus the ones the project
