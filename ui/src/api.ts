@@ -49,6 +49,11 @@ export interface GraphNode {
   missing_package?: { module: string; package: string } | null;
 }
 
+export interface HelperFile {
+  path: string;
+  used_by: string[];
+}
+
 /** One requirement in the project's pyproject.toml, and what is installed for it. */
 export interface PackageRow {
   requirement: string;
@@ -227,6 +232,9 @@ export const api = {
   viewQuery: async (view: string, sql: string, params?: Record<string, unknown>) =>
     (await send("POST", `/api/views/${view}/query`, { sql, params: params ?? null }, ARROW_STREAM)).arrayBuffer(),
   node: (name: string) => req<{ name: string; source: string }>("GET", `/api/nodes/${name}`),
+  helpers: () => req<{ files: HelperFile[] }>("GET", "/api/files"),
+  helper: (path: string) =>
+    req<HelperFile & { source: string }>("GET", `/api/files/${path.split("/").map(encodeURIComponent).join("/")}`),
   save: (name: string, source: string) => req<Project>("PUT", `/api/nodes/${name}`, { source }),
   create: (b: { name: string; kind: string; deps: string[]; description: string }) =>
     req<Project>("POST", "/api/nodes", b),

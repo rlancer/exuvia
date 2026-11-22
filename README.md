@@ -230,7 +230,8 @@ def basket_corr(returns):
 
 A node's code hash covers every `lib/` file it imports, directly or through
 other helpers, so editing a helper marks exactly those nodes stale. Only
-static `import` / `from … import` statements are tracked. Besides `nodes/`,
+static `import` / `from … import` statements are tracked. Open **Helpers** in
+the workbench to read a module and see which nodes use it. Besides `nodes/`,
 `lib/**/*.py` and view folders (see "Views") are the only places the API and
 the agent can write.
 
@@ -1193,7 +1194,7 @@ executor you meant. Delete the node when you are done.
 | `result` | What it means | Where to fix it |
 |---|---|---|
 | `http` | The provider answered with the status in `detail`. The route works; a 401 or 403 is the provider turning away a request with no key. | Not the network. If the node still fails, look at its key (on the executor, for a remote one) or the request it makes. |
-| `proxy refused` | The proxy took the connection and refused the tunnel; `detail` is its status. 403: the host isn't on its allowlist. 407: it wants credentials. 502, 503 or 504: the proxy itself couldn't resolve or reach the provider. | The proxy: add the host to its allowlist (the Squid example above allows only the package hosts), or fix the proxy's own route out. |
+| `proxy refused` | The proxy took the connection and refused the tunnel; `detail` is its status. 403: the host isn't on its allowlist. 407: it wants credentials. 502, 503 or 504: the proxy itself couldn't resolve or reach the provider. | The proxy: add the host to its allowlist (the Squid example above allows only the package hosts), or fix the proxy's own route out. A provider that redirects, or serves downloads from another host, needs those hosts too. |
 | `dns`, `proxy name` | The proxy's name doesn't resolve where the node runs. | The node and the proxy aren't on a network they share: often a remote executor given the hub's `HTTPS_PROXY`. |
 | `dns`, `provider name` | The request went direct and the provider's name doesn't resolve: no route out. | `HTTPS_PROXY` where the node runs, or take the host out of `NO_PROXY`. A running server or executor doesn't see new variables: restart or redeploy it. |
 | `timeout`, `connect` | The name resolved and the connection timed out, was refused or was reset. Through a proxy, a reset or `RemoteDisconnected` is often the proxy refusing the tunnel without a status, as some do for a host or port they don't allow. | A firewall or NetworkPolicy dropping the traffic, the wrong port in `HTTPS_PROXY`, a proxy that isn't running, or the proxy's allowlist. |
