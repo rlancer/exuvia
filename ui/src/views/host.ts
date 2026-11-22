@@ -100,9 +100,41 @@ export interface BridgeOptions {
   onStatus: (s: FrameStatus) => void;
 }
 
-/** Why the host refuses a node, or null when the view may read it. */
-export function refusal(view: Pick<ProjectView, "name" | "reads">, node: string): string | null {
+/** `fit.coefs` names the `coefs` output of a node `fit` that returns several; `fit` names the node's only output. */
+export function splitOutput(name: string): { node: string; part: string | null } {
+  const dot = name.indexOf(".");
+  return dot < 0 ? { node: name, part: null } : { node: name.slice(0, dot), part: name.slice(dot + 1) };
+}
+
+/** Why the host refuses a node (or `node.part`), or null when the view may read it. */
+export function refusal(view: Pick<ProjectView, "name" | "reads">, name: string): string | null {
+  const { node } = splitOutput(name);
   return view.reads.includes(node) ? null : `View ${view.name} does not read ${node}: add it to "reads" in view.json.`;
+}
+
+/** What a `table`/`json` request for `name` reads, or why it cannot. */
+export function resolveOutput(
+  outputs: ProjectView["outputs"],
+  name: string,
+  method: "table" | "json",
+): { node: string; part: string | null; artifact_id: string } {
+  const { node, part } = splitOutput(name);
+  const other = method === "table" ? "json" : "table";
+  const out = outputs.find((o) => o.node === node);
+  if (!out?.artifact_id) throw new Error(`${node} has no output yet for these parameters (views never run nodes).`);
+  if (out.kind === "multi") {
+    const parts = out.parts ?? [];
+    const names = parts.map((p) => `${node}.${p.name}`).join(", ");
+    if (part === null) throw new Error(`${node} has several outputs: read one of ${names}.`);
+    const found = parts.find((p) => p.name === part);
+    if (!found) throw new Error(`${node} has no output ${part}: it has ${names}.`);
+    if (found.kind !== method) throw new Error(`${name} is ${found.kind}, not ${method === "table" ? "a table" : "JSON"}: use ${other}().`);
+    return { node, part, artifact_id: out.artifact_id };
+  }
+  if (part !== null) throw new Error(`${node} has a single output: read it as ${node}.`);
+  if (method === "table" && out.kind !== "table") throw new Error(`${node}'s output is ${out.kind}, not a table: use json().`);
+  if (method === "json" && out.kind !== "json") throw new Error(`${node}'s output is ${out.kind}, not JSON: use table().`);
+  return { node, part, artifact_id: out.artifact_id };
 }
 
 export class ViewBridge {
@@ -206,21 +238,18 @@ export class ViewBridge {
         return api.viewQuery(name, (args as RequestArgs["query"]).sql, this.params.params);
       case "table":
       case "json": {
-        const node = (args as RequestArgs["table"]).node;
-        const refused = refusal(this.view, node);
+        const asked = (args as RequestArgs["table"]).node;
+        const refused = refusal(this.view, asked);
         if (refused) throw new Error(refused);
-        const out = this.view.outputs.find((o) => o.node === node);
-        if (!out?.artifact_id) throw new Error(`${node} has no output yet for these parameters (views never run nodes).`);
-        if (method === "table" && out.kind !== "table") throw new Error(`${node}'s output is ${out.kind}, not a table: use json().`);
-        if (method === "json" && out.kind !== "json") throw new Error(`${node}'s output is ${out.kind}, not JSON: use table().`);
-        // An artifact id names its content, so an answer for it never goes stale.
-        const key = `${node}@${out.artifact_id}`;
+        const { node, part, artifact_id } = resolveOutput(this.view.outputs, asked, method);
+        // An artifact id names its content (every part of it), so an answer for it never goes stale.
+        const key = `${asked}@${artifact_id}`;
         let hit = this.cache.get(key);
         if (!hit) {
-          hit = api.viewData(name, node, this.params.params).then((d) => {
+          hit = api.viewData(name, node, this.params.params, part ?? undefined).then((d) => {
             if (d.kind === "table") return d.arrow;
             if (d.kind === "json") return d.value;
-            throw new Error(`${node} has no output yet for these parameters.`);
+            throw new Error(`${asked} has no output yet for these parameters.`);
           });
           hit.catch(() => this.cache.delete(key));
           this.cache.set(key, hit);

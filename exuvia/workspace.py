@@ -38,10 +38,13 @@ import asyncio
 import hashlib
 import json
 import os
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from contextlib import contextmanager, suppress
 from contextvars import Context, ContextVar
 from datetime import datetime
@@ -58,6 +61,7 @@ from .executor import ExecRequest, LocalExecutor, make_executor
 from .notify import failure_webhook, payload, send
 from .packages import Packages, missing_package
 from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Project, View, _hash, _validate_cron
+from .runner import PART_EXT, PART_NAME
 from .store import CodeChange, clean_origin, open_store
 
 MAX_PARALLEL = int(os.environ.get("EXUVIA_MAX_PARALLEL", "4"))
@@ -494,9 +498,10 @@ class Workspace:
             st = status.get(n)
             if st is None:
                 continue  # an unknown node: already the view's parse_error
-            outputs.append(
-                {"node": n, "state": st["state"], "artifact_id": st["artifact_id"], "kind": st["output_kind"]}
-            )
+            out = {"node": n, "state": st["state"], "artifact_id": st["artifact_id"], "kind": st["output_kind"]}
+            if st["output_kind"] == "multi":
+                out["parts"] = output_parts(st["schema"])
+            outputs.append(out)
         missing = [o["node"] for o in outputs if not o["artifact_id"]]
         stale = [f"{o['node']} ({o['state']})" for o in outputs if o["artifact_id"] and o["state"] != "fresh"]
         if view.parse_error:
@@ -793,6 +798,39 @@ class Workspace:
         if not local.exists():
             self._download(p, local)
         return str(local)
+
+    def part_file(self, run: dict[str, Any], part: str) -> tuple[Path, str] | None:
+        """The local file of one part of a run with several outputs, and its
+        kind (``table`` or ``json``); None when the run has no such part.
+
+        DuckDB cannot read inside a zip, so a part is extracted once under
+        ``.exuvia/parts/<node>/<artifact_id>/`` (a cache: hub exports leave
+        it out, and it is rebuilt from the artifact when missing). Blocking."""
+        if run.get("kind") != "multi" or not PART_NAME.match(part or ""):
+            return None
+        kind = dict((p["name"], p["kind"]) for p in output_parts(run.get("schema"))).get(part)
+        if kind is None:
+            return None
+        member = f"{part}.{PART_EXT[kind]}"
+        local = self.project.state_dir / "parts" / run["node"] / run["artifact_id"] / member
+        if local.is_file():
+            return local, kind
+        src = self.artifact_path(run)
+        if not src or not Path(src).is_file():
+            return None
+        local.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=local.parent, suffix=".part")
+        os.close(fd)
+        try:
+            with zipfile.ZipFile(src) as z, z.open(member) as f_in, open(tmp, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out)
+            os.replace(tmp, local)
+        except KeyError:
+            return None
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        return local, kind
 
     # -- remote artifact store (see artifacts.py) ------------------------------
     def _download(self, rel: str, local: Path) -> None:
@@ -1156,17 +1194,35 @@ class Workspace:
         offset: int = 0,
         params: dict[str, Any] | None = None,
         run_id: str | None = None,
+        part: str | None = None,
     ) -> dict[str, Any]:
         """A node's current output for a parameter set, or the output of one
-        specific historical run."""
+        specific historical run. For a node with several outputs, ``part``
+        picks one; without it the answer lists them (``parts``).
+        Raises KeyError for a ``part`` the output does not have."""
         ls = self._output_run(name, params, run_id)
         if ls is None:
             return {"kind": None, "rows": [], "columns": [], "total": 0}
         meta = {"run_id": ls["id"], "run_params": ls.get("params") or {}, "finished_at": ls.get("finished_at")}
         kind = ls["kind"]
-        if kind not in ("table", "json"):
+        total = ls.get("rows")
+        if kind == "multi":
+            parts = output_parts(ls.get("schema"))
+            meta["parts"] = parts
+            if part is None:
+                return {"kind": "multi", **meta}
+            found = self.part_file(ls, part)
+            if found is None:
+                raise KeyError(f"{name} has no output {part!r} (it has {', '.join(p['name'] for p in parts)})")
+            path, kind = str(found[0]), found[1]
+            meta["part"] = part
+            total = next((p["rows"] for p in parts if p["name"] == part), None)
+        elif part is not None:
+            raise KeyError(f"{name} has a single output, not several: leave out part")
+        elif kind not in ("table", "json"):
             return {"kind": "none", "value": None, **meta}  # incl. a retired pickle output: never read
-        path = self.artifact_path(ls)
+        else:
+            path = self.artifact_path(ls)
         if kind == "table":
             import duckdb
 
@@ -1178,7 +1234,7 @@ class Workspace:
                 "kind": "table",
                 "columns": [{"name": c, "type": str(t)} for c, t in zip(cols, rel.types)],
                 "rows": _jsonable(rows),
-                "total": ls.get("rows"),
+                "total": total,
                 **meta,
             }
         if kind == "json":
@@ -1192,34 +1248,53 @@ class Workspace:
         offset: int = 0,
         params: dict[str, Any] | None = None,
         run_id: str | None = None,
+        part: str | None = None,
     ) -> ArrowStream | None:
         """The table ``preview`` would answer with, as an Arrow stream: every
-        row unless ``limit`` is given. None when there is no table output."""
+        row unless ``limit`` is given. None when there is no table output
+        (``preview`` then answers, or says what is wrong with ``part``)."""
         ls = self._output_run(name, params, run_id)
-        if ls is None or ls["kind"] != "table":
+        if ls is None:
+            return None
+        total = ls.get("rows")
+        extra: dict[str, Any] = {}
+        if ls["kind"] == "multi" and part is not None:
+            found = self.part_file(ls, part)
+            if found is None or found[1] != "table":
+                return None
+            path = str(found[0])
+            total = next((p["rows"] for p in output_parts(ls.get("schema")) if p["name"] == part), None)
+            extra["part"] = part
+        elif ls["kind"] == "table" and part is None:
+            path = self.artifact_path(ls)
+        else:
             return None
         import duckdb
 
         con = duckdb.connect()
-        rel = con.sql("select * from read_parquet(?)", params=[self.artifact_path(ls)])
+        rel = con.sql("select * from read_parquet(?)", params=[path])
         if limit is not None or offset:
             rel = rel.limit(_ALL_ROWS if limit is None else int(limit), int(offset))
         meta = {
             "kind": "table",
-            "total": ls.get("rows"),
+            "total": total,
             "run_id": ls["id"],
             "run_params": ls.get("params") or {},
             "finished_at": ls.get("finished_at"),
+            **extra,
         }
         return ArrowStream(rel, meta, owner=con)
 
-    def artifact_file(self, node: str, artifact_id: str) -> tuple[Path, str] | None:
-        """The stored file of one of ``node``'s outputs and its kind (``table``
-        or ``json``), fetched from the remote artifact store first when this
-        process does not have it. None when no successful run produced it.
-        Blocking: call it off the event loop."""
+    def artifact_file(self, node: str, artifact_id: str, part: str | None = None) -> tuple[Path, str] | None:
+        """The stored file of one of ``node``'s outputs and its kind (``table``,
+        ``json`` or ``multi``), fetched from the remote artifact store first
+        when this process does not have it. With ``part``, that part of an
+        output with several (kind ``table`` or ``json``). None when no
+        successful run produced it. Blocking: call it off the event loop."""
         run = self.store.run_with_artifact(node, artifact_id)
-        if run is None or run["kind"] not in ("table", "json"):
+        if run is not None and part is not None:
+            return self.part_file(run, part)
+        if run is None or run["kind"] not in ("table", "json", "multi"):
             return None
         path = self.artifact_path(run)
         if not path or not Path(path).is_file():
@@ -1251,7 +1326,9 @@ class Workspace:
         ``<node>`` is the node's current table for ``params`` (the defaults
         when omitted). ``<node>__runs`` unions its output across every
         parameter set it has run with, adding one ``_<param>`` column per
-        parameter — the view to compare runs over time.
+        parameter — the view to compare runs over time. A node with several
+        outputs is a schema instead: ``<node>.<part>`` for each table part,
+        and ``<node>.<part>__runs``.
 
         The connection runs in the server's process, so it is a sandbox: it
         can read the files behind its views and nothing else, and it is
@@ -1274,28 +1351,47 @@ class Workspace:
             files.append(path or "")
             return f"select {cols}* from read_parquet({_lit(path)})"
 
+        def table_parts(run: dict[str, Any]) -> list[str]:
+            return [p["name"] for p in output_parts(run.get("schema")) if p["kind"] == "table"]
+
+        def part_path(run: dict[str, Any], part: str) -> str | None:
+            found = self.part_file(run, part)
+            return str(found[0]) if found else None
+
+        schemas: set[str] = set()
         for name in names:
             ls = self.store.last_success(name, self.node_params(name, resolved)[1])
             if ls and ls["kind"] == "table":
-                views.append((name, read(self.artifact_path(ls))))
+                views.append((f'"{name}"', read(self.artifact_path(ls))))
+            elif ls and ls["kind"] == "multi":
+                # Several outputs: each table is <node>.<part>, in a schema named after the node.
+                schemas.add(name)
+                for part in table_parts(ls):
+                    views.append((f'"{name}"."{part}"', read(part_path(ls, part))))
             if not self.graph.effective_params(name):
                 continue
-            parts = []
-            for run in self.store.history(name, HISTORY_VIEW_LIMIT):
-                if run["kind"] != "table":
-                    continue
+            history = self.store.history(name, HISTORY_VIEW_LIMIT)
+            unions: dict[str, list[str]] = {}  # view name -> selects
+            for run in history:
                 cols = ", ".join(f'{_lit(v)} as "_{k}"' for k, v in sorted((run.get("params") or {}).items()))
-                parts.append(read(self.artifact_path(run), cols + ", " if cols else ""))
-            if parts:
-                views.append((f"{name}__runs", " union all by name ".join(parts)))
+                cols = cols + ", " if cols else ""
+                if run["kind"] == "table":
+                    unions.setdefault(f'"{name}__runs"', []).append(read(self.artifact_path(run), cols))
+                elif run["kind"] == "multi":
+                    schemas.add(name)
+                    for part in table_parts(run):
+                        unions.setdefault(f'"{name}"."{part}__runs"', []).append(read(part_path(run, part), cols))
+            views.extend((view, " union all by name ".join(selects)) for view, selects in unions.items())
         # Only the files behind these views stay readable once external
         # access is off; the lock makes every setting final.
         con.execute("set allowed_paths = ?", [sorted({f for f in files if f})])
+        for schema in sorted(schemas):
+            con.execute(f'create schema if not exists "{schema}"')
         for view, select in views:
             try:
-                con.execute(f'create view "{view}" as {select}')
+                con.execute(f"create view {view} as {select}")
             except duckdb.Error:
-                if not view.endswith("__runs"):
+                if not view.endswith('__runs"'):
                     raise
                 # incompatible schemas across runs: leave the history view out
         con.execute("set enable_external_access = false")
@@ -1350,6 +1446,18 @@ class Workspace:
         if rel is not None and limit is not None:
             rel = rel.limit(int(limit))
         return ArrowStream(rel, owner=con)
+
+
+def output_parts(schema: Any) -> list[dict[str, Any]]:
+    """``[{name, kind, rows}]`` for the parts of an output with several,
+    from the schema its run recorded (see ``runner.save_artifact``)."""
+    if not isinstance(schema, list):
+        return []
+    return [
+        {"name": p["name"], "kind": p.get("type"), "rows": p.get("rows")}
+        for p in schema
+        if isinstance(p, dict) and isinstance(p.get("name"), str) and p.get("type") in PART_EXT
+    ]
 
 
 def _lit(value: Any) -> str:

@@ -1,6 +1,7 @@
 """Hub mode: many projects, one tick, export/restore, and the HTTP surface a
 host app drives (parameters, as-of runs, backfill, schedules set from the UI)."""
 
+import io
 import json
 import time
 from pathlib import Path
@@ -447,3 +448,28 @@ def test_browser_auth_rejects_unknown_modes(tmp_path, monkeypatch):
     monkeypatch.setenv("EXUVIA_BROWSER_AUTH", "opne")
     with pytest.raises(SystemExit, match="token or open"):
         create_hub_app(tmp_path / "hub", template(tmp_path))
+
+
+def test_export_carries_a_multi_output_but_not_its_extracted_parts(tmp_path, hub):
+    import tarfile
+
+    hub.post("/api/projects", json={"id": "mo", "name": "Multi"})
+    hub.put(
+        "/p/mo/api/nodes/fit",
+        json={
+            "source": "import exuvia\n\n@exuvia.node()\ndef fit():\n    import pandas as pd\n"
+            "    return {'preds': pd.DataFrame({'y': [1, 2]}), 'metrics': {'r2': 0.5}}\n",
+            "kind": "python",
+        },
+    )
+    assert hub.post("/p/mo/api/nodes/fit/run", json={"wait": 60}).json()["ok"]
+    assert hub.get("/p/mo/api/nodes/fit/data", params={"part": "preds"}).json()["total"] == 2  # extracts preds
+    assert any((tmp_path / "hub" / "mo" / ".exuvia" / "parts").rglob("preds.parquet"))
+    blob = hub.get("/api/hub/export").content
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        names = tar.getnames()
+    assert any(n.startswith("mo/.exuvia/artifacts/fit/") and n.endswith(".zip") for n in names)
+    assert not any("/.exuvia/parts/" in n for n in names)
+    with TestClient(create_hub_app(tmp_path / "elsewhere")) as fresh:
+        assert fresh.post("/api/hub/import", content=blob).json()["ok"]
+        assert fresh.get("/p/mo/api/nodes/fit/data", params={"part": "metrics"}).json()["value"] == {"r2": 0.5}

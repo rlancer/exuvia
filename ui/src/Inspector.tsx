@@ -280,18 +280,42 @@ export function DataTable({ columns, rows }: { columns: Column[]; rows: unknown[
 
 function DataTab({ node }: { node: GraphNode }) {
   const [p, setP] = useState<Preview | null>(null);
+  // A node with several outputs shows one at a time; null picks the first.
+  const [part, setPart] = useState<string | null>(null);
+  const multi = node.output_kind === "multi";
+  const parts = multi ? (node.schema ?? []).map((c) => c.name) : [];
+  const shown = multi ? (part !== null && parts.includes(part) ? part : (parts[0] ?? null)) : null;
   useEffect(() => {
     let live = true;
-    api.data(node.name, 300).then((d) => live && setP(d));
+    api.data(node.name, 300, shown ?? undefined).then((d) => live && setP(d));
     return () => {
       live = false;
     };
-  }, [node.name, node.artifact_id]);
+  }, [node.name, node.artifact_id, shown]);
+  const picker = multi && parts.length > 0 && (
+    <div className="data-parts">
+      <div className="seg" role="tablist" aria-label={`${node.name}: outputs`}>
+        {parts.map((name) => (
+          <button key={name} role="tab" aria-selected={name === shown} className={name === shown ? "on" : ""} onClick={() => setPart(name)}>
+            {name}
+          </button>
+        ))}
+      </div>
+      {node.schema?.find((c) => c.name === shown)?.type === "table" ? (
+        <span className="hint">
+          SQL: <code>{`${node.name}.${shown}`}</code>
+        </span>
+      ) : (
+        <span className="hint">JSON (not in SQL)</span>
+      )}
+    </div>
+  );
   if (!p) return <div className="placeholder">Loading…</div>;
   if (!p.kind) return <div className="placeholder">No output yet — run the node.</div>;
   if (p.kind === "table" && p.columns && p.rows)
     return (
       <>
+        {picker}
         <DataTable columns={p.columns} rows={p.rows} />
         <div className="data-foot">
           {p.rows.length < (p.total ?? 0) ? `first ${p.rows.length} of ` : ""}
@@ -299,7 +323,12 @@ function DataTab({ node }: { node: GraphNode }) {
         </div>
       </>
     );
-  return <pre className="json">{JSON.stringify(p.value, null, 2)}</pre>;
+  return (
+    <>
+      {picker}
+      <pre className="json">{JSON.stringify(p.value, null, 2)}</pre>
+    </>
+  );
 }
 
 function ChartTab({ node, dark }: { node: GraphNode; dark: boolean }) {
@@ -308,7 +337,9 @@ function ChartTab({ node, dark }: { node: GraphNode; dark: boolean }) {
   useEffect(() => {
     let cancelled = false;
     let finalize: (() => void) | undefined;
-    api.data(node.name, 5000).then(async (d) => {
+    // A node with several outputs charts its first table.
+    const firstTable = node.output_kind === "multi" ? (node.schema ?? []).find((c) => c.type === "table")?.name : undefined;
+    api.data(node.name, 5000, firstTable).then(async (d) => {
       if (cancelled || !ref.current) return;
       if (d.kind !== "table" || !d.columns || !d.rows) {
         setError("Charts need a table output. Run the node first.");

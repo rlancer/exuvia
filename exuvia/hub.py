@@ -38,6 +38,8 @@ PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 SKIP_DIRS = {"__pycache__", "node_modules"}
 DB_REL = ".exuvia/exuvia.db"
 PACKAGES_REL = ".exuvia/packages/"
+# Parts extracted from multi-output artifacts (workspace.part_file): a cache.
+PARTS_REL = ".exuvia/parts/"
 # The hub's user list (users.py), under the hub's directory beside the
 # projects, unless EXUVIA_DB holds it. Exports carry it at the same path.
 HUB_USERS_DB = ".exuvia/hub.db"
@@ -271,6 +273,8 @@ class Hub:
                         continue  # the live database (and its -wal/-shm) is copied above
                     if posix.startswith(PACKAGES_REL):
                         continue  # installed packages: rebuilt from pyproject.toml when the project loads
+                    if posix.startswith(PARTS_REL):
+                        continue  # extracted from the artifacts on the next read
                     if rel.name.endswith((".tmp", ".part")):
                         continue  # half-written artifacts
                     if posix in stored:

@@ -13,14 +13,17 @@ moves the (often multi-second) pandas/duckdb import off the critical path.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import importlib.machinery
 import importlib.util
 import json
 import os
+import re
 import sys
 import tempfile
 import traceback
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +37,8 @@ def load_artifact(path: str | None, kind: str | None) -> Any:
         return pd.read_parquet(path)
     if kind == "json":
         return json.loads(Path(path).read_text(encoding="utf-8"))
+    if kind == "multi":
+        return read_parts(path)
     if kind == "pickle":
         # Older exuvia pickled outputs it could not store as JSON. Loading a
         # pickle runs code, so they are never read; the workspace reports such
@@ -59,6 +64,109 @@ class UnsupportedOutput(TypeError):
     pass
 
 
+# A node that returns several named outputs (a dict whose values include a
+# DataFrame, or a dataclass / pydantic model with a DataFrame field) stores
+# them as one zip of ``<part>.parquet`` / ``<part>.json`` members, kind
+# ``multi``. One file per run keeps everything that moves outputs around
+# (the remote executor, the artifact store, hub exports) unchanged. Members
+# are stored uncompressed (Parquet is already compressed) with a fixed
+# timestamp, so the same outputs make the same bytes and the same digest.
+PART_NAME = re.compile(r"^[a-z_][a-z0-9_]*$")
+PART_EXT = {"table": "parquet", "json": "json"}
+_ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+
+
+def part_members(path: str | Path) -> list[tuple[str, str]]:
+    """``(part, kind)`` for each member of a multi-output zip, in order."""
+    with zipfile.ZipFile(path) as z:
+        return [_member_part(m) for m in z.namelist()]
+
+
+def _member_part(member: str) -> tuple[str, str]:
+    stem, _, ext = member.rpartition(".")
+    kind = {v: k for k, v in PART_EXT.items()}.get(ext)
+    if not kind or not PART_NAME.match(stem):
+        raise ValueError(f"unexpected member {member!r} in a multi-output artifact")
+    return stem, kind
+
+
+def read_parts(path: str | Path) -> dict[str, Any]:
+    """A multi-output artifact as ``{part: DataFrame | JSON value}``."""
+    import io
+
+    out: dict[str, Any] = {}
+    with zipfile.ZipFile(path) as z:
+        for member in z.namelist():
+            part, kind = _member_part(member)
+            data = z.read(member)
+            if kind == "table":
+                import pandas as pd
+
+                out[part] = pd.read_parquet(io.BytesIO(data))
+            else:
+                out[part] = json.loads(data)
+    return out
+
+
+def _as_frame(value: Any) -> Any:
+    """``value`` as a pandas DataFrame when it is table-like (pandas, polars,
+    pyarrow), else None."""
+    import pandas as pd
+
+    if isinstance(value, pd.DataFrame):
+        return value
+    if isinstance(value, pd.Series):
+        return value.to_frame()
+    if hasattr(value, "to_pandas") and not isinstance(value, type):
+        out = value.to_pandas()  # polars / pyarrow tables
+        return out.to_frame() if isinstance(out, pd.Series) else out
+    return None
+
+
+def _is_dataclass_instance(value: Any) -> bool:
+    return dataclasses.is_dataclass(value) and not isinstance(value, type)
+
+
+def _is_pydantic_instance(value: Any) -> bool:
+    return not isinstance(value, type) and hasattr(value, "model_dump") and hasattr(type(value), "model_fields")
+
+
+def _fields(value: Any) -> dict[str, Any] | None:
+    """A dataclass's or pydantic model's fields (one level), else None."""
+    if _is_dataclass_instance(value):
+        return {f.name: getattr(value, f.name) for f in dataclasses.fields(value)}
+    if _is_pydantic_instance(value):
+        return {name: getattr(value, name) for name in type(value).model_fields}
+    return None
+
+
+def _parts_of(value: Any) -> dict[str, Any] | None:
+    """The named outputs of a return value with several, else None: a dict,
+    dataclass or pydantic model with at least one table-like value."""
+    if isinstance(value, dict):
+        items = value
+    else:
+        items = _fields(value)
+        if items is None:
+            return None
+    if not any(_is_table(v) for v in items.values()):
+        return None
+    bad = [repr(k) for k in items if not (isinstance(k, str) and PART_NAME.match(k))]
+    if bad:
+        raise TypeError(
+            "A node that returns several outputs names each one with a lowercase identifier "
+            f"(letters, digits and _, not starting with a digit), so SQL can read it as <node>.<name>. Not: {', '.join(bad)}"
+        )
+    return dict(items)
+
+
+def _is_table(value: Any) -> bool:
+    """Whether ``_as_frame`` would make a DataFrame of ``value``, without converting it."""
+    import pandas as pd
+
+    return isinstance(value, (pd.DataFrame, pd.Series)) or (hasattr(value, "to_pandas") and not isinstance(value, type))
+
+
 def _json_default(obj: Any) -> Any:
     """JSON for the non-JSON types data code commonly returns; anything else
     is an error rather than a silent ``str()`` (or a pickle)."""
@@ -80,6 +188,10 @@ def _json_default(obj: Any) -> Any:
         return sorted(obj, key=repr)
     if isinstance(obj, (Path, uuid.UUID)):
         return str(obj)
+    if _is_pydantic_instance(obj):
+        return obj.model_dump(mode="json")
+    if _is_dataclass_instance(obj):
+        return {f.name: getattr(obj, f.name) for f in dataclasses.fields(obj)}
     raise UnsupportedOutput(type(obj).__name__)
 
 
@@ -89,13 +201,53 @@ def _to_json(value: Any) -> str:
     except (UnsupportedOutput, TypeError, ValueError) as e:
         raise TypeError(
             "A node must return a DataFrame (stored as Parquet), JSON-compatible data "
-            "(dict with string keys, list, str, number, bool), or None. "
+            "(dict with string keys, list, str, number, bool, dataclass, pydantic model), "
+            "several named outputs (a dict, dataclass or pydantic model with DataFrame values), or None. "
             f"This one returned {type(value).__name__}, which contains something JSON cannot hold: {e}"
         ) from None
 
 
 def _table_schema(df: Any) -> list[dict[str, str]]:
     return [{"name": str(c), "type": str(t)} for c, t in df.dtypes.items()]
+
+
+def _frame_for_parquet(df: Any) -> Any:
+    import pandas as pd
+
+    if not isinstance(df.index, pd.RangeIndex) or df.index.name is not None:
+        df = df.reset_index()
+    df.columns = [str(c) for c in df.columns]
+    return df
+
+
+def _parquet_bytes(df: Any) -> bytes:
+    import io
+
+    buf = io.BytesIO()
+    df.to_parquet(buf, index=False, engine="pyarrow", **PARQUET_OPTIONS)
+    return buf.getvalue()
+
+
+def _write_parts(parts: dict[str, Any], path: Path) -> list[dict[str, Any]]:
+    """Write a multi-output zip; returns one schema entry per part."""
+    schema: list[dict[str, Any]] = []
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as z:
+        for name, value in parts.items():
+            frame = _as_frame(value)
+            if frame is not None:
+                frame = _frame_for_parquet(frame)
+                data = _parquet_bytes(frame)
+                kind = "table"
+                schema.append({"name": name, "type": "table", "rows": int(len(frame)), "columns": _table_schema(frame)})
+            else:
+                data = _to_json(value).encode("utf-8")
+                kind = "json"
+                schema.append({"name": name, "type": "json", "rows": None, "columns": None})
+            info = zipfile.ZipInfo(f"{name}.{PART_EXT[kind]}", date_time=_ZIP_EPOCH)
+            info.compress_type = zipfile.ZIP_STORED
+            info.external_attr = 0o644 << 16
+            z.writestr(info, data)
+    return schema
 
 
 def save_artifact(value: Any, out_dir: Path) -> dict[str, Any]:
@@ -106,20 +258,16 @@ def save_artifact(value: Any, out_dir: Path) -> dict[str, Any]:
     tmp_path = Path(tmp)
     meta: dict[str, Any] = {"rows": None, "schema": None}
     try:
-        import pandas as pd
-
         if value is None:
             tmp_path.unlink()
             return {"kind": "none", "artifact_id": "none", "artifact_path": None, **meta}
-        if hasattr(value, "to_pandas") and not isinstance(value, pd.DataFrame):
-            value = value.to_pandas()  # polars / pyarrow tables
-        if isinstance(value, pd.Series):
-            value = value.to_frame()
-        if isinstance(value, pd.DataFrame):
-            df = value
-            if not isinstance(df.index, pd.RangeIndex) or df.index.name is not None:
-                df = df.reset_index()
-            df.columns = [str(c) for c in df.columns]
+        parts = _parts_of(value)
+        frame = None if parts is not None else _as_frame(value)
+        if parts is not None:
+            meta["schema"] = _write_parts(parts, tmp_path)
+            kind, ext = "multi", "zip"
+        elif frame is not None:
+            df = _frame_for_parquet(frame)
             df.to_parquet(tmp_path, index=False, engine="pyarrow", **PARQUET_OPTIONS)
             kind, ext = "table", "parquet"
             meta = {"rows": int(len(df)), "schema": _table_schema(df)}
@@ -201,8 +349,6 @@ def _load_python_node(root: Path, path: Path, name: str):
 
 
 def execute(spec: dict[str, Any]) -> dict[str, Any]:
-    import re
-
     import exuvia
 
     root = Path(spec["root"])
@@ -220,7 +366,7 @@ def execute(spec: dict[str, Any]) -> dict[str, Any]:
     inputs = {dep: load_artifact(i.get("path"), i.get("kind")) for dep, i in spec["inputs"].items()}
     if spec["kind"] == "python":
         fn = _load_python_node(root, root / spec["path"], spec["node"])
-        value = fn(**inputs)
+        value = fn(**_typed_inputs(fn, inputs))
     else:
         import duckdb
         import pandas as pd
@@ -229,12 +375,45 @@ def execute(spec: dict[str, Any]) -> dict[str, Any]:
         for dep, val in inputs.items():
             if isinstance(val, pd.DataFrame):
                 con.register(dep, val)
+            elif spec["inputs"][dep].get("kind") == "multi":
+                # Several outputs: each table is <dep>.<part>, in a schema named after the node.
+                con.execute(f'create schema if not exists "{dep}"')
+                for part, frame in val.items():
+                    if isinstance(frame, pd.DataFrame):
+                        tmp = f"__exuvia_{dep}__{part}"
+                        con.register(tmp, frame)
+                        con.execute(f'create view "{dep}"."{part}" as select * from "{tmp}"')
         sql = (root / spec["path"]).read_text(encoding="utf-8")
         # Declared parameters are bound as DuckDB named parameters: `$as_of`.
         # DuckDB rejects values the statement does not use, so bind only those.
         used = {name: params[name] for name in params if re.search(rf"\${name}\b", sql)}
         value = con.execute(sql, used).df() if used else con.execute(sql).df()
     return save_artifact(value, Path(spec["out_dir"]))
+
+
+def _typed_inputs(fn: Any, inputs: dict[str, Any]) -> dict[str, Any]:
+    """Build the parameters annotated with a dataclass or a pydantic model
+    from their upstream's output: a JSON object, or the parts of a node with
+    several outputs. Other parameters get the output as it is."""
+    import typing
+
+    try:
+        hints = typing.get_type_hints(fn)
+    except Exception:  # an annotation that does not resolve: leave every input untyped
+        hints = {}
+    out = dict(inputs)
+    for dep, value in inputs.items():
+        cls = hints.get(dep)
+        if not isinstance(cls, type) or not isinstance(value, dict):
+            continue
+        try:
+            if hasattr(cls, "model_validate") and hasattr(cls, "model_fields"):
+                out[dep] = cls.model_validate(value)
+            elif dataclasses.is_dataclass(cls):
+                out[dep] = cls(**value)
+        except Exception as e:
+            raise TypeError(f"could not build {cls.__name__} for parameter {dep!r} from {dep}'s output: {e}") from e
+    return out
 
 
 WARM_IMPORTS = ("pandas", "pyarrow", "duckdb", "numpy")

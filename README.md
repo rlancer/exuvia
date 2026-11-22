@@ -219,6 +219,49 @@ The graph is read **statically** (`ast` for Python, identifier matching for
 SQL), so a broken node still shows up in the graph with its error, and nothing
 runs until you ask.
 
+**Several outputs from one node.** When one step yields several results of
+different shapes (a model fit's predictions, coefficients and metrics, or one
+API call that returns two tables), return them together instead of redoing
+the work in separate nodes. A dict, dataclass or pydantic model whose values
+include a DataFrame is stored as named outputs: each DataFrame is a table,
+anything else is JSON. Names are lowercase identifiers.
+
+```python
+@exuvia.node()
+def fit(returns):
+    ...
+    return {"preds": preds, "coefs": coefs, "metrics": {"r2": r2}}
+```
+
+```sql
+-- a table of a node with several outputs is <node>.<name>
+select term, value from fit.coefs order by abs(value) desc
+```
+
+A Python node that takes `fit` gets a dict, `{"preds": DataFrame, "coefs":
+DataFrame, "metrics": {...}}`. The node is still one node: one run, one
+schedule, one freshness state, and the outputs downstream nodes read are
+stale or fresh together. A Data tab with a picker shows each one.
+
+**Typed outputs.** Dataclasses and pydantic models are JSON outputs too (or
+several outputs, above, when a field holds a DataFrame). Annotate a
+parameter with the class and it arrives as that class, built from the
+upstream's output, rather than as a dict. Put the class in a `lib/` helper so
+both nodes import it:
+
+```python
+from lib.models import Fit, Settings   # @dataclass Fit: preds, coefs; pydantic Settings
+
+@exuvia.node()
+def report(fit: Fit, settings: Settings):
+    return fit.preds.tail(settings.window)
+```
+
+A pydantic model is validated (`model_validate`, nested models included); a
+dataclass is called with the fields as keywords, one level deep. When the
+output does not fit the class, the run fails and says which parameter it
+could not build.
+
 **Shared helpers** — code several nodes need lives in Python modules under
 `lib/` (`lib/stats.py`, `lib/vol/surface.py`; no `__init__.py` needed), and
 nodes import it with plain import statements:
@@ -286,6 +329,7 @@ select * from screen where as_of_date <= $as_of
 - **Time series for free.** In `query_data` and `POST /api/query`,
   `<node>__runs` unions a node's output across every parameter set that has
   run, with a `_<param>` column each (`select _as_of, count(*) from screen__runs group by 1`).
+  For a node with several outputs it is `<node>.<name>__runs`.
 - `timezone` also sets the clock for cron schedules. `schedules` overrides or
   adds a per-node cron without editing the node file (this is what the
   schedule API writes), so an embedding app can let people schedule nodes.
@@ -382,8 +426,9 @@ the requested parameter set, derived from the nodes it reads:
 Each view also carries `outputs`: per read node, its state, `kind` and the
 `artifact_id` of the output the view would show now. Artifact ids name their
 content, so a client can fetch `/api/artifacts/{node}/{artifact_id}.parquet`
-once and cache it for good. `hash` covers every file of the view, so a
-client can tell when its code changed.
+once and cache it for good. For a node with several outputs, `kind` is
+`multi` and `parts` lists them (`name`, `kind`, `rows`). `hash` covers
+every file of the view, so a client can tell when its code changed.
 
 ### Rendering a view
 
@@ -451,9 +496,9 @@ export default function App() {
 
 | | |
 |---|---|
-| `useTable(node)`, `table(node)` | a read node's current table output, as an Arrow `Table` |
-| `useJson(node)`, `json(node)` | a read node's current JSON output |
-| `useQuery(sql)`, `query(sql)` | DuckDB SQL that sees only the read nodes (`<node>` and `<node>__runs`), as an Arrow `Table` |
+| `useTable(node)`, `table(node)` | a read node's current table output, as an Arrow `Table`; `useTable("fit.coefs")` for one output of a node with several |
+| `useJson(node)`, `json(node)` | a read node's current JSON output (`useJson("fit.metrics")`) |
+| `useQuery(sql)`, `query(sql)` | DuckDB SQL that sees only the read nodes (`<node>` and `<node>__runs`; `<node>.<name>` for several outputs), as an Arrow `Table` |
 | `useParams()`, `getParams()`, `setParams(values)` | the run parameters the view shows; setting them changes which outputs it reads, never runs anything |
 | `onChange(fn)` | called with the nodes whose output was replaced |
 | `rows(table)` | Arrow rows as plain objects (64-bit integers become numbers when they fit) |
@@ -653,7 +698,9 @@ in the image, listed in a `pyproject.toml` of its own and installed with
 ## Execution model
 
 - **Content-addressed outputs.** Each run writes its result to
-  `.exuvia/artifacts/<node>/<sha>.parquet` (or `.json`), keyed by the
+  `.exuvia/artifacts/<node>/<sha>.parquet` (or `.json`, or `.zip` for
+  several outputs: one member per output, written so the same outputs make
+  the same bytes), keyed by the
   node's parameter set (see "Run parameters and replays"). Paths are stored
   relative to the project, so a project directory can be moved or restored
   elsewhere with its outputs intact.
@@ -2013,8 +2060,9 @@ headlessly or iframe the UI:
 | `POST /api/tools/{name}` | run one of those tools with the body as its input, as the agent would: `{"ok", "text", ...}`. A failed tool or a rejected input is still a 200 with `ok: false` and `text` saying why; an unknown tool is a 404. `exuvia mcp --url` relays MCP tool calls here (see "MCP") |
 | `POST /api/run-stale` | refresh everything stale |
 | `POST/GET/DELETE /api/backfill` | replay a list or date range of parameter values |
-| `GET /api/nodes/{name}/data` | a node's output (`?params=` or `?run_id=`, `?limit=`, `?offset=`): JSON rows, or an Arrow stream (see "Binary data") |
-| `GET/HEAD /api/artifacts/{node}/{artifact_id}.parquet` (or `.json`) | the stored file of one output, byte for byte, with `Range` support (see "Binary data") |
+| `GET /api/nodes/{name}/data` | a node's output (`?params=` or `?run_id=`, `?limit=`, `?offset=`): JSON rows, or an Arrow stream (see "Binary data"). For a node with several outputs, `kind: "multi"` and its `parts`; `?part=` reads one |
+| `GET/HEAD /api/artifacts/{node}/{artifact_id}.parquet` (or `.json`, `.zip`) | the stored file of one output, byte for byte, with `Range` support (see "Binary data") |
+| `GET/HEAD /api/artifacts/{node}/{artifact_id}/{part}.parquet` (or `.json`) | one output of a node with several, as a file of its own |
 | `GET /api/nodes/{name}/history` | the node's stored output per parameter set (with the `code_hash` each was computed with) |
 | `GET /api/code/revisions` | saved versions of the code, newest first (`?node=` for one node, `?view=` for one view's files, deleted ones included); each says how it was saved (`origin`), by whom (`author`, with `EXUVIA_AUTH=headers`) and whether it is current |
 | `GET /api/code/blobs/{hash}` | the text of one saved version |
@@ -2074,8 +2122,10 @@ JSON.parse(table.schema.metadata.get("exuvia")); // { columns: [{ name, type }] 
 
 **The stored file.** Every output is a file named after its content:
 `artifact_id` in `/api/project` and `/api/nodes/{name}/history`, with
-`output_kind` / `kind` saying whether it is a table (`.parquet`) or a JSON
-value (`.json`). `GET /api/artifacts/{node}/{artifact_id}.parquet` returns
+`output_kind` / `kind` saying whether it is a table (`.parquet`), a JSON
+value (`.json`) or several outputs (`.zip`, `multi`; each one is also served
+on its own as `/api/artifacts/{node}/{artifact_id}/{part}.parquet` or
+`.json`). `GET /api/artifacts/{node}/{artifact_id}.parquet` returns
 that file as it is stored, downloading it from `EXUVIA_ARTIFACT_STORE` first
 when this process does not have it.
 

@@ -152,3 +152,20 @@ def test_remote_installs_the_projects_declared_packages(remote_ws, tmp_path, mon
     assert finals["base"]["status"] == "success", finals["base"].get("error")
     assert remote_ws.preview("base")["rows"] == [[42]]
     assert not (tmp_path / ".exuvia" / "packages").exists()  # installed on the executor's side
+
+
+def test_remote_multi_output(remote_ws, tmp_path):
+    write(tmp_path, "nodes/fit.py", '''
+        import exuvia
+        @exuvia.node()
+        def fit(base):
+            return {"scaled": base, "stats": {"n": len(base)}}
+    ''')
+    write(tmp_path, "nodes/n.sql", "select count(*) as n from fit.scaled\n")
+    remote_ws.reload()
+    finals = run(remote_ws, ["n"])
+    assert {n: r["status"] for n, r in finals.items()} == {"base": "success", "fit": "success", "n": "success"}
+    assert remote_ws.preview("n")["rows"] == [[3]]
+    art = remote_ws.store.last_success("fit")
+    assert art["kind"] == "multi" and art["artifact_path"].endswith(f"{art['artifact_id']}.zip")
+    assert remote_ws.preview("fit", part="stats")["value"] == {"n": 3}

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ViewError, compile, createLoader, resolveImport } from "./loader";
 import { CHANNEL, isToFrame, isToHost } from "./protocol";
-import { frameDocument, refusal } from "./host";
+import { frameDocument, refusal, resolveOutput, splitOutput } from "./host";
 import { fileOrder } from "./files";
 
 const files = {
@@ -165,5 +165,38 @@ describe("fileOrder", () => {
       "styles.css",
     ]);
     expect(fileOrder(["b.ts", "a.ts"], "Main.tsx")).toEqual(["a.ts", "b.ts"]);
+  });
+});
+
+describe("outputs of a node with several", () => {
+  const outputs = [
+    { node: "prices", state: "fresh" as const, artifact_id: "a1", kind: "table" as const },
+    {
+      node: "fit",
+      state: "fresh" as const,
+      artifact_id: "f1",
+      kind: "multi" as const,
+      parts: [
+        { name: "coefs", kind: "table" as const, rows: 2 },
+        { name: "metrics", kind: "json" as const, rows: null },
+      ],
+    },
+  ];
+
+  it("reads node.part and checks it against the node's reads", () => {
+    expect(splitOutput("fit.coefs")).toEqual({ node: "fit", part: "coefs" });
+    expect(splitOutput("prices")).toEqual({ node: "prices", part: null });
+    expect(refusal({ name: "v", reads: ["fit"] }, "fit.coefs")).toBeNull();
+    expect(refusal({ name: "v", reads: ["prices"] }, "fit.coefs")).toMatch(/does not read fit/);
+  });
+
+  it("resolves a part, and says what is wrong otherwise", () => {
+    expect(resolveOutput(outputs, "fit.coefs", "table")).toEqual({ node: "fit", part: "coefs", artifact_id: "f1" });
+    expect(resolveOutput(outputs, "fit.metrics", "json")).toEqual({ node: "fit", part: "metrics", artifact_id: "f1" });
+    expect(resolveOutput(outputs, "prices", "table")).toEqual({ node: "prices", part: null, artifact_id: "a1" });
+    expect(() => resolveOutput(outputs, "fit", "table")).toThrow(/several outputs: read one of fit.coefs, fit.metrics/);
+    expect(() => resolveOutput(outputs, "fit.nope", "table")).toThrow(/no output nope/);
+    expect(() => resolveOutput(outputs, "fit.metrics", "table")).toThrow(/is json, not a table: use json\(\)/);
+    expect(() => resolveOutput(outputs, "prices.x", "table")).toThrow(/single output/);
   });
 });

@@ -38,8 +38,9 @@ export interface GraphNode {
   state: State;
   reason: string | null;
   rows: number | null;
+  /** A table's columns; for `multi`, one entry per part (`type` is `table` or `json`). */
   schema: Column[] | null;
-  output_kind: "table" | "json" | "pickle" | "none" | null;
+  output_kind: "table" | "json" | "multi" | "pickle" | "none" | null;
   artifact_id: string | null;
   code_hash: string;
   finished_at: number | null;
@@ -87,12 +88,21 @@ export interface PackagesState {
 /** A view's state for one parameter set, derived from the nodes it reads. */
 export type ViewState = "ready" | "missing" | "stale" | "error";
 
+/** One named output of a node that returns several (`output_kind: "multi"`). */
+export interface OutputPart {
+  name: string;
+  kind: "table" | "json";
+  rows: number | null;
+}
+
 /** One node a view reads, and the output the view would show now. */
 export interface ViewOutput {
   node: string;
   state: State;
   artifact_id: string | null;
   kind: GraphNode["output_kind"];
+  /** For `kind: "multi"`: its parts, read as `node.part`. */
+  parts?: OutputPart[];
 }
 
 /** A folder under views/: custom UI that only reads node outputs. */
@@ -157,7 +167,9 @@ export interface CodeRevision {
 }
 
 export interface Preview {
-  kind: "table" | "json" | "pickle" | "none" | null;
+  kind: "table" | "json" | "multi" | "pickle" | "none" | null;
+  /** For `kind: "multi"`: the parts, each read with `part`. */
+  parts?: OutputPart[];
   columns?: Column[];
   rows?: unknown[][];
   total?: number | null;
@@ -228,9 +240,11 @@ async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
   return (await send(method, url, body)).json() as Promise<T>;
 }
 
-/** A node's output: the first `limit` rows of a table (read as Arrow), or its JSON value. */
-async function nodeData(name: string, limit: number): Promise<Preview> {
-  const res = await send("GET", `/api/nodes/${name}/data?limit=${limit}`, undefined, `${ARROW_STREAM}, application/json`);
+/** A node's output: the first `limit` rows of a table (read as Arrow), or its JSON value.
+ * `part` picks one output of a node with several. */
+async function nodeData(name: string, limit: number, part?: string): Promise<Preview> {
+  const q = `limit=${limit}${part ? `&part=${encodeURIComponent(part)}` : ""}`;
+  const res = await send("GET", `/api/nodes/${name}/data?${q}`, undefined, `${ARROW_STREAM}, application/json`);
   if (!isArrow(res)) return res.json() as Promise<Preview>;
   const table = await readArrow(res);
   return { kind: "table", total: arrowMeta(table).total ?? table.numRows, ...toGrid(table) };
@@ -244,9 +258,14 @@ async function queryRows(sql: string, limit = 500): Promise<{ columns: Column[];
 const paramsQuery = (params?: Record<string, unknown>) =>
   params && Object.keys(params).length ? `?params=${encodeURIComponent(JSON.stringify(params))}` : "";
 
-/** A node's output through the view-scoped route (403 unless the view reads it). */
-async function viewData(view: string, node: string, params?: Record<string, unknown>): Promise<ViewData> {
-  const url = `/api/views/${view}/data/${encodeURIComponent(node)}${paramsQuery(params)}`;
+/** A node's output through the view-scoped route (403 unless the view reads it);
+ * `part` picks one output of a node with several. */
+async function viewData(view: string, node: string, params?: Record<string, unknown>, part?: string): Promise<ViewData> {
+  const q = new URLSearchParams();
+  if (params && Object.keys(params).length) q.set("params", JSON.stringify(params));
+  if (part) q.set("part", part);
+  const qs = q.toString();
+  const url = `/api/views/${view}/data/${encodeURIComponent(node)}${qs ? `?${qs}` : ""}`;
   const res = await send("GET", url, undefined, `${ARROW_STREAM}, application/json`);
   if (isArrow(res)) return { kind: "table", arrow: await res.arrayBuffer() };
   const body = (await res.json()) as Preview;
@@ -286,7 +305,7 @@ export const api = {
     req("POST", "/api/run", { targets, force: false, params: Object.keys(params).length ? params : null }),
   runStale: () => req<{ targets: string[] }>("POST", "/api/run-stale"),
   pause: (name: string, paused: boolean) => req("POST", `/api/nodes/${name}/schedule`, { paused }),
-  data: (name: string, limit = 200) => nodeData(name, limit),
+  data: (name: string, limit = 200, part?: string) => nodeData(name, limit, part),
   runs: (name: string) => req<RunRow[]>("GET", `/api/nodes/${name}/runs`),
   recentRuns: () => req<RunRow[]>("GET", "/api/runs"),
   runDetail: (id: string) => req<RunRow>("GET", `/api/runs/${id}`),

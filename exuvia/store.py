@@ -47,7 +47,7 @@ TABLES = {
     inputs text,            -- json {dep: artifact_id}
     artifact_id text,
     artifact_path text,     -- relative to the project root
-    kind text,              -- table | json | none (pickle: written by older versions, never read)
+    kind text,              -- table | json | multi | none (pickle: written by older versions, never read)
     rows integer,
     schema text,            -- json [{name, type}]
     log text default '',
