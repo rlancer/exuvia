@@ -26,7 +26,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-from .mcp_server import HUB_GUIDE_TOOL, ORIGIN, build_server, hub_instructions, hub_tool_list
+from .mcp_server import HUB_GUIDE_TOOL, ORIGIN, PROJECT_FREE, build_server, hub_instructions, hub_tool_list
 
 # What the request being served is about. Set by McpEndpoint before the MCP
 # server sees the request; the server's tasks start from the request's task
@@ -95,6 +95,10 @@ class HubLocalBackend:
     async def call(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
         if name == "list_projects":
             return True, json.dumps({"projects": self.hub.list(), "templates": self.hub.templates()}, indent=1)
+        if name in PROJECT_FREE:
+            from . import docs
+
+            return docs.tool(args)
         if name == "create_project":
             pid, display, template = args.get("id"), args.get("name"), args.get("template")
             if not isinstance(pid, str) or not all(v is None or isinstance(v, str) for v in (display, template)):
