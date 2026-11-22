@@ -1,4 +1,6 @@
 ---
+import type { ImageMetadata } from "astro";
+import { getImage } from "astro:assets";
 import Docs from "../../layouts/Docs.astro";
 import { getDocs, type DocPage } from "../../lib/docs";
 
@@ -10,8 +12,34 @@ interface Props {
   page: DocPage;
 }
 const { page } = Astro.props;
+
+// The page's screenshots arrive as <img data-shot="name" alt="..."> (see
+// shotFigure in lib/docs.ts). Each becomes a responsive image of
+// src/assets/shots/<name>.png that links to the full-size picture.
+const shots = import.meta.glob<{ default: ImageMetadata }>("../../assets/shots/*.png", { eager: true });
+const SHOT = /<img data-shot="([\w-]+)" alt="([^"]*)">/g;
+
+async function shotImage(name: string, alt: string): Promise<string> {
+  const src = shots[`../../assets/shots/${name}.png`]?.default;
+  if (!src) throw new Error(`No screenshot src/assets/shots/${name}.png`);
+  const [image, full] = await Promise.all([
+    getImage({ src, widths: [720, 1100, 1600], sizes: "(max-width: 900px) 94vw, 46rem", format: "webp", quality: 82 }),
+    getImage({ src, format: "webp", quality: 88 }),
+  ]);
+  const attrs = { width: image.attributes.width ?? src.width, height: image.attributes.height ?? src.height };
+  return (
+    `<a href="${full.src}">` +
+    `<img src="${image.src}" srcset="${image.srcSet.attribute}" sizes="(max-width: 900px) 94vw, 46rem" ` +
+    `width="${attrs.width}" height="${attrs.height}" alt="${alt}" loading="lazy" decoding="async"></a>`
+  );
+}
+
+let html = page.html;
+for (const [tag, name, alt] of [...page.html.matchAll(SHOT)]) {
+  html = html.replace(tag, await shotImage(name, alt));
+}
 ---
 
 <Docs title={page.title} description={page.summary} page={page}>
-  <Fragment set:html={page.html} />
+  <Fragment set:html={html} />
 </Docs>
