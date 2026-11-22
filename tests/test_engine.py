@@ -128,6 +128,50 @@ def test_failure_skips_downstream_and_reports_error(tmp_path):
     assert ws.status()["a"]["state"] == "failed"
 
 
+def test_failed_upstream_with_a_good_output_does_not_block_downstream(tmp_path):
+    # `src` is a slow source that fetches (here: reads a file) on its own
+    # schedule; `fast` runs often and reads it. When a refresh of `src`
+    # fails, `fast` keeps reading the last good output instead of retrying
+    # `src` on every run and being skipped.
+    (tmp_path / "feed.txt").write_text("1")
+    py(tmp_path, "src", body="v = open('feed.txt').read()\n    assert v != 'down', 'feed is down'\n    return pd.DataFrame({'x': [int(v)]})")
+    py(tmp_path, "fast", params="src", body="return src.assign(y=src.x + 1)", kw="cascade=False")
+    ws = Workspace(tmp_path)
+    run(ws, ["fast"])
+    good = ws.status()["src"]["artifact_id"]
+
+    (tmp_path / "feed.txt").write_text("down")
+    assert run(ws, ["src"], force={"src"})["src"]["status"] == "failed"  # its scheduled refresh
+    st = ws.status()
+    assert st["src"]["state"] == "failed" and st["src"]["output_current"]
+    assert st["fast"]["state"] == "fresh"
+
+    finals = run(ws, ["fast"], force={"fast"})  # fast's scheduled run
+    assert list(finals) == ["fast"] and finals["fast"]["status"] == "success"
+    assert finals["fast"]["inputs"]["src"] == good
+
+    # Run by name (forced, as the workbench and its schedule run it), it
+    # still retries, and recovers once the feed is back.
+    assert run(ws, ["src"], force={"src"})["src"]["status"] == "failed"
+    (tmp_path / "feed.txt").write_text("2")
+    assert run(ws, ["src"], force={"src"})["src"]["status"] == "success"
+    assert ws.status()["src"]["state"] == "fresh"
+
+
+def test_failed_upstream_whose_output_is_out_of_date_still_runs_first(tmp_path):
+    py(tmp_path, "src")
+    py(tmp_path, "fast", params="src", body="return src")
+    ws = Workspace(tmp_path)
+    run(ws, ["fast"])
+    py(tmp_path, "src", body="raise ValueError('boom')")  # new code, so the old output is no longer current
+    ws.reload()
+    run(ws, ["src"])
+    st = ws.status()
+    assert st["src"]["state"] == "failed" and not st["src"]["output_current"]
+    finals = run(ws, ["fast"], force={"fast"})
+    assert finals["src"]["status"] == "failed" and finals["fast"]["status"] == "skipped"
+
+
 def test_sql_node_and_query(tmp_path):
     py(tmp_path, "a", body="return pd.DataFrame({'x': [1, 2, 3]})")
     write(tmp_path, "total.sql", "select sum(x) as s from a\n")
