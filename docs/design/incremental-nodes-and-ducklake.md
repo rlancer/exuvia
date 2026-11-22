@@ -177,12 +177,94 @@ and `lock_configuration = true`.
     server with the server's filesystem access (the test read `/etc/passwd`
     on the server host).
 
-So neither node processes nor the query/view sandbox can be given the token.
-That matches the existing rule that nodes never see exuvia's own settings.
-Quack has an authorization hook (`quack_authorization_function`, default
-`quack_nop_authorization`: two `VARCHAR` arguments in, one `VARCHAR` out) that
-might enforce read-only access per client. Its semantics are **unverified**
-(the docs on `duckdb.org` couldn't be reached from the test environment).
+So with Quack's default hooks, neither node processes nor the query/view
+sandbox can be given the token. That matches the existing rule that nodes
+never see exuvia's own settings.
+
+### Read-only tokens: the authorization hook can enforce them (tested)
+
+Quack's two hooks are server settings that name a scalar function. A Python
+UDF registered on the serving connection works:
+
+- `quack_authentication_function(client_id, presented_token, server_token) -> BOOLEAN`
+  (default `quack_check_token`). Called once per client connection.
+- `quack_authorization_function(client_id, sql) -> VARCHAR` (default
+  `quack_nop_authorization`, which returns `sql`). Called for **every
+  statement**, with the SQL text; the SQL it returns is what runs. Raising an
+  error (or returning NULL) denies the statement; the client retries it three
+  times, then fails.
+- `client_id` is a **server-issued id per connection**, not the
+  `quack_default_client_id` a client sets. Binding a role to the `client_id`
+  at authentication is therefore safe: a reader that set its client id to the
+  same value as a writer's still arrived under its own id and stayed
+  read-only.
+
+**What a DuckLake reader sends.** Logging every statement showed that a
+DuckLake 1.1 reader (attach, select, time travel, `table_changes`,
+`ducklake_list_files`) sends only `SELECT`/`WITH` statements. They touch only:
+
+- `ducklake_*` metadata tables, inlined data included;
+- CTEs the statement defines itself;
+- `information_schema.tables`;
+- four table functions: `duckdb_functions`, `duckdb_schemas`, `duckdb_tables`,
+  `duckdb_views`;
+- a few scalar functions (`count_star`, `current_database`, `length`, `list`,
+  `list_append`, `list_value`, `max`, `struct_pack`, `sum`, `-`).
+
+A writer additionally sends `CREATE TEMPORARY TABLE`, multi-statement
+`BEGIN TRANSACTION; INSERT …` and a server-side `ducklake_commit`.
+
+**The policy that was tested.** Two tokens, writer and reader:
+
+- Authentication maps the token to a role and binds it to the `client_id`.
+  It refuses a `client_id` already bound to another role.
+- Authorization lets writer statements through. Each reader statement is
+  parsed with DuckDB's own parser (`json_serialize_sql`, which accepts only
+  `SELECT`) and the parse tree is checked against an allowlist:
+  - every statement is a `SELECT`;
+  - tables are `ducklake_*` in the default catalog, the statement's own CTEs,
+    or `information_schema.tables`;
+  - only the table functions and scalar functions listed above are used.
+
+It costs about 1.3 ms per statement.
+
+**Results.** Normal reads all worked, and the reader saw the writer's new
+rows. Everything else from the reader token was denied, both through a
+DuckLake attach and through raw `quack_query` SQL sent straight to the
+server:
+
+| Category | Attempts, all denied |
+|---|---|
+| DuckLake writes | insert, create table, delete, `ducklake_expire_snapshots` |
+| Non-`SELECT` statements | `DELETE`, stacked `select 1; delete …`, a comment-and-newline trick, `ATTACH`, `COPY … TO`, `SET`, `PRAGMA` |
+| File access | `read_csv`, `read_text`, `FROM '/etc/passwd'`, and both again inside a subquery or a `UNION` |
+| Dangerous functions | `query('delete …')`, `quack_stop`, `current_setting`, `getenv`, `list_transform` with a lambda |
+| Other catalogs | `system.main.duckdb_settings()`, the `temp` catalog |
+| Identity | a wrong token reusing the writer's client id |
+
+**Second layer: lock the server process.** After `quack_serve`, setting
+`enable_external_access = false` and `lock_configuration = true` on the
+serving connection left DuckLake reads and writes over Quack working, writer
+bulk inserts included (data files are written by the client, not the
+server). With no authorization policy at all, the lock alone blocked
+`read_csv('/etc/passwd')` and `SET enable_external_access = true`. It does
+**not** stop SQL that writes the catalog's own tables (`DELETE FROM
+ducklake_snapshot`); the policy does. Use both.
+
+**Caveats.**
+
+- The allowlist is tied to the SQL DuckLake sends today. A new DuckLake
+  version that uses another function or table will have its reads denied.
+  That fails closed, but it needs a test that pins the extension version and
+  runs a reader through the policy.
+- Read access is all-or-nothing: the reader token can read every table and
+  all metadata in the lake. Per-table scoping would need more rules.
+- The token only governs the catalog. Data files at `DATA_PATH` are read and
+  written by clients directly, so their protection is filesystem or bucket
+  permissions. exuvia's sandbox already restricts reads with
+  `allowed_directories`.
+- The table of bound client ids needs pruning (for example from
+  `quack_active_connections()`). Not tested.
 
 ### How it would fit exuvia
 
@@ -193,11 +275,13 @@ might enforce read-only access per client. Its semantics are **unverified**
   rows, and the control plane appends or merges them in one commit. The
   node's output id becomes the snapshot id, and freshness compares the
   snapshot a downstream run read with the current one.
-- **Readers get files, not the token.** Nodes and the query sandbox get a
-  snapshot's files (`ducklake_list_files`) or its change feed, written out as
-  parquet by the control plane. Inlined rows have to be flushed or written
-  out first, since they aren't in any file. That holds until the
-  authorization hook is shown to enforce read-only access.
+- **Readers get a read-only token.** The control plane serves Quack with the
+  read-only policy above and the server lockdown. Nodes and the query/view
+  sandbox attach the lake `READ_ONLY` with a reader token, and DuckLake handles
+  snapshots, inlined rows and time travel for them. The writer token never
+  leaves the control plane. The fallback, if the policy proves too brittle,
+  is for the control plane to write out a snapshot's files
+  (`ducklake_list_files`) or its change feed as parquet.
 - **Quack's main payoff is outside readers:** remote executors, more than one
   hub replica, or analysts querying the lake from their own DuckDB or BI
   tool. If only the control plane ever touches the lake, a plain DuckDB file
@@ -226,9 +310,9 @@ might enforce read-only access per client. Its semantics are **unverified**
 
 - Add DuckLake as the storage for a new kind of incremental node (append, or
   merge on a key). Keep ordinary per-run outputs as they are.
-- Before anything else, settle how readers get data without the token:
-  either confirm the authorization hook can enforce read-only access, or have
-  the control plane hand out snapshot files.
+- Readers get a read-only Quack token, enforced by the authorization hook
+  plus a locked-down server process (tested; see "Read-only tokens" above).
+  The writer token stays in the control plane.
 - Option A (`__runs` as a node input) doesn't need DuckLake and could ship
   first, depending on how soon the lake is wanted.
 
