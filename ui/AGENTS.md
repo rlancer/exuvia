@@ -7,9 +7,10 @@ How the exuvia UI (`ui/`) is built. The rules for the repo as a whole are in
 
 Every screen is made of [Astryx](https://github.com/meta/astryx) components
 (`@astryxdesign/core`), and every style of the app's own is StyleX
-(`stylex.create`) reading Astryx's design tokens. There is no stylesheet of
-our own: no `.css` file, no `className="…"` string, no `style={{…}}`, no hex
-colour and no font named outside `src/theme/`.
+(`stylex.create`) reading Astryx's design tokens. There is no stylesheet
+written by hand: no `.css` file of our own, no `className="…"` string, no
+`style={{…}}`, no hex colour and no font named outside `src/theme/`. (The one
+`.css` in `src/` is `theme/exuvia.css`, which `bun run theme` generates.)
 
 - **Components first.** Before a raw element, look for the component:
   `bun run astryx search "<what you need>"`, then
@@ -27,6 +28,9 @@ colour and no font named outside `src/theme/`.
 - **Colour is the theme's.** `src/theme/brand.ts` is the palette,
   `src/theme/exuviaTheme.ts` maps it onto Astryx's tokens. A new colour, a
   denser control or a restyled component is a change there, never on a page.
+  The app loads the theme as built: run `bun run theme` after a change to
+  either file and commit what it writes (`exuvia.css`, `exuvia.js` and their
+  declarations); `bun run build` fails while they are behind.
 - **States** of a node, a run or a view go through `src/ui/state.tsx`:
   `<StateDot state={…} />`, `statusOf(state)`, `statusText[…]`. Green, amber
   and red are states and never decoration.
@@ -98,7 +102,7 @@ const styles = stylex.create({
 bun run typecheck
 bun run test
 bun run build                      # also what `exuvia serve` shows
-bun run astryx doctor --built .    # Astryx's own checks of the setup and the code
+bun run doctor                     # Astryx's own checks of the setup and the code
 ```
 
 Look at it in both colour modes and at a narrow width (the workbench stacks

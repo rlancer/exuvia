@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { colorVars, spacingVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { ReactFlowProvider } from "@xyflow/react";
@@ -14,14 +14,11 @@ import { Text } from "@astryxdesign/core/Text";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
 import { access, api, apiUrl, HUB_PROJECT, type Access, type CodeRevision, type PackagesState, type Project } from "./api";
 import { AccessContext, accessState, NoAccess, useAccess, ViewOnlyBanner } from "./Access";
-import { ShareDialog } from "./Share";
 import { Canvas } from "./Canvas";
 import { Inspector, Overview } from "./Inspector";
 import { SidePanel, SideRail, type AgentHandle, type SideTab } from "./AgentPanel";
-import { NewNodeDialog } from "./NewNodeDialog";
-import { PackagesDialog } from "./PackagesDialog";
 import { HistoryBrowser, HistoryRail } from "./History";
-import { Views, type OpenView } from "./Views";
+import type { OpenView } from "./Views";
 import { FileTree, HelperEditor } from "./Files";
 import { codeGroup, DownloadMenu } from "./Export";
 import type { FileRef } from "./tree";
@@ -32,6 +29,13 @@ import { Brand, Mark } from "./Brand";
 import { IconClock, IconClose, IconMoon, IconPackage, IconPlay, IconPlus, IconShare, IconSun } from "./icons";
 import { StateDot } from "./ui/state";
 import { failed, Toasts } from "./toast";
+
+// What is not on the first screen is fetched when it is opened: the Views
+// mode and the dialogs.
+const Views = lazy(() => import("./Views").then((m) => ({ default: m.Views })));
+const ShareDialog = lazy(() => import("./Share").then((m) => ({ default: m.ShareDialog })));
+const NewNodeDialog = lazy(() => import("./NewNodeDialog").then((m) => ({ default: m.NewNodeDialog })));
+const PackagesDialog = lazy(() => import("./PackagesDialog").then((m) => ({ default: m.PackagesDialog })));
 
 const embed = new URLSearchParams(location.search).has("embed");
 
@@ -316,12 +320,14 @@ function Workbench() {
         <div {...stylex.props(styles.main)}>
           {/* The project's bar: its two faces, and what the graph is doing and can be told to do. */}
           <div {...stylex.props(styles.bar, styles.workBar)}>
-            <TabList value={mode === "views" ? "views" : mode === "graph" ? "graph" : ""} onChange={(v) => setMode(v as Mode)} xstyle={styles.modes}>
+            <TabList role="tablist" value={mode === "views" ? "views" : mode === "graph" ? "graph" : ""} onChange={(v) => setMode(v as Mode)} xstyle={styles.modes}>
               <Tab value="graph" label="Graph" />
               <Tab value="views" label="Views" endContent={project?.views.length ? <Badge label={project.views.length} /> : undefined} />
             </TabList>
             <span {...stylex.props(styles.grow)} />
             {!conn && <Badge variant="error" label="Reconnecting…" />}
+            {/* The graph's own state and actions: with the graph, not with the views. */}
+            {mode === "graph" && (<>
             <HStack gap={3} vAlign="center" xstyle={styles.counts}>
               {(["fresh", "stale", "new", "failed", "error", "running"] as const).map((s) =>
                 counts[s] ? (
@@ -365,6 +371,7 @@ function Workbench() {
                 />
               </HStack>
             )}
+            </>)}
           </div>
 
           {mode === "helper" && helper && project ? (
@@ -385,7 +392,9 @@ function Workbench() {
               <HistoryBrowser filter={{}} tick={codeTick} dark={dark} layout="side" path={rev?.path} rev={rev?.id} deletedFilter onRestored={() => refresh()} />
             </section>
           ) : mode === "views" ? (
-            <Views project={project} nodes={nodes} dark={dark} open={viewOpen} onOpenNode={openNode} />
+            <Suspense fallback={<div {...stylex.props(styles.wide)} />}>
+              <Views project={project} nodes={nodes} dark={dark} open={viewOpen} onOpenNode={openNode} />
+            </Suspense>
           ) : (
             <div {...stylex.props(styles.graph, !agentOpen && styles.graphRail)}>
               <div {...stylex.props(styles.canvas)}>
@@ -456,21 +465,23 @@ function Workbench() {
         )}
       </div>
 
-      {sharing && HUB_PROJECT && (
-        <ShareDialog project={HUB_PROJECT} name={project?.name} self={acc?.user?.uid ?? null} onClose={() => setSharing(false)} />
-      )}
-      {pkgOpen && <PackagesDialog state={pkgs} onChange={setPkgs} onClose={() => setPkgOpen(false)} />}
-      {newOpen && (
-        <NewNodeDialog
-          nodes={nodes}
-          initialDeps={selected ? [selected] : []}
-          onClose={() => setNewOpen(false)}
-          onCreated={(name) => {
-            setNewOpen(false);
-            refresh().then(() => setSelected(name));
-          }}
-        />
-      )}
+      <Suspense fallback={null}>
+        {sharing && HUB_PROJECT && (
+          <ShareDialog project={HUB_PROJECT} name={project?.name} self={acc?.user?.uid ?? null} onClose={() => setSharing(false)} />
+        )}
+        {pkgOpen && <PackagesDialog state={pkgs} onChange={setPkgs} onClose={() => setPkgOpen(false)} />}
+        {newOpen && (
+          <NewNodeDialog
+            nodes={nodes}
+            initialDeps={selected ? [selected] : []}
+            onClose={() => setNewOpen(false)}
+            onCreated={(name) => {
+              setNewOpen(false);
+              refresh().then(() => setSelected(name));
+            }}
+          />
+        )}
+      </Suspense>
       <Toasts />
     </div>
   );

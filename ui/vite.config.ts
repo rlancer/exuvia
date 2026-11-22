@@ -23,7 +23,9 @@ export default defineConfig({
   // StyleX compiles the app's own styles (`stylex.create` in src/); Astryx's
   // components come prebuilt (astryx.css, imported in main.tsx). The dev
   // server serves the styles from a virtual stylesheet the plugin links itself.
-  plugins: [stylex.vite({ useCSSLayers: true }), prebundleAstryx, react(), { name: "exuvia-icon", transformIndexHtml: { order: "pre", handler: (html) => html.replace("data:,exuvia-icon", icon) } }],
+  // `debug: false` keeps the dev server's class names the build's: an `xstyle`
+  // then replaces the property Astryx set, in both, instead of racing it.
+  plugins: [stylex.vite({ useCSSLayers: true, debug: false }), prebundleAstryx, react(), { name: "exuvia-icon", transformIndexHtml: { order: "pre", handler: (html) => html.replace("data:,exuvia-icon", icon) } }],
   base: "/",
   // Busts the browser cache of the views runtime (view-runtime/runtime.js) per build.
   define: { __EXUVIA_BUILD__: JSON.stringify(Date.now().toString(36)) },

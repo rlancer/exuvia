@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from "react";
+import { forwardRef, lazy, Suspense, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { colorVars, radiusVars, shadowVars, spacingVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { Banner } from "@astryxdesign/core/Banner";
@@ -8,7 +8,6 @@ import { Code } from "@astryxdesign/core/Code";
 import { HStack } from "@astryxdesign/core/HStack";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { List, ListItem } from "@astryxdesign/core/List";
-import { Markdown } from "@astryxdesign/core/Markdown";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
@@ -74,6 +73,9 @@ function toolLabel(it: Extract<Item, { kind: "tool" }>): string {
       return it.name;
   }
 }
+
+// The Markdown renderer is fetched with the agent's first reply: a chat nobody opens costs nothing.
+const Markdown = lazy(() => import("@astryxdesign/core/Markdown").then((m) => ({ default: m.Markdown })));
 
 /** A run of the agent's steps, one after the other, as Astryx's list of tool calls. */
 type Tool = Extract<Item, { kind: "tool" }>;
@@ -239,7 +241,7 @@ export const SidePanel = forwardRef<
   return (
     <aside {...stylex.props(styles.panel, sheet && styles.sheet)} aria-label="Side panel">
       <div {...stylex.props(styles.head)}>
-        <TabList value={tab} onChange={(t) => onTab(t as SideTab)} xstyle={styles.tabs}>
+        <TabList role="tablist" value={tab} onChange={(t) => onTab(t as SideTab)} xstyle={styles.tabs}>
           {agent && (
             <Tab
               value="agent"
@@ -336,9 +338,11 @@ export const SidePanel = forwardRef<
                     return (
                       <ChatMessage key={i} sender="assistant">
                         <ChatMessageBubble variant="ghost" width="100%">
-                          <Markdown density="compact" headingLevelStart={3} isStreaming={busy && i === all.length - 1}>
-                            {b.text}
-                          </Markdown>
+                          <Suspense fallback={<Text>{b.text}</Text>}>
+                            <Markdown density="compact" headingLevelStart={3} isStreaming={busy && i === all.length - 1}>
+                              {b.text}
+                            </Markdown>
+                          </Suspense>
                         </ChatMessageBubble>
                       </ChatMessage>
                     );

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import * as stylex from "@stylexjs/stylex";
-import { colorVars, spacingVars } from "@astryxdesign/core/theme/tokens.stylex";
+import { colorVars, sizeVars, spacingVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
@@ -506,6 +506,7 @@ function ViewError(props: { error: FrameError; onOpenFile: (path: string) => voi
             size="sm"
             variant="ghost"
             label={open ? "Hide the stack" : "Show the stack"}
+            tooltip={open ? "Hide the stack" : "Show the stack"}
             aria-expanded={open}
             icon={
               <span {...stylex.props(open && styles.down)}>
@@ -529,7 +530,11 @@ function ViewError(props: { error: FrameError; onOpenFile: (path: string) => voi
           {e.error}
         </Text>
       </div>
-      {open && e.stack && <pre {...stylex.props(styles.stack)}>{e.stack}</pre>}
+      {open && e.stack && (
+        <Text type="code" color="secondary" display="block" xstyle={styles.stack}>
+          {e.stack}
+        </Text>
+      )}
     </div>
   );
 }
@@ -821,7 +826,6 @@ function ViewFrame(props: {
  *              view, and so are the Code tab's files over the editor
  */
 const NARROW = "@media (max-width: 1100px)";
-const rule = { borderStyle: "solid", borderColor: colorVars["--color-border"], borderWidth: 0 } as const;
 
 const styles = stylex.create({
   views: {
@@ -833,8 +837,9 @@ const styles = stylex.create({
   },
   viewsAlone: { gridTemplateColumns: "minmax(0, 1fr)", gridTemplateRows: "minmax(0, 1fr)" },
   list: {
-    ...rule,
     borderInlineEndWidth: "1px",
+    borderInlineEndStyle: "solid",
+    borderInlineEndColor: colorVars["--color-border"],
     minHeight: 0,
     overflow: "auto",
     padding: spacingVars["--spacing-2"],
@@ -855,8 +860,9 @@ const styles = stylex.create({
   pane: { display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0, minHeight: 0 },
   // The tabs sit on the head's bottom edge, so the head has no padding there.
   head: {
-    ...rule,
     borderBottomWidth: "1px",
+    borderBottomStyle: "solid",
+    borderBottomColor: colorVars["--color-border"],
     display: "flex",
     flexDirection: "column",
     gap: spacingVars["--spacing-2"],
@@ -891,9 +897,10 @@ const styles = stylex.create({
   },
   hidden: { display: "none" },
 
-  // A parameter set to something other than its default.
   params: { display: "flex", flexWrap: "wrap", alignItems: "center", columnGap: spacingVars["--spacing-4"], rowGap: spacingVars["--spacing-2"] },
+  // A parameter's name, its control and the way back to its default stay together when the row wraps.
   param: { display: "inline-flex", alignItems: "center", gap: spacingVars["--spacing-1-5"], flexShrink: 0, whiteSpace: "nowrap" },
+  // A parameter set to something other than its default.
   custom: { backgroundColor: colorVars["--color-accent-muted"], borderColor: colorVars["--color-accent"] },
   contents: { display: "contents" },
 
@@ -905,8 +912,9 @@ const styles = stylex.create({
     minHeight: 0,
   },
   files: {
-    ...rule,
     borderInlineEndWidth: "1px",
+    borderInlineEndStyle: "solid",
+    borderInlineEndColor: colorVars["--color-border"],
     minHeight: 0,
     overflow: "auto",
     padding: spacingVars["--spacing-2"],
@@ -914,8 +922,9 @@ const styles = stylex.create({
   },
   editor: { display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 },
   codeBar: {
-    ...rule,
     borderTopWidth: "1px",
+    borderTopStyle: "solid",
+    borderTopColor: colorVars["--color-border"],
     display: "flex",
     alignItems: "center",
     gap: spacingVars["--spacing-2"],
@@ -927,20 +936,23 @@ const styles = stylex.create({
   // The path gives way first; the state and the actions keep their words.
   codePath: { flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 },
 
-  // The errors drawer: under the pane, never more than a third of it.
+  // The errors drawer, under the pane: a long list scrolls, so the pane keeps most of the height.
   errors: { flexShrink: 0 },
   errorList: { maxHeight: "26vh", overflow: "auto" },
-  error: { ...rule, borderTopWidth: { default: "1px", ":first-child": 0 } },
+  error: {
+    borderTopWidth: { default: "1px", ":first-child": 0 },
+    borderTopStyle: "solid",
+    borderTopColor: colorVars["--color-border"],
+  },
   errorLine: { display: "flex", alignItems: "baseline", gap: spacingVars["--spacing-2"], paddingBlock: spacingVars["--spacing-1"] },
-  noStack: { width: "24px", flexShrink: 0 },
+  // As wide as the arrow of an error that has a stack, so every row starts on one edge.
+  noStack: { width: sizeVars["--size-element-sm"], flexShrink: 0 },
   down: { display: "block", transform: "rotate(90deg)" },
   errorText: { flexGrow: 1, minWidth: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
   stack: {
-    margin: 0,
     paddingBlockEnd: spacingVars["--spacing-2"],
     paddingInlineStart: spacingVars["--spacing-8"],
     whiteSpace: "pre-wrap",
     overflowWrap: "anywhere",
-    color: colorVars["--color-text-secondary"],
   },
 });

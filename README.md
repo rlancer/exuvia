@@ -602,7 +602,7 @@ requires-python = ">=3.11"
 dependencies = ["scikit-learn==1.9.1", "acme-models>=2.3"]
 ```
 
-**Adding a package in the workbench.** The **Packages** button in the top
+**Adding a package in the workbench.** The **Packages** button above the graph, in the project's
 bar lists what the project has and what is installed for it, adds packages
 (`scikit-learn`, `acme-models>=2`) and removes them, edits `pyproject.toml`
 directly, and shows the install's status and log. A package added without a

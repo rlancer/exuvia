@@ -136,21 +136,23 @@ export function FileTree(props: {
           onClick={() => saveUrl(codeArchiveUrl())}
         />
       </div>
-      <div ref={treeRef} role="tree" aria-label="Project files" onKeyDown={handleKeyDown} onFocus={handleFocus} {...stylex.props(styles.tree)}>
-        {rows.map((r) =>
-          r.kind === "empty" ? (
-            <div key={`${r.dir}/`} role="none" {...stylex.props(styles.row, indent(r.depth))}>
-              <span {...stylex.props(styles.twist)} />
-              <Text type="supporting" color="disabled">
-                {r.dir === "nodes" ? "No nodes yet." : r.dir === "views" ? "No views yet." : "Empty."}
-              </Text>
-            </div>
-          ) : r.entry.type === "dir" ? (
-            <DirRow key={r.entry.path} dir={r.entry} depth={r.depth} ctx={ctx} />
-          ) : (
-            <FileRow key={r.entry.path} file={r.entry} depth={r.depth} ctx={ctx} />
-          ),
-        )}
+      <div {...stylex.props(styles.scroll)}>
+        <div ref={treeRef} role="tree" aria-label="Project files" onKeyDown={handleKeyDown} onFocus={handleFocus} {...stylex.props(styles.tree)}>
+          {rows.map((r) =>
+            r.kind === "empty" ? (
+              <div key={`${r.dir}/`} role="none" {...stylex.props(styles.row, indent(r.depth))}>
+                <span {...stylex.props(styles.twist)} />
+                <Text type="supporting" color="disabled">
+                  {r.dir === "nodes" ? "No nodes yet." : r.dir === "views" ? "No views yet." : "Empty."}
+                </Text>
+              </div>
+            ) : r.entry.type === "dir" ? (
+              <DirRow key={r.entry.path} dir={r.entry} depth={r.depth} ctx={ctx} />
+            ) : (
+              <FileRow key={r.entry.path} file={r.entry} depth={r.depth} ctx={ctx} />
+            ),
+          )}
+        </div>
         {filter.trim() && !tree.length && (
           <Text type="supporting" color="secondary" xstyle={styles.note}>
             No file path contains “{filter.trim()}”.
@@ -440,7 +442,7 @@ export function HelperEditor(props: {
   );
 }
 
-// A level of the tree is one step in: `--spacing-4`, as wide as the twist and its gap.
+// A level of the tree is one step in, `--spacing-4`: a folder's files start under its icon.
 const depths = stylex.create({
   d0: { paddingInlineStart: spacingVars["--spacing-1"] },
   d1: { paddingInlineStart: `calc(${spacingVars["--spacing-1"]} + ${spacingVars["--spacing-4"]})` },
@@ -466,15 +468,14 @@ const styles = stylex.create({
     paddingInline: spacingVars["--spacing-2"],
   },
   grow: { flexGrow: 1, minWidth: 0 },
-  tree: {
-    display: "flex",
-    flexDirection: "column",
+  scroll: {
     flexGrow: 1,
     minHeight: 0,
     overflowY: "auto",
     paddingInline: spacingVars["--spacing-2"],
     paddingBottom: spacingVars["--spacing-3"],
   },
+  tree: { display: "flex", flexDirection: "column" },
   row: {
     display: "flex",
     alignItems: "center",

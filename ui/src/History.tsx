@@ -357,7 +357,7 @@ export function HistoryRail(props: {
   return (
     <div {...stylex.props(styles.rail)}>
       <div {...stylex.props(styles.bar)}>
-        <SegmentedControl size="sm" layout="fill" label="Which revisions" value={deletedOnly ? "deleted" : "latest"} onChange={(v) => setDeletedOnly(v === "deleted")} xstyle={styles.grow}>
+        <SegmentedControl size="sm" layout="fill" label="Which revisions" value={deletedOnly ? "deleted" : "latest"} onChange={(v) => setDeletedOnly(v === "deleted")} xstyle={styles.switch}>
           <SegmentedControlItem value="latest" label="Latest saves" />
           <SegmentedControlItem value="deleted" label={deleted.length ? `Deleted (${deleted.length})` : "Deleted"} />
         </SegmentedControl>
@@ -489,4 +489,6 @@ const styles = stylex.create({
   },
   // The History tab: the switch stays put, the saves under it scroll.
   rail: { display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0, minHeight: 0 },
+  // As wide as the panel beside the graph; no wider where the panel is a sheet across the window.
+  switch: { flexGrow: 1, minWidth: 0, maxWidth: "324px" },
 });

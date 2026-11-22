@@ -2,7 +2,6 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type Keyboard
 import { EditorView } from "@uiw/react-codemirror";
 import { python } from "@codemirror/lang-python";
 import { sql } from "@codemirror/lang-sql";
-import embed from "vega-embed";
 import * as stylex from "@stylexjs/stylex";
 import { colorVars, fontWeightVars, radiusVars, spacingVars, textSizeVars, typeScaleVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
@@ -542,6 +541,9 @@ function ChartTab({ node, dark }: { node: GraphNode; dark: boolean }) {
       try {
         setError(null);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // Vega is as large as the rest of the app: it is fetched when a chart is first drawn.
+        const { default: embed } = await import("vega-embed");
+        if (!ref.current) return;
         const res = await embed(ref.current, spec as any, { actions: { export: true, source: false, compiled: false, editor: false } });
         finalize = () => res.finalize();
       } catch (e) {
