@@ -40,7 +40,7 @@ from .project import NODE_NAME
 
 RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 BUNDLE_ID = re.compile(r"^[0-9a-f]{24}$")
-INPUT_EXT = {"table": ".parquet", "json": ".json"}
+INPUT_EXT = {"table": ".parquet", "json": ".json", "multi": ".zip"}
 RUN_TTL_S = 2 * 3600
 
 

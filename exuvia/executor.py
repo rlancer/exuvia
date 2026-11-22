@@ -321,7 +321,7 @@ class RemoteExecutor:
                 pass
 
     def _download(self, req: ExecRequest, res: ExecResult) -> str:
-        ext = {"table": "parquet", "json": "json"}[res.kind or ""]
+        ext = {"table": "parquet", "json": "json", "multi": "zip"}[res.kind or ""]
         req.out_dir.mkdir(parents=True, exist_ok=True)
         final = req.out_dir / f"{res.artifact_id}.{ext}"
         if final.exists():

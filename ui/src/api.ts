@@ -38,8 +38,9 @@ export interface GraphNode {
   state: State;
   reason: string | null;
   rows: number | null;
+  /** A table's columns; for `multi`, one entry per part (`type` is `table` or `json`). */
   schema: Column[] | null;
-  output_kind: "table" | "json" | "pickle" | "none" | null;
+  output_kind: "table" | "json" | "multi" | "pickle" | "none" | null;
   artifact_id: string | null;
   code_hash: string;
   finished_at: number | null;
@@ -87,12 +88,21 @@ export interface PackagesState {
 /** A view's state for one parameter set, derived from the nodes it reads. */
 export type ViewState = "ready" | "missing" | "stale" | "error";
 
+/** One named output of a node that returns several (`output_kind: "multi"`). */
+export interface OutputPart {
+  name: string;
+  kind: "table" | "json";
+  rows: number | null;
+}
+
 /** One node a view reads, and the output the view would show now. */
 export interface ViewOutput {
   node: string;
   state: State;
   artifact_id: string | null;
   kind: GraphNode["output_kind"];
+  /** For `kind: "multi"`: its parts, read as `node.part`. */
+  parts?: OutputPart[];
 }
 
 /** A folder under views/: custom UI that only reads node outputs. */
@@ -157,7 +167,9 @@ export interface CodeRevision {
 }
 
 export interface Preview {
-  kind: "table" | "json" | "pickle" | "none" | null;
+  kind: "table" | "json" | "multi" | "pickle" | "none" | null;
+  /** For `kind: "multi"`: the parts, each read with `part`. */
+  parts?: OutputPart[];
   columns?: Column[];
   rows?: unknown[][];
   total?: number | null;
@@ -228,9 +240,11 @@ async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
   return (await send(method, url, body)).json() as Promise<T>;
 }
 
-/** A node's output: the first `limit` rows of a table (read as Arrow), or its JSON value. */
-async function nodeData(name: string, limit: number): Promise<Preview> {
-  const res = await send("GET", `/api/nodes/${name}/data?limit=${limit}`, undefined, `${ARROW_STREAM}, application/json`);
+/** A node's output: the first `limit` rows of a table (read as Arrow), or its JSON value.
+ * `part` picks one output of a node with several. */
+async function nodeData(name: string, limit: number, part?: string): Promise<Preview> {
+  const q = `limit=${limit}${part ? `&part=${encodeURIComponent(part)}` : ""}`;
+  const res = await send("GET", `/api/nodes/${name}/data?${q}`, undefined, `${ARROW_STREAM}, application/json`);
   if (!isArrow(res)) return res.json() as Promise<Preview>;
   const table = await readArrow(res);
   return { kind: "table", total: arrowMeta(table).total ?? table.numRows, ...toGrid(table) };
@@ -244,9 +258,14 @@ async function queryRows(sql: string, limit = 500): Promise<{ columns: Column[];
 const paramsQuery = (params?: Record<string, unknown>) =>
   params && Object.keys(params).length ? `?params=${encodeURIComponent(JSON.stringify(params))}` : "";
 
-/** A node's output through the view-scoped route (403 unless the view reads it). */
-async function viewData(view: string, node: string, params?: Record<string, unknown>): Promise<ViewData> {
-  const url = `/api/views/${view}/data/${encodeURIComponent(node)}${paramsQuery(params)}`;
+/** A node's output through the view-scoped route (403 unless the view reads it);
+ * `part` picks one output of a node with several. */
+async function viewData(view: string, node: string, params?: Record<string, unknown>, part?: string): Promise<ViewData> {
+  const q = new URLSearchParams();
+  if (params && Object.keys(params).length) q.set("params", JSON.stringify(params));
+  if (part) q.set("part", part);
+  const qs = q.toString();
+  const url = `/api/views/${view}/data/${encodeURIComponent(node)}${qs ? `?${qs}` : ""}`;
   const res = await send("GET", url, undefined, `${ARROW_STREAM}, application/json`);
   if (isArrow(res)) return { kind: "table", arrow: await res.arrayBuffer() };
   const body = (await res.json()) as Preview;
@@ -286,7 +305,7 @@ export const api = {
     req("POST", "/api/run", { targets, force: false, params: Object.keys(params).length ? params : null }),
   runStale: () => req<{ targets: string[] }>("POST", "/api/run-stale"),
   pause: (name: string, paused: boolean) => req("POST", `/api/nodes/${name}/schedule`, { paused }),
-  data: (name: string, limit = 200) => nodeData(name, limit),
+  data: (name: string, limit = 200, part?: string) => nodeData(name, limit, part),
   runs: (name: string) => req<RunRow[]>("GET", `/api/nodes/${name}/runs`),
   recentRuns: () => req<RunRow[]>("GET", "/api/runs"),
   runDetail: (id: string) => req<RunRow>("GET", `/api/runs/${id}`),
@@ -402,13 +421,130 @@ export const usersApi = {
     (await sendTo("PATCH", `/api/users/${encodeURIComponent(id)}`, change)).json() as Promise<UserRow>,
 };
 
+/** A project role on a hub with sharing (exuvia/sharing.py): viewers read, editors change, owners share. */
+export type Role = "viewer" | "editor" | "owner";
+/** What everyone else signed in on the hub gets on a project. */
+export type GeneralAccess = "private" | "view" | "edit";
+
+/** Someone in the user list, as sharing shows them. */
+export interface Person {
+  id: string | null;
+  name: string;
+  email: string | null;
+  disabled?: boolean;
+}
+
 /** A project on a hub, as `GET /api/projects` lists it. */
 export interface HubProject {
   id: string;
   name: string;
   nodes: number;
   loaded: boolean;
+  /** With sharing on: the caller's role, the owner, general access, and whether it is shared by name or link. */
+  access?: Role;
+  owner?: Person | null;
+  general?: GeneralAccess;
+  shared?: boolean;
+  /** Access requests waiting for the owner (counted for the owner only). */
+  requests?: number;
 }
+
+/** `GET /api/projects`. `sharing` is null on a hub nobody has to get in to. */
+export interface HubListing {
+  projects: HubProject[];
+  templates: string[];
+  auth: boolean;
+  sharing: { people: boolean; default_access: GeneralAccess } | null;
+}
+
+/** `GET <project>/api/access`: what this page may do in its project. */
+export interface Access {
+  role: Role | null;
+  /** The hub shares projects (else everyone who gets in can do everything). */
+  sharing: boolean;
+  /** People can be named (the hub signs people in); else it shares by link only. */
+  people: boolean;
+  user: Me["user"];
+  /** A share link let this page in. */
+  link?: boolean;
+  owner?: Person | null;
+  general?: GeneralAccess;
+  can_request?: boolean;
+  requested?: { role: Role; message: string; created_at: number } | null;
+}
+
+/** One person a project is shared with by name. */
+export interface Member {
+  principal: string;
+  kind: "user" | "email";
+  role: Role;
+  user: Person;
+  /** Named by an email nobody has signed in with yet. */
+  pending: boolean;
+  created_at: number;
+}
+
+/** A read-only share link: never the token, except in the answer that creates it. */
+export interface ShareLink {
+  id: string;
+  name: string;
+  hint: string;
+  role: "viewer";
+  created_at: number;
+  expires_at: number | null;
+  last_used: number | null;
+  expired?: boolean;
+}
+
+export interface AccessRequest {
+  user_id: string;
+  user: Person;
+  role: Role;
+  message: string;
+  created_at: number;
+}
+
+/** `GET /api/projects/<id>/sharing`. `links` and `requests` come to whoever can manage it. */
+export interface Sharing {
+  project: string;
+  you: Role;
+  can_manage: boolean;
+  people_enabled: boolean;
+  default_access: GeneralAccess;
+  owner: Person | null;
+  general: GeneralAccess;
+  /** The project has no settings of its own: it follows the hub's default. */
+  default: boolean;
+  people: Member[];
+  links?: ShareLink[];
+  requests?: AccessRequest[];
+}
+
+/** The page's own project's access (not on `exuvia serve`, whose answer is always full access). */
+export const access = async () => (await sendTo("GET", apiUrl("/api/access"))).json() as Promise<Access>;
+
+const sharingUrl = (project: string, rest = "") => `/api/projects/${encodeURIComponent(project)}/sharing${rest}`;
+const json = async <T,>(r: Promise<Response>) => (await r).json() as Promise<T>;
+
+/** A hub project's sharing (exuvia/server.py `_sharing_routes`). */
+export const sharingApi = {
+  get: (p: string) => json<Sharing>(sendTo("GET", sharingUrl(p))),
+  patch: (p: string, change: { general?: GeneralAccess; owner?: string }) => json<Sharing>(sendTo("PATCH", sharingUrl(p), change)),
+  share: (p: string, who: { user?: string; email?: string; role: Role }) => json<Sharing>(sendTo("PUT", sharingUrl(p, "/people"), who)),
+  /** Take someone off; the answer is `{left: true}` when you took yourself off and can't open it any more. */
+  unshare: (p: string, principal: string) =>
+    json<Sharing | { ok: true; left: true }>(sendTo("DELETE", sharingUrl(p, `/people/${encodeURIComponent(principal)}`))),
+  createLink: (p: string, b: { name?: string; expires_in_days?: number | null }) =>
+    json<ShareLink & { token: string; url: string }>(sendTo("POST", sharingUrl(p, "/links"), b)),
+  revokeLink: (p: string, id: string) => json<Sharing>(sendTo("DELETE", sharingUrl(p, `/links/${encodeURIComponent(id)}`))),
+  request: (p: string, b: { role: Role; message?: string }) => json<{ ok: true }>(sendTo("POST", sharingUrl(p, "/requests"), b)),
+  approve: (p: string, uid: string, role?: Role) =>
+    json<Sharing>(sendTo("POST", sharingUrl(p, `/requests/${encodeURIComponent(uid)}/approve`), { role })),
+  dismiss: (p: string, uid: string) => json<Sharing>(sendTo("DELETE", sharingUrl(p, `/requests/${encodeURIComponent(uid)}`))),
+  /** People to share with: enabled users whose name or email contains `q`. */
+  people: async (q: string) =>
+    (await json<{ people: Person[] }>(sendTo("GET", `/api/people?q=${encodeURIComponent(q)}`))).people,
+};
 
 /** Project ids a hub accepts (exuvia/hub.py PROJECT_ID). */
 export const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -417,8 +553,8 @@ export const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 export const hubApi = {
   /** Every project and template; `token` checks a token before the browser keeps it. */
   projects: async (token?: string) =>
-    (await sendTo("GET", "/api/projects", undefined, undefined, token)).json() as Promise<{ projects: HubProject[]; templates: string[]; auth: boolean }>,
-  create: async (b: { id: string; name?: string; template?: string }) =>
+    (await sendTo("GET", "/api/projects", undefined, undefined, token)).json() as Promise<HubListing>,
+  create: async (b: { id: string; name?: string; template?: string; access?: GeneralAccess }) =>
     (await sendTo("POST", "/api/projects", b)).json() as Promise<{ id: string; name: string }>,
   remove: async (id: string) => {
     await sendTo("DELETE", `/api/projects/${encodeURIComponent(id)}`);

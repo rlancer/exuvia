@@ -53,18 +53,23 @@ export const internal = {
 
 // -- plain calls ------------------------------------------------------------------
 
-/** The current output of a node the view reads, as an Arrow table. */
+/** The node an output name belongs to: `fit` for `fit.coefs` (one output of a node with several). */
+const nodeOf = (name: string) => name.split(".")[0];
+
+/** The current output of a node the view reads, as an Arrow table
+ * (`table("fit.coefs")` for one output of a node with several). */
 export async function table(node: string): Promise<Table> {
   return tableFromIPC(new Uint8Array(await call("table", { node })));
 }
 
-/** The current output of a node whose output is JSON. */
+/** The current output of a node whose output is JSON (`json("fit.metrics")` for one of several). */
 export async function json<T = unknown>(node: string): Promise<T> {
   return (await call("json", { node })) as T;
 }
 
 /** DuckDB SQL over the outputs of the nodes the view reads (each is a table
- * named after its node; `<node>__runs` has every parameter set it ran with). */
+ * named after its node; `<node>__runs` has every parameter set it ran with; a node
+ * with several outputs is a schema: `<node>.<part>` and `<node>.<part>__runs`). */
 export async function query(sql: string): Promise<Table> {
   return tableFromIPC(new Uint8Array(await call("query", { sql })));
 }
@@ -134,16 +139,16 @@ function useStore(): State {
   return useSyncExternalStore(subscribe, () => state);
 }
 
-/** A node's current table; reloads when the node's output is replaced. */
+/** A node's current table (`"fit.coefs"`: one output of a node with several); reloads when the node's output is replaced. */
 export function useTable(node: string): Loaded<Table> {
   const s = useStore();
-  return useLoad(`${node}|${s.versions[node] ?? 0}`, () => table(node));
+  return useLoad(`${node}|${s.versions[nodeOf(node)] ?? 0}`, () => table(node));
 }
 
-/** A node's current JSON output; reloads when it is replaced. */
+/** A node's current JSON output (`"fit.metrics"`: one of several); reloads when it is replaced. */
 export function useJson<T = unknown>(node: string): Loaded<T> {
   const s = useStore();
-  return useLoad(`${node}|${s.versions[node] ?? 0}`, () => json<T>(node));
+  return useLoad(`${node}|${s.versions[nodeOf(node)] ?? 0}`, () => json<T>(node));
 }
 
 /** A query over the view's reads; reloads when the SQL or any read output changes. */

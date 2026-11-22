@@ -6,6 +6,7 @@ import { HistoryBrowser } from "./History";
 import { VIEW_STATE_CLASS } from "./Views";
 import { language } from "./lang";
 import { IconChevronRight, IconClose, IconFile, IconFolder, MOD } from "./icons";
+import { useAccess } from "./Access";
 
 // Kept outside the components, so closing the panel or switching its tab
 // keeps the folded folders, and closing a helper keeps its unsaved edits.
@@ -193,6 +194,7 @@ export function HelperEditor(props: {
   onOpenNode: (name: string) => void;
 }) {
   const { path, project } = props;
+  const { canEdit } = useAccess();
   const [file, setFile] = useState<(HelperFile & { source: string }) | null>(null);
   const [draft, setDraftState] = useState<string | undefined>(helperDrafts[path]);
   const [err, setErr] = useState<string | null>(null);
@@ -236,6 +238,7 @@ export function HelperEditor(props: {
   const dirty = draft !== undefined;
 
   const save = async () => {
+    if (!canEdit) return;
     if (!dirty || busy) return;
     setBusy(true);
     setErr(null);
@@ -302,6 +305,8 @@ export function HelperEditor(props: {
             <CodeMirror
               value={text}
               onChange={(t) => setDraft(t === saved ? null : t)}
+              editable={canEdit}
+              readOnly={!canEdit}
               theme={props.dark ? "dark" : "light"}
               extensions={[...language(path), EditorView.lineWrapping]}
               basicSetup={{ foldGutter: false, highlightActiveLine: true }}
@@ -312,15 +317,17 @@ export function HelperEditor(props: {
           <div className="code-bar">
             <span className="mono">{text.split("\n").length} lines</span>
             <span className="spacer" />
-            <span>{dirty ? `unsaved · ${MOD}S save` : "saved"}</span>
+            <span>{!canEdit ? "read-only" : dirty ? `unsaved · ${MOD}S save` : "saved"}</span>
             {dirty && (
               <button className="btn sm ghost" onClick={() => setDraft(null)} disabled={busy} title="Throw away the unsaved edits to this file">
                 Discard
               </button>
             )}
-            <button className="btn sm" onClick={save} disabled={!dirty || busy}>
-              {busy ? "Saving…" : "Save"}
-            </button>
+            {canEdit && (
+              <button className="btn sm" onClick={save} disabled={!dirty || busy}>
+                {busy ? "Saving…" : "Save"}
+              </button>
+            )}
           </div>
         </div>
       ) : (

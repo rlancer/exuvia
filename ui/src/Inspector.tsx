@@ -9,6 +9,7 @@ import { Dialog } from "./Dialog";
 import { IconClock, IconPlay, IconSpark, IconTrash, MOD } from "./icons";
 import { failed } from "./toast";
 import { HistoryBrowser } from "./History";
+import { useAccess } from "./Access";
 
 /** A chart's series colours: the accent first, then the states' hues and four more, per theme. */
 const SERIES = {
@@ -33,7 +34,10 @@ export function Inspector(props: {
   /** Changes when the node's file is picked in the side panel: show the Code tab. */
   showCode?: number;
 }) {
-  const { node, logs, dark, onDeleted, onAskAI, aiEnabled, onInstall, installing } = props;
+  const { node, logs, dark, onDeleted, onAskAI, onInstall, installing } = props;
+  // A viewer of a shared project reads the node but changes nothing (sharing.py).
+  const { canEdit } = useAccess();
+  const aiEnabled = props.aiEnabled && canEdit;
   const [tab, setTab] = useState<Tab>("code");
   const [source, setSource] = useState("");
   const [saved, setSaved] = useState("");
@@ -67,7 +71,7 @@ export function Inspector(props: {
   }, [node.name]);
 
   const save = useCallback(async () => {
-    if (!dirty) return;
+    if (!dirty || !canEdit) return;
     setErr(null);
     try {
       await api.save(node.name, source);
@@ -75,9 +79,10 @@ export function Inspector(props: {
     } catch (e) {
       setErr((e as Error).message);
     }
-  }, [dirty, node.name, source]);
+  }, [dirty, canEdit, node.name, source]);
 
   const run = async () => {
+    if (!canEdit) return;
     setBusy(true);
     try {
       await save();
@@ -110,15 +115,19 @@ export function Inspector(props: {
         <div className="insp-title">
           <span className="dot" />
           <h3>{node.name}</h3>
-          <button className="btn primary" onClick={run} disabled={busy || running || !!node.parse_error}>
-            {running ? "Running…" : dirty ? "Save & run" : <><IconPlay size={11} /> Run</>}
-          </button>
-          {running && node.last_run && (
+          {canEdit && (
+            <button className="btn primary" onClick={run} disabled={busy || running || !!node.parse_error}>
+              {running ? "Running…" : dirty ? "Save & run" : <><IconPlay size={11} /> Run</>}
+            </button>
+          )}
+          {canEdit && running && node.last_run && (
             <button className="btn" onClick={() => api.cancel(node.last_run!.id).catch(failed("Couldn't stop the run"))}>Stop</button>
           )}
-          <button className="btn ghost icon-btn danger" title="Delete node" aria-label={`Delete node ${node.name}`} onClick={() => setConfirmDelete(true)}>
-            <IconTrash />
-          </button>
+          {canEdit && (
+            <button className="btn ghost icon-btn danger" title="Delete node" aria-label={`Delete node ${node.name}`} onClick={() => setConfirmDelete(true)}>
+              <IconTrash />
+            </button>
+          )}
         </div>
         <div className="insp-sub">
           <span className={`kind ${node.kind}`}>{node.kind}</span>
@@ -128,9 +137,11 @@ export function Inspector(props: {
             <span className="sched">
               <IconClock size={12} /> <span className="mono">{node.schedule.cron}</span>{" "}
               {node.schedule.paused ? "(paused)" : node.schedule.next ? `(next ${until(node.schedule.next)})` : ""}{" "}
-              <button className="btn sm ghost" onClick={() => api.pause(node.name, !node.schedule!.paused).catch(failed("Couldn't change the schedule"))}>
-                {node.schedule.paused ? "Resume" : "Pause"}
-              </button>
+              {canEdit && (
+                <button className="btn sm ghost" onClick={() => api.pause(node.name, !node.schedule!.paused).catch(failed("Couldn't change the schedule"))}>
+                  {node.schedule.paused ? "Resume" : "Pause"}
+                </button>
+              )}
             </span>
           )}
           {!node.cascade && <span title="Does not auto-refresh when upstream changes">cascade off</span>}
@@ -169,7 +180,7 @@ export function Inspector(props: {
             {(problem || err) && (
               <div className="err-banner">
                 <div>{err || problem}</div>
-                {!err && node.missing_package && (
+                {!err && canEdit && node.missing_package && (
                   <button
                     className="btn sm primary"
                     disabled={installing}
@@ -189,6 +200,8 @@ export function Inspector(props: {
             <CodeMirror
               value={source}
               onChange={setSource}
+              editable={canEdit}
+              readOnly={!canEdit}
               theme={dark ? "dark" : "light"}
               extensions={[node.kind === "sql" ? sql() : python(), EditorView.lineWrapping]}
               basicSetup={{ foldGutter: false, highlightActiveLine: true }}
@@ -198,8 +211,14 @@ export function Inspector(props: {
             <div className="code-bar">
               <span className="mono">{node.path}</span>
               <span className="spacer" />
-              <span>{dirty ? `unsaved · ${MOD}S save · ${MOD}Enter run` : "saved"}</span>
-              <button className="btn sm" onClick={save} disabled={!dirty}>Save</button>
+              {canEdit ? (
+                <>
+                  <span>{dirty ? `unsaved · ${MOD}S save · ${MOD}Enter run` : "saved"}</span>
+                  <button className="btn sm" onClick={save} disabled={!dirty}>Save</button>
+                </>
+              ) : (
+                <span>read-only</span>
+              )}
             </div>
           </div>
         )}
@@ -280,18 +299,42 @@ export function DataTable({ columns, rows }: { columns: Column[]; rows: unknown[
 
 function DataTab({ node }: { node: GraphNode }) {
   const [p, setP] = useState<Preview | null>(null);
+  // A node with several outputs shows one at a time; null picks the first.
+  const [part, setPart] = useState<string | null>(null);
+  const multi = node.output_kind === "multi";
+  const parts = multi ? (node.schema ?? []).map((c) => c.name) : [];
+  const shown = multi ? (part !== null && parts.includes(part) ? part : (parts[0] ?? null)) : null;
   useEffect(() => {
     let live = true;
-    api.data(node.name, 300).then((d) => live && setP(d));
+    api.data(node.name, 300, shown ?? undefined).then((d) => live && setP(d));
     return () => {
       live = false;
     };
-  }, [node.name, node.artifact_id]);
+  }, [node.name, node.artifact_id, shown]);
+  const picker = multi && parts.length > 0 && (
+    <div className="data-parts">
+      <div className="seg" role="tablist" aria-label={`${node.name}: outputs`}>
+        {parts.map((name) => (
+          <button key={name} role="tab" aria-selected={name === shown} className={name === shown ? "on" : ""} onClick={() => setPart(name)}>
+            {name}
+          </button>
+        ))}
+      </div>
+      {node.schema?.find((c) => c.name === shown)?.type === "table" ? (
+        <span className="hint">
+          SQL: <code>{`${node.name}.${shown}`}</code>
+        </span>
+      ) : (
+        <span className="hint">JSON (not in SQL)</span>
+      )}
+    </div>
+  );
   if (!p) return <div className="placeholder">Loading…</div>;
   if (!p.kind) return <div className="placeholder">No output yet — run the node.</div>;
   if (p.kind === "table" && p.columns && p.rows)
     return (
       <>
+        {picker}
         <DataTable columns={p.columns} rows={p.rows} />
         <div className="data-foot">
           {p.rows.length < (p.total ?? 0) ? `first ${p.rows.length} of ` : ""}
@@ -299,7 +342,12 @@ function DataTab({ node }: { node: GraphNode }) {
         </div>
       </>
     );
-  return <pre className="json">{JSON.stringify(p.value, null, 2)}</pre>;
+  return (
+    <>
+      {picker}
+      <pre className="json">{JSON.stringify(p.value, null, 2)}</pre>
+    </>
+  );
 }
 
 function ChartTab({ node, dark }: { node: GraphNode; dark: boolean }) {
@@ -308,7 +356,9 @@ function ChartTab({ node, dark }: { node: GraphNode; dark: boolean }) {
   useEffect(() => {
     let cancelled = false;
     let finalize: (() => void) | undefined;
-    api.data(node.name, 5000).then(async (d) => {
+    // A node with several outputs charts its first table.
+    const firstTable = node.output_kind === "multi" ? (node.schema ?? []).find((c) => c.type === "table")?.name : undefined;
+    api.data(node.name, 5000, firstTable).then(async (d) => {
       if (cancelled || !ref.current) return;
       if (d.kind !== "table" || !d.columns || !d.rows) {
         setError("Charts need a table output. Run the node first.");

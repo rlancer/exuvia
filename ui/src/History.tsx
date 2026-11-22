@@ -6,6 +6,7 @@ import { Dialog } from "./Dialog";
 import { currentVersion, deletedFiles, isDeleted, ORIGIN_LABEL, paths, previousVersion, restoreTarget } from "./revisions";
 import { language } from "./lang";
 import { ago, pressable } from "./util";
+import { useAccess } from "./Access";
 
 /** What the selected version is compared with. */
 type Against = "current" | "previous";
@@ -37,6 +38,7 @@ export function HistoryBrowser(props: {
   onRestored?: (rev: CodeRevision) => void;
 }) {
   const { filter, dark } = props;
+  const { canEdit } = useAccess();
   const [revs, setRevs] = useState<CodeRevision[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [selId, setSelId] = useState<number | null>(props.rev ?? null);
@@ -225,7 +227,7 @@ export function HistoryBrowser(props: {
             <span className="mono" title={sel.hash ?? undefined}>{sel.path}</span>
             <span className="spacer" />
             <span title={when(sel.saved_at)}>{sel.hash ? `saved ${ago(sel.saved_at)}` : `deleted ${ago(sel.saved_at)}`}</span>
-            {target ? (
+            {target && canEdit ? (
               <button
                 className="btn sm"
                 disabled={!canRestore || busy}
@@ -235,7 +237,7 @@ export function HistoryBrowser(props: {
                 {fileGone && sel.hash ? (target.kind === "node" ? "Restore node" : "Restore file") : "Restore"}
               </button>
             ) : (
-              <span className="hint" title="Only node and view files can be restored from the workbench">read-only</span>
+              <span className="hint" title={canEdit ? "Only node and view files can be restored from the workbench" : "You can view this project but not change it"}>read-only</span>
             )}
           </div>
         )}

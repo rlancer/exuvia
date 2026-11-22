@@ -88,8 +88,10 @@ export const AgentPanel = forwardRef<
     /** The Files and History tabs' contents. The chat stays mounted under them, so a reply keeps streaming. */
     files: ReactNode;
     history: ReactNode;
+    /** Whether this page has the Agent tab: not for a viewer of a shared project (the agent changes it). */
+    agent?: boolean;
   }
->(function AgentPanel({ enabled, model, selected, hasNodes, onTouch, onSelect, onCollapse, tab, onTab, files, history }, ref) {
+>(function AgentPanel({ enabled, model, selected, hasNodes, onTouch, onSelect, onCollapse, tab, onTab, files, history, agent = true }, ref) {
   const [items, setItems] = useState<Item[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -199,10 +201,12 @@ export const AgentPanel = forwardRef<
     <aside className="agent">
       <div className="agent-head side-head">
         <div className="side-tabs" role="tablist" aria-label="Side panel">
-          <button role="tab" aria-selected={tab === "agent"} className={`side-tab ${tab === "agent" ? "on" : ""}`} onClick={() => onTab("agent")} title={enabled ? `The agent (${model})` : "The agent"}>
-            <IconSpark /> Agent
-            {news && <span className={`side-news ${busy ? "pulse" : ""}`} title={busy ? "The agent is working" : "New in the chat"} />}
-          </button>
+          {agent && (
+            <button role="tab" aria-selected={tab === "agent"} className={`side-tab ${tab === "agent" ? "on" : ""}`} onClick={() => onTab("agent")} title={enabled ? `The agent (${model})` : "The agent"}>
+              <IconSpark /> Agent
+              {news && <span className={`side-news ${busy ? "pulse" : ""}`} title={busy ? "The agent is working" : "New in the chat"} />}
+            </button>
+          )}
           <button role="tab" aria-selected={tab === "files"} className={`side-tab ${tab === "files" ? "on" : ""}`} onClick={() => onTab("files")} title="The files of the graph and the views">
             <IconFolder /> Files
           </button>
@@ -218,7 +222,7 @@ export const AgentPanel = forwardRef<
       </div>
       {tab === "files" && files}
       {tab === "history" && history}
-      <div className="side-body" hidden={tab !== "agent"}>
+      <div className="side-body" hidden={tab !== "agent" || !agent}>
       {!enabled ? (
         <div className="agent-off">
           The agent builds, runs, and fixes nodes for you. To turn it on, set <code>ANTHROPIC_API_KEY</code> (Claude) or{" "}

@@ -40,7 +40,11 @@ const Card = memo(function Card({ data }: NodeProps<Node<CardData>>) {
       <div className="meta">
         <span className="state">{g.state}</span>
         {g.rows != null && <span>{fmtNum(g.rows)} rows</span>}
-        {g.output_kind && g.output_kind !== "table" && <span>{g.output_kind}</span>}
+        {g.output_kind === "multi" ? (
+          <span title={(g.schema ?? []).map((p) => p.name).join(", ")}>{g.schema?.length ?? 0} outputs</span>
+        ) : (
+          g.output_kind && g.output_kind !== "table" && <span>{g.output_kind}</span>
+        )}
         {g.schedule && (
           <span className={`sched ${g.schedule.paused ? "paused" : ""}`} title={`cron ${g.schedule.cron}`}>
             <IconClock size={11} /> {g.schedule.paused ? "paused" : until(g.schedule.next) || g.schedule.cron}

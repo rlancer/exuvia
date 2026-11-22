@@ -38,6 +38,8 @@ PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 SKIP_DIRS = {"__pycache__", "node_modules"}
 DB_REL = ".exuvia/exuvia.db"
 PACKAGES_REL = ".exuvia/packages/"
+# Parts extracted from multi-output artifacts (workspace.part_file): a cache.
+PARTS_REL = ".exuvia/parts/"
 # The hub's user list (users.py), under the hub's directory beside the
 # projects, unless EXUVIA_DB holds it. Exports carry it at the same path.
 HUB_USERS_DB = ".exuvia/hub.db"
@@ -67,6 +69,11 @@ class Hub:
         self._load_origin: dict[str, str] = {}
         # Everyone who has signed in (set by create_hub_app when people sign in).
         self.users: Any = None
+        # Who can open and change each project (sharing.py; set by
+        # create_hub_app when the hub has any auth). None: everyone can.
+        self.sharing: Any = None
+        # The projects a request may see (create_hub_app filters by sharing).
+        self.visible: Any = self.list
 
     # -- projects ------------------------------------------------------------
     def exists(self, project_id: str) -> bool:
@@ -108,9 +115,24 @@ class Hub:
                 self._ctxs[project_id] = ctx
             return ctx
 
-    async def create(self, project_id: str, name: str | None = None, template: str | None = None) -> None:
+    async def create(
+        self, project_id: str, name: str | None = None, template: str | None = None,
+        access: str | None = None, owner: str | None = None,
+    ) -> None:
+        """A new project. With sharing on, ``owner`` (a user id; default: the
+        signed-in person, nobody for the operator) owns it and ``access`` is
+        what everyone else signed in gets (default EXUVIA_DEFAULT_ACCESS)."""
+        from . import auth
+        from .sharing import GENERAL
+
         if not PROJECT_ID.match(project_id):
             raise ValueError("project ids are 1-64 letters, digits, `-` or `_`")
+        if access is not None and access not in GENERAL:
+            raise ValueError(f"access must be one of {', '.join(GENERAL)}")
+        if owner is None:
+            owner = auth.current_uid()
+        elif self.users is None or self.users.get(owner) is None:
+            raise ValueError(f"no user {owner} to own the project")
         target = self.root / project_id
         if target.exists():
             raise FileExistsError(project_id)
@@ -124,6 +146,8 @@ class Hub:
         project = Project(target)  # creates nodes/ and .exuvia/
         if name:
             project.update_config(lambda cfg: cfg.__setitem__("name", name))
+        if self.sharing is not None:
+            self.sharing.init_project(project_id, owner, access)
         self._structural += 1
 
     async def apply_template(self, project_id: str, template: str) -> None:
@@ -178,6 +202,8 @@ class Hub:
             shared = _shared_store(project_id)
             if shared is not None:
                 shared.delete_all()
+            if self.sharing is not None:
+                self.sharing.forget(project_id)
             self._load_origin.pop(project_id, None)
         store = artifact_store()
         if store is not None:
@@ -190,6 +216,8 @@ class Hub:
         async with self._lock:
             for pid in list(self._ctxs):
                 await self._unload(pid)
+        if self.sharing is not None:
+            self.sharing.close()
         if self.users is not None:
             self.users.close()
 
@@ -271,6 +299,8 @@ class Hub:
                         continue  # the live database (and its -wal/-shm) is copied above
                     if posix.startswith(PACKAGES_REL):
                         continue  # installed packages: rebuilt from pyproject.toml when the project loads
+                    if posix.startswith(PARTS_REL):
+                        continue  # extracted from the artifacts on the next read
                     if rel.name.endswith((".tmp", ".part")):
                         continue  # half-written artifacts
                     if posix in stored:
@@ -278,10 +308,13 @@ class Hub:
                     tar.add(path, arcname=f"{pid}/{posix}")
                 if copy is not None:
                     tar.add(copy, arcname=f"{pid}/{DB_REL}")
-            # The user list, unless a shared database holds it.
-            if self.users is not None and not database_url():
+            # The user list and the projects' sharing, unless a shared database holds them.
+            if (self.users is not None or self.sharing is not None) and not database_url():
                 users = Path(scratch) / "hub.db"
-                self.users.dump_to(users)
+                if self.users is not None:
+                    self.users.dump_to(users)
+                if self.sharing is not None:
+                    self.sharing.dump_to(users)
                 tar.add(users, arcname=HUB_USERS_DB)
         if self._export_path and self._export_path != out:
             self._export_path.unlink(missing_ok=True)
@@ -302,10 +335,14 @@ class Hub:
             users = Path(scratch) / HUB_USERS_DB
             if not found:
                 raise ValueError("the archive contains no projects")
-            # The archive's user list replaces this hub's (roles and disabled
-            # users included), unless a shared database holds it.
-            if users.is_file() and self.users is not None and not database_url():
-                self.users.replace_from(users)
+            # The archive's user list and sharing replace this hub's (roles,
+            # disabled users and who can open what included), unless a shared
+            # database holds them.
+            if users.is_file() and not database_url():
+                if self.users is not None and "users" in _sqlite_tables(users):
+                    self.users.replace_from(users)
+                if self.sharing is not None:
+                    self.sharing.replace_from(users)
             async with self._lock:
                 try:
                     for pid in found:
@@ -333,6 +370,17 @@ async def _remove_tree(path: Path) -> None:
         if delay is not None:
             await asyncio.sleep(delay)
     raise StillInUse(f"could not remove {path.name}: a file in it is still in use; try again")
+
+
+def _sqlite_tables(path: Path) -> set[str]:
+    """The tables in a SQLite file (an archive's hub.db may hold only some)."""
+    con = sqlite3.connect(path)
+    try:
+        return {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+    except sqlite3.DatabaseError:
+        return set()
+    finally:
+        con.close()
 
 
 def _backup_db(src: Path, dst: Path) -> None:

@@ -246,7 +246,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "run_node",
         "description": (
             "Run a node (and any stale upstream nodes). Returns status, error + log tail on failure, "
-            "and on success the output schema, row count, and the first rows. `params` overrides run "
+            "and on success the output schema, row count, and the first rows (`parts`, by name, for a node with "
+            "several outputs). `params` overrides run "
             "parameters for this run (e.g. {\"as_of\": \"2026-03-02\"} to replay a past date); omitted "
             "parameters use their defaults."
         ),
@@ -261,7 +262,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "query_data",
         "description": (
             "Run read-only DuckDB SQL over the current outputs of all table nodes; each node is a view "
-            "named after the node. Use it to inspect data before writing or after running nodes. Max 50 rows returned. "
+            "named after the node, and each table of a node with several outputs is `<node>.<name>`. Use it to inspect data before writing or after running nodes. Max 50 rows returned. "
             "`params` picks which parameter set the views show (defaults otherwise). For nodes that depend on "
             "parameters, `<node>__runs` unions every parameter set that has run, with a `_<param>` column each — "
             "use it to compare runs across dates. It reads node outputs only: no other file and no network "
@@ -374,6 +375,13 @@ VIEW_TOOLS = {
     "list_views", "read_view", "write_view", "write_view_file", "delete_view_file", "delete_view", "restore_view_file",
 }
 
+# Tools that change nothing in the project: all a viewer of a shared hub
+# project may call (sharing.py). Every other tool needs an editor.
+READ_TOOLS = frozenset({
+    "list_nodes", "read_node", "list_files", "read_file", "list_revisions", "read_revision",
+    "list_views", "read_view", "query_data", "list_packages", "report_issue",
+})
+
 
 def _available_packages(root: Path | None = None) -> str:
     """The data packages exuvia's environment has, plus the ones the project
@@ -416,7 +424,8 @@ SYSTEM = """You are the agent inside exuvia, a DAG workbench for analysts and da
 
 ## How exuvia works
 - A project is a folder of node files in `nodes/`. One file = one node. File name (snake_case) = node name.
-- Python node: a module with exactly one function decorated `@exuvia.node(...)`. Its parameter names ARE its upstream dependencies; exuvia passes each upstream's output (table outputs arrive as pandas DataFrames). Return a DataFrame (preferred), a dict/list/scalar (stored as JSON; numpy values and dates are converted), or None. Any other object (a fitted model, a custom class) fails the run: return the numbers you need from it instead. Put the description in the function docstring.
+- Python node: a module with exactly one function decorated `@exuvia.node(...)`. Its parameter names ARE its upstream dependencies; exuvia passes each upstream's output (table outputs arrive as pandas DataFrames). Return a DataFrame (preferred), a dict/list/scalar (stored as JSON; numpy values, dates, dataclasses and pydantic models are converted), or None. Any other object (a fitted model, a custom class) fails the run: return the numbers you need from it instead. Put the description in the function docstring.
+- Several outputs from one node: when one step naturally yields several results of different shapes (a model fit's predictions, coefficients and metrics; an API call that returns two tables), return a dict, dataclass or pydantic model whose values include DataFrames, e.g. `return {"preds": preds_df, "coefs": coefs_df, "metrics": {"r2": r2}}`. Names are lowercase identifiers. Each DataFrame is a table and anything else is JSON. Downstream, SQL reads a table as `<node>.<name>` (`select * from fit.coefs`); a Python parameter `fit` gets a dict `{"preds": DataFrame, ...}`, or the dataclass / pydantic model itself when the parameter is annotated with it (`def report(fit: FitResult)`, the class in a `lib/` helper). A JSON output can be typed the same way. Prefer separate nodes when the results do not come from the same expensive step.
 - Decorator keywords (must be literals): `schedule="<cron>"` (local time; re-runs this node on that cadence), `cascade=True|False` (auto re-run when upstream output changes; default True), `chart={...}` a Vega-Lite spec WITHOUT a `data` key — the UI injects the node's output rows, `tags=[...]`, `retries=N` (try a failed run again up to N more times, 0-10; for flaky sources such as APIs) with `retry_delay=<seconds>` (default 30, doubling per retry), `overlap="queue"|"skip"` (a scheduled fire while the node is still running: run it after, the default, or drop it).
 - SQL node (`.sql`): DuckDB SQL; reference upstream nodes by name as tables. Header comments: first `--` lines are the description; `-- schedule: <cron>`, `-- cascade: false`, `-- chart: {json}`, `-- retries: 2`, `-- retry_delay: 60`, `-- overlap: skip`.
 - Run parameters make results reproducible over time. A project declares them (see "Run parameters" below; add one with define_param). A node that reads one must declare it: `@exuvia.node(params=["as_of"])` then `exuvia.param("as_of")` (dates arrive as "YYYY-MM-DD" strings); in SQL, `-- params: as_of` then `$as_of`. A node's output is stored per value of the parameters it or its upstream nodes declare, so each date has its own output and history, and nodes without parameters are computed once and shared. A node that reads `as_of` must compute "as of that date": filter source data to rows known on or before it, and never call "now"/"today" yourself.
@@ -452,7 +461,7 @@ def rolling_vol(returns):
 - A view only reads. It sees the outputs of the nodes listed in `reads` and nothing else, and it never runs anything. Computation belongs in nodes: when a view needs data no node produces, add or change a node and list it in `reads`.
 - A view's state follows the nodes it reads, for a parameter set: ready, missing (a read node has no output yet), stale (one is out of date), or error (broken manifest, missing entry file, unknown node).
 - The user sees views in the Views mode of the exuvia UI, rendered in a sandboxed iframe with no network access. The entry file's `export default` is a React component. Imports: the view's own files by relative path (`./Chart`, `./styles.css`, `./data.json`), and only these packages: `react`, `react-dom`, `apache-arrow`, `vega-embed`, `exuvia`. Nothing else is installed and nothing can be fetched.
-- Data comes from `exuvia`: `useTable(node)` / `useJson(node)` (a read node's current output), `useQuery(sql)` (DuckDB over the read nodes only, `<node>__runs` for history), each `{data, error, loading}` and reloading when an output changes; `rows(table)` turns an Arrow table into plain objects; `useParams()` gives `[values, setParams, declared]` (setting parameters changes what is shown, it never runs nodes); `useDark()`. Style with the page's CSS variables (`var(--text)`, `--muted`, `--line`, `--panel`, `--accent`, `--mono`), which follow light and dark mode.
+- Data comes from `exuvia`: `useTable(node)` / `useJson(node)` (a read node's current output; `useTable("fit.coefs")` for one output of a node with several), `useQuery(sql)` (DuckDB over the read nodes only, `<node>__runs` for history), each `{data, error, loading}` and reloading when an output changes; `rows(table)` turns an Arrow table into plain objects; `useParams()` gives `[values, setParams, declared]` (setting parameters changes what is shown, it never runs nodes); `useDark()`. Style with the page's CSS variables (`var(--text)`, `--muted`, `--line`, `--panel`, `--accent`, `--mono`), which follow light and dark mode.
 - Only write views when the user asks for one.
 
 ## When exuvia itself is the problem

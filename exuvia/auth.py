@@ -38,13 +38,19 @@ class Identity:
     """A signed-in person. ``id`` is the name records show them by: the user
     name, or the email when the proxy sends no user name. ``uid`` and
     ``role`` come from the user list (users.py) once the sign-in is recorded:
-    the stable id records link to, and ``admin`` or ``member``."""
+    the stable id records link to, and ``admin`` or ``member``.
+
+    ``link`` is the hub project a share link on this request opens
+    (sharing.py): read-only access to that one project, signed in or not. A
+    request let in by a link alone is an Identity with method ``link`` and no
+    user, so it is never mistaken for the operator (nobody signed in)."""
 
     user: str | None
     email: str | None
     method: str
     uid: str | None = None
     role: str | None = None
+    link: str | None = None
 
     @property
     def id(self) -> str:
@@ -136,7 +142,7 @@ def current() -> Identity | None:
 def current_id() -> str | None:
     """The signed-in person's name, as records show it."""
     ident = _IDENTITY.get()
-    return ident.id if ident else None
+    return (ident.id or None) if ident else None
 
 
 def current_uid() -> str | None:

@@ -43,6 +43,8 @@
 #   EXUVIA_ADMINS      user names or emails (comma-separated) who are always
 #                      admins: they manage everyone else under Users
 #                      (README "Schedules, auth and settings")
+#   EXUVIA_DEFAULT_ACCESS  who else can open a new project: private, view or
+#                      edit (default); its creator can pick (README "Sharing projects")
 #   ANTHROPIC_API_KEY  optional: turns on the built-in agent (or OPENROUTER_API_KEY)
 #
 # For a single project at / instead of a hub, replace `command` with
@@ -88,6 +90,7 @@ services:
       EXUVIA_AUTH_EMAIL_HEADER: ${EXUVIA_AUTH_EMAIL_HEADER:-}
       EXUVIA_AUTH_TRUSTED_PROXIES: ${EXUVIA_AUTH_TRUSTED_PROXIES:-}
       EXUVIA_ADMINS: ${EXUVIA_ADMINS:-}
+      EXUVIA_DEFAULT_ACCESS: ${EXUVIA_DEFAULT_ACCESS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes:

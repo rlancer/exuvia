@@ -267,6 +267,27 @@ class UserStore:
         rows = self._q(f"select {USER_COLS} from users where scope=? and id=?", (self.scope, uid))
         return _user(rows[0]) if rows else None
 
+    def by_email(self, email: str) -> User | None:
+        """The user with this email (the earliest, should two share it)."""
+        rows = self._q(
+            f"select {USER_COLS} from users where scope=? and email=? order by created_at, id limit 1",
+            (self.scope, email.strip().lower()),
+        )
+        return _user(rows[0]) if rows else None
+
+    def search(self, q: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        """Enabled users whose name or email contains ``q`` (any case), for
+        picking someone to share a project with: id, name and email only."""
+        needle = q.strip().lower()
+        out = []
+        for r in self._q(f"select {USER_COLS} from users where scope=? and disabled=0 order by name, id", (self.scope,)):
+            if needle and needle not in r["name"].lower() and needle not in (r["email"] or ""):
+                continue
+            out.append({"id": r["id"], "name": r["name"], "email": r["email"]})
+            if len(out) >= limit:
+                break
+        return out
+
     def list(self) -> list[dict[str, Any]]:
         """Every user, most recently seen first, with the identities they
         signed in with."""
