@@ -15,7 +15,7 @@ import { Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
 import { VStack } from "@astryxdesign/core/VStack";
 import { api, streamAgent, type AgentEvent, type GraphNode } from "./api";
-import { IconChevronRight, IconClock, IconFolder, IconSpark } from "./icons";
+import { IconChevronRight, IconClock, IconFolder, IconPlus, IconSpark } from "./icons";
 
 type Item =
   | { kind: "user"; text: string }
@@ -254,7 +254,9 @@ export const SidePanel = forwardRef<
           <Tab value="history" label="History" icon={<IconClock />} />
         </TabList>
         <span {...stylex.props(styles.grow)} />
-        {tab === "agent" && items.length > 0 && <Button size="sm" variant="ghost" label="New chat" onClick={reset} />}
+        {tab === "agent" && items.length > 0 && (
+          <IconButton size="sm" variant="ghost" label="New chat" tooltip="New chat" icon={<IconPlus />} onClick={reset} />
+        )}
         <IconButton
           size="sm"
           variant="ghost"
