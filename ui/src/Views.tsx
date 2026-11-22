@@ -1,8 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import CodeMirror, { EditorView, type Extension } from "@uiw/react-codemirror";
+import { css } from "@codemirror/lang-css";
+import { javascript } from "@codemirror/lang-javascript";
+import { json } from "@codemirror/lang-json";
 import { api, type GraphNode, type Project, type ProjectParam, type ProjectView } from "./api";
+import { fileOrder } from "./views/files";
 import { ViewBridge, frameDocument, type FrameStatus } from "./views/host";
 import type { Params, ParamsState } from "./views/protocol";
-import { IconPlay } from "./icons";
+import { IconPlay, MOD } from "./icons";
+
+/** What the main pane shows for the selected view: the rendered view or its files. */
+type Pane = "view" | "code";
+/** Unsaved edits: view name → file path → text. */
+type Drafts = Record<string, Record<string, string>>;
+// Kept outside the component, so leaving Views mode for the graph and coming
+// back keeps unsaved edits and the open pane.
+let keptDrafts: Drafts = {};
+let keptPane: Pane = "view";
 
 /** Overrides → the parameter set a view sees (resolved values + declarations). */
 function paramsState(params: ProjectParam[]): ParamsState {
@@ -39,6 +53,32 @@ export function Views(props: {
   const [at, setAt] = useState<Project | null>(null);
   const [paramErr, setParamErr] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  const [pane, setPane] = useState<Pane>(keptPane);
+  const [drafts, setDrafts] = useState<Drafts>(keptDrafts);
+  const [openFiles, setOpenFiles] = useState<Record<string, string>>({});
+  useEffect(() => void (keptDrafts = drafts), [drafts]);
+  useEffect(() => void (keptPane = pane), [pane]);
+  // Unsaved edits: ask before the page goes away.
+  const anyDraft = Object.keys(drafts).length > 0;
+  useEffect(() => {
+    if (!anyDraft) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [anyDraft]);
+
+  /** Set (or with `null`, drop) the unsaved text of one file of one view. */
+  const setDraft = useCallback((viewName: string, path: string, text: string | null) => {
+    setDrafts((d) => {
+      const mine = { ...d[viewName] };
+      if (text === null) delete mine[path];
+      else mine[path] = text;
+      const next = { ...d };
+      if (Object.keys(mine).length) next[viewName] = mine;
+      else delete next[viewName];
+      return next;
+    });
+  }, []);
 
   // `project` changes on every graph/run event: refetch at our parameter set.
   useEffect(() => {
@@ -85,6 +125,7 @@ export function Views(props: {
             <span className="row1">
               <span className="dot" />
               <span className="name">{v.title || v.name}</span>
+              {drafts[v.name] && <span className="dirty" title="Unsaved changes">•</span>}
               <span className="state">{VIEW_STATE_LABEL[v.state]}</span>
             </span>
             {v.reason ? <span className="reason">{v.reason}</span> : v.description ? <span className="reason">{v.description}</span> : null}
@@ -111,6 +152,12 @@ export function Views(props: {
             dark={dark}
             onParams={changeParams}
             onOpenNode={onOpenNode}
+            pane={pane}
+            onPane={setPane}
+            drafts={drafts[view.name] ?? {}}
+            onDraft={(path, text) => setDraft(view.name, path, text)}
+            file={openFiles[view.name]}
+            onFile={(path) => setOpenFiles((f) => ({ ...f, [view.name]: path }))}
           />
         ) : (
           <div className="placeholder">{at ? "Pick a view." : "Loading…"}</div>
@@ -130,8 +177,14 @@ function ViewPane(props: {
   dark: boolean;
   onParams: (p: Params) => Promise<ParamsState>;
   onOpenNode: (name: string) => void;
+  pane: Pane;
+  onPane: (p: Pane) => void;
+  drafts: Record<string, string>;
+  onDraft: (path: string, text: string | null) => void;
+  file: string | undefined;
+  onFile: (path: string) => void;
 }) {
-  const { view, params, dark } = props;
+  const { view, params, dark, pane } = props;
   const [status, setStatus] = useState<FrameStatus>({ phase: "loading" });
   const [errors, setErrors] = useState<Extract<FrameStatus, { error: string }>[]>([]);
   const [runErr, setRunErr] = useState<string | null>(null);
@@ -148,6 +201,12 @@ function ViewPane(props: {
     setErrors([]);
     setStatus({ phase: "loading" });
   }, [view.hash]);
+
+  /** Show one of the view's files in the Code pane. */
+  const openFile = (path: string) => {
+    props.onFile(path);
+    props.onPane("code");
+  };
 
   const runReads = async () => {
     setRunErr(null);
@@ -195,11 +254,30 @@ function ViewPane(props: {
         {props.specs.length > 0 && <ParamBar specs={props.specs} overrides={props.overrides} onChange={props.onParams} />}
         {(props.paramErr || runErr) && <div className="err-banner"><div>{props.paramErr ?? runErr}</div></div>}
         {view.state !== "ready" && view.reason && <div className={`view-reason ${VIEW_STATE_CLASS[view.state]}`}>{view.reason}</div>}
+        <div className="tabs" role="tablist" aria-label={`${view.name}: the rendered view and its code`}>
+          <button role="tab" aria-selected={pane === "view"} className={`tab ${pane === "view" ? "on" : ""}`} onClick={() => props.onPane("view")}>
+            View
+          </button>
+          <button role="tab" aria-selected={pane === "code"} className={`tab ${pane === "code" ? "on" : ""}`} onClick={() => props.onPane("code")}>
+            Code{Object.keys(props.drafts).length > 0 && <span title="Unsaved changes"> •</span>}
+            <span className="n">{view.files.length}</span>
+          </button>
+        </div>
       </div>
+      {pane === "code" && (
+        <ViewCode key={view.name} view={view} dark={dark} drafts={props.drafts} onDraft={props.onDraft} file={props.file} onFile={props.onFile} />
+      )}
       {view.state === "error" ? (
-        <div className="placeholder">Fix view.json to render this view.</div>
+        pane === "view" && (
+          <div className="placeholder">
+            Fix view.json to render this view.{" "}
+            <button className="btn sm" onClick={() => openFile("view.json")}>Open view.json</button>
+          </div>
+        )
       ) : (
-        <ViewFrame key={view.hash} view={view} params={params} dark={dark} onParams={props.onParams} onStatus={onStatus} />
+        // Stays mounted while the code is open, so saving a file rebuilds it and
+        // its compile and runtime errors show up under the editor.
+        <ViewFrame key={view.hash} view={view} params={params} dark={dark} hidden={pane !== "view"} onParams={props.onParams} onStatus={onStatus} />
       )}
       {errors.length > 0 && (
         <div className="view-errors">
@@ -215,7 +293,18 @@ function ViewPane(props: {
               <details key={i} className="view-error">
                 <summary>
                   <span className="kind">{e.phase}</span>
-                  {e.file && <code>{e.file}</code>}
+                  {e.file && (
+                    <button
+                      className="file-link"
+                      title={`Open ${e.file}`}
+                      onClick={(ev) => {
+                        ev.preventDefault(); // don't also open the stack
+                        openFile(e.file!);
+                      }}
+                    >
+                      <code>{e.file}</code>
+                    </button>
+                  )}
                   <span className="msg">{e.error}</span>
                 </summary>
                 {e.stack && <pre>{e.stack}</pre>}
@@ -223,6 +312,134 @@ function ViewPane(props: {
             ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/** A view file's editor language, by extension. */
+function language(path: string): Extension[] {
+  const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+  if (["tsx", "ts", "jsx", "js"].includes(ext)) return [javascript({ jsx: ext.endsWith("x"), typescript: ext.startsWith("t") })];
+  if (ext === "css") return [css()];
+  if (ext === "json") return [json()];
+  return [];
+}
+
+/**
+ * The Code pane: the view's files, one open in an editor. Saving writes the
+ * file (PUT /api/views/{name}/files/{path}); the new hash rebuilds the frame.
+ */
+function ViewCode(props: {
+  view: ProjectView;
+  dark: boolean;
+  drafts: Record<string, string>;
+  onDraft: (path: string, text: string | null) => void;
+  file: string | undefined;
+  onFile: (path: string) => void;
+}) {
+  const { view, drafts, onDraft } = props;
+  const [saved, setSaved] = useState<Record<string, string> | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  // The files as saved, read again whenever they change: a save here, the
+  // agent, or an editor on disk. Unsaved edits are kept.
+  useEffect(() => {
+    let live = true;
+    api.view(view.name).then(
+      (r) => live && setSaved(Object.fromEntries(r.sources.map((f) => [f.path, f.source]))),
+      (e: Error) => live && setErr(e.message),
+    );
+    return () => {
+      live = false;
+    };
+  }, [view.name, view.hash]);
+
+  // An edit that now matches the saved file is no longer unsaved.
+  useEffect(() => {
+    if (!saved) return;
+    for (const [path, text] of Object.entries(drafts)) if (saved[path] === text) onDraft(path, null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saved]);
+
+  // A file deleted elsewhere while it has unsaved edits stays listed: saving brings it back.
+  const files = fileOrder([...Object.keys(saved ?? {}), ...Object.keys(drafts)], view.entry);
+  const current = props.file && files.includes(props.file) ? props.file : files.includes(view.entry) ? view.entry : files[0];
+  const text = current ? (drafts[current] ?? saved?.[current] ?? "") : "";
+  const dirty = !!current && current in drafts;
+  const unsaved = files.filter((f) => f in drafts);
+
+  const save = async (paths: string[]) => {
+    if (!paths.length || busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      for (const path of paths) {
+        const source = drafts[path];
+        await api.saveViewFile(view.name, path, source);
+        setSaved((s) => ({ ...s, [path]: source }));
+        onDraft(path, null);
+      }
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="view-code">
+      <nav className="view-files" aria-label={`Files of ${view.name}`}>
+        {files.map((f) => (
+          <button key={f} className={`view-file ${f === current ? "on" : ""}`} aria-current={f === current} onClick={() => props.onFile(f)} title={f}>
+            <span className="fname">{f}</span>
+            {f in drafts && <span className="dirty" title="Unsaved changes">•</span>}
+          </button>
+        ))}
+      </nav>
+      <div
+        className="code-wrap"
+        onKeyDown={(e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+            e.preventDefault();
+            if (dirty) save([current!]);
+          }
+        }}
+      >
+        {err && <div className="err-banner"><div>{err}</div></div>}
+        {current ? (
+          <CodeMirror
+            key={current}
+            value={text}
+            onChange={(t) => onDraft(current, t === saved?.[current] ? null : t)}
+            theme={props.dark ? "dark" : "light"}
+            extensions={[...language(current), EditorView.lineWrapping]}
+            basicSetup={{ foldGutter: false, highlightActiveLine: true }}
+            style={{ flex: 1, minHeight: 0, overflow: "auto" }}
+            height="100%"
+          />
+        ) : (
+          <div className="placeholder">{saved ? "This view has no files." : "Loading…"}</div>
+        )}
+        <div className="code-bar">
+          <span className="mono">{current ? `${view.path}/${current}` : view.path}</span>
+          <span className="spacer" />
+          <span>{dirty ? `unsaved · ${MOD}S save` : "saved"}</span>
+          {dirty && (
+            <button className="btn sm ghost" onClick={() => onDraft(current!, null)} disabled={busy} title="Throw away the unsaved edits to this file">
+              Discard
+            </button>
+          )}
+          {unsaved.length > 1 && (
+            <button className="btn sm" onClick={() => save(unsaved)} disabled={busy}>
+              Save all ({unsaved.length})
+            </button>
+          )}
+          <button className="btn sm" onClick={() => save([current!])} disabled={!dirty || busy}>
+            Save
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -266,6 +483,8 @@ function ViewFrame(props: {
   view: ProjectView;
   params: ParamsState;
   dark: boolean;
+  /** Kept running but not shown (while the Code pane is open). */
+  hidden: boolean;
   onParams: (p: Params) => Promise<ParamsState>;
   onStatus: (s: FrameStatus) => void;
 }) {
@@ -301,6 +520,7 @@ function ViewFrame(props: {
       title={props.view.title || props.view.name}
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
+      hidden={props.hidden}
     />
   );
 }

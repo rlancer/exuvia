@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ViewError, compile, createLoader, resolveImport } from "./loader";
 import { CHANNEL, isToFrame, isToHost } from "./protocol";
 import { frameDocument, refusal } from "./host";
+import { fileOrder } from "./files";
 
 const files = {
   "App.tsx": 'import { label } from "./lib/format";\nexport default function App() { return <b>{label(1)}</b>; }\n',
@@ -152,5 +153,17 @@ describe("host", () => {
   it("a new nonce for every frame", () => {
     const n = (d: string) => /nonce-([^']+)'/.exec(d)?.[1];
     expect(n(frameDocument())).not.toBe(n(frameDocument()));
+  });
+});
+
+describe("fileOrder", () => {
+  it("lists the manifest, then the entry, then the rest by path, once each", () => {
+    expect(fileOrder(["styles.css", "components/Chart.tsx", "App.tsx", "view.json", "App.tsx"], "App.tsx")).toEqual([
+      "view.json",
+      "App.tsx",
+      "components/Chart.tsx",
+      "styles.css",
+    ]);
+    expect(fileOrder(["b.ts", "a.ts"], "Main.tsx")).toEqual(["a.ts", "b.ts"]);
   });
 });
