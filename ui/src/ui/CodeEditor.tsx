@@ -1,12 +1,13 @@
-import CodeMirror, { EditorView, type Extension, type ReactCodeMirrorProps } from "@uiw/react-codemirror";
+import CodeMirror, { EditorView, Prec, type Extension, type ReactCodeMirrorProps } from "@uiw/react-codemirror";
 import * as stylex from "@stylexjs/stylex";
 
 /**
  * The editor's skin, in CodeMirror's own theme API: the app's code ground,
  * its mono, and the theme's rules and text. The values are the theme's
  * custom properties, so the editor follows the colour mode with the page.
+ * Highest precedence: CodeMirror's own dark theme sets a ground too.
  */
-const skin = EditorView.theme({
+const skin = Prec.highest(EditorView.theme({
   "&": { height: "100%", fontSize: "var(--text-code-size)", backgroundColor: "var(--exuvia-code-background)" },
   "&.cm-focused": { outline: "none" },
   ".cm-scroller": { fontFamily: "var(--font-family-code)", lineHeight: "1.5" },
@@ -19,7 +20,7 @@ const skin = EditorView.theme({
   ".cm-changedLine": { backgroundColor: "color-mix(in srgb, var(--color-success) 12%, transparent) !important" },
   ".cm-deletedChunk": { backgroundColor: "color-mix(in srgb, var(--color-error) 12%, transparent) !important" },
   ".cm-collapsedLines": { backgroundColor: "var(--color-background-muted)", color: "var(--color-text-secondary)" },
-});
+}));
 
 const styles = stylex.create({
   editor: { flexGrow: 1, minHeight: 0, minWidth: 0, overflow: "auto" },

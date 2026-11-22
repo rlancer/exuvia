@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { EditorView } from "@uiw/react-codemirror";
 import * as stylex from "@stylexjs/stylex";
 import { borderVars, colorVars, radiusVars, spacingVars, typeScaleVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { Banner } from "@astryxdesign/core/Banner";
@@ -6,14 +7,17 @@ import { Button } from "@astryxdesign/core/Button";
 import { Code } from "@astryxdesign/core/Code";
 import { Collapsible } from "@astryxdesign/core/Collapsible";
 import { HStack } from "@astryxdesign/core/HStack";
+import { IconButton } from "@astryxdesign/core/IconButton";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
-import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { VStack } from "@astryxdesign/core/VStack";
 import { api, type PackagesState } from "./api";
+import { IconTrash } from "./icons";
 import { AppDialog } from "./ui/AppDialog";
+import { CodeEditor } from "./ui/CodeEditor";
 import { StateDot } from "./ui/state";
+import { useColorMode } from "./theme/colorMode";
 
 const STATUS: Record<PackagesState["status"], string> = {
   none: "no packages listed",
@@ -25,6 +29,9 @@ const STATUS: Record<PackagesState["status"], string> = {
 };
 
 const NEW_MANIFEST = '[project]\nname = "project"\nversion = "0"\nrequires-python = ">=3.11"\ndependencies = []\n';
+
+/** What a screen reader calls the editor of the manifest. */
+const MANIFEST_EDITOR = [EditorView.contentAttributes.of({ "aria-label": "pyproject.toml" })];
 
 /** Who made a request: the built-in agent, an API client, or an MCP client's own name. */
 const requester = (origin: string) => (origin === "agent" ? "The agent" : origin === "api" ? "An API client" : origin);
@@ -42,7 +49,20 @@ type Row = { requirement: string; name: string; version: string | null; source: 
 const styles = stylex.create({
   grow: { flexGrow: 1, flexBasis: 0, minWidth: 0 },
   // A requirement is read letter by letter: `>=` stays two characters.
-  spec: { fontFamily: typographyVars["--font-family-code"], fontVariantLigatures: "none", fontFeatureSettings: '"liga" 0, "calt" 0' },
+  spec: { fontVariantLigatures: "none", fontFeatureSettings: '"liga" 0, "calt" 0' },
+  // The file's editor: a frame of a fixed height, which the editor fills and scrolls in.
+  editor: {
+    display: "flex",
+    flexDirection: "column",
+    alignSelf: "stretch",
+    height: "260px",
+    overflow: "hidden",
+    borderWidth: borderVars["--border-width"],
+    borderStyle: "solid",
+    borderColor: colorVars["--color-border"],
+    borderRadius: radiusVars["--radius-container"],
+    fontVariantLigatures: "none",
+  },
   // What uv or pip printed: the code ground, the mono, and a height it scrolls in.
   output: {
     margin: 0,
@@ -76,6 +96,7 @@ export function PackagesDialog(props: { state: PackagesState | null; onChange: (
   const [err, setErr] = useState<{ at: string; text: string } | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [showLog, setShowLog] = useState(false);
+  const [dark] = useColorMode();
 
   const act = async (label: string, fn: () => Promise<PackagesState>) => {
     setBusy(label);
@@ -97,8 +118,9 @@ export function PackagesDialog(props: { state: PackagesState | null; onChange: (
   };
 
   const status = state?.status ?? "none";
-  const failure = (text: string) => (
-    <pre role="alert" {...stylex.props(styles.output, styles.wrong)}>
+  // What an action just answered is announced; what a past install left is read with the status.
+  const failure = (text: string, announce = true) => (
+    <pre role={announce ? "alert" : undefined} {...stylex.props(styles.output, styles.wrong)}>
       {text}
     </pre>
   );
@@ -107,13 +129,17 @@ export function PackagesDialog(props: { state: PackagesState | null; onChange: (
     {
       key: "requirement",
       header: "Package",
-      width: proportional(2),
-      renderCell: (p) => <Code xstyle={styles.spec}>{p.requirement}</Code>,
+      width: proportional(2, { minWidth: 140 }),
+      renderCell: (p) => (
+        <Text type="code" xstyle={styles.spec}>
+          {p.requirement}
+        </Text>
+      ),
     },
     {
       key: "version",
       header: "Version",
-      width: proportional(1),
+      width: proportional(1, { minWidth: 72 }),
       renderCell: (p) => (
         <Text type="code" color="secondary">
           {p.version ?? "—"}
@@ -123,7 +149,7 @@ export function PackagesDialog(props: { state: PackagesState | null; onChange: (
     {
       key: "source",
       header: "Source",
-      width: proportional(1.5),
+      width: proportional(1.5, { minWidth: 110 }),
       renderCell: (p) => (
         <Text type="supporting" color="secondary">
           {p.source === "exuvia" ? "comes with exuvia" : p.source === "project" ? "installed" : ""}
@@ -133,14 +159,15 @@ export function PackagesDialog(props: { state: PackagesState | null; onChange: (
     {
       key: "remove",
       header: "",
-      width: pixel(88),
+      width: pixel(56),
       align: "end",
       renderCell: (p) => (
-        <Button
+        <IconButton
           variant="ghost"
           size="sm"
-          label="Remove"
+          label={`Remove ${p.name}`}
           tooltip={`Remove ${p.name}`}
+          icon={<IconTrash />}
           isDisabled={!!busy && busy !== `rm${p.name}`}
           isLoading={busy === `rm${p.name}`}
           onClick={() => act(`rm${p.name}`, () => api.packagesEdit({ remove: [p.name] }))}
@@ -179,35 +206,39 @@ export function PackagesDialog(props: { state: PackagesState | null; onChange: (
               <Button size="sm" label="Retry" isDisabled={!!busy && busy !== "retry"} isLoading={busy === "retry"} onClick={() => act("retry", api.packagesRetry)} />
             )}
           </HStack>
-          {status === "failed" && state?.error && failure(state.error)}
+          {status === "failed" && state?.error && failure(state.error, false)}
           {err?.at === "retry" && failure(err.text)}
         </VStack>
 
-        {state?.requests.map((r) => (
-          <VStack key={r.id} gap={2}>
-            <Banner
-              status="info"
-              title={
-                <>
-                  {requester(r.origin)} asks for <Code xstyle={styles.spec}>{r.packages.join(", ")}</Code>
-                </>
-              }
-              description={r.reason || undefined}
-              endContent={
-                <HStack gap={1}>
-                  <Button
-                    size="sm"
-                    label={busy === `req${r.id}` ? "Checking…" : "Install"}
-                    isDisabled={!!busy}
-                    onClick={() => act(`req${r.id}`, () => api.packagesApprove(r.id))}
-                  />
-                  <Button variant="ghost" size="sm" label="Dismiss" isDisabled={!!busy} onClick={() => act(`req${r.id}`, () => api.packagesDismiss(r.id))} />
-                </HStack>
-              }
-            />
-            {err?.at === `req${r.id}` && failure(err.text)}
+        {!!state?.requests.length && (
+          <VStack gap={2}>
+            {state.requests.map((r) => (
+              <VStack key={r.id} gap={2}>
+                <Banner
+                  status="info"
+                  title={
+                    <>
+                      {requester(r.origin)} asks for <Code xstyle={styles.spec}>{r.packages.join(", ")}</Code>
+                    </>
+                  }
+                  description={r.reason || undefined}
+                  endContent={
+                    <HStack gap={1}>
+                      <Button
+                        size="sm"
+                        label={busy === `req${r.id}` ? "Checking…" : "Install"}
+                        isDisabled={!!busy}
+                        onClick={() => act(`req${r.id}`, () => api.packagesApprove(r.id))}
+                      />
+                      <Button variant="ghost" size="sm" label="Dismiss" isDisabled={!!busy} onClick={() => act(`req${r.id}`, () => api.packagesDismiss(r.id))} />
+                    </HStack>
+                  }
+                />
+                {err?.at === `req${r.id}` && failure(err.text)}
+              </VStack>
+            ))}
           </VStack>
-        ))}
+        )}
 
         <VStack gap={2}>
           <HStack gap={2} vAlign="end">
@@ -233,7 +264,7 @@ export function PackagesDialog(props: { state: PackagesState | null; onChange: (
         {state && state.packages.length > 0 && <Table<Row> data={state.packages.map((p) => ({ ...p }))} columns={columns} idKey="requirement" density="compact" />}
 
         {/* What few people need: the file itself, and what the installer printed. */}
-        <VStack gap={1}>
+        <VStack gap={2}>
           <Collapsible
             trigger={<Text weight="medium">Edit pyproject.toml</Text>}
             chevronPosition="start"
@@ -242,16 +273,9 @@ export function PackagesDialog(props: { state: PackagesState | null; onChange: (
           >
             {editing !== null && (
               <VStack gap={2} hAlign="end" paddingBlock={2}>
-                <TextArea
-                  label="pyproject.toml"
-                  isLabelHidden
-                  hasSpellCheck={false}
-                  rows={12}
-                  width="100%"
-                  value={editing}
-                  onChange={setEditing}
-                  controlXstyle={styles.spec}
-                />
+                <div {...stylex.props(styles.editor)}>
+                  <CodeEditor value={editing} onChange={setEditing} dark={dark} extensions={MANIFEST_EDITOR} />
+                </div>
                 {err?.at === "manifest" && failure(err.text)}
                 <Button
                   size="sm"

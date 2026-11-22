@@ -22,8 +22,8 @@ const styles = stylex.create({
   // The news of a release: a dot on the button's corner, ringed in the bar's ground.
   dot: {
     position: "absolute",
-    insetBlockStart: spacingVars["--spacing-0-5"],
-    insetInlineEnd: spacingVars["--spacing-0-5"],
+    insetBlockStart: spacingVars["--spacing-1"],
+    insetInlineEnd: spacingVars["--spacing-1"],
     pointerEvents: "none",
     boxShadow: `0 0 0 2px ${colorVars["--color-background-surface"]}`,
   },
@@ -112,7 +112,7 @@ export function HelpMenu() {
       content={
         <VStack gap={3}>
           <VStack gap={1}>
-            <HStack gap={2} xstyle={styles.baseline}>
+            <HStack gap={2} wrap="wrap" xstyle={styles.baseline}>
               <Heading level={3}>exuvia</Heading>
               <Text type="code" color="secondary">
                 {info?.version ?? (failed ? "unknown" : "…")}

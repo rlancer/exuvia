@@ -1,4 +1,6 @@
 import { useId, useState } from "react";
+import * as stylex from "@stylexjs/stylex";
+import { borderVars, colorVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Field } from "@astryxdesign/core/Field";
@@ -9,6 +11,12 @@ import { ToggleButton, ToggleButtonGroup } from "@astryxdesign/core/ToggleButton
 import { VStack } from "@astryxdesign/core/VStack";
 import { api, type GraphNode } from "./api";
 import { AppDialog } from "./ui/AppDialog";
+
+const styles = stylex.create({
+  // An input is a chip with an edge, so a name that is not picked still reads as one to press.
+  chip: { borderWidth: borderVars["--border-width"], borderStyle: "solid", borderColor: colorVars["--color-border-emphasized"] },
+  chipOn: { borderColor: colorVars["--color-accent"], backgroundColor: colorVars["--color-accent-muted"] },
+});
 
 /**
  * A new node: its name (which is its file's), whether it is Python or SQL,
@@ -80,7 +88,7 @@ export function NewNodeDialog(props: {
           <Field label="Inputs (upstream nodes)" inputID={depsId} isGroupLabel>
             <ToggleButtonGroup type="multiple" size="sm" label="Inputs (upstream nodes)" value={deps} onChange={setDeps}>
               {props.nodes.map((n) => (
-                <ToggleButton key={n.name} value={n.name} label={n.name}>
+                <ToggleButton key={n.name} value={n.name} label={n.name} xstyle={[styles.chip, deps.includes(n.name) && styles.chipOn]}>
                   <Text type="code" color="inherit">
                     {n.name}
                   </Text>

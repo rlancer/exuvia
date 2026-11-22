@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import * as stylex from "@stylexjs/stylex";
-import { colorVars, radiusVars, spacingVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
+import { colorVars, radiusVars, sizeVars, spacingVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
@@ -109,6 +109,7 @@ export default function Hub() {
   const projects = !people || filter === "all" ? all : all.filter((p) => (filter === "mine" ? mine(p) : !mine(p)));
   // Without sharing everyone can delete; with it, the owner (admins are owners everywhere).
   const canDelete = (p: HubProject) => !listing?.sharing || p.access === "owner";
+  const someDeletable = projects.some(canDelete);
   useEffect(() => {
     document.title = "Projects · exuvia";
   }, []);
@@ -170,6 +171,7 @@ export default function Hub() {
           <TokenForm />
         ) : err ? (
           <Banner
+            role="alert"
             status="error"
             title="Couldn't load the projects"
             description={err}
@@ -246,7 +248,7 @@ export default function Hub() {
                                 onClick={() => setSharing(p)}
                               />
                             )}
-                            {canDelete(p) && (
+                            {canDelete(p) ? (
                               <IconButton
                                 variant="ghost"
                                 size="sm"
@@ -255,6 +257,9 @@ export default function Hub() {
                                 icon={<IconTrash />}
                                 onClick={() => setDeleting(p)}
                               />
+                            ) : (
+                              // Keeps Share and Access in one column down the list.
+                              someDeletable && <span {...stylex.props(styles.slot)} />
                             )}
                           </HStack>
                         ) : undefined
@@ -413,7 +418,6 @@ function NewProjectDialog(props: {
         <TextInput
           label="Id"
           description="In its URL: /p/<id>/"
-          controlXstyle={styles.mono}
           value={finalId}
           placeholder="market-research"
           hasSpellCheck={false}
@@ -443,7 +447,7 @@ function NewProjectDialog(props: {
             }))}
           />
         )}
-        {err && <Banner status="error" title={err} />}
+        {err && <Banner role="alert" status="error" title={err} />}
       </VStack>
     </AppDialog>
   );
@@ -492,7 +496,6 @@ function DeleteDialog(props: { project: HubProject; onClose: () => void; onDelet
       <VStack gap={4}>
         <TextInput
           label={`Type ${id} to confirm`}
-          controlXstyle={styles.mono}
           hasAutoFocus
           hasSpellCheck={false}
           autoCapitalize="off"
@@ -500,7 +503,7 @@ function DeleteDialog(props: { project: HubProject; onClose: () => void; onDelet
           value={typed}
           onChange={setTyped}
         />
-        {err && <Banner status="error" title={err} />}
+        {err && <Banner role="alert" status="error" title={err} />}
       </VStack>
     </AppDialog>
   );
@@ -549,5 +552,6 @@ const styles = stylex.create({
     borderColor: colorVars["--color-border"],
     borderRadius: radiusVars["--radius-container"],
   },
+  slot: { width: sizeVars["--size-element-sm"], flexShrink: 0 },
   mono: { fontFamily: typographyVars["--font-family-code"] },
 });

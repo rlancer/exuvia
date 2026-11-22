@@ -1,3 +1,4 @@
+from lib.stats import zscore  # noqa: F401
 """Daily log returns per ticker."""
 import exuvia
 

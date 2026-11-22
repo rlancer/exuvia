@@ -164,7 +164,8 @@ export function DownloadMenu(props: {
     menuMaxHeight: 420,
   };
   return label ? (
-    <DropdownMenu {...menu} hasChevron={false} button={{ label, icon, size, isDisabled, tooltip: title === label ? undefined : title }} />
+    // The button says `label`; what it is called, and its tooltip, is the fuller `title`.
+    <DropdownMenu {...menu} hasChevron={false} button={{ label: title, children: label, icon, size, isDisabled, tooltip: title === label ? undefined : title }} />
   ) : (
     <DropdownMenu
       {...menu}

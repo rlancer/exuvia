@@ -1,26 +1,72 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import CodeMirror, { EditorView } from "@uiw/react-codemirror";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { EditorView } from "@uiw/react-codemirror";
 import { python } from "@codemirror/lang-python";
 import { sql } from "@codemirror/lang-sql";
 import embed from "vega-embed";
+import * as stylex from "@stylexjs/stylex";
+import { colorVars, fontWeightVars, radiusVars, spacingVars, textSizeVars, typeScaleVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
+import { AlertDialog } from "@astryxdesign/core/AlertDialog";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
+import { Code } from "@astryxdesign/core/Code";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { Heading } from "@astryxdesign/core/Heading";
+import { HStack } from "@astryxdesign/core/HStack";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { List, ListItem } from "@astryxdesign/core/List";
+import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
+import { Spinner } from "@astryxdesign/core/Spinner";
+import { StatusDot } from "@astryxdesign/core/StatusDot";
+import { Tab, TabList } from "@astryxdesign/core/TabList";
+import { Text } from "@astryxdesign/core/Text";
+import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { api, type Column, type GraphNode, type Preview, type RunRow } from "./api";
-import { ago, dur, fmtCell, fmtNum, pressable, until } from "./util";
-import { Dialog } from "./Dialog";
+import { ago, dur, fmtCell, fmtNum, until } from "./util";
 import { IconClock, IconPlay, IconSpark, IconTrash, MOD } from "./icons";
 import { failed } from "./toast";
 import { HistoryBrowser } from "./History";
 import { useAccess } from "./Access";
 import { codeGroup, DownloadMenu, outputGroups, tableItems } from "./Export";
 import { nodeExportUrl, saveQuery, saveUrl } from "./download";
+import { CodeEditor } from "./ui/CodeEditor";
+import { StateDot, statusOf, statusText } from "./ui/state";
+import { useColorMode } from "./theme/colorMode";
 
-/** A chart's series colours: the accent first, then the states' hues and four more, per theme. */
-const SERIES = {
-  dark: ["#6f9bff", "#f2b84b", "#4cc38a", "#ef6b62", "#b48cf2", "#4fc1d6", "#e88bc4", "#a0a39a"],
-  light: ["#3b6fd8", "#c98a12", "#2f8f5b", "#c4413a", "#7d55cf", "#1f8ea6", "#c2518f", "#7d7b74"],
-};
+/**
+ * A chart's series colours: the accent first, then the states' hues and four
+ * more, as the theme has them (its custom properties, so they follow the mode).
+ */
+const SERIES = [
+  "--color-accent",
+  "--color-warning",
+  "--color-success",
+  "--color-error",
+  "--color-data-categorical-pink",
+  "--color-data-categorical-teal",
+  "--color-data-categorical-purple",
+  "--color-data-neutral",
+];
+
+/** What the theme's colours are at `host`, here and now, in a form a canvas can paint with. */
+function themeColors(host: HTMLElement, names: string[]): string[] {
+  const probe = document.createElement("span");
+  host.appendChild(probe);
+  const out = names.map((name) => {
+    probe.style.color = `var(${name})`;
+    return getComputedStyle(probe).color;
+  });
+  probe.remove();
+  return out;
+}
 
 type Tab = "code" | "data" | "chart" | "runs" | "history";
 
+/**
+ * The pane of the selected node. From the top: what it is (its name and
+ * kind) and what can be done to it (Run, download, delete); its state and
+ * what it depends on; then its code, data, chart, runs and history, a tab each.
+ */
 export function Inspector(props: {
   node: GraphNode;
   nodes: GraphNode[];
@@ -46,6 +92,7 @@ export function Inspector(props: {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const panelId = useId();
   const dirty = source !== saved;
   const loadedFor = useRef<string>("");
   useEffect(() => {
@@ -110,120 +157,174 @@ export function Inspector(props: {
 
   const running = node.state === "running" || node.state === "queued";
   const problem = node.parse_error || (node.state === "failed" ? node.reason : null);
+  // What went wrong with a save, a run or a delete shows on every tab; the node's own error with its code.
+  const shownErr = err ?? (tab === "code" ? problem : null);
+
+  /** The editor's shortcuts, taken before CodeMirror sees the keys (it would add a line on Ctrl+Enter). */
+  const onKeys = (e: KeyboardEvent) => {
+    if (!(e.ctrlKey || e.metaKey) || (e.key !== "s" && e.key !== "Enter")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "s") save();
+    else run();
+  };
 
   return (
-    <>
-      <div className={`insp-head s-${node.state}`}>
-        <div className="insp-title">
-          <span className="dot" />
-          <h3>{node.name}</h3>
-          {canEdit && (
-            <button className="btn primary" onClick={run} disabled={busy || running || !!node.parse_error}>
-              {running ? "Running…" : dirty ? "Save & run" : <><IconPlay size={11} /> Run</>}
-            </button>
-          )}
-          {canEdit && running && node.last_run && (
-            <button className="btn" onClick={() => api.cancel(node.last_run!.id).catch(failed("Couldn't stop the run"))}>Stop</button>
-          )}
-          <DownloadMenu
-            title={`Download ${node.name}: its output or its code`}
-            groups={[...outputGroups(node, { title: "Output" }), codeGroup({ node: node.name })]}
-          />
-          {canEdit && (
-            <button className="btn ghost icon-btn danger" title="Delete node" aria-label={`Delete node ${node.name}`} onClick={() => setConfirmDelete(true)}>
-              <IconTrash />
-            </button>
-          )}
-        </div>
-        <div className="insp-sub">
-          <span className={`kind ${node.kind}`}>{node.kind}</span>
-          <span className="reason">{node.state}{node.reason && node.state !== "failed" && node.state !== "error" ? ` · ${node.reason}` : ""}</span>
-          {node.deps.length > 0 && <span>← {node.deps.join(", ")}</span>}
-          {node.schedule && (
-            <span className="sched">
-              <IconClock size={12} /> <span className="mono">{node.schedule.cron}</span>{" "}
-              {node.schedule.paused ? "(paused)" : node.schedule.next ? `(next ${until(node.schedule.next)})` : ""}{" "}
-              {canEdit && (
-                <button className="btn sm ghost" onClick={() => api.pause(node.name, !node.schedule!.paused).catch(failed("Couldn't change the schedule"))}>
-                  {node.schedule.paused ? "Resume" : "Pause"}
-                </button>
-              )}
-            </span>
-          )}
-          {!node.cascade && <span title="Does not auto-refresh when upstream changes">cascade off</span>}
-        </div>
-        <div className="tabs" role="tablist" aria-label={`${node.name}: code, data, runs and history`}>
-          <button role="tab" aria-selected={tab === "code"} className={`tab ${tab === "code" ? "on" : ""}`} onClick={() => setTab("code")}>
-            Code{dirty ? <span title="Unsaved changes"> •</span> : null}
-          </button>
-          <button role="tab" aria-selected={tab === "data"} className={`tab ${tab === "data" ? "on" : ""}`} onClick={() => setTab("data")}>
-            Data{node.rows != null && <span className="n">{fmtNum(node.rows)}</span>}
-          </button>
-          {node.chart && (
-            <button role="tab" aria-selected={tab === "chart"} className={`tab ${tab === "chart" ? "on" : ""}`} onClick={() => setTab("chart")}>Chart</button>
-          )}
-          <button role="tab" aria-selected={tab === "runs"} className={`tab ${tab === "runs" ? "on" : ""}`} onClick={() => setTab("runs")}>Runs</button>
-          <button role="tab" aria-selected={tab === "history"} className={`tab ${tab === "history" ? "on" : ""}`} onClick={() => setTab("history")} title="Every saved version of this node's code">
-            History
-          </button>
-        </div>
-      </div>
-      <div className="insp-body">
-        {tab === "code" && (
-          <div
-            className="code-wrap"
-            onKeyDown={(e) => {
-              if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-                e.preventDefault();
-                save();
-              }
-              if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-                e.preventDefault();
-                run();
-              }
-            }}
-          >
-            {(problem || err) && (
-              <div className="err-banner">
-                <div>{err || problem}</div>
-                {!err && canEdit && node.missing_package && (
-                  <button
-                    className="btn sm primary"
-                    disabled={installing}
-                    title={`Add ${node.missing_package.package} to the project's pyproject.toml, install it, and re-run ${node.name}`}
-                    onClick={() => onInstall(node.missing_package!.package).catch((e) => setErr((e as Error).message))}
-                  >
-                    {installing ? "Installing…" : `Install ${node.missing_package.package}`}
-                  </button>
-                )}
-                {aiEnabled && !err && (
-                  <button className="btn sm" onClick={() => onAskAI(`Fix \`${node.name}\` — it's failing. Read the error, fix the code, and re-run it.`)}>
-                    <IconSpark size={12} /> Fix with AI
-                  </button>
-                )}
-              </div>
+    <div {...stylex.props(styles.root)}>
+      <header {...stylex.props(styles.head)}>
+        <div {...stylex.props(styles.titleRow)}>
+          <div {...stylex.props(styles.title)}>
+            <Heading level={3} maxLines={1}>
+              {node.name}
+            </Heading>
+          </div>
+          <span {...stylex.props(styles.fixed)}>
+            <Badge label={node.kind === "python" ? "py" : "sql"} />
+          </span>
+          <span {...stylex.props(styles.grow)} />
+          <div {...stylex.props(styles.actions)}>
+            {canEdit && running && node.last_run && (
+              <Button label="Stop" onClick={() => api.cancel(node.last_run!.id).catch(failed("Couldn't stop the run"))} />
             )}
-            <CodeMirror
+            {canEdit && (
+              <Button
+                variant="primary"
+                label={running ? "Running…" : dirty ? "Save & run" : "Run"}
+                icon={running || dirty ? undefined : <IconPlay size={11} />}
+                isDisabled={busy || running || !!node.parse_error}
+                onClick={run}
+              />
+            )}
+            <DownloadMenu
+              title={`Download ${node.name}: its output or its code`}
+              groups={[...outputGroups(node, { title: "Output" }), codeGroup({ node: node.name })]}
+            />
+            {canEdit && (
+              <IconButton variant="ghost" label={`Delete node ${node.name}`} tooltip="Delete node" icon={<IconTrash />} onClick={() => setConfirmDelete(true)} />
+            )}
+          </div>
+        </div>
+        <div {...stylex.props(styles.sub)}>
+          <HStack gap={1.5} vAlign="center">
+            <StateDot state={node.state} />
+            <Text type="supporting" weight="medium" xstyle={statusText[statusOf(node.state)]}>
+              {node.state}
+            </Text>
+            {node.reason && node.state !== "failed" && node.state !== "error" && (
+              <Text type="supporting" color="secondary">
+                · {node.reason}
+              </Text>
+            )}
+          </HStack>
+          {node.deps.length > 0 && (
+            <Text type="supporting" color="secondary" maxLines={1} xstyle={styles.deps}>
+              ← {node.deps.join(", ")}
+            </Text>
+          )}
+          {node.schedule && (
+            <HStack gap={1} vAlign="center">
+              <IconClock size={12} />
+              <Text type="code" size="sm" color="secondary">
+                {node.schedule.cron}
+              </Text>
+              <Text type="supporting" color="secondary">
+                {node.schedule.paused ? "(paused)" : node.schedule.next ? `(next ${until(node.schedule.next)})` : ""}
+              </Text>
+              {canEdit && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  label={node.schedule.paused ? "Resume" : "Pause"}
+                  onClick={() => api.pause(node.name, !node.schedule!.paused).catch(failed("Couldn't change the schedule"))}
+                />
+              )}
+            </HStack>
+          )}
+          {!node.cascade && (
+            <Tooltip content="Does not auto-refresh when upstream changes">
+              <Text type="supporting" color="secondary">
+                cascade off
+              </Text>
+            </Tooltip>
+          )}
+        </div>
+        <TabList value={tab} onChange={(t) => setTab(t as Tab)} role="tablist" aria-label={`${node.name}: code, data, runs and history`} xstyle={styles.tabs}>
+          <Tab
+            value="code"
+            label="Code"
+            panelId={panelId}
+            endContent={dirty ? <StatusDot variant="accent" label="Unsaved changes" tooltip="Unsaved changes" /> : undefined}
+          />
+          <Tab value="data" label="Data" panelId={panelId} endContent={node.rows != null ? <Badge label={fmtNum(node.rows)} /> : undefined} />
+          {node.chart && <Tab value="chart" label="Chart" panelId={panelId} />}
+          <Tab value="runs" label="Runs" panelId={panelId} />
+          <Tab value="history" label="History" panelId={panelId} />
+        </TabList>
+      </header>
+      {shownErr && (
+        <div {...stylex.props(styles.problem)}>
+          <Banner
+            status="error"
+            title={
+              <Text type="code" wordBreak="break-word" xstyle={styles.pre}>
+                {shownErr}
+              </Text>
+            }
+            isDismissable={!!err}
+            onDismiss={() => setErr(null)}
+            dismissLabel="Dismiss the error"
+            endContent={
+              !err && ((canEdit && node.missing_package) || aiEnabled) ? (
+                <HStack gap={1.5}>
+                  {canEdit && node.missing_package && (
+                    <Button
+                      size="sm"
+                      label={installing ? "Installing…" : `Install ${node.missing_package.package}`}
+                      isDisabled={installing}
+                      tooltip={`Add ${node.missing_package.package} to the project's pyproject.toml, install it, and re-run ${node.name}`}
+                      onClick={() => onInstall(node.missing_package!.package).catch((e) => setErr((e as Error).message))}
+                    />
+                  )}
+                  {aiEnabled && (
+                    <Button
+                      size="sm"
+                      label="Fix with AI"
+                      icon={<IconSpark size={12} />}
+                      onClick={() => onAskAI(`Fix \`${node.name}\` — it's failing. Read the error, fix the code, and re-run it.`)}
+                    />
+                  )}
+                </HStack>
+              ) : undefined
+            }
+          />
+        </div>
+      )}
+      <div id={panelId} role="tabpanel" {...stylex.props(styles.body)}>
+        {tab === "code" && (
+          <div {...stylex.props(styles.fill)} onKeyDownCapture={onKeys}>
+            <CodeEditor
               value={source}
               onChange={setSource}
               editable={canEdit}
               readOnly={!canEdit}
-              theme={dark ? "dark" : "light"}
-              extensions={[node.kind === "sql" ? sql() : python(), EditorView.lineWrapping]}
-              basicSetup={{ foldGutter: false, highlightActiveLine: true }}
-              style={{ flex: 1, minHeight: 0, overflow: "auto" }}
-              height="100%"
+              dark={dark}
+              extensions={[node.kind === "sql" ? sql() : python()]}
             />
-            <div className="code-bar">
-              <span className="mono">{node.path}</span>
-              <span className="spacer" />
+            <div {...stylex.props(styles.foot)}>
+              <Text type="code" size="sm" color="secondary" maxLines={1} xstyle={styles.footText}>
+                {node.path}
+              </Text>
               {canEdit ? (
                 <>
-                  <span>{dirty ? `unsaved · ${MOD}S save · ${MOD}Enter run` : "saved"}</span>
-                  <button className="btn sm" onClick={save} disabled={!dirty}>Save</button>
+                  <Text type="supporting" color="secondary" textWrap="nowrap">
+                    {dirty ? `unsaved · ${MOD}S save · ${MOD}Enter run` : "saved"}
+                  </Text>
+                  <Button size="sm" label="Save" isDisabled={!dirty} onClick={save} />
                 </>
               ) : (
-                <span>read-only</span>
+                <Text type="supporting" color="secondary">
+                  read-only
+                </Text>
               )}
             </div>
           </div>
@@ -249,50 +350,55 @@ export function Inspector(props: {
           />
         )}
       </div>
-      {confirmDelete && (
-        <Dialog title={`Delete ${node.name}?`} onClose={() => setConfirmDelete(false)}>
-          <p className="hub-muted">
-            This removes <span className="mono">{node.path}</span> from the project. Its code stays in the project's
-            history, so the node can be restored.
-          </p>
-          {readers.length > 0 && (
-            <p className="hub-muted">
-              {readers.length === 1 ? "One node reads" : `${readers.length} nodes read`} it and will fail without it:{" "}
-              <span className="mono">{readers.join(", ")}</span>.
-            </p>
-          )}
-          <div className="actions">
-            <button type="button" className="btn ghost" onClick={() => setConfirmDelete(false)}>Cancel</button>
-            <button type="button" className="btn destroy" onClick={del}>Delete node</button>
-          </div>
-        </Dialog>
-      )}
-    </>
+      <AlertDialog
+        isOpen={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title={`Delete ${node.name}?`}
+        description={
+          `This removes ${node.path} from the project. Its code stays in the project's history, so the node can be restored.` +
+          (readers.length > 0
+            ? ` ${readers.length === 1 ? "One node reads" : `${readers.length} nodes read`} it and will fail without it: ${readers.join(", ")}.`
+            : "")
+        }
+        actionLabel="Delete node"
+        onAction={del}
+      />
+    </div>
   );
 }
 
+/**
+ * A table of an output or a query's result: a plain table, in the mono, whose
+ * header stays in view as its scroller (the element around it) scrolls. Each
+ * column is as wide as what is in it, up to a width past which a cell is cut
+ * short and shows whole when pointed at.
+ */
 export function DataTable({ columns, rows }: { columns: Column[]; rows: unknown[][] }) {
   const numeric = useMemo(
     () => columns.map((c) => /int|float|double|decimal|numeric|bigint|real/i.test(c.type)),
     [columns],
   );
+  // Thousands of cells: their styles are worked out once, not per cell.
+  const row = stylex.props(grid.row);
+  const cell = stylex.props(grid.cell);
+  const num = stylex.props(grid.cell, grid.num);
   return (
-    <table className="grid">
+    <table {...stylex.props(grid.table)}>
       <thead>
         <tr>
-          {columns.map((c) => (
-            <th key={c.name}>
+          {columns.map((c, j) => (
+            <th key={c.name} {...stylex.props(grid.cell, grid.head, numeric[j] && grid.num)}>
               {c.name}
-              <span className="t">{c.type.toLowerCase()}</span>
+              <span {...stylex.props(grid.type)}>{c.type.toLowerCase()}</span>
             </th>
           ))}
         </tr>
       </thead>
       <tbody>
         {rows.map((r, i) => (
-          <tr key={i}>
+          <tr key={i} {...row}>
             {r.map((v, j) => (
-              <td key={j} className={numeric[j] ? "num" : ""} title={typeof v === "string" ? v : undefined}>
+              <td key={j} {...(numeric[j] ? num : cell)} title={typeof v === "string" ? v : undefined}>
                 {fmtCell(v)}
               </td>
             ))}
@@ -317,21 +423,21 @@ function DataTab({ node }: { node: GraphNode }) {
       live = false;
     };
   }, [node.name, node.artifact_id, shown]);
-  const picker = multi && parts.length > 0 && (
-    <div className="data-parts">
-      <div className="seg" role="tablist" aria-label={`${node.name}: outputs`}>
+  const picker = multi && parts.length > 0 && shown !== null && (
+    <div {...stylex.props(styles.strip)}>
+      <SegmentedControl size="sm" value={shown} onChange={setPart} label={`${node.name}: outputs`}>
         {parts.map((name) => (
-          <button key={name} role="tab" aria-selected={name === shown} className={name === shown ? "on" : ""} onClick={() => setPart(name)}>
-            {name}
-          </button>
+          <SegmentedControlItem key={name} value={name} label={name} />
         ))}
-      </div>
+      </SegmentedControl>
       {node.schema?.find((c) => c.name === shown)?.type === "table" ? (
-        <span className="hint">
-          SQL: <code>{`${node.name}.${shown}`}</code>
-        </span>
+        <Text type="supporting" color="secondary">
+          SQL: <Code size="inherit">{`${node.name}.${shown}`}</Code>
+        </Text>
       ) : (
-        <span className="hint">JSON (not in SQL)</span>
+        <Text type="supporting" color="secondary">
+          JSON (not in SQL)
+        </Text>
       )}
     </div>
   );
@@ -339,18 +445,30 @@ function DataTab({ node }: { node: GraphNode }) {
   const zipAll = multi
     ? [{ items: [{ key: "zip", label: "All outputs (.zip)", hint: "every output as it is stored", onPick: () => saveUrl(nodeExportUrl(node.name, "zip")) }] }]
     : [];
-  if (!p) return <div className="placeholder">Loading…</div>;
-  if (!p.kind) return <div className="placeholder">No output yet — run the node.</div>;
+  if (!p)
+    return (
+      <div {...stylex.props(styles.center)}>
+        <Spinner aria-label="Loading…" />
+      </div>
+    );
+  if (!p.kind)
+    return (
+      <div {...stylex.props(styles.center)}>
+        <EmptyState isCompact title="No output yet" description="Run the node." />
+      </div>
+    );
   if (p.kind === "table" && p.columns && p.rows)
     return (
-      <>
+      <div {...stylex.props(styles.fill)}>
         {picker}
-        <DataTable columns={p.columns} rows={p.rows} />
-        <div className="data-foot">
-          <span>
+        <div {...stylex.props(styles.scroll)}>
+          <DataTable columns={p.columns} rows={p.rows} />
+        </div>
+        <div {...stylex.props(styles.foot)}>
+          <Text type="supporting" color="secondary" maxLines={1} hasTabularNumbers xstyle={styles.footText}>
             {p.rows.length < (p.total ?? 0) ? `first ${p.rows.length} of ` : ""}
             {fmtNum(p.total)} rows · {p.columns.length} columns · {ago(node.finished_at)}
-          </span>
+          </Text>
           <DownloadMenu
             small
             up
@@ -359,14 +477,16 @@ function DataTab({ node }: { node: GraphNode }) {
             groups={[{ title: "Every row", items: tableItems((f) => saveUrl(nodeExportUrl(node.name, f, { part: shown })), p.total) }, ...zipAll]}
           />
         </div>
-      </>
+      </div>
     );
   return (
-    <>
+    <div {...stylex.props(styles.fill)}>
       {picker}
-      <pre className="json">{JSON.stringify(p.value, null, 2)}</pre>
-      <div className="data-foot">
-        <span>JSON · {ago(node.finished_at)}</span>
+      <pre {...stylex.props(styles.scroll, styles.mono, styles.json)}>{JSON.stringify(p.value, null, 2)}</pre>
+      <div {...stylex.props(styles.foot)}>
+        <Text type="supporting" color="secondary" maxLines={1} xstyle={styles.footText}>
+          JSON · {ago(node.finished_at)}
+        </Text>
         <DownloadMenu
           small
           up
@@ -380,7 +500,7 @@ function DataTab({ node }: { node: GraphNode }) {
           ]}
         />
       </div>
-    </>
+    </div>
   );
 }
 
@@ -400,8 +520,8 @@ function ChartTab({ node, dark }: { node: GraphNode; dark: boolean }) {
       }
       const cols = d.columns.map((c) => c.name);
       const values = d.rows.map((r) => Object.fromEntries(r.map((v, i) => [cols[i], v])));
-      const css = getComputedStyle(document.documentElement);
-      const v = (k: string) => css.getPropertyValue(k).trim();
+      // The chart is drawn on a canvas: it takes the theme's colours as they are now.
+      const [label, rule, strong, ...series] = themeColors(ref.current, ["--color-text-secondary", "--color-border", "--color-border-emphasized", ...SERIES]);
       const spec = {
         $schema: "https://vega.github.io/schema/vega-lite/v5.json",
         width: "container",
@@ -411,11 +531,11 @@ function ChartTab({ node, dark }: { node: GraphNode; dark: boolean }) {
         data: { values },
         config: {
           background: "transparent",
-          font: v("--sans") || "sans-serif",
+          font: getComputedStyle(ref.current).fontFamily || "sans-serif",
           view: { stroke: null },
-          axis: { labelColor: v("--muted"), titleColor: v("--muted"), gridColor: v("--line"), domainColor: v("--line-strong"), tickColor: v("--line-strong") },
-          legend: { labelColor: v("--muted"), titleColor: v("--muted") },
-          range: { category: dark ? SERIES.dark : SERIES.light },
+          axis: { labelColor: label, titleColor: label, gridColor: rule, domainColor: strong, tickColor: strong },
+          legend: { labelColor: label, titleColor: label },
+          range: { category: series },
           ...(node.chart?.config as object | undefined),
         },
       };
@@ -434,9 +554,9 @@ function ChartTab({ node, dark }: { node: GraphNode; dark: boolean }) {
     };
   }, [node.name, node.artifact_id, node.chart, dark]);
   return (
-    <div className="chart-wrap">
-      {error && <div className="err-banner"><div>{error}</div></div>}
-      <div ref={ref} />
+    <div {...stylex.props(styles.scroll, styles.chart)}>
+      {error && <Banner status="error" title={error} />}
+      <div ref={ref} {...stylex.props(styles.vega)} />
     </div>
   );
 }
@@ -456,42 +576,82 @@ function RunsTab({ node, logs }: { node: GraphNode; logs: Record<string, string>
     if (sel) api.runDetail(sel).then(setDetail);
     else setDetail(null);
   }, [sel, tick]);
-  if (!runs.length) return <div className="placeholder">No runs yet.</div>;
+  if (!runs.length)
+    return (
+      <div {...stylex.props(styles.center)}>
+        <EmptyState isCompact title="No runs yet" />
+      </div>
+    );
   const live = sel ? logs[sel] : undefined;
   const isLive = detail && (detail.status === "running" || detail.status === "queued");
   return (
-    <>
-      <ul className="runs">
-        {runs.map((r) => (
-          <li key={r.id} className={`s-${r.status} ${r.id === sel ? "on" : ""}`} {...pressable(() => setSel(r.id))} aria-pressed={r.id === sel}>
-            <span className="dot" />
-            <span>{r.status}</span>
-            <span className="trig">
-              {r.trigger}
-              {r.started_by ? ` · ${r.started_by}` : ""}
-              {r.error ? <span className="err"> · {r.error}</span> : r.rows != null ? ` · ${fmtNum(r.rows)} rows` : ""}
-            </span>
-            <span className="when">{dur(r.started_at, r.finished_at) || ago(r.queued_at)} · {ago(r.queued_at)}</span>
-          </li>
-        ))}
-      </ul>
-      {detail?.status === "success" && detail.artifact_id && node.output_kind && node.output_kind !== "none" && (
-        <div className="run-dl">
-          <DownloadMenu
-            small
-            align="left"
-            label="Output of this run"
-            title="Download the output this run made"
-            groups={outputGroups(node, { runId: detail.id, rows: detail.rows ?? null })}
-          />
-        </div>
+    <div {...stylex.props(styles.fill)}>
+      {/* The runs keep to the top of the pane, so the picked run's log is always in view under them. */}
+      <div {...stylex.props(styles.runs)}>
+        <List density="compact" hasDividers>
+          {runs.map((r) => (
+            <ListItem
+              key={r.id}
+              isSelected={r.id === sel}
+              onClick={() => setSel(r.id)}
+              startContent={<StateDot state={r.status} />}
+              label={
+                <Text maxLines={1}>
+                  <Text weight="medium">{r.status}</Text>{" "}
+                  <Text color="secondary">
+                    · {r.trigger}
+                    {r.started_by ? ` · ${r.started_by}` : ""}
+                    {!r.error && r.rows != null ? ` · ${fmtNum(r.rows)} rows` : ""}
+                  </Text>
+                </Text>
+              }
+              description={
+                r.error ? (
+                  <Text type="supporting" maxLines={1} xstyle={statusText.error}>
+                    {r.error}
+                  </Text>
+                ) : undefined
+              }
+              endContent={
+                <Text type="supporting" color="secondary" hasTabularNumbers textWrap="nowrap">
+                  {[dur(r.started_at, r.finished_at), ago(r.queued_at)].filter(Boolean).join(" · ")}
+                </Text>
+              }
+            />
+          ))}
+        </List>
+      </div>
+      {detail && (
+        <>
+          <div {...stylex.props(styles.strip, styles.logHead)}>
+            <Heading level={5} accessibilityLevel={4}>
+              Log
+            </Heading>
+            <span {...stylex.props(styles.grow)} />
+            {detail.status === "success" && detail.artifact_id && node.output_kind && node.output_kind !== "none" && (
+              <DownloadMenu
+                small
+                label="Output of this run"
+                title="Download the output this run made"
+                groups={outputGroups(node, { runId: detail.id, rows: detail.rows ?? null })}
+              />
+            )}
+          </div>
+          <pre {...stylex.props(styles.scroll, styles.mono, styles.log)}>
+            {(isLive ? live : detail.log) || (isLive ? "waiting for output…" : "(no output)")}
+          </pre>
+        </>
       )}
-      {detail && <pre className="log">{(isLive ? live : detail.log) || (isLive ? "waiting for output…" : "(no output)")}</pre>}
-    </>
+    </div>
   );
 }
 
+/**
+ * The pane with no node selected: a query over the nodes' outputs, and the
+ * runs of the whole graph, newest first.
+ */
 export function Overview(props: { nodes: GraphNode[]; onSelect: (n: string) => void }) {
+  const [dark] = useColorMode();
   const [q, setQ] = useState("");
   const firstTable = props.nodes.find((n) => n.output_kind === "table")?.name;
   useEffect(() => {
@@ -514,20 +674,25 @@ export function Overview(props: { nodes: GraphNode[]; onSelect: (n: string) => v
     }
   };
   return (
-    <div className="overview">
-      <div className="sql-box">
-        <h4>Query outputs</h4>
-        <textarea
-          value={q}
-          aria-label="SQL over the nodes' outputs"
-          spellCheck={false}
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => {
-            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") exec();
+    <div {...stylex.props(styles.overview)}>
+      <section {...stylex.props(styles.section)}>
+        <Heading level={4} accessibilityLevel={3}>
+          Query outputs
+        </Heading>
+        <div
+          {...stylex.props(styles.query)}
+          onKeyDownCapture={(e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+              e.preventDefault();
+              e.stopPropagation();
+              exec();
+            }
           }}
-        />
-        <div className="row">
-          <button className="btn sm primary" onClick={exec}>Run query</button>
+        >
+          <CodeEditor value={q} onChange={setQ} dark={dark} activeLine={false} extensions={QUERY} />
+        </div>
+        <div {...stylex.props(styles.queryRow)}>
+          <Button size="sm" variant="primary" label="Run query" onClick={exec} />
           <DownloadMenu
             small
             align="left"
@@ -536,29 +701,236 @@ export function Overview(props: { nodes: GraphNode[]; onSelect: (n: string) => v
             disabled={!q.trim()}
             groups={[{ title: "Whole result", items: tableItems((f) => saveQuery(q, f)) }]}
           />
-          <span>DuckDB · every table node is a view · {MOD}Enter</span>
+          <Text type="supporting" color="secondary">
+            DuckDB · every table node is a view · {MOD}Enter
+          </Text>
         </div>
-        {err && <div className="err-banner"><div>{err}</div></div>}
+        {err && (
+          <Banner
+            status="error"
+            title={
+              <Text type="code" wordBreak="break-word" xstyle={styles.pre}>
+                {err}
+              </Text>
+            }
+          />
+        )}
         {res && (
-          <div className="sql-result">
+          <div {...stylex.props(styles.result)}>
             <DataTable columns={res.columns} rows={res.rows} />
           </div>
         )}
-      </div>
-      <div>
-        <h4>Recent runs</h4>
-        <ul className="runs boxed">
-          {runs.slice(0, 25).map((r) => (
-            <li key={r.id} className={`s-${r.status}`} {...pressable(() => props.onSelect(r.node))} title={`Open ${r.node}`}>
-              <span className="dot" />
-              <span>{r.status}</span>
-              <span className="trig"><span className="mono">{r.node}</span> · {r.trigger}{r.started_by ? ` · ${r.started_by}` : ""}</span>
-              <span className="when">{ago(r.queued_at)}</span>
-            </li>
-          ))}
-          {!runs.length && <li className="none">No runs yet. Run a node and it shows here.</li>}
-        </ul>
-      </div>
+      </section>
+      <section {...stylex.props(styles.section)}>
+        <Heading level={4} accessibilityLevel={3}>
+          Recent runs
+        </Heading>
+        {runs.length ? (
+          <div {...stylex.props(styles.recent)}>
+            <List density="compact" hasDividers>
+              {runs.slice(0, 25).map((r) => (
+                <ListItem
+                  key={r.id}
+                  onClick={() => props.onSelect(r.node)}
+                  startContent={<StateDot state={r.status} />}
+                  label={
+                    <Text maxLines={1}>
+                      <Text type="code" weight="medium">
+                        {r.node}
+                      </Text>{" "}
+                      <Text color="secondary">
+                        · {r.status} · {r.trigger}
+                        {r.started_by ? ` · ${r.started_by}` : ""}
+                      </Text>
+                    </Text>
+                  }
+                  endContent={
+                    <Text type="supporting" color="secondary" hasTabularNumbers textWrap="nowrap">
+                      {ago(r.queued_at)}
+                    </Text>
+                  }
+                />
+              ))}
+            </List>
+          </div>
+        ) : (
+          <EmptyState isCompact title="No runs yet" description="Run a node and it shows here." />
+        )}
+      </section>
     </div>
   );
 }
+
+/** The query box's language, and its name for a screen reader. */
+const QUERY = [sql(), EditorView.contentAttributes.of({ "aria-label": "SQL over the nodes' outputs" })];
+
+const rule = {
+  borderBottomWidth: "1px",
+  borderBottomStyle: "solid",
+  borderBottomColor: colorVars["--color-border"],
+} as const;
+
+const styles = stylex.create({
+  // The pane is App's (its ground and its edge); this fills it.
+  root: { display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0, minHeight: 0 },
+  // The tabs sit on the head's bottom edge, so the head has no padding there.
+  head: {
+    display: "flex",
+    flexDirection: "column",
+    gap: spacingVars["--spacing-1"],
+    flexShrink: 0,
+    paddingBlockStart: spacingVars["--spacing-3"],
+    paddingInline: spacingVars["--spacing-4"],
+    ...rule,
+  },
+  titleRow: { display: "flex", alignItems: "center", gap: spacingVars["--spacing-2"], minWidth: 0 },
+  // The name gives way, and is cut short, before the controls do.
+  title: { flexShrink: 1, minWidth: 0 },
+  fixed: { display: "inline-flex", flexShrink: 0 },
+  actions: { display: "flex", alignItems: "center", gap: spacingVars["--spacing-1"], flexShrink: 0 },
+  grow: { flexGrow: 1 },
+  sub: {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    columnGap: spacingVars["--spacing-3"],
+    rowGap: spacingVars["--spacing-0-5"],
+    minHeight: "24px",
+    color: colorVars["--color-text-secondary"],
+  },
+  deps: { minWidth: 0 },
+  // A tab's label, not its padding, starts on the title's line.
+  tabs: { marginBlockStart: spacingVars["--spacing-1"], marginInlineStart: `calc(${spacingVars["--spacing-3"]} * -1)`, minWidth: 0 },
+  // An error keeps to its share of the pane: a long traceback scrolls.
+  problem: {
+    flexShrink: 0,
+    maxHeight: "40%",
+    overflow: "auto",
+    paddingBlockStart: spacingVars["--spacing-3"],
+    paddingInline: spacingVars["--spacing-4"],
+  },
+  pre: { whiteSpace: "pre-wrap" },
+  body: { position: "relative", display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, overflow: "auto" },
+  // A tab that lays itself out: what scrolls in it, and a bar that stays put under it.
+  fill: { display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0, minHeight: 0 },
+  scroll: { flexGrow: 1, minWidth: 0, minHeight: 0, overflow: "auto" },
+  center: { display: "grid", placeItems: "center", flexGrow: 1, padding: spacingVars["--spacing-6"] },
+  // The bar under a tab's content: what is shown, and what can be done with it.
+  foot: {
+    display: "flex",
+    alignItems: "center",
+    gap: spacingVars["--spacing-2"],
+    flexShrink: 0,
+    minHeight: "36px",
+    paddingBlock: spacingVars["--spacing-1"],
+    paddingInline: spacingVars["--spacing-4"],
+    borderTopWidth: "1px",
+    borderTopStyle: "solid",
+    borderTopColor: colorVars["--color-border"],
+  },
+  footText: { flexGrow: 1, minWidth: 0 },
+  // A bar over a tab's content: which output, which run.
+  strip: {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: spacingVars["--spacing-2"],
+    flexShrink: 0,
+    paddingBlock: spacingVars["--spacing-2"],
+    paddingInline: spacingVars["--spacing-4"],
+    ...rule,
+  },
+  mono: {
+    margin: 0,
+    fontFamily: typographyVars["--font-family-code"],
+    fontSize: textSizeVars["--font-size-sm"],
+    lineHeight: 1.5,
+    whiteSpace: "pre-wrap",
+    overflowWrap: "anywhere",
+  },
+  json: { paddingBlock: spacingVars["--spacing-3"], paddingInline: spacingVars["--spacing-4"] },
+  log: {
+    paddingBlock: spacingVars["--spacing-3"],
+    paddingInline: spacingVars["--spacing-4"],
+    backgroundColor: "var(--exuvia-code-background)",
+  },
+  chart: { display: "flex", flexDirection: "column", gap: spacingVars["--spacing-3"], padding: spacingVars["--spacing-4"] },
+  // vega-embed makes its element inline; as a flex item it is as wide as the pane, which the chart fits itself to.
+  vega: { width: "100%", flexShrink: 0 },
+  // A row's own padding and this one put its dot on the title's line.
+  runs: { flexShrink: 0, maxHeight: "45%", overflow: "auto", paddingInline: spacingVars["--spacing-2"], ...rule },
+  // In the overview the rows reach into the pane's padding, so their dots are on the headings' line.
+  recent: { marginInline: `calc(${spacingVars["--spacing-2"]} * -1)` },
+  logHead: { minHeight: "36px", paddingBlock: spacingVars["--spacing-1"] },
+  overview: {
+    display: "flex",
+    flexDirection: "column",
+    gap: spacingVars["--spacing-6"],
+    flexGrow: 1,
+    minWidth: 0,
+    minHeight: 0,
+    overflow: "auto",
+    padding: spacingVars["--spacing-4"],
+  },
+  section: { display: "flex", flexDirection: "column", gap: spacingVars["--spacing-2"], minWidth: 0 },
+  // The query box: an editor a few lines tall, which its corner drags taller.
+  query: {
+    display: "flex",
+    flexDirection: "column",
+    height: "96px",
+    minHeight: "64px",
+    maxHeight: "50vh",
+    overflow: "hidden",
+    resize: "vertical",
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: { default: colorVars["--color-border-emphasized"], ":focus-within": colorVars["--color-accent"] },
+    borderRadius: radiusVars["--radius-element"],
+  },
+  queryRow: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: spacingVars["--spacing-2"] },
+  result: {
+    maxHeight: "340px",
+    overflow: "auto",
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: colorVars["--color-border"],
+    borderRadius: radiusVars["--radius-element"],
+  },
+});
+
+/** The data table's parts (DataTable). */
+const grid = stylex.create({
+  table: {
+    width: "max-content",
+    minWidth: "100%",
+    borderCollapse: "separate",
+    borderSpacing: 0,
+    fontFamily: typographyVars["--font-family-code"],
+    fontSize: textSizeVars["--font-size-sm"],
+    lineHeight: typeScaleVars["--text-body-leading"],
+  },
+  row: { backgroundColor: { default: "transparent", ":hover": colorVars["--color-background-muted"] } },
+  cell: {
+    maxWidth: "320px",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    textAlign: "start",
+    fontWeight: fontWeightVars["--font-weight-normal"],
+    paddingBlock: spacingVars["--spacing-1"],
+    // The first and the last column keep to the pane's own margin.
+    paddingInlineStart: { default: spacingVars["--spacing-3"], ":first-child": spacingVars["--spacing-4"] },
+    paddingInlineEnd: { default: spacingVars["--spacing-3"], ":last-child": spacingVars["--spacing-4"] },
+    ...rule,
+  },
+  head: {
+    position: "sticky",
+    top: 0,
+    zIndex: 1,
+    fontWeight: fontWeightVars["--font-weight-semibold"],
+    backgroundColor: colorVars["--color-background-muted"],
+  },
+  // A column's type, under its name.
+  type: { display: "block", color: colorVars["--color-text-secondary"], fontWeight: fontWeightVars["--font-weight-normal"] },
+  num: { textAlign: "end", fontVariantNumeric: "tabular-nums" },
+});

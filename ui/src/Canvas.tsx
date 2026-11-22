@@ -41,7 +41,9 @@ const Card = memo(function Card({ data }: NodeProps<Node<CardData>>) {
       <div {...stylex.props(styles.row1)}>
         <StateDot state={g.state} />
         <span {...stylex.props(styles.name)} title={g.name}>{g.name}</span>
-        <Badge label={g.kind === "python" ? "py" : "sql"} />
+        <span {...stylex.props(styles.kind)}>
+          <Badge label={g.kind === "python" ? "py" : "sql"} />
+        </span>
       </div>
       {g.description ? <div {...stylex.props(styles.desc)}>{g.description}</div> : null}
       <div {...stylex.props(styles.meta)}>
@@ -212,6 +214,7 @@ const styles = stylex.create({
     width: W,
     overflow: "hidden",
     cursor: "pointer",
+    lineHeight: 1.4,
     color: colorVars["--color-text-primary"],
     backgroundColor: colorVars["--color-background-card"],
     borderWidth: "1px",
@@ -252,6 +255,7 @@ const styles = stylex.create({
     fontSize: textSizeVars["--font-size-base"],
     fontWeight: fontWeightVars["--font-weight-semibold"],
   },
+  kind: { display: "inline-flex", flexShrink: 0 },
   desc: {
     display: "-webkit-box",
     WebkitBoxOrient: "vertical",

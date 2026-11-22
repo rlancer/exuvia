@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import * as stylex from "@stylexjs/stylex";
-import { colorVars, radiusVars, spacingVars } from "@astryxdesign/core/theme/tokens.stylex";
+import { colorVars, spacingVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
@@ -11,7 +11,6 @@ import { DateInput } from "@astryxdesign/core/DateInput";
 import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
 import { IconButton } from "@astryxdesign/core/IconButton";
-import { InputGroup, InputGroupText } from "@astryxdesign/core/InputGroup";
 import { Link } from "@astryxdesign/core/Link";
 import { List, ListItem } from "@astryxdesign/core/List";
 import { NumberInput } from "@astryxdesign/core/NumberInput";
@@ -19,7 +18,7 @@ import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Switch } from "@astryxdesign/core/Switch";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Text } from "@astryxdesign/core/Text";
-import { TextInput } from "@astryxdesign/core/TextInput";
+import { TextInput, type TextInputProps } from "@astryxdesign/core/TextInput";
 import { Token } from "@astryxdesign/core/Token";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
@@ -157,36 +156,62 @@ export function Views(props: {
     [overrides],
   );
 
+  const narrow = useMediaQuery("(max-width: 1100px)");
+  // Nothing to list: the main area has the whole width (and says what a view is).
+  const alone = views.length === 0 && (narrow || at !== null);
+  const unsaved = (v: ProjectView) => (drafts[v.name] ? <StatusDot variant="accent" label="Unsaved changes" tooltip="Unsaved changes" /> : undefined);
+
   return (
-    <div className="views">
-      <aside className="views-list">
-        <h4>Views</h4>
-        {views.map((v) => (
-          <button
-            key={v.name}
-            aria-current={view?.name === v.name}
-            className={`views-item ${VIEW_STATE_CLASS[v.state]} ${view?.name === v.name ? "on" : ""}`}
-            onClick={() => setSelected(v.name)}
-            title={v.reason ?? v.description}
+    <div {...stylex.props(styles.views, alone && styles.viewsAlone)}>
+      {alone ? null : narrow ? (
+        <TabList value={view?.name ?? ""} onChange={setSelected} aria-label="Views" hasDivider xstyle={styles.strip}>
+          {views.map((v) => (
+            <Tab key={v.name} value={v.name} label={v.title || v.name} icon={<StateDot state={v.state} />} endContent={unsaved(v)} />
+          ))}
+        </TabList>
+      ) : (
+        <aside {...stylex.props(styles.list)} aria-label="Views">
+          <List
+            density="compact"
+            header={
+              <Heading level={5} accessibilityLevel={2} color="secondary" xstyle={styles.listTitle}>
+                Views
+              </Heading>
+            }
           >
-            <span className="row1">
-              <span className="dot" />
-              <span className="name">{v.title || v.name}</span>
-              {drafts[v.name] && <span className="dirty" title="Unsaved changes">•</span>}
-              <span className="state">{VIEW_STATE_LABEL[v.state]}</span>
-            </span>
-            {v.reason ? <span className="reason">{v.reason}</span> : v.description ? <span className="reason">{v.description}</span> : null}
-          </button>
-        ))}
-        {at && views.length === 0 && (
-          <div className="views-empty">
-            No views yet. A view is a folder <code>views/&lt;name&gt;/</code> with a <code>view.json</code> (
-            <code>{'{"title", "reads": [nodes]}'}</code>) and an <code>App.tsx</code> whose default export is a React
-            component. Ask the agent to write one.
-          </div>
-        )}
-      </aside>
-      <section className="views-main">
+            {views.map((v) => (
+              <ListItem
+                key={v.name}
+                isSelected={view?.name === v.name}
+                onClick={() => setSelected(v.name)}
+                align="first-line"
+                startContent={<StateDot state={v.state} />}
+                label={
+                  <HStack gap={1.5} vAlign="center">
+                    <Text weight="medium" maxLines={1}>
+                      {v.title || v.name}
+                    </Text>
+                    {unsaved(v)}
+                  </HStack>
+                }
+                description={
+                  v.reason || v.description ? (
+                    <Text type="supporting" color="secondary" maxLines={2}>
+                      {v.reason || v.description}
+                    </Text>
+                  ) : undefined
+                }
+                endContent={
+                  <Text type="supporting" weight="medium" xstyle={statusText[statusOf(v.state)]}>
+                    {VIEW_STATE_LABEL[v.state]}
+                  </Text>
+                }
+              />
+            ))}
+          </List>
+        </aside>
+      )}
+      <section {...stylex.props(styles.main)}>
         {view ? (
           <ViewPane
             key={view.name}
@@ -206,10 +231,31 @@ export function Views(props: {
             file={openFiles[view.name]}
             onFile={(path) => setOpenFiles((f) => ({ ...f, [view.name]: path }))}
           />
+        ) : at ? (
+          <div {...stylex.props(styles.placeholder)}>
+            <VStack gap={2} maxWidth={520}>
+              <Heading level={3} accessibilityLevel={2}>
+                No views yet
+              </Heading>
+              <Text color="secondary">
+                A view is a folder <Code>views/&lt;name&gt;/</Code> with a <Code>view.json</Code> (<Code>{'{"title", "reads": [nodes]}'}</Code>) and an{" "}
+                <Code>App.tsx</Code> whose default export is a React component. Ask the agent to write one.
+              </Text>
+            </VStack>
+          </div>
         ) : (
-          <div className="placeholder">{at ? "Pick a view." : "Loading…"}</div>
+          <Placeholder>Loading…</Placeholder>
         )}
       </section>
+    </div>
+  );
+}
+
+/** What a pane says while it has nothing to show. */
+function Placeholder(props: { children: ReactNode }) {
+  return (
+    <div {...stylex.props(styles.placeholder)}>
+      <Text color="secondary">{props.children}</Text>
     </div>
   );
 }
@@ -234,7 +280,7 @@ function ViewPane(props: {
   const { view, params, dark, pane } = props;
   const { canEdit } = useAccess();
   const [status, setStatus] = useState<FrameStatus>({ phase: "loading" });
-  const [errors, setErrors] = useState<Extract<FrameStatus, { error: string }>[]>([]);
+  const [errors, setErrors] = useState<FrameError[]>([]);
   const [runErr, setRunErr] = useState<string | null>(null);
   const known = new Set(props.nodes.map((n) => n.name));
   const outputs = new Map(view.outputs.map((o) => [o.node, o]));
@@ -265,135 +311,232 @@ function ViewPane(props: {
     }
   };
 
+  const title = view.title || view.name;
+  const panel = useId();
+  const historyTab = useRef<HTMLButtonElement>(null);
+  const failing = "error" in status;
+
   return (
-    <div className="view-pane">
-      <div className="view-head">
-        <div className="insp-title">
-          <h3>{view.title || view.name}</h3>
+    <div {...stylex.props(styles.pane)}>
+      <header {...stylex.props(styles.head)}>
+        <div {...stylex.props(styles.titleRow)}>
+          <Heading level={3} accessibilityLevel={2} maxLines={1} xstyle={styles.title}>
+            {title}
+          </Heading>
+          <HStack gap={1.5} vAlign="center" xstyle={styles.fixed}>
+            <StateDot state={view.state} />
+            <Text weight="medium" xstyle={statusText[statusOf(view.state)]}>
+              {view.state}
+            </Text>
+          </HStack>
+          {/* What the frame is doing. A view that can't be read has no frame. */}
+          {view.state !== "error" && (
+            <Text type="supporting" color="secondary" xstyle={[styles.fixed, failing && statusText.error]}>
+              {failing ? `${status.phase} error` : status.phase}
+            </Text>
+          )}
+          <span {...stylex.props(styles.grow)} />
           <DownloadMenu
             small
-            align="left"
-            title={`Download what ${view.title || view.name} reads, or its code`}
+            title={`Download what ${title} reads, or its code`}
             groups={[...view.outputs.flatMap((o) => viewOutputGroups(view.name, o, params.params)), codeGroup({ view: view.name, title: "View code" })]}
           />
-          <span className={`view-state ${VIEW_STATE_CLASS[view.state]}`}>
-            <span className="dot" /> {view.state}
-          </span>
-          <span className="phase">{"error" in status ? `${status.phase} error` : status.phase}</span>
         </div>
-        {view.description && <div className="insp-sub">{view.description}</div>}
-        <div className="view-reads" title="The nodes this view reads (view.json reads)">
-          <span className="lbl">reads</span>
-          {view.reads.map((n) => {
-            const o = outputs.get(n);
-            return (
-              <button
-                key={n}
-                className={`read-chip ${o ? `s-${o.state}` : "s-error"}`}
-                onClick={() => known.has(n) && props.onOpenNode(n)}
-                disabled={!known.has(n)}
-                title={!known.has(n) ? "no such node" : o?.artifact_id ? `${o.state} · ${o.kind}` : "no output for these parameters"}
-              >
-                <span className="dot" /> {n}
-                {o && !o.artifact_id && <span className="miss">no output</span>}
-              </button>
-            );
-          })}
-          {canEdit && toRun.length > 0 && (
-            <button className="btn sm" onClick={runReads} title="Run the read nodes that are missing or stale, for these parameters">
-              <IconPlay size={10} /> Run {toRun.length === 1 ? toRun[0] : `${toRun.length} nodes`}
-            </button>
-          )}
-        </div>
-        {props.specs.length > 0 && <ParamBar specs={props.specs} overrides={props.overrides} onChange={props.onParams} />}
-        {(props.paramErr || runErr) && <div className="err-banner"><div>{props.paramErr ?? runErr}</div></div>}
-        {view.state !== "ready" && view.reason && <div className={`view-reason ${VIEW_STATE_CLASS[view.state]}`}>{view.reason}</div>}
-        <div className="tabs" role="tablist" aria-label={`${view.name}: the rendered view, its code and its history`}>
-          <button role="tab" aria-selected={pane === "view"} className={`tab ${pane === "view" ? "on" : ""}`} onClick={() => props.onPane("view")}>
-            View
-          </button>
-          <button role="tab" aria-selected={pane === "code"} className={`tab ${pane === "code" ? "on" : ""}`} onClick={() => props.onPane("code")}>
-            Code{Object.keys(props.drafts).length > 0 && <span title="Unsaved changes"> •</span>}
-            <span className="n">{view.files.length}</span>
-          </button>
-          <button role="tab" aria-selected={pane === "history"} className={`tab ${pane === "history" ? "on" : ""}`} onClick={() => props.onPane("history")} title="Every saved version of this view's files, deleted ones too">
-            History
-          </button>
-        </div>
-      </div>
-      {pane === "code" && (
-        <ViewCode
-          key={view.name}
-          view={view}
-          dark={dark}
-          drafts={props.drafts}
-          onDraft={props.onDraft}
-          file={props.file}
-          onFile={props.onFile}
-          onHistory={() => props.onPane("history")}
-        />
-      )}
-      {pane === "history" && (
-        <div className="view-history">
-          <HistoryBrowser
-            filter={{ view: view.name }}
-            tick={view.hash}
-            dark={dark}
-            layout="side"
-            path={props.file ? `${view.path}/${props.file}` : undefined}
-            restoreNote={(rev) => {
-              const rel = rev.path.slice(view.path.length + 1);
-              return rel in props.drafts ? `Your unsaved edits to ${rel} will be replaced.` : null;
-            }}
-            onRestored={(rev) => props.onDraft(rev.path.slice(view.path.length + 1), null)}
-          />
-        </div>
-      )}
-      {view.state === "error" ? (
-        pane === "view" && (
-          <div className="placeholder">
-            Fix view.json to render this view.{" "}
-            <button className="btn sm" onClick={() => openFile("view.json")}>Open view.json</button>
-          </div>
-        )
-      ) : (
-        // Stays mounted while the code is open, so saving a file rebuilds it and
-        // its compile and runtime errors show up under the editor.
-        <ViewFrame key={view.hash} view={view} params={params} dark={dark} hidden={pane !== "view"} onParams={props.onParams} onStatus={onStatus} />
-      )}
-      {errors.length > 0 && (
-        <div className="view-errors">
-          <div className="view-errors-head">
-            <b>{errors.length} error{errors.length === 1 ? "" : "s"} from the view</b>
-            <span className="spacer" />
-            <button className="btn ghost sm" onClick={() => setErrors([])}>Clear</button>
-          </div>
-          {errors
-            .slice()
-            .reverse()
-            .map((e, i) => (
-              <details key={i} className="view-error">
-                <summary>
-                  <span className="kind">{e.phase}</span>
-                  {e.file && (
-                    <button
-                      className="file-link"
-                      title={`Open ${e.file}`}
-                      onClick={(ev) => {
-                        ev.preventDefault(); // don't also open the stack
-                        openFile(e.file!);
-                      }}
-                    >
-                      <code>{e.file}</code>
-                    </button>
+        {view.state !== "ready" && view.reason && <Text xstyle={statusText[statusOf(view.state)]}>{view.reason}</Text>}
+        {view.description && <Text color="secondary">{view.description}</Text>}
+        {(view.reads.length > 0 || props.specs.length > 0) && (
+          <div {...stylex.props(styles.facts)}>
+            {view.reads.length > 0 && (
+              <>
+                <Tooltip content="The nodes this view reads (view.json reads)">
+                  <Text type="supporting" color="secondary">
+                    Reads
+                  </Text>
+                </Tooltip>
+                <HStack gap={1.5} wrap="wrap" vAlign="center">
+                  {view.reads.map((n) => {
+                    const o = outputs.get(n);
+                    const here = known.has(n);
+                    // What is wrong with it is said on the chip; a tooltip never opens on one that can't be pressed.
+                    const wrong = !here ? "no such node" : o && !o.artifact_id ? "no output" : null;
+                    return (
+                      <Tooltip key={n} content={o?.artifact_id ? `${o.state} · ${o.kind}` : "no output for these parameters"} isEnabled={here}>
+                        <Token
+                          size="sm"
+                          label={n}
+                          icon={<StateDot state={o ? o.state : "error"} />}
+                          isDisabled={!here}
+                          onClick={() => here && props.onOpenNode(n)}
+                          endContent={
+                            wrong ? (
+                              <Text type="supporting" color="secondary">
+                                {wrong}
+                              </Text>
+                            ) : undefined
+                          }
+                        />
+                      </Tooltip>
+                    );
+                  })}
+                  {canEdit && toRun.length > 0 && (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      icon={<IconPlay />}
+                      label={`Run ${toRun.length === 1 ? toRun[0] : `${toRun.length} nodes`}`}
+                      tooltip="Run the read nodes that are missing or stale, for these parameters"
+                      clickAction={runReads}
+                    />
                   )}
-                  <span className="msg">{e.error}</span>
-                </summary>
-                {e.stack && <pre>{e.stack}</pre>}
-              </details>
-            ))}
-        </div>
+                </HStack>
+              </>
+            )}
+            {props.specs.length > 0 && (
+              <>
+                <Text type="supporting" color="secondary">
+                  Parameters
+                </Text>
+                <ParamBar specs={props.specs} overrides={props.overrides} onChange={props.onParams} />
+              </>
+            )}
+          </div>
+        )}
+        {(props.paramErr || runErr) && <Banner status="error" title={props.paramErr ?? runErr} />}
+        <TabList
+          value={pane}
+          onChange={(p) => props.onPane(p as Pane)}
+          role="tablist"
+          aria-label={`${view.name}: the rendered view, its code and its history`}
+          xstyle={styles.tabs}
+        >
+          <Tab value="view" label="View" panelId={panel} />
+          <Tab
+            value="code"
+            label="Code"
+            panelId={panel}
+            endContent={
+              <HStack gap={1.5} vAlign="center">
+                {Object.keys(props.drafts).length > 0 && <StatusDot variant="accent" label="Unsaved changes" />}
+                <Badge label={view.files.length} />
+              </HStack>
+            }
+          />
+          <Tab ref={historyTab} value="history" label="History" panelId={panel} />
+        </TabList>
+        <Tooltip anchorRef={historyTab} placement="below" content="Every saved version of this view's files, deleted ones too" />
+      </header>
+      <div {...stylex.props(styles.panel)} id={panel} role="tabpanel">
+        {pane === "code" && (
+          <ViewCode
+            key={view.name}
+            view={view}
+            dark={dark}
+            drafts={props.drafts}
+            onDraft={props.onDraft}
+            file={props.file}
+            onFile={props.onFile}
+            onHistory={() => props.onPane("history")}
+          />
+        )}
+        {pane === "history" && (
+          <div {...stylex.props(styles.history)}>
+            <HistoryBrowser
+              filter={{ view: view.name }}
+              tick={view.hash}
+              dark={dark}
+              layout="side"
+              path={props.file ? `${view.path}/${props.file}` : undefined}
+              restoreNote={(rev) => {
+                const rel = rev.path.slice(view.path.length + 1);
+                return rel in props.drafts ? `Your unsaved edits to ${rel} will be replaced.` : null;
+              }}
+              onRestored={(rev) => props.onDraft(rev.path.slice(view.path.length + 1), null)}
+            />
+          </div>
+        )}
+        {view.state === "error" ? (
+          pane === "view" && (
+            <div {...stylex.props(styles.placeholder)}>
+              <VStack gap={3} hAlign="center">
+                <Text color="secondary">Fix view.json to render this view.</Text>
+                <Button label="Open view.json" onClick={() => openFile("view.json")} />
+              </VStack>
+            </div>
+          )
+        ) : (
+          // Stays mounted while the code is open, so saving a file rebuilds it and
+          // its compile and runtime errors show up under the editor.
+          <ViewFrame key={view.hash} view={view} params={params} dark={dark} hidden={pane !== "view"} onParams={props.onParams} onStatus={onStatus} />
+        )}
+      </div>
+      {errors.length > 0 && (
+        <Banner
+          status="error"
+          container="section"
+          title={`${errors.length} error${errors.length === 1 ? "" : "s"} from the view`}
+          endContent={<Button size="sm" variant="ghost" label="Clear" onClick={() => setErrors([])} />}
+          collapsible={{ defaultIsOpen: true }}
+          xstyle={styles.errors}
+        >
+          <div {...stylex.props(styles.errorList)}>
+            {errors
+              .slice()
+              .reverse()
+              .map((e) => (
+                <ViewError key={errorId(e)} error={e} onOpenFile={openFile} />
+              ))}
+          </div>
+        </Banner>
       )}
+    </div>
+  );
+}
+
+type FrameError = Extract<FrameStatus, { error: string }>;
+// An error keeps its row (and whether its stack is open) as newer ones arrive above it.
+const errorIds = new WeakMap<FrameError, number>();
+let lastErrorId = 0;
+function errorId(e: FrameError): number {
+  if (!errorIds.has(e)) errorIds.set(e, ++lastErrorId);
+  return errorIds.get(e)!;
+}
+
+/** One error from the view: where it happened, the file to open, the message, and its stack behind the arrow. */
+function ViewError(props: { error: FrameError; onOpenFile: (path: string) => void }) {
+  const e = props.error;
+  const [open, setOpen] = useState(false);
+  return (
+    <div {...stylex.props(styles.error)}>
+      <div {...stylex.props(styles.errorLine)}>
+        {e.stack ? (
+          <IconButton
+            size="sm"
+            variant="ghost"
+            label={open ? "Hide the stack" : "Show the stack"}
+            aria-expanded={open}
+            icon={
+              <span {...stylex.props(open && styles.down)}>
+                <IconChevronRight />
+              </span>
+            }
+            onClick={() => setOpen(!open)}
+          />
+        ) : (
+          <span {...stylex.props(styles.noStack)} />
+        )}
+        <Text type="supporting" weight="medium" xstyle={[styles.fixed, statusText.error]}>
+          {e.phase}
+        </Text>
+        {e.file && (
+          <Link type="code" tooltip={`Open ${e.file}`} onClick={() => props.onOpenFile(e.file!)}>
+            {e.file}
+          </Link>
+        )}
+        <Text type="code" xstyle={styles.errorText}>
+          {e.error}
+        </Text>
+      </div>
+      {open && e.stack && <pre {...stylex.props(styles.stack)}>{e.stack}</pre>}
     </div>
   );
 }
@@ -464,18 +607,39 @@ function ViewCode(props: {
     }
   };
 
+  const narrow = useMediaQuery("(max-width: 1100px)");
+  const [discarding, setDiscarding] = useState(false);
+  const unsavedDot = (f: string) => (f in drafts ? <StatusDot variant="accent" label="Unsaved changes" tooltip="Unsaved changes" /> : undefined);
+
   return (
-    <div className="view-code">
-      <nav className="view-files" aria-label={`Files of ${view.name}`}>
-        {files.map((f) => (
-          <button key={f} className={`view-file ${f === current ? "on" : ""}`} aria-current={f === current} onClick={() => props.onFile(f)} title={f}>
-            <span className="fname">{f}</span>
-            {f in drafts && <span className="dirty" title="Unsaved changes">•</span>}
-          </button>
-        ))}
-      </nav>
+    <div {...stylex.props(styles.code)}>
+      {narrow ? (
+        <TabList value={current ?? ""} onChange={props.onFile} aria-label={`Files of ${view.name}`} size="sm" hasDivider xstyle={styles.strip}>
+          {files.map((f) => (
+            <Tab key={f} value={f} label={f} endContent={unsavedDot(f)} />
+          ))}
+        </TabList>
+      ) : (
+        <nav {...stylex.props(styles.files)} aria-label={`Files of ${view.name}`}>
+          <List density="compact">
+            {files.map((f) => (
+              <ListItem
+                key={f}
+                isSelected={f === current}
+                onClick={() => props.onFile(f)}
+                label={
+                  <Text type="code" color={f === current ? "primary" : "secondary"} maxLines={1}>
+                    {f}
+                  </Text>
+                }
+                endContent={unsavedDot(f)}
+              />
+            ))}
+          </List>
+        </nav>
+      )}
       <div
-        className="code-wrap"
+        {...stylex.props(styles.editor)}
         onKeyDown={(e) => {
           if ((e.ctrlKey || e.metaKey) && e.key === "s") {
             e.preventDefault();
@@ -483,91 +647,124 @@ function ViewCode(props: {
           }
         }}
       >
-        {err && <div className="err-banner"><div>{err}</div></div>}
+        {err && <Banner status="error" container="section" title={err} />}
         {current ? (
-          <CodeMirror
+          <CodeEditor
             key={current}
             value={text}
             onChange={(t) => onDraft(current, t === saved?.[current] ? null : t)}
             editable={canEdit}
             readOnly={!canEdit}
-            theme={props.dark ? "dark" : "light"}
-            extensions={[...language(current), EditorView.lineWrapping]}
-            basicSetup={{ foldGutter: false, highlightActiveLine: true }}
-            style={{ flex: 1, minHeight: 0, overflow: "auto" }}
-            height="100%"
+            dark={props.dark}
+            extensions={language(current)}
           />
         ) : (
-          <div className="placeholder">{saved ? "This view has no files." : "Loading…"}</div>
+          <Placeholder>{saved ? "This view has no files." : "Loading…"}</Placeholder>
         )}
-        <div className="code-bar">
-          <span className="mono">{current ? `${view.path}/${current}` : view.path}</span>
-          <span className="spacer" />
-          <span>{dirty ? `unsaved · ${MOD}S save` : "saved"}</span>
-          <button
-            className="btn sm ghost"
+        <div {...stylex.props(styles.codeBar)}>
+          <Text type="code" color="secondary" maxLines={1} xstyle={styles.codePath}>
+            {current ? `${view.path}/${current}` : view.path}
+          </Text>
+          <Text type="supporting" color="secondary" xstyle={styles.fixed}>
+            {dirty ? `unsaved · ${MOD}S save` : "saved"}
+          </Text>
+          <Button
+            size="sm"
+            variant="ghost"
+            label="History"
+            tooltip={current ? `Every saved version of ${current}` : "Every saved version of this view's files"}
             onClick={() => {
               if (current) props.onFile(current);
               props.onHistory();
             }}
-            title={current ? `Every saved version of ${current}` : "Every saved version of this view's files"}
-          >
-            History
-          </button>
+          />
           {dirty && (
-            <button className="btn sm ghost" onClick={() => onDraft(current!, null)} disabled={busy} title="Throw away the unsaved edits to this file">
-              Discard
-            </button>
+            <Button size="sm" variant="ghost" label="Discard" tooltip="Throw away the unsaved edits to this file" isDisabled={busy} onClick={() => setDiscarding(true)} />
           )}
-          {canEdit && unsaved.length > 1 && (
-            <button className="btn sm" onClick={() => save(unsaved)} disabled={busy}>
-              Save all ({unsaved.length})
-            </button>
-          )}
+          {canEdit && unsaved.length > 1 && <Button size="sm" label={`Save all (${unsaved.length})`} isDisabled={busy} onClick={() => save(unsaved)} />}
           {canEdit ? (
-            <button className="btn sm" onClick={() => save([current!])} disabled={!dirty || busy}>
-              Save
-            </button>
+            <Button size="sm" variant={dirty ? "primary" : "secondary"} label="Save" isDisabled={!dirty || busy} onClick={() => save([current!])} />
           ) : (
-            <span className="hint">read-only</span>
+            <Text type="supporting" color="secondary" xstyle={styles.fixed}>
+              read-only
+            </Text>
           )}
         </div>
       </div>
+      <AlertDialog
+        isOpen={discarding && dirty}
+        onOpenChange={setDiscarding}
+        title={`Discard the edits to ${current}?`}
+        description="The unsaved edits to this file are thrown away. The file stays as it was last saved."
+        actionLabel="Discard"
+        onAction={() => {
+          onDraft(current!, null);
+          setDiscarding(false);
+        }}
+      />
     </div>
   );
 }
 
+/** The run parameters, one control each. A value other than the default is marked, and has a way back to it. */
 function ParamBar(props: { specs: ProjectParam[]; overrides: Params; onChange: (p: Params) => Promise<ParamsState> }) {
-  const set = (name: string, value: unknown) => props.onChange({ [name]: value }).catch(() => {});
   return (
-    <div className="param-bar">
-      {props.specs.map((p) => {
-        const v = p.value;
-        const custom = Object.prototype.hasOwnProperty.call(props.overrides, p.name);
-        return (
-          <label key={p.name} className={`param ${custom ? "custom" : ""}`} title={p.description ?? ""}>
-            <span className="pname">{p.name}</span>
-            {p.type === "boolean" ? (
-              <input type="checkbox" checked={!!v} onChange={(e) => set(p.name, e.target.checked)} />
-            ) : (
-              <input
-                type={p.type === "date" ? "date" : p.type === "number" ? "number" : "text"}
-                defaultValue={v == null ? "" : String(v)}
-                key={String(v)}
-                onBlur={(e) => e.target.value !== String(v ?? "") && set(p.name, p.type === "number" ? Number(e.target.value) : e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-                onChange={(e) => p.type === "date" && e.target.value && set(p.name, e.target.value)}
-              />
-            )}
-            {custom && (
-              <button className="reset" onClick={() => set(p.name, null)} title={`Back to the default (${String(p.default)})`} aria-label={`Reset ${p.name} to its default`}>
-                ×
-              </button>
-            )}
-          </label>
-        );
-      })}
+    <div {...stylex.props(styles.params)}>
+      {props.specs.map((p) => (
+        <Param key={p.name} spec={p} custom={Object.prototype.hasOwnProperty.call(props.overrides, p.name)} onChange={props.onChange} />
+      ))}
     </div>
+  );
+}
+
+function Param(props: { spec: ProjectParam; custom: boolean; onChange: (p: Params) => Promise<ParamsState> }) {
+  const { spec: p, custom } = props;
+  const v = p.value;
+  const set = (value: unknown) => props.onChange({ [p.name]: value }).catch(() => {});
+  const field = { label: p.name, isLabelHidden: true, size: "sm", controlXstyle: custom && styles.custom } as const;
+  return (
+    <span {...stylex.props(styles.param)}>
+      <Tooltip content={p.description} isEnabled={!!p.description}>
+        <Text type="code" color={custom ? "accent" : "secondary"}>
+          {p.name}
+        </Text>
+      </Tooltip>
+      {p.type === "boolean" ? (
+        <Switch size="sm" label={p.name} isLabelHidden value={!!v} onChange={(on) => set(on)} />
+      ) : p.type === "date" ? (
+        <DateInput
+          {...field}
+          format="system_date"
+          width={184}
+          value={typeof v === "string" && v ? (v as ISODateString) : undefined}
+          onChange={(d) => d !== v && set(d ?? null)}
+        />
+      ) : p.type === "number" ? (
+        <NumberInput {...field} width={96} isWheelEnabled={false} value={v == null ? null : Number(v)} onChange={(n) => n !== v && set(n)} />
+      ) : (
+        <TextParam key={String(v)} field={field} value={v == null ? "" : String(v)} onCommit={set} />
+      )}
+      {custom && (
+        <IconButton
+          size="sm"
+          variant="ghost"
+          icon={<IconClose />}
+          label={`Reset ${p.name} to its default`}
+          tooltip={`Back to the default (${String(p.default)})`}
+          onClick={() => set(null)}
+        />
+      )}
+    </span>
+  );
+}
+
+/** A text parameter: typed freely, and set when the field is left or Enter is pressed. */
+function TextParam(props: { field: Pick<TextInputProps, "label" | "isLabelHidden" | "size" | "controlXstyle">; value: string; onCommit: (text: string) => void }) {
+  const [text, setText] = useState(props.value);
+  return (
+    <span {...stylex.props(styles.contents)} onBlur={() => text !== props.value && props.onCommit(text)}>
+      <TextInput {...props.field} width={150} value={text} onChange={setText} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
+    </span>
   );
 }
 
@@ -609,7 +806,7 @@ function ViewFrame(props: {
   return (
     <iframe
       ref={ref}
-      className="view-frame"
+      {...stylex.props(styles.frame, props.hidden && styles.hidden)}
       title={props.view.title || props.view.name}
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
@@ -617,3 +814,135 @@ function ViewFrame(props: {
     />
   );
 }
+
+/**
+ * Views mode fills the cell under the project's bar.
+ *
+ *   > 1100px   the views 240 | the selected view
+ *              its Code tab: the files 200 | the editor
+ *   <= 1100px  one column: the views are a strip of tabs over the selected
+ *              view, and so are the Code tab's files over the editor
+ */
+const NARROW = "@media (max-width: 1100px)";
+const rule = { borderStyle: "solid", borderColor: colorVars["--color-border"], borderWidth: 0 } as const;
+
+const styles = stylex.create({
+  views: {
+    display: "grid",
+    gridTemplateColumns: { default: "240px minmax(0, 1fr)", [NARROW]: "minmax(0, 1fr)" },
+    gridTemplateRows: { default: "minmax(0, 1fr)", [NARROW]: "auto minmax(0, 1fr)" },
+    minWidth: 0,
+    minHeight: 0,
+  },
+  viewsAlone: { gridTemplateColumns: "minmax(0, 1fr)", gridTemplateRows: "minmax(0, 1fr)" },
+  list: {
+    ...rule,
+    borderInlineEndWidth: "1px",
+    minHeight: 0,
+    overflow: "auto",
+    padding: spacingVars["--spacing-2"],
+    backgroundColor: colorVars["--color-background-surface"],
+  },
+  listTitle: { paddingInline: spacingVars["--spacing-2"], paddingBlock: spacingVars["--spacing-1"] },
+  // The views, or a view's files, where there is no room for a column of them.
+  strip: { minWidth: 0, paddingInline: spacingVars["--spacing-1"], backgroundColor: colorVars["--color-background-surface"] },
+  main: { display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 },
+  placeholder: {
+    display: "grid",
+    placeItems: "center",
+    flexGrow: 1,
+    minHeight: 0,
+    padding: spacingVars["--spacing-6"],
+    textAlign: "center",
+  },
+  pane: { display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0, minHeight: 0 },
+  // The tabs sit on the head's bottom edge, so the head has no padding there.
+  head: {
+    ...rule,
+    borderBottomWidth: "1px",
+    display: "flex",
+    flexDirection: "column",
+    gap: spacingVars["--spacing-2"],
+    flexShrink: 0,
+    paddingTop: spacingVars["--spacing-3"],
+    paddingInline: spacingVars["--spacing-4"],
+    backgroundColor: colorVars["--color-background-surface"],
+  },
+  titleRow: { display: "flex", alignItems: "center", gap: spacingVars["--spacing-3"], minWidth: 0 },
+  title: { minWidth: 0 },
+  fixed: { flexShrink: 0, whiteSpace: "nowrap" },
+  grow: { flexGrow: 1 },
+  // What the view reads and the parameters it is shown with: the names on one edge, the controls on another.
+  facts: {
+    display: "grid",
+    gridTemplateColumns: "max-content minmax(0, 1fr)",
+    alignItems: "baseline",
+    columnGap: spacingVars["--spacing-3"],
+    rowGap: spacingVars["--spacing-2"],
+  },
+  // A tab's label, not its box, is on the head's edge.
+  tabs: { minWidth: 0, marginInlineStart: `calc(${spacingVars["--spacing-3"]} * -1)` },
+  panel: { display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0, minHeight: 0 },
+  history: { display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 },
+  frame: {
+    display: "block",
+    flexGrow: 1,
+    minHeight: 0,
+    width: "100%",
+    borderWidth: 0,
+    backgroundColor: colorVars["--color-background-body"],
+  },
+  hidden: { display: "none" },
+
+  // A parameter set to something other than its default.
+  params: { display: "flex", flexWrap: "wrap", alignItems: "center", columnGap: spacingVars["--spacing-4"], rowGap: spacingVars["--spacing-2"] },
+  param: { display: "inline-flex", alignItems: "center", gap: spacingVars["--spacing-1-5"], flexShrink: 0, whiteSpace: "nowrap" },
+  custom: { backgroundColor: colorVars["--color-accent-muted"], borderColor: colorVars["--color-accent"] },
+  contents: { display: "contents" },
+
+  code: {
+    display: "grid",
+    gridTemplateColumns: { default: "200px minmax(0, 1fr)", [NARROW]: "minmax(0, 1fr)" },
+    gridTemplateRows: { default: "minmax(0, 1fr)", [NARROW]: "auto minmax(0, 1fr)" },
+    flexGrow: 1,
+    minHeight: 0,
+  },
+  files: {
+    ...rule,
+    borderInlineEndWidth: "1px",
+    minHeight: 0,
+    overflow: "auto",
+    padding: spacingVars["--spacing-2"],
+    backgroundColor: colorVars["--color-background-surface"],
+  },
+  editor: { display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 },
+  codeBar: {
+    ...rule,
+    borderTopWidth: "1px",
+    display: "flex",
+    alignItems: "center",
+    gap: spacingVars["--spacing-2"],
+    flexShrink: 0,
+    paddingBlock: spacingVars["--spacing-1"],
+    paddingInline: spacingVars["--spacing-3"],
+    backgroundColor: colorVars["--color-background-surface"],
+  },
+  codePath: { flexGrow: 1, minWidth: 0 },
+
+  // The errors drawer: under the pane, never more than a third of it.
+  errors: { flexShrink: 0 },
+  errorList: { maxHeight: "26vh", overflow: "auto" },
+  error: { ...rule, borderTopWidth: { default: "1px", ":first-child": 0 } },
+  errorLine: { display: "flex", alignItems: "baseline", gap: spacingVars["--spacing-2"], paddingBlock: spacingVars["--spacing-1"] },
+  noStack: { width: "24px", flexShrink: 0 },
+  down: { display: "block", transform: "rotate(90deg)" },
+  errorText: { flexGrow: 1, minWidth: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
+  stack: {
+    margin: 0,
+    paddingBlockEnd: spacingVars["--spacing-2"],
+    paddingInlineStart: spacingVars["--spacing-8"],
+    whiteSpace: "pre-wrap",
+    overflowWrap: "anywhere",
+    color: colorVars["--color-text-secondary"],
+  },
+});
