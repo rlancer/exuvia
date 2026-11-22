@@ -8,6 +8,7 @@ import { ago, dur, fmtCell, fmtNum, pressable, until } from "./util";
 import { Dialog } from "./Dialog";
 import { IconClock, IconPlay, IconSpark, IconTrash, MOD } from "./icons";
 import { failed } from "./toast";
+import { HistoryBrowser } from "./History";
 
 /** A chart's series colours: the accent first, then the states' hues and four more, per theme. */
 const SERIES = {
@@ -15,7 +16,7 @@ const SERIES = {
   light: ["#3b6fd8", "#c98a12", "#2f8f5b", "#c4413a", "#7d55cf", "#1f8ea6", "#c2518f", "#7d7b74"],
 };
 
-type Tab = "code" | "data" | "chart" | "runs";
+type Tab = "code" | "data" | "chart" | "runs" | "history";
 
 export function Inspector(props: {
   node: GraphNode;
@@ -129,7 +130,7 @@ export function Inspector(props: {
           )}
           {!node.cascade && <span title="Does not auto-refresh when upstream changes">cascade off</span>}
         </div>
-        <div className="tabs" role="tablist" aria-label={`${node.name}: code, data and runs`}>
+        <div className="tabs" role="tablist" aria-label={`${node.name}: code, data, runs and history`}>
           <button role="tab" aria-selected={tab === "code"} className={`tab ${tab === "code" ? "on" : ""}`} onClick={() => setTab("code")}>
             Code{dirty ? <span title="Unsaved changes"> •</span> : null}
           </button>
@@ -140,6 +141,9 @@ export function Inspector(props: {
             <button role="tab" aria-selected={tab === "chart"} className={`tab ${tab === "chart" ? "on" : ""}`} onClick={() => setTab("chart")}>Chart</button>
           )}
           <button role="tab" aria-selected={tab === "runs"} className={`tab ${tab === "runs" ? "on" : ""}`} onClick={() => setTab("runs")}>Runs</button>
+          <button role="tab" aria-selected={tab === "history"} className={`tab ${tab === "history" ? "on" : ""}`} onClick={() => setTab("history")} title="Every saved version of this node's code">
+            History
+          </button>
         </div>
       </div>
       <div className="insp-body">
@@ -197,6 +201,23 @@ export function Inspector(props: {
         {tab === "data" && <DataTab node={node} />}
         {tab === "chart" && node.chart && <ChartTab node={node} dark={dark} />}
         {tab === "runs" && <RunsTab node={node} logs={logs} />}
+        {tab === "history" && (
+          <HistoryBrowser
+            filter={{ node: node.name }}
+            tick={node.code_hash}
+            dark={dark}
+            layout="stack"
+            restoreNote={() => (dirty ? "Your unsaved edits in the Code tab will be replaced." : null)}
+            onRestored={() => {
+              // Show the restored code even over unsaved edits.
+              loadedFor.current = "";
+              api.node(node.name).then((r) => {
+                setSource(r.source);
+                setSaved(r.source);
+              });
+            }}
+          />
+        )}
       </div>
       {confirmDelete && (
         <Dialog title={`Delete ${node.name}?`} onClose={() => setConfirmDelete(false)}>

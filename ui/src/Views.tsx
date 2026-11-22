@@ -1,16 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import CodeMirror, { EditorView, type Extension } from "@uiw/react-codemirror";
-import { css } from "@codemirror/lang-css";
-import { javascript } from "@codemirror/lang-javascript";
-import { json } from "@codemirror/lang-json";
+import CodeMirror, { EditorView } from "@uiw/react-codemirror";
 import { api, type GraphNode, type Project, type ProjectParam, type ProjectView } from "./api";
 import { fileOrder } from "./views/files";
 import { ViewBridge, frameDocument, type FrameStatus } from "./views/host";
 import type { Params, ParamsState } from "./views/protocol";
 import { IconPlay, MOD } from "./icons";
+import { language } from "./lang";
+import { HistoryBrowser } from "./History";
 
-/** What the main pane shows for the selected view: the rendered view or its files. */
-type Pane = "view" | "code";
+/** What the main pane shows for the selected view: the rendered view, its files or their history. */
+type Pane = "view" | "code" | "history";
 /** Unsaved edits: view name → file path → text. */
 type Drafts = Record<string, Record<string, string>>;
 // Kept outside the component, so leaving Views mode for the graph and coming
@@ -254,7 +253,7 @@ function ViewPane(props: {
         {props.specs.length > 0 && <ParamBar specs={props.specs} overrides={props.overrides} onChange={props.onParams} />}
         {(props.paramErr || runErr) && <div className="err-banner"><div>{props.paramErr ?? runErr}</div></div>}
         {view.state !== "ready" && view.reason && <div className={`view-reason ${VIEW_STATE_CLASS[view.state]}`}>{view.reason}</div>}
-        <div className="tabs" role="tablist" aria-label={`${view.name}: the rendered view and its code`}>
+        <div className="tabs" role="tablist" aria-label={`${view.name}: the rendered view, its code and its history`}>
           <button role="tab" aria-selected={pane === "view"} className={`tab ${pane === "view" ? "on" : ""}`} onClick={() => props.onPane("view")}>
             View
           </button>
@@ -262,10 +261,38 @@ function ViewPane(props: {
             Code{Object.keys(props.drafts).length > 0 && <span title="Unsaved changes"> •</span>}
             <span className="n">{view.files.length}</span>
           </button>
+          <button role="tab" aria-selected={pane === "history"} className={`tab ${pane === "history" ? "on" : ""}`} onClick={() => props.onPane("history")} title="Every saved version of this view's files, deleted ones too">
+            History
+          </button>
         </div>
       </div>
       {pane === "code" && (
-        <ViewCode key={view.name} view={view} dark={dark} drafts={props.drafts} onDraft={props.onDraft} file={props.file} onFile={props.onFile} />
+        <ViewCode
+          key={view.name}
+          view={view}
+          dark={dark}
+          drafts={props.drafts}
+          onDraft={props.onDraft}
+          file={props.file}
+          onFile={props.onFile}
+          onHistory={() => props.onPane("history")}
+        />
+      )}
+      {pane === "history" && (
+        <div className="view-history">
+          <HistoryBrowser
+            filter={{ view: view.name }}
+            tick={view.hash}
+            dark={dark}
+            layout="side"
+            path={props.file ? `${view.path}/${props.file}` : undefined}
+            restoreNote={(rev) => {
+              const rel = rev.path.slice(view.path.length + 1);
+              return rel in props.drafts ? `Your unsaved edits to ${rel} will be replaced.` : null;
+            }}
+            onRestored={(rev) => props.onDraft(rev.path.slice(view.path.length + 1), null)}
+          />
+        </div>
       )}
       {view.state === "error" ? (
         pane === "view" && (
@@ -316,15 +343,6 @@ function ViewPane(props: {
   );
 }
 
-/** A view file's editor language, by extension. */
-function language(path: string): Extension[] {
-  const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
-  if (["tsx", "ts", "jsx", "js"].includes(ext)) return [javascript({ jsx: ext.endsWith("x"), typescript: ext.startsWith("t") })];
-  if (ext === "css") return [css()];
-  if (ext === "json") return [json()];
-  return [];
-}
-
 /**
  * The Code pane: the view's files, one open in an editor. Saving writes the
  * file (PUT /api/views/{name}/files/{path}); the new hash rebuilds the frame.
@@ -336,6 +354,8 @@ function ViewCode(props: {
   onDraft: (path: string, text: string | null) => void;
   file: string | undefined;
   onFile: (path: string) => void;
+  /** Open the History tab (on the file shown here). */
+  onHistory: () => void;
 }) {
   const { view, drafts, onDraft } = props;
   const [saved, setSaved] = useState<Record<string, string> | null>(null);
@@ -425,6 +445,16 @@ function ViewCode(props: {
           <span className="mono">{current ? `${view.path}/${current}` : view.path}</span>
           <span className="spacer" />
           <span>{dirty ? `unsaved · ${MOD}S save` : "saved"}</span>
+          <button
+            className="btn sm ghost"
+            onClick={() => {
+              if (current) props.onFile(current);
+              props.onHistory();
+            }}
+            title={current ? `Every saved version of ${current}` : "Every saved version of this view's files"}
+          >
+            History
+          </button>
           {dirty && (
             <button className="btn sm ghost" onClick={() => onDraft(current!, null)} disabled={busy} title="Throw away the unsaved edits to this file">
               Discard
