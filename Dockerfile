@@ -12,13 +12,10 @@
 # builds this image and drives the hub role over HTTP.
 #
 # Nodes import the packages their project lists in its pyproject.toml, which
-# the image installs before they run. To build packages into the *executor*
-# image instead, extend it (the venv belongs to root, so install as root and
-# switch back):
-#   FROM ghcr.io/rlancer/exuvia:0.3
-#   USER root
-#   RUN uv pip install --python /opt/venv/bin/python scipy statsmodels yfinance
-#   USER exuvia
+# the image installs before they run. To build packages every project gets
+# into an image of your own, install them with `uv pip install -r` from a
+# pyproject.toml of the image's own, held at exuvia's versions (-c), never
+# with `uv add` or `uv sync`: README.md, "Packages your nodes import".
 
 # The UI bundle is the same on every platform, so it builds natively even in a
 # multi-arch build (see .github/workflows/image.yml), with the bun mise.toml pins.
@@ -58,8 +55,9 @@ RUN SETUPTOOLS_SCM_PRETEND_VERSION=$EXUVIA_VERSION uv sync --frozen --no-editabl
 RUN useradd --create-home --uid 10001 exuvia && mkdir /data && chown exuvia:exuvia /data
 USER exuvia
 # uv installs the packages a project lists in its pyproject.toml before its
-# nodes run (exuvia/packages.py). Its cache goes where any uid can write, as
-# `docker run --user` leaves HOME pointing at a folder the user can't.
-ENV UV_CACHE_DIR=/tmp/uv-cache
+# nodes run (exuvia/packages.py), and exuvia picks uv's cache: a hub keeps it
+# on its volume (/data/.exuvia/packages/.uv-cache), so installs survive
+# restarts; elsewhere it is uv's default, or the temp dir when `docker run
+# --user` leaves HOME pointing at a folder the user can't write.
 EXPOSE 8080 7420
 CMD ["exuvia", "executor", "--host", "0.0.0.0", "--port", "8080"]

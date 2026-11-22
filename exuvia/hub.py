@@ -41,6 +41,10 @@ PACKAGES_REL = ".exuvia/packages/"
 # The hub's user list (users.py), under the hub's directory beside the
 # projects, unless EXUVIA_DB holds it. Exports carry it at the same path.
 HUB_USERS_DB = ".exuvia/hub.db"
+# Package installs shared by the hub's projects (packages.py), beside them.
+# Projects that resolve to the same packages share an install, and it outlives
+# restarts and exuvia upgrades that leave the packages as they were.
+HUB_PACKAGES = ".exuvia/packages"
 # Pauses between attempts to remove a folder (see _remove_tree).
 REMOVE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8)
 
@@ -93,7 +97,11 @@ class Hub:
         async with self._lock:
             ctx = self._ctxs.get(project_id)
             if ctx is None:
-                ws = Workspace(self.root / project_id, origin=self._load_origin.pop(project_id, "load"))
+                ws = Workspace(
+                    self.root / project_id,
+                    origin=self._load_origin.pop(project_id, "load"),
+                    packages_store=self.root / HUB_PACKAGES,
+                )
                 ws.api_prefix = f"/p/{project_id}/api"
                 await ws.start()
                 ctx = Ctx(ws, Agent(ws))

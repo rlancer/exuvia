@@ -24,20 +24,39 @@ from (``[tool.uv.sources]``). Index credentials come from the environment
 (``UV_INDEX_<NAME>_USERNAME`` / ``_PASSWORD``), which a project's ``.env`` can
 set. ``uv.lock`` is not read.
 
-The install folder is named after a hash of the ``pyproject.toml`` and of
-exuvia's environment, and is reused until either changes.
+Installs live in a store: a project's ``.exuvia/packages``, or one folder
+shared by every project on a server (a hub's ``.exuvia/packages``, an
+executor service's ``packages``). Each install folder is named after what it
+holds (the packages and versions the list resolved to, the index each came
+from, the Python and the platform), so projects that resolve to the same set
+share one, and a new exuvia version that leaves the set as it was keeps it:
+
+* ``.inputs/<input key>`` names the install for one ``pyproject.toml`` with
+  one exuvia environment, so a run finds it without resolving anything.
+* On a miss (the list or exuvia changed) the list is resolved again,
+  preferring the versions of the install the project used before; when that
+  gives the same set, the folder is reused and nothing is installed.
+* ``.refs/`` records which install each project uses. Installs no project
+  uses are removed, an hour after they were made at the earliest.
+
+A shared store keeps uv's own cache beside the installs (``.uv-cache``), on
+the server's volume, so an install that does run copies files instead of
+downloading them again after a restart.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
+import time
 import tomllib
 from functools import lru_cache
 from importlib import metadata
@@ -48,6 +67,11 @@ from .pool import node_environ
 
 PYPROJECT = "pyproject.toml"
 COMPLETE = ".complete"
+RESOLVED = ".resolved.txt"  # in an install: the resolution it holds
+INPUTS = ".inputs"  # in a store: input key -> the install it resolved to
+REFS = ".refs"  # in a store: which install each project uses
+UV_CACHE = ".uv-cache"  # in a shared store: uv's cache
+KEEP_S = 3600  # an install no project uses is kept this long after it is made
 CONFLICT_HINT = "hint: the exact (==) versions are the ones exuvia itself runs with; a project's packages must work with them"
 INSTALL_TIMEOUT_S = int(os.environ.get("EXUVIA_PACKAGES_TIMEOUT", "900"))
 
@@ -127,10 +151,26 @@ def _key(root: Path) -> str:
 _INDEX_ENV = ("UV_INDEX", "UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_EXTRA_INDEX_URL")
 
 
-def _uv_run(args: list[str], cwd: Path, edit: bool = False) -> str:
+def _cache_env(cache: Path | None) -> dict[str, str]:
+    """Where uv keeps its cache: ``UV_CACHE_DIR`` when the server sets it,
+    else ``cache`` (a shared store's, on the server's volume), else uv's
+    default, unless that is not writable (``docker run --user`` leaves HOME
+    pointing at a folder the user can't write)."""
+    if os.environ.get("UV_CACHE_DIR") or os.environ.get("UV_NO_CACHE"):
+        return {}
+    if cache is not None:
+        return {"UV_CACHE_DIR": str(cache)}
+    home = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    probe = home if home.exists() else home.parent
+    if not os.access(probe, os.W_OK):
+        return {"UV_CACHE_DIR": str(Path(tempfile.gettempdir()) / "uv-cache")}
+    return {}
+
+
+def _uv_run(args: list[str], cwd: Path, edit: bool = False, cache: Path | None = None) -> str:
     # A build backend runs code from the packages being installed, so uv gets
     # none of exuvia's own settings; index credentials stay, uv needs them.
-    env = {**node_environ(index=False), "NO_COLOR": "1", "UV_NO_PROGRESS": "1"}
+    env = {**node_environ(index=False), "NO_COLOR": "1", "UV_NO_PROGRESS": "1", **_cache_env(cache)}
     if edit:
         for name in _INDEX_ENV:
             env.pop(name, None)
@@ -158,37 +198,44 @@ def _write_base_files(work: Path) -> tuple[Path, Path, Path]:
     return constraints, excludes, only_exuvia
 
 
-def _compile(root: Path, work: Path) -> Path:
+def _compile(root: Path, work: Path, prefer: str | None = None, cache: Path | None = None) -> Path:
     """Resolve the project's packages against exuvia's own versions into a
-    pinned requirements file. A conflict fails here, with uv's explanation.
-    exuvia itself is left out: a project may list it for its editor, and its
-    version may not be on any index."""
+    pinned requirements file, preferring the versions in ``prefer`` (an
+    earlier resolution) where they still fit. A conflict fails here, with
+    uv's explanation. exuvia itself is left out: a project may list it for
+    its editor, and its version may not be on any index."""
     constraints, _, only_exuvia = _write_base_files(work)
     resolved = work / "resolved.txt"
+    if prefer:
+        resolved.write_text(prefer, encoding="utf-8")  # uv prefers what the output file pins
     try:
-        _uv_compile(root, resolved, only_exuvia, constraints)
+        _uv_compile(root, resolved, only_exuvia, constraints, cache=cache)
     except PackagesError as e:
         text = str(e)
         if not _names_a_base_pin(text):
-            text = _hidden_base_conflict(root, work, only_exuvia, constraints, text) or text
+            text = _hidden_base_conflict(root, work, only_exuvia, constraints, text, cache) or text
         if _names_a_base_pin(text):
             text += f"\n\n{CONFLICT_HINT}"  # one of exuvia's own versions is in the way
         raise PackagesError(text) from None
     return resolved
 
 
-def _uv_compile(root: Path, out: Path, excludes: Path, *constraints: Path) -> None:
-    args = ["pip", "compile", PYPROJECT, "--python", sys.executable]
+def _uv_compile(root: Path, out: Path, excludes: Path, *constraints: Path, cache: Path | None = None) -> None:
+    # --emit-index-annotation: the index each package comes from (without
+    # credentials) is part of what an install holds; see _install_key.
+    args = ["pip", "compile", PYPROJECT, "--python", sys.executable, "--emit-index-annotation"]
     for c in constraints:
         args += ["-c", str(c)]
-    _uv_run([*args, "--excludes", str(excludes), "-o", str(out), "--quiet"], cwd=root)
+    _uv_run([*args, "--excludes", str(excludes), "-o", str(out), "--quiet"], cwd=root, cache=cache)
 
 
 def _names_a_base_pin(text: str) -> bool:
     return any(f"{name}=={version}".lower() in text.lower() for name, version in _base())
 
 
-def _hidden_base_conflict(root: Path, work: Path, excludes: Path, constraints: Path, error: str) -> str | None:
+def _hidden_base_conflict(
+    root: Path, work: Path, excludes: Path, constraints: Path, error: str, cache: Path | None = None
+) -> str | None:
     """uv's explanation of a conflict with exuvia's versions that a failed
     resolution (``error``) did not mention, or None if there is none.
 
@@ -201,7 +248,7 @@ def _hidden_base_conflict(root: Path, work: Path, excludes: Path, constraints: P
     releases that resolution chose, and report why that fails."""
     free = work / "free.txt"
     try:
-        _uv_compile(root, free, excludes)
+        _uv_compile(root, free, excludes, cache=cache)
     except PackagesError:
         return None  # it does not resolve on its own either: the error stands
     wanted = _pins(free.read_text(encoding="utf-8"))
@@ -215,7 +262,7 @@ def _hidden_base_conflict(root: Path, work: Path, excludes: Path, constraints: P
     held = work / "newest.txt"
     held.write_text("".join(f"{n}=={v}\n" for n, v in newest.items()), encoding="utf-8")
     try:
-        _uv_compile(root, work / "held.txt", excludes, constraints, held)
+        _uv_compile(root, work / "held.txt", excludes, constraints, held, cache=cache)
     except PackagesError as e:
         if not _names_a_base_pin(str(e)):
             return None
@@ -234,62 +281,222 @@ def _pins(text: str) -> dict[str, str]:
     return {_norm(m.group(1)): m.group(2) for line in text.splitlines() if (m := _PIN.match(line.strip()))}
 
 
-def resolve(root: Path) -> dict[str, str]:
+def resolve(root: Path, cache: Path | None = None) -> dict[str, str]:
     """``normalized name -> version`` of every package the project's list
     resolves to (exuvia's own included), without installing anything."""
     work = Path(tempfile.mkdtemp(prefix="exuvia-packages-"))
     try:
         with _SLOTS:
-            text = _compile(root, work).read_text(encoding="utf-8")
+            text = _compile(root, work, cache=cache).read_text(encoding="utf-8")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     return _pins(text)
 
 
-def ensure(root: Path, cache: Path, log: Callable[[str], None], prune: bool = False) -> Path | None:
-    """The folder holding the project's declared packages, installed first
-    if needed (the installer's output goes to ``log``), or None when it
-    declares none. ``prune`` removes other installs from ``cache`` (a
-    project's own cache, not one shared by many projects)."""
-    deps = declared(root)
-    if not deps:
+# -- the store: installs named after what they hold ----------------------------------
+_COMMENT = re.compile(r"\s+#.*$")
+
+
+def _install_key(resolved: str) -> str:
+    """The name of the install that holds a resolution: the packages it adds
+    to exuvia's (a requirement line each, with the index it comes from), the
+    Python and platform they were installed for, and NumPy's major version,
+    which compiled extensions are built against."""
+    base = {_norm(n): v for n, v in _base()}
+    lines: list[str | None] = []  # None: one of exuvia's packages, not installed
+    for raw in resolved.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("# from "):
+            if lines and lines[-1] is not None:
+                lines[-1] += f" from {stripped[7:]}"
+            continue
+        line = _COMMENT.sub("", stripped)
+        if not line or line.startswith(("#", "-")):
+            continue
+        name = _requirement_name(line)
+        lines.append(line if name and name not in base else None)
+    h = hashlib.sha256()
+    h.update(f"{sys.implementation.cache_tag}{getattr(sys, 'abiflags', '')}\0{sysconfig.get_platform()}\0".encode())
+    h.update(f"numpy {base.get('numpy', '').split('.')[0]}\0".encode())
+    for line in sorted(x for x in lines if x is not None):
+        h.update(f"{line}\n".encode())
+    return h.hexdigest()[:16]
+
+
+def _ref_path(store: Path, root: Path) -> Path:
+    return store / REFS / f"{hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:16]}.json"
+
+
+def _found(store: Path, input_key: str) -> Path | None:
+    """The finished install recorded for ``input_key``, without resolving."""
+    try:
+        name = (store / INPUTS / input_key).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    folder = store / name
+    return folder if name and (folder / COMPLETE).exists() else None
+
+
+def _use(store: Path, root: Path, folder: Path, input_key: str) -> bool:
+    """Record that the project at ``root`` uses ``folder``, unless it was
+    removed meanwhile. Under the store's lock, so an install found here is
+    not removed by _collect before the record keeps it."""
+    with _lock(f"store\0{store}"):
+        if not (folder / COMPLETE).exists():
+            return False
+        if _found(store, input_key) != folder:
+            _write(store / INPUTS / input_key, folder.name)
+        ref = _ref_path(store, root)
+        want = {"root": str(root.resolve()), "install": folder.name}
+        try:
+            if json.loads(ref.read_text(encoding="utf-8")) == want:
+                return True
+        except (OSError, ValueError):
+            pass
+        _write(ref, json.dumps(want))
+    _collect(store)
+    return True
+
+
+def _write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _forget(store: Path, root: Path) -> None:
+    """The project at ``root`` uses no install (it lists no packages)."""
+    ref = _ref_path(store, root)
+    if ref.exists():
+        with _lock(f"store\0{store}"):
+            ref.unlink(missing_ok=True)
+        _collect(store)
+
+
+def _previous(store: Path, root: Path) -> str | None:
+    """The resolution in the install the project used last, if it is still there."""
+    try:
+        name = json.loads(_ref_path(store, root).read_text(encoding="utf-8"))["install"]
+        return (store / name / RESOLVED).read_text(encoding="utf-8")
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _collect(store: Path) -> None:
+    """Remove installs no project uses (made more than KEEP_S ago), the
+    records of projects that are gone, and installs cut short."""
+    now = time.time()
+    with _lock(f"store\0{store}"):
+        live: set[str] = set()
+        for ref in (store / REFS).glob("*.json") if (store / REFS).is_dir() else []:
+            try:
+                data = json.loads(ref.read_text(encoding="utf-8"))
+                root, name = Path(data["root"]), data["install"]
+            except (OSError, ValueError, KeyError, TypeError):
+                ref.unlink(missing_ok=True)
+                continue
+            if (root / PYPROJECT).is_file():
+                live.add(name)
+            else:
+                ref.unlink(missing_ok=True)  # the project was deleted or moved
+        for folder in store.iterdir() if store.is_dir() else []:
+            if not folder.is_dir() or folder.name in live:
+                continue
+            try:
+                age = now - folder.stat().st_mtime
+                if folder.name.startswith(".incoming-"):
+                    if age > INSTALL_TIMEOUT_S + KEEP_S:
+                        shutil.rmtree(folder, ignore_errors=True)  # left by a process that died
+                    continue
+                if folder.name.startswith("."):
+                    continue
+                done = folder / COMPLETE
+                if done.exists() and now - done.stat().st_mtime < KEEP_S:
+                    continue  # just made: a project may be about to record it
+            except OSError:
+                continue
+            shutil.rmtree(folder, ignore_errors=True)
+        for record in (store / INPUTS).iterdir() if (store / INPUTS).is_dir() else []:
+            if record.name.startswith("."):
+                continue  # being written
+            try:
+                if not (store / record.read_text(encoding="utf-8").strip() / COMPLETE).exists():
+                    record.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def installed(root: Path, store: Path) -> Path | None:
+    """The finished install of the project's current list, found without
+    resolving (None when there is none yet, or the list is empty)."""
+    if not declared(root):
         return None
     key = _key(root)
-    target = cache / key
-    if (target / COMPLETE).exists():
-        return target
-    with _lock(key):
-        if (target / COMPLETE).exists():
-            return target
-        cache.mkdir(parents=True, exist_ok=True)
-        log(f"installing the packages in {PYPROJECT}: {', '.join(deps)}\n")
+    folder = _found(store, key)
+    if folder is not None and _use(store, root, folder, key):
+        return folder
+    return None
+
+
+def ensure(root: Path, store: Path, log: Callable[[str], None], shared: bool = False) -> Path | None:
+    """The folder holding the project's declared packages, installed first
+    if needed (the installer's output goes to ``log``), or None when it
+    declares none. ``store`` holds the installs; ``shared`` says that it is
+    a server's, used by many projects, which also keeps uv's cache there."""
+    deps = declared(root)
+    if not deps:
+        _forget(store, root)
+        return None
+    cache = store / UV_CACHE if shared else None
+    key = _key(root)
+    folder = installed(root, store)
+    if folder is not None:
+        return folder
+    with _lock(f"input\0{store}\0{key}"):
+        folder = installed(root, store)
+        if folder is not None:
+            return folder
+        store.mkdir(parents=True, exist_ok=True)
         work = Path(tempfile.mkdtemp(prefix="exuvia-packages-"))
-        incoming = Path(tempfile.mkdtemp(dir=cache, prefix=".incoming-"))
         try:
             with _SLOTS:
-                resolved = _compile(root, work)
-                _, excludes, _ = _write_base_files(work)
-                # Install that resolution minus what exuvia already has.
-                out = _uv_run(["pip", "install", "-r", PYPROJECT, "--python", sys.executable, "--target",
-                               str(incoming), "-c", str(resolved), "--excludes", str(excludes)], cwd=root)
-            if out:
-                log(out + "\n")
-            (incoming / COMPLETE).write_text("", encoding="utf-8")
-            if target.exists() and not (target / COMPLETE).exists():
-                shutil.rmtree(target, ignore_errors=True)  # an install that was cut short
-            try:
-                os.replace(incoming, target)
-            except OSError:
-                if not (target / COMPLETE).exists():  # not another process finishing first
-                    raise
+                resolved = _compile(root, work, prefer=_previous(store, root), cache=cache)
+            text = resolved.read_text(encoding="utf-8")
+            target = store / _install_key(text)
+            with _lock(f"install\0{target}"):
+                if not (target / COMPLETE).exists():
+                    log(f"installing the packages in {PYPROJECT}: {', '.join(deps)}\n")
+                    _install(root, store, work, resolved, target, log, cache)
+                if not _use(store, root, target, key):
+                    raise PackagesError("the install was removed while it was being recorded; run again")
         finally:
             shutil.rmtree(work, ignore_errors=True)
-            shutil.rmtree(incoming, ignore_errors=True)
-        if prune:
-            for old in cache.iterdir():
-                if old.name != key and not old.name.startswith("."):
-                    shutil.rmtree(old, ignore_errors=True)
         return target
+
+
+def _install(root: Path, store: Path, work: Path, resolved: Path, target: Path,
+             log: Callable[[str], None], cache: Path | None) -> None:
+    """Install a resolution, minus what exuvia already has, as ``target``."""
+    _, excludes, _ = _write_base_files(work)
+    incoming = Path(tempfile.mkdtemp(dir=store, prefix=".incoming-"))
+    try:
+        with _SLOTS:
+            out = _uv_run(["pip", "install", "-r", PYPROJECT, "--python", sys.executable, "--target",
+                           str(incoming), "-c", str(resolved), "--excludes", str(excludes)], cwd=root, cache=cache)
+        if out:
+            log(out + "\n")
+        shutil.copyfile(resolved, incoming / RESOLVED)
+        (incoming / COMPLETE).write_text("", encoding="utf-8")
+        if target.exists() and not (target / COMPLETE).exists():
+            shutil.rmtree(target, ignore_errors=True)  # an install that was cut short
+        try:
+            os.replace(incoming, target)
+        except OSError:
+            if not (target / COMPLETE).exists():  # not another process finishing first
+                raise
+    finally:
+        shutil.rmtree(incoming, ignore_errors=True)
 
 
 def installed_in(folder: Path | None) -> dict[str, tuple[str, str]]:
@@ -378,12 +585,16 @@ class Packages:
 
     ``local`` is false when nodes run on a remote executor: it installs the
     packages itself, so this side edits and checks the list but installs
-    nothing.
+    nothing. ``store`` is a server's store shared by its projects (a hub's);
+    without one, the project keeps its installs in ``.exuvia/packages``.
     """
 
-    def __init__(self, root: Path, publish: Callable[[dict], None] | None = None, local: bool = True):
+    def __init__(self, root: Path, publish: Callable[[dict], None] | None = None, local: bool = True,
+                 store: Path | None = None):
         self.root = root
-        self.cache = root / ".exuvia" / "packages"
+        self.shared = store is not None
+        self.store = store if store is not None else root / ".exuvia" / "packages"
+        self.uv_cache = self.store / UV_CACHE if self.shared else None
         self.local = local
         self._publish = publish or (lambda event: None)
         self._edit = threading.Lock()
@@ -412,8 +623,9 @@ class Packages:
             return None
         if key in self._failed:
             raise PackagesError(self._failed[key])
-        if (self.cache / key / COMPLETE).exists():
-            return self.cache / key
+        folder = installed(self.root, self.store)
+        if folder is not None:
+            return folder
         return self._install(key, log)
 
     def _install(self, key: str, log: Callable[[str], None] | None = None) -> Path | None:
@@ -430,7 +642,7 @@ class Packages:
             self._installing = True
         self._changed()
         try:
-            folder = ensure(self.root, self.cache, tee, prune=True)
+            folder = ensure(self.root, self.store, tee, shared=self.shared)
         except PackagesError as e:
             with self._state_lock:
                 self._failed[key] = str(e)
@@ -448,11 +660,15 @@ class Packages:
         after every change to the list."""
         if not self.local:
             return
+        legacy = self.root / ".exuvia" / "packages"
+        if self.shared and legacy.is_dir():
+            # Installs from before the project used the server's store.
+            threading.Thread(target=shutil.rmtree, args=(legacy, True), daemon=True).start()
         try:
             deps, key = self._current()
         except PackagesError:
             return  # state() reports the broken file
-        if key is None or key in self._failed or (self.cache / key / COMPLETE).exists():
+        if key is None or key in self._failed or installed(self.root, self.store) is not None:
             return
         with self._state_lock:
             if self._thread and self._thread.is_alive():
@@ -466,7 +682,7 @@ class Packages:
                 deps, key = self._current()
             except PackagesError:
                 break
-            if key is None or key in self._failed or (self.cache / key / COMPLETE).exists():
+            if key is None or key in self._failed or installed(self.root, self.store) is not None:
                 break
             try:
                 self._install(key)
@@ -497,8 +713,8 @@ class Packages:
             if before is None:
                 path.write_text(PYPROJECT_TEMPLATE.format(name=dist_name(self.root.name)), encoding="utf-8")
             try:
-                _uv_run([*args, "--frozen"], cwd=self.root, edit=True)
-                versions = resolve(self.root)
+                _uv_run([*args, "--frozen"], cwd=self.root, edit=True, cache=self.uv_cache)
+                versions = resolve(self.root, cache=self.uv_cache)
                 base = {_norm(n) for n, _ in _base()}
                 exact = [
                     f"{m.group(1)}{m.group(2) or ''}=={versions[_norm(m.group(1))]}"
@@ -506,7 +722,7 @@ class Packages:
                     if (m := _BARE.match(spec)) and _norm(m.group(1)) in versions and _norm(m.group(1)) not in base
                 ]
                 if exact:
-                    _uv_run(["add", *exact, "--frozen"], cwd=self.root, edit=True)
+                    _uv_run(["add", *exact, "--frozen"], cwd=self.root, edit=True, cache=self.uv_cache)
             except BaseException:
                 if before is None:
                     path.unlink(missing_ok=True)
@@ -615,8 +831,8 @@ class Packages:
             deps, key = self._current()
         except PackagesError as e:
             deps, key, error = [], None, str(e)
-        folder = self.cache / key if key else None
-        ready = bool(folder and (folder / COMPLETE).exists())
+        folder = _found(self.store, key) if key else None
+        ready = folder is not None
         with self._state_lock:
             installing, log, requests = self._installing, self._log, list(self._requests)
             failed = self._failed.get(key) if key else None
