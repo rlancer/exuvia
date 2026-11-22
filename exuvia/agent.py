@@ -14,7 +14,7 @@ import uuid
 from importlib import metadata
 from typing import Any, AsyncIterator
 
-from . import feedback
+from . import docs, feedback
 from .llm import Provider, resolve_provider
 from .packages import PackagesError, agent_mode
 from .project import NODE_NAME, coerce_param
@@ -323,6 +323,25 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "docs",
+        "description": (
+            "exuvia's documentation, for what the guide does not cover: deploying a server or hub (Docker, "
+            "Compose, Kubernetes), auth and agent tokens, private package indexes and Kerberos, executors, record "
+            "databases, schedules on hosts that sleep, the HTTP API, embedding exuvia, MCP setup, views in depth. "
+            "With no input: the table of contents. `topic`: one section by its heading. `query`: the passages "
+            "that match some words, across every section. It is the README of the installed version, read "
+            "locally: no network."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string", "description": "a heading from the table of contents, e.g. `Kerberos` or `Deploying`"},
+                "query": {"type": "string", "description": "words to search for, e.g. `postgres records`"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "report_issue",
         "description": (
             "Tell the exuvia maintainers something is wrong or missing: a bug in exuvia itself, a tool that fails "
@@ -434,6 +453,7 @@ def rolling_vol(returns):
 - Add a `chart` when a node's output is naturally visual (time series, distributions, rankings).
 - Imports go inside the function or at module top; available packages: {packages}. Do not pip install. A package that is not listed goes in the project's `pyproject.toml` under `[project] dependencies`, which exuvia installs from: {packages_how}
 - Only delete or rename nodes when asked. Keep edits minimal when changing an existing node.
+- For anything about exuvia this guide does not cover (deploying it, hubs, auth and tokens, executors, package indexes, the HTTP API, MCP setup), read `docs` before you answer or act: it is the documentation of the installed version. Do not answer those from memory.
 - Finish with a short summary of what you changed and what the data shows — a few sentences, not a report. Describe findings factually; you are a research tool and do not give investment advice.
 
 ## Views
@@ -656,6 +676,9 @@ class Agent:
                     "a node waits for the install to finish."
                 )
             return True, text, {}
+        if name == "docs":
+            ok, text = docs.tool(args)
+            return ok, text, {}
         if name == "report_issue":
             return True, json.dumps(feedback.draft(args["title"], args["details"], args.get("kind") or "bug", origin)), {}
         return False, f"unknown tool {name}", {}

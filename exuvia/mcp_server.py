@@ -92,10 +92,19 @@ HUB_GUIDE_TOOL = {
 }
 
 
+# Project tools that are about exuvia, not a project: a hub offers them
+# without a `project` argument and answers them itself.
+PROJECT_FREE = {"docs"}
+
+
 def hub_tool_list(project_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """A hub's tools: its own, then each project tool with a required ``project``."""
+    """A hub's tools: its own, then each project tool with a required
+    ``project`` (but those in PROJECT_FREE as they are)."""
     out = list(HUB_TOOLS)
     for t in project_tools:
+        if t["name"] in PROJECT_FREE:
+            out.append({"name": t["name"], "description": t["description"], "input_schema": t["input_schema"]})
+            continue
         schema = dict(t["input_schema"])
         schema["properties"] = {"project": PROJECT_ARG, **schema.get("properties", {})}
         schema["required"] = ["project", *schema.get("required", [])]
@@ -116,8 +125,9 @@ def hub_instructions(url: str, projects: list[dict[str, Any]] | str) -> str:
     return (
         f"An exuvia hub at {url}: many exuvia projects (DAG workbenches of Python and SQL nodes), each "
         f"with its own nodes, runs, outputs and views, and its workbench at {url}/p/<project>/. "
-        "Every project tool takes the project's id as `project`. Before you write or change anything in a "
-        "project, call `guide` with that `project`: it says how exuvia works and holds the project's own "
+        "Every project tool takes the project's id as `project`; `docs` (exuvia's documentation) needs none. "
+        "Before you write or change anything in a project, call `guide` with that `project`: it says how "
+        "exuvia works and holds the project's own "
         "parameters and notes. Use the project the user names; when it is unclear which one, ask, or call "
         f"list_projects. {listing}"
     )
@@ -343,6 +353,10 @@ class HubBackend:
             if name == "list_projects":
                 ok, listing = await self._projects()
                 return ok, json.dumps(listing, indent=1) if ok else str(listing)
+            if name in PROJECT_FREE:  # the docs of this install, which may be a different version than the hub
+                from . import docs
+
+                return docs.tool(args)
             if name == "create_project":
                 r = await self.http.post(f"{self.url}/api/projects", json={k: v for k, v in args.items() if k in ("id", "name", "template")})
                 if r.status_code != 200:

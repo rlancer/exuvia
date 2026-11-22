@@ -64,6 +64,8 @@ function toolLabel(it: Extract<Item, { kind: "tool" }>): string {
       return `wrote ${i.path ?? "…"}${i.lines ? ` · ${i.lines} lines` : ""}`;
     case "delete_file":
       return `deleted ${i.path ?? ""}`;
+    case "docs":
+      return i.topic ? `read the docs: ${i.topic}` : i.query ? `searched the docs: ${i.query}` : "looked at the docs";
     case "report_issue":
       return `drafted an issue report: ${String(i.title ?? "").slice(0, 80)}`;
     default:

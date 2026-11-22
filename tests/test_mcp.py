@@ -268,6 +268,7 @@ def test_a_hub_url_relays_to_every_project(hub_served):
                 hub_guide = text(await client.call_tool("guide", {}))
                 book_guide = await client.call_tool("guide", {"project": "books"})
                 listing = json.loads(text(await client.call_tool("list_projects", {})))
+                docs = await client.call_tool("docs", {"topic": "Kerberos"})
             return locals() | {"instructions": server.instructions}
         finally:
             await backend.stop()
@@ -278,6 +279,8 @@ def test_a_hub_url_relays_to_every_project(hub_served):
     run_schema = tools["run_node"].input_schema
     assert run_schema["required"] == ["project", "name"] and "project" in run_schema["properties"]
     assert "project" not in tools["guide"].input_schema.get("required", [])
+    assert "project" not in tools["docs"].input_schema["properties"]  # about exuvia, not a project
+    assert not seen["docs"].is_error and text(seen["docs"]).startswith("### Kerberos")
     assert "no projects yet" in seen["instructions"]
     assert json.loads(seen["empty"])["projects"] == []
 
@@ -386,6 +389,7 @@ def test_a_hub_answers_mcp_over_http(hub_served):
             hub_guide = text(await client.call_tool("guide", {}))
             book_guide = await client.call_tool("guide", {"project": "books"})
             listing = json.loads(text(await client.call_tool("list_projects", {})))
+            docs = await client.call_tool("docs", {"query": "kerberos keytab"})
         async with http_client(f"{hub_served}/mcp", token) as client:
             later = client.instructions  # worked out again for each client
         return locals()
@@ -393,6 +397,8 @@ def test_a_hub_answers_mcp_over_http(hub_served):
     seen = asyncio.run(hub_wide("s3cret"))
     assert set(seen["tools"]) == {"guide", "list_projects", "create_project", *(t["name"] for t in TOOLS)}
     assert seen["tools"]["run_node"].input_schema["required"] == ["project", "name"]
+    assert "project" not in seen["tools"]["docs"].input_schema["properties"]
+    assert not seen["docs"].is_error and "## Deploying > Kerberos" in text(seen["docs"])
     assert "no projects yet" in seen["empty"] and "- books: Books" in seen["later"]
     assert json.loads(text(seen["made"])) == {"id": "books", "name": "Books", "workbench": f"{hub_served}/p/books/"}
     assert seen["dup"].is_error and "already exists" in text(seen["dup"])

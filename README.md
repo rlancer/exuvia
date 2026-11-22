@@ -1783,7 +1783,7 @@ The agent runs a tool loop over the live workspace: `list_nodes`, `read_node`,
 `write_view` / `write_view_file` / `delete_view_file` / `delete_view` (see
 "Views"), `run_node`, `define_param`,
 `query_data` (DuckDB over every node's current output), `list_packages` and
-`request_packages` (see "Packages"), and `report_issue` (see "MCP"). It looks at real column names before writing, runs
+`request_packages` (see "Packages"), `docs` and `report_issue` (see "MCP"). It looks at real column names before writing, runs
 what it writes, reads the traceback when something fails, and fixes it. Every
 tool call shows up in the chat, and nodes it touches flash on the canvas.
 
@@ -1942,7 +1942,8 @@ token from a file (`EXUVIA_API_TOKEN_FILE`).
 "hub"`), `exuvia mcp --url` serves every project on it: `list_projects`,
 `create_project`, and each project tool with a required `project` argument
 (the project's id); `guide` with `project` returns that project's
-instructions, and without it describes the hub and lists its projects. One
+instructions, and without it describes the hub and lists its projects.
+`docs` is about exuvia rather than a project, so it takes no `project`. One
 MCP server then covers all of them, including ones created later. A hub's
 home page writes this setup out (**Connect agent**), with a person's own
 agent token already in it on a hub where people sign in. For an agent that should
@@ -1958,6 +1959,19 @@ Code the client changes is recorded with the origin `mcp`, and nodes it runs
 with the trigger `mcp`, so the history shows which changes came from your
 agent. A tool that fails returns its error (a traceback's last lines, an
 invalid input) as the tool result, for the model to read and fix.
+
+**Docs.** The `guide` covers building in a project; for everything else
+(deploying a hub, auth and agent tokens, package indexes, executors, the HTTP
+API, setting up MCP itself) the agent has a `docs` tool. It reads this README
+as the installed version ships it, so the answer matches the exuvia that is
+running and needs no network: with no input it returns the table of
+contents, with `topic` one section (`Kerberos`, `Deploying > Kerberos` or an
+anchor such as `#kerberos`; a section too long to send at once comes back as
+its opening and a list of its subsections), and with `query` the passages
+that best match some words. The agent's instructions tell it to look there
+rather than answer such questions from memory. Clients that can fetch web
+pages also have [llms.txt](https://exuvia.lobster.mp/llms.txt), which
+describes the latest release.
 
 **Reporting problems.** When the problem is exuvia's rather than your
 project's (a tool fails on valid input, the instructions are wrong or
