@@ -398,6 +398,9 @@ class Workspace:
                     if dep_state in ("stale", "new", "error"):
                         state, reason = "stale", f"{dep} is {dep_state}"
                         break
+            # Fresh apart from a later failed run: the last good output is still
+            # what the code and the inputs would produce, so it can be read.
+            output_current = state == "fresh"
             if lr and lr["status"] == "failed" and (ls is None or lr["queued_at"] > ls["queued_at"]):
                 if state != "error":
                     state, reason = "failed", lr.get("error")
@@ -428,6 +431,7 @@ class Workspace:
                 "schedule": sched,
                 "run_params": own,
                 "params_key": key,
+                "output_current": output_current,
                 # A run that failed importing something not installed: the
                 # package to offer to install (see packages.missing_package).
                 "missing_package": missing_package(reason) if state == "failed" else None,
@@ -596,7 +600,7 @@ class Workspace:
         for t in targets:
             wanted.add(t)
             if pull_upstream:
-                wanted |= {a for a in g.ancestors(t) if status[a]["state"] != "fresh"}
+                wanted |= {a for a in g.ancestors(t) if self._pull(status[a])}
         plan = [n for n in g.topo_order(wanted) if n in force or status[n]["state"] != "fresh"]
         if not plan:
             return {}
@@ -648,6 +652,17 @@ class Workspace:
                     )
                 )
         return finals
+
+    @staticmethod
+    def _pull(st: dict[str, Any]) -> bool:
+        """Whether a run must also run this ancestor first. Not when it is
+        fresh, nor when only its latest run failed and its last good output is
+        still current: that output is read instead, so a source that fails
+        (an API outage, say) does not retry on every run downstream and block
+        them. It retries on its own schedule or when run by name."""
+        if st["state"] == "fresh":
+            return False
+        return not (st["state"] == "failed" and st["output_current"])
 
     def _is_fresh_ignoring_inflight(self, name: str, key: str, params: dict[str, Any]) -> bool:
         run_id = self._inflight.pop((name, key), None)

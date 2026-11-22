@@ -656,6 +656,13 @@ in the image, listed in a `pyproject.toml` of its own and installed with
   one that run consumed. Otherwise it is *stale*, and the reason says why.
 - **Run = target + stale ancestors**, in dependency order, in parallel where
   the graph allows (`EXUVIA_MAX_PARALLEL`, default 4).
+- **A failed refresh doesn't block what reads it.** When an ancestor's latest
+  run failed but its last good output is still current (same code, same
+  inputs), runs below it read that output instead of retrying it. A monthly
+  source whose API is down doesn't stop the node that runs every 5 minutes on
+  top of it; the source retries on its own schedule or when you run it. An
+  ancestor whose code or inputs changed since its last good output still runs
+  first.
 - **Subprocess isolation.** Every node runs in its own Python process: crash
   isolation, clean per-run logs streamed live to the UI, killable timeouts
   (`EXUVIA_RUN_TIMEOUT`, default 1800 s).
