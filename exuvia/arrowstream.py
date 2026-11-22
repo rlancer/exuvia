@@ -29,8 +29,7 @@ def wants_arrow(accept: str | None) -> bool:
 
 def _reader(rel: Any) -> Any:
     """A pyarrow RecordBatchReader over a DuckDB relation."""
-    to_reader = getattr(rel, "to_arrow_reader", None)  # DuckDB 2; 1.x has fetch_record_batch
-    return to_reader(BATCH_ROWS) if to_reader else rel.fetch_record_batch(BATCH_ROWS)
+    return rel.to_arrow_reader(BATCH_ROWS)
 
 
 class ArrowStream:
