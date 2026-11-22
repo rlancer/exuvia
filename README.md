@@ -503,6 +503,7 @@ export default function App() {
 | `onChange(fn)` | called with the nodes whose output was replaced |
 | `rows(table)` | Arrow rows as plain objects (64-bit integers become numbers when they fit) |
 | `useView()`, `useDark()` | the view's name, title and reads; whether the page is in dark mode |
+| `download(node \| {sql}, format, filename?)` | save a read node's whole output (`download("prices", "xlsx")`) or a query's whole result (`download({sql: "select …"}, "csv")`) as a file: `csv`, `xlsx`, `parquet` or `json`, for the parameters the view shows. The frame cannot save files itself, so the page does |
 
 The hooks reload by themselves when an output they read is replaced (a run
 finished, or the parameters changed) and keep the previous data while
@@ -521,7 +522,7 @@ origin is `"null"`, so the origin says nothing):
 | page → frame | `runtime {source}` | the runtime script, evaluated by the bootstrap |
 | frame → page | `ready` | the runtime loaded |
 | page → frame | `load {view, params, dark}` | the view's files (`{path: source}`), entry and reads, and the parameter set |
-| frame → page | `request {id, method, args}` | `table {node}`, `json {node}`, `query {sql}`, `params {}`, `setParams {params}` |
+| frame → page | `request {id, method, args}` | `table {node}`, `json {node}`, `query {sql}`, `params {}`, `setParams {params}`, `download {node \| sql, format, filename}` |
 | page → frame | `response {id, ok, result \| error}` | Arrow IPC bytes for `table`/`query` (transferred, not copied), the value for `json`, `{params, specs}` for the parameter calls |
 | page → frame | `changed {nodes, params}` | outputs the view reads were replaced; driven by `/api/events` |
 | page → frame | `theme {dark}` | |
@@ -539,7 +540,51 @@ DuckDB connection that holds only the views of the nodes in `reads` (and
 their `__runs`) and is then locked: external access is off except for those
 exact output files, extensions cannot load, and the configuration cannot be
 changed back, so the SQL cannot `read_parquet` another node's file, `COPY`
-out, `ATTACH` a file or `INSTALL` anything.
+out, `ATTACH` a file or `INSTALL` anything. `GET
+/api/views/{name}/data/{node}/export` and `POST /api/views/{name}/query/export`
+are the same two routes as downloads (see "Downloads").
+
+## Downloads
+
+Anything you can see in the workbench you can save as a file. Every table
+offers four formats: **CSV**, **Excel** (`.xlsx`: typed cells, a frozen
+header row; text that starts with `=` stays text, never a formula),
+**Parquet** (typed columns, for pandas, DuckDB or Spark) and **JSON** (an
+array of rows). A JSON output downloads as `.json`.
+
+- **A node's output**, every row, not just what the table shows: the
+  download button in the node's header and under its Data tab. For a node
+  with several outputs, each one on its own, or all of them as the stored
+  `.zip`.
+- **A past run's output:** the Runs tab, on any successful run.
+- **A SQL result:** the button beside "Run query" saves the whole result.
+- **What a view reads**, for the parameters it shows: the button in the
+  view's header. A view can add its own buttons with `download()` (see
+  "Rendering a view").
+- **Code, as a .zip:** the whole project (the download button in the top bar,
+  or the one beside the Files tab's filter), one node with the `lib/`
+  helpers it imports (the node's header), or one view (the view's header).
+  The archive holds the nodes, helpers and views with `exuvia.json`,
+  `pyproject.toml`, `uv.lock`, `AGENTS.md` and `README.md` when present;
+  never `.env`, run history or outputs.
+
+The same routes serve scripts:
+
+```bash
+curl -OJ 'http://127.0.0.1:7420/api/nodes/prices/export?format=parquet'
+curl -OJ 'http://127.0.0.1:7420/api/code/archive'
+curl -OJ http://127.0.0.1:7420/api/query/export \
+  -H 'Content-Type: application/json' \
+  -d '{"sql": "select * from prices where close > 100", "format": "xlsx"}'
+```
+
+The file is named after the node and the run's parameter values
+(`prices-2026-11-20.csv`); `filename` (without the extension) names it
+otherwise. CSV and JSON stream as they are written, so a big table never sits
+in memory. One Excel sheet holds 1,048,575 rows: a bigger table is refused
+(413), so download it as CSV or Parquet. Lists, structs and maps become JSON
+text in CSV and Excel cells. A viewer of a shared project can download
+everything they can read.
 
 ## Packages
 
@@ -2091,7 +2136,7 @@ What each role may do:
 
 | | viewer | editor | owner |
 |---|---|---|---|
-| Open it; read code, outputs, runs, history and views; query outputs | yes | yes | yes |
+| Open it; read code, outputs, runs, history and views; query outputs; download them | yes | yes | yes |
 | Change code, run nodes and backfills, packages, parameters, use the agent | | yes | yes |
 | Share it, make links, answer requests, hand it over, delete it | | | yes |
 
@@ -2138,6 +2183,7 @@ headlessly or iframe the UI:
 | `POST /api/views/{name}/restore` | make a saved version (`{path, hash}`) of one view file current again; brings back a deleted file or view |
 | `GET /api/views/{name}/data/{node}` | `/api/nodes/{node}/data` for a view: 403 unless the view's `reads` lists `node` |
 | `POST /api/views/{name}/query` | `/api/query` for a view: only the nodes in its `reads` exist, and the connection cannot open other files (see "Rendering a view") |
+| `GET /api/views/{name}/data/{node}/export`, `POST /api/views/{name}/query/export` | the two routes above as downloads, like `/api/nodes/{node}/export` and `/api/query/export` |
 | `POST /api/nodes` | create from a template |
 | `POST /api/nodes/{name}/run` | run a node; `{"wait": seconds}` waits and returns the same report the agent's `run_node` gets (status, error + log tail, or schema, rows and first rows; `running: true` if still going) |
 | `POST /api/run` | bring the graph (or named nodes) up to date for a parameter set (`wait` as above: per-node status and each failure's error + log tail) |
@@ -2146,14 +2192,17 @@ headlessly or iframe the UI:
 | `POST /api/run-stale` | refresh everything stale |
 | `POST/GET/DELETE /api/backfill` | replay a list or date range of parameter values |
 | `GET /api/nodes/{name}/data` | a node's output (`?params=` or `?run_id=`, `?limit=`, `?offset=`): JSON rows, or an Arrow stream (see "Binary data"). For a node with several outputs, `kind: "multi"` and its `parts`; `?part=` reads one |
+| `GET /api/nodes/{name}/export` | a node's whole output as a file to save (see "Downloads"): `?format=` `csv`, `xlsx`, `parquet` or `json` (`json` only, for a JSON output), or `zip` for every output of a node with several; `?params=`, `?run_id=` and `?part=` pick the output as for `/data`; `?filename=` names it |
 | `GET/HEAD /api/artifacts/{node}/{artifact_id}.parquet` (or `.json`, `.zip`) | the stored file of one output, byte for byte, with `Range` support (see "Binary data") |
 | `GET/HEAD /api/artifacts/{node}/{artifact_id}/{part}.parquet` (or `.json`) | one output of a node with several, as a file of its own |
 | `GET /api/nodes/{name}/history` | the node's stored output per parameter set (with the `code_hash` each was computed with) |
 | `GET /api/code/revisions` | saved versions of the code, newest first (`?node=` for one node, `?view=` for one view's files, deleted ones included); each says how it was saved (`origin`), by whom (`author`, with `EXUVIA_AUTH=headers`) and whether it is current |
 | `GET /api/code/blobs/{hash}` | the text of one saved version |
+| `GET /api/code/archive` | the project's code as a .zip (nodes, `lib/` helpers, views, `exuvia.json`, `pyproject.toml`, `uv.lock`; never `.env` or outputs); `?node=` for one node and the helpers it imports, `?view=` for one view |
 | `POST /api/nodes/{name}/restore` | make a saved version (`{hash}`) current again; brings back a deleted node |
 | `GET /api/runs/{run_id}/source` | the exact code a run executed |
 | `POST /api/query` | DuckDB SQL over all outputs (`{sql, limit, params}`): JSON rows, or an Arrow stream (see "Binary data"). It cannot open other files or the network (see "Execution model") |
+| `POST /api/query/export` | the whole result of `{sql, params, format, filename}` as a file to save, in `csv`, `xlsx`, `parquet` or `json` |
 | `POST /api/nodes/{name}/schedule` | set, clear, pause or resume a schedule |
 | `POST /api/schedule/tick` | evaluate schedules now (for external schedulers) |
 | `GET /api/events` | SSE: graph changes, run status, live logs |

@@ -10,6 +10,8 @@ import { IconClock, IconPlay, IconSpark, IconTrash, MOD } from "./icons";
 import { failed } from "./toast";
 import { HistoryBrowser } from "./History";
 import { useAccess } from "./Access";
+import { codeGroup, DownloadMenu, outputGroups, tableItems } from "./Export";
+import { nodeExportUrl, saveQuery, saveUrl } from "./download";
 
 /** A chart's series colours: the accent first, then the states' hues and four more, per theme. */
 const SERIES = {
@@ -123,6 +125,10 @@ export function Inspector(props: {
           {canEdit && running && node.last_run && (
             <button className="btn" onClick={() => api.cancel(node.last_run!.id).catch(failed("Couldn't stop the run"))}>Stop</button>
           )}
+          <DownloadMenu
+            title={`Download ${node.name}: its output or its code`}
+            groups={[...outputGroups(node, { title: "Output" }), codeGroup({ node: node.name })]}
+          />
           {canEdit && (
             <button className="btn ghost icon-btn danger" title="Delete node" aria-label={`Delete node ${node.name}`} onClick={() => setConfirmDelete(true)}>
               <IconTrash />
@@ -329,6 +335,10 @@ function DataTab({ node }: { node: GraphNode }) {
       )}
     </div>
   );
+  // A node with several outputs: all of them at once, as stored.
+  const zipAll = multi
+    ? [{ items: [{ key: "zip", label: "All outputs (.zip)", hint: "every output as it is stored", onPick: () => saveUrl(nodeExportUrl(node.name, "zip")) }] }]
+    : [];
   if (!p) return <div className="placeholder">Loading…</div>;
   if (!p.kind) return <div className="placeholder">No output yet — run the node.</div>;
   if (p.kind === "table" && p.columns && p.rows)
@@ -337,8 +347,17 @@ function DataTab({ node }: { node: GraphNode }) {
         {picker}
         <DataTable columns={p.columns} rows={p.rows} />
         <div className="data-foot">
-          {p.rows.length < (p.total ?? 0) ? `first ${p.rows.length} of ` : ""}
-          {fmtNum(p.total)} rows · {p.columns.length} columns · {ago(node.finished_at)}
+          <span>
+            {p.rows.length < (p.total ?? 0) ? `first ${p.rows.length} of ` : ""}
+            {fmtNum(p.total)} rows · {p.columns.length} columns · {ago(node.finished_at)}
+          </span>
+          <DownloadMenu
+            small
+            up
+            label="Download"
+            title={`Download every row of ${shown ? `${node.name}.${shown}` : node.name}`}
+            groups={[{ title: "Every row", items: tableItems((f) => saveUrl(nodeExportUrl(node.name, f, { part: shown })), p.total) }, ...zipAll]}
+          />
         </div>
       </>
     );
@@ -346,6 +365,21 @@ function DataTab({ node }: { node: GraphNode }) {
     <>
       {picker}
       <pre className="json">{JSON.stringify(p.value, null, 2)}</pre>
+      <div className="data-foot">
+        <span>JSON · {ago(node.finished_at)}</span>
+        <DownloadMenu
+          small
+          up
+          label="Download"
+          title={`Download ${shown ? `${node.name}.${shown}` : node.name}`}
+          groups={[
+            {
+              items: [{ key: "json", label: "JSON", hint: ".json: the value as it was returned", onPick: () => saveUrl(nodeExportUrl(node.name, "json", { part: shown })) }],
+            },
+            ...zipAll,
+          ]}
+        />
+      </div>
     </>
   );
 }
@@ -441,6 +475,17 @@ function RunsTab({ node, logs }: { node: GraphNode; logs: Record<string, string>
           </li>
         ))}
       </ul>
+      {detail?.status === "success" && detail.artifact_id && node.output_kind && node.output_kind !== "none" && (
+        <div className="run-dl">
+          <DownloadMenu
+            small
+            align="left"
+            label="Output of this run"
+            title="Download the output this run made"
+            groups={outputGroups(node, { runId: detail.id, rows: detail.rows ?? null })}
+          />
+        </div>
+      )}
       {detail && <pre className="log">{(isLive ? live : detail.log) || (isLive ? "waiting for output…" : "(no output)")}</pre>}
     </>
   );
@@ -483,6 +528,14 @@ export function Overview(props: { nodes: GraphNode[]; onSelect: (n: string) => v
         />
         <div className="row">
           <button className="btn sm primary" onClick={exec}>Run query</button>
+          <DownloadMenu
+            small
+            align="left"
+            label="Download"
+            title="Download the query's whole result"
+            disabled={!q.trim()}
+            groups={[{ title: "Whole result", items: tableItems((f) => saveQuery(q, f)) }]}
+          />
           <span>DuckDB · every table node is a view · {MOD}Enter</span>
         </div>
         {err && <div className="err-banner"><div>{err}</div></div>}

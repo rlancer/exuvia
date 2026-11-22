@@ -8,6 +8,7 @@ import { IconPlay, MOD } from "./icons";
 import { language } from "./lang";
 import { HistoryBrowser } from "./History";
 import { useAccess } from "./Access";
+import { codeGroup, DownloadMenu, viewOutputGroups } from "./Export";
 
 /** What the main pane shows for the selected view: the rendered view, its files or their history. */
 type Pane = "view" | "code" | "history";
@@ -243,6 +244,12 @@ function ViewPane(props: {
       <div className="view-head">
         <div className="insp-title">
           <h3>{view.title || view.name}</h3>
+          <DownloadMenu
+            small
+            align="left"
+            title={`Download what ${view.title || view.name} reads, or its code`}
+            groups={[...view.outputs.flatMap((o) => viewOutputGroups(view.name, o, params.params)), codeGroup({ view: view.name, title: "View code" })]}
+          />
           <span className={`view-state ${VIEW_STATE_CLASS[view.state]}`}>
             <span className="dot" /> {view.state}
           </span>

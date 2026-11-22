@@ -124,6 +124,13 @@ describe("protocol", () => {
     expect(isToHost({ channel: CHANNEL, type: "request", id: 1, method: "run", args: {} })).toBe(false);
     expect(isToHost({ channel: CHANNEL, type: "request", id: 1, method: "table", args: {} })).toBe(false);
     expect(isToHost({ channel: CHANNEL, type: "request", id: 1, method: "setParams", args: { params: [] } })).toBe(false);
+    const dl = (args: unknown) => isToHost({ channel: CHANNEL, type: "request", id: 1, method: "download", args });
+    expect(dl({ node: "prices", format: "csv" })).toBe(true);
+    expect(dl({ sql: "select 1", format: "xlsx", filename: "x" })).toBe(true);
+    expect(dl({ node: "prices", sql: "select 1", format: "csv" })).toBe(false); // one or the other
+    expect(dl({ format: "csv" })).toBe(false);
+    expect(dl({ node: "prices", format: "docx" })).toBe(false);
+    expect(dl({ node: "prices", format: "csv", filename: 3 })).toBe(false);
     expect(isToHost(null)).toBe(false);
     expect(isToFrame({ channel: CHANNEL, type: "changed", nodes: [], params: { params: {}, specs: [] } })).toBe(true);
     expect(isToFrame({ channel: CHANNEL, type: "request" })).toBe(false);

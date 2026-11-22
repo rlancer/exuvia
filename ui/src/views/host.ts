@@ -6,6 +6,7 @@
  * `/api/views/{name}/query`), which refuse other nodes on the server too.
  */
 import { api, apiUrl, type ProjectView } from "../api";
+import { saveQuery, saveUrl, viewExportUrl } from "../download";
 import {
   CHANNEL,
   isToHost,
@@ -236,6 +237,27 @@ export class ViewBridge {
         return this.opts.setParams((args as RequestArgs["setParams"]).params);
       case "query":
         return api.viewQuery(name, (args as RequestArgs["query"]).sql, this.params.params);
+      case "download": {
+        const a = args as RequestArgs["download"];
+        // The frame cannot save files (its sandbox has no allow-downloads): the page does.
+        if (a.sql !== undefined) {
+          await saveQuery(a.sql, a.format, { view: name, params: this.params.params, filename: a.filename });
+          return null;
+        }
+        const asked = a.node ?? "";
+        const refused = refusal(this.view, asked);
+        if (refused) throw new Error(refused);
+        // Say what is wrong here: a link's failure never reaches the view.
+        try {
+          resolveOutput(this.view.outputs, asked, "table");
+        } catch (e) {
+          if (a.format !== "json") throw e;
+          resolveOutput(this.view.outputs, asked, "json");
+        }
+        const { node, part } = splitOutput(asked);
+        saveUrl(viewExportUrl(name, node, a.format, { part, params: this.params.params, filename: a.filename }));
+        return null;
+      }
       case "table":
       case "json": {
         const asked = (args as RequestArgs["table"]).node;

@@ -53,6 +53,7 @@ export const IconUser = icon(
 );
 export const IconFolder = icon(<path d="M1.8 4.2a1 1 0 0 1 1-1h3.1l1.5 1.6h5.8a1 1 0 0 1 1 1v6.7a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z" />);
 export const IconFile = icon(<path d="M4 1.8h5.2L12.5 5v8.2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1zM9 1.8V5.3h3.5" />);
+export const IconDownload = icon(<path d="M8 2v8.5M4.5 7 8 10.5 11.5 7M2.5 11.5v1.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-1.5" />);
 /** Share: three linked nodes. */
 export const IconShare = icon(
   <>

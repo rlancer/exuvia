@@ -5,7 +5,7 @@
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { tableFromIPC, type Table } from "apache-arrow";
-import type { Method, ParamSpec, Params, ParamsState, RequestArgs, ResultOf, ViewBundle } from "./protocol";
+import type { DownloadFormat, Method, ParamSpec, Params, ParamsState, RequestArgs, ResultOf, ViewBundle } from "./protocol";
 
 export type { Table };
 
@@ -72,6 +72,15 @@ export async function json<T = unknown>(node: string): Promise<T> {
  * with several outputs is a schema: `<node>.<part>` and `<node>.<part>__runs`). */
 export async function query(sql: string): Promise<Table> {
   return tableFromIPC(new Uint8Array(await call("query", { sql })));
+}
+
+/** Save data as a file: a read node's whole output (`download("prices", "xlsx")`,
+ * `"fit.coefs"` for one output of a node with several) or a query's whole result
+ * (`download({ sql: "select …" }, "csv")`), for the parameters the view shows.
+ * `format` is csv (the default), xlsx, parquet or json; `filename` leaves out the extension. */
+export async function download(source: string | { sql: string }, format: DownloadFormat = "csv", filename?: string): Promise<void> {
+  const what = typeof source === "string" ? { node: source } : { sql: source.sql };
+  await call("download", { ...what, format, ...(filename ? { filename } : {}) });
 }
 
 /** The run parameters the view is showing, and the declared ones. */

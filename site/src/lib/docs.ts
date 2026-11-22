@@ -71,6 +71,12 @@ const PAGES: PageSpec[] = [
     summary: "Your own interface over node outputs, written as front-end code: React and TypeScript files, sandboxed and read-only.",
   },
   {
+    slug: "downloads",
+    group: "Build",
+    source: { heading: "Downloads" },
+    summary: "Save any table as CSV, Excel, Parquet or JSON, and the project's code as a zip.",
+  },
+  {
     slug: "agent",
     group: "Build",
     source: { heading: "The agent" },
