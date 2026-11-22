@@ -377,7 +377,17 @@ The UI's **Views** mode (next to the graph) lists the views with their state
 and reason, shows the nodes each one reads (click one to open it on the
 canvas), lets you pick the run parameters, and renders the selected view.
 Compile and runtime errors from the view are listed under it with the file
-they came from. `examples/markets` ships one (`views/vol_board`).
+they came from; click the file to open it. `examples/markets` ships one
+(`views/vol_board`).
+
+The view's **Code** tab lists its files (`view.json` first, then the entry)
+and edits them in place, with TypeScript, JSX, CSS and JSON highlighting.
+Ctrl+S (⌘S on a Mac) or **Save** writes the open file
+(`PUT /api/views/{name}/files/{path}`), which versions it like any other edit
+and rebuilds the view; compile errors from the new version show up under the
+editor. Unsaved edits are kept per
+file while you move between files, views and the graph, and a file the agent
+or an editor on disk changes reloads unless you have unsaved edits to it.
 
 A view runs in an `<iframe sandbox="allow-scripts">` built from a `srcdoc`:
 an opaque origin, so no cookies, no API token and no access to the page. The

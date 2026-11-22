@@ -446,6 +446,17 @@ pre.log { margin: 0; padding: 10px 14px; font-size: 11.5px; line-height: 1.5; wh
 .param input:focus { outline: none; }
 .param .reset { border: 0; background: none; cursor: pointer; color: var(--muted); padding: 0 4px; }
 .view-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: var(--bg); display: block; }
+.view-frame[hidden] { display: none; }
+.view-head .tabs { margin: -2px 0 -10px; }
+.views-item .dirty, .view-file .dirty { color: var(--accent); font-weight: 700; }
+.view-code { flex: 1; min-height: 0; display: grid; grid-template-columns: 200px minmax(0, 1fr); }
+.view-files { background: var(--panel); border-right: 1px solid var(--line); overflow: auto; padding: 8px 6px; display: flex; flex-direction: column; gap: 2px; }
+.view-file { text-align: left; border: 0; background: none; border-radius: 6px; padding: 5px 8px; cursor: pointer; font: 12px var(--mono); color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.view-file:hover, .view-file.on { background: var(--panel-2); color: var(--text); }
+.view-file .fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.view-code .code-wrap { min-width: 0; min-height: 0; }
+.view-error summary .file-link { border: 0; background: none; padding: 0; cursor: pointer; }
+.view-error summary .file-link:hover code { color: var(--accent); text-decoration: underline; }
 .view-errors { border-top: 1px solid color-mix(in srgb, var(--failed) 40%, transparent); background: color-mix(in srgb, var(--failed) 6%, var(--panel)); max-height: 34%; overflow: auto; }
 .view-errors-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px 6px 14px; font-size: 12px; color: var(--failed); position: sticky; top: 0; background: inherit; }
 .view-error { border-top: 1px solid var(--line); }
@@ -458,6 +469,9 @@ pre.log { margin: 0; padding: 10px 14px; font-size: 11.5px; line-height: 1.5; wh
   .views { grid-column: 1; grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .views-list { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
   .views-list h4 { display: none; }
+  .view-code { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .view-files { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  .view-file { flex: none; }
 }
 
 /* ---------- hub home (/ of `exuvia hub`) ---------- */

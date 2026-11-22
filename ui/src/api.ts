@@ -227,6 +227,9 @@ export const api = {
   config: () => req<{ ai_enabled: boolean; model: string; project: string }>("GET", "/api/config"),
   project: (params?: Record<string, unknown>) => req<Project>("GET", `/api/project${paramsQuery(params)}`),
   view: (name: string) => req<ViewSources>("GET", `/api/views/${name}`),
+  /** Write one file of a view (`App.tsx`, `components/Chart.tsx`, `view.json`); answers the view as listed. */
+  saveViewFile: (name: string, path: string, source: string) =>
+    req<ProjectView>("PUT", `/api/views/${name}/files/${path.split("/").map(encodeURIComponent).join("/")}`, { source }),
   viewData,
   /** DuckDB SQL that sees only the view's `reads`; the whole result as Arrow bytes. */
   viewQuery: async (view: string, sql: string, params?: Record<string, unknown>) =>
