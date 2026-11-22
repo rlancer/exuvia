@@ -663,6 +663,10 @@ in the image, listed in a `pyproject.toml` of its own and installed with
   top of it; the source retries on its own schedule or when you run it. An
   ancestor whose code or inputs changed since its last good output still runs
   first.
+- **A failure stands until the node runs again.** A node is *failed* while
+  its latest attempt (a run that succeeded or failed) failed; runs that were
+  cached or skipped don't clear it. Refreshing everything stale
+  (`POST /api/run-stale`, `exuvia run`) retries failed nodes.
 - **Subprocess isolation.** Every node runs in its own Python process: crash
   isolation, clean per-run logs streamed live to the UI, killable timeouts
   (`EXUVIA_RUN_TIMEOUT`, default 1800 s).

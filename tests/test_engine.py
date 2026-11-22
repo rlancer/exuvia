@@ -172,6 +172,45 @@ def test_failed_upstream_whose_output_is_out_of_date_still_runs_first(tmp_path):
     assert finals["src"]["status"] == "failed" and finals["fast"]["status"] == "skipped"
 
 
+def test_a_failed_node_retries_when_run_unforced_instead_of_reading_as_cached(tmp_path):
+    # "Refresh everything stale" (POST /api/run-stale, `exuvia run`) runs
+    # failed nodes without forcing them. A failed node whose last good output
+    # is still current must run again, not finish as "cached" and drop its
+    # failure without having been retried.
+    (tmp_path / "feed.txt").write_text("1")
+    py(tmp_path, "src", body="v = open('feed.txt').read()\n    assert v != 'down', 'feed is down'\n    return pd.DataFrame({'x': [int(v)]})")
+    ws = Workspace(tmp_path)
+    run(ws, ["src"])
+    (tmp_path / "feed.txt").write_text("down")
+    run(ws, ["src"], force={"src"})
+    assert ws.status()["src"]["state"] == "failed"
+
+    finals = run(ws, ["src"])  # still down: it tries, and stays failed
+    assert finals["src"]["status"] == "failed"
+    assert ws.status()["src"]["state"] == "failed"
+
+    (tmp_path / "feed.txt").write_text("2")
+    assert run(ws, ["src"])["src"]["status"] == "success"
+    assert ws.status()["src"]["state"] == "fresh"
+
+
+def test_a_failure_stands_through_runs_that_did_not_try(tmp_path):
+    # A node that failed, then was skipped because its upstream failed, still
+    # reads as failed: the skipped run never ran its code.
+    (tmp_path / "flag.txt").write_text("ok")
+    py(tmp_path, "a", body="assert open('flag.txt').read() == 'ok', 'a is down'\n    return pd.DataFrame({'x': [1]})")
+    py(tmp_path, "b", params="a", body="raise ValueError('b is broken')")
+    ws = Workspace(tmp_path)
+    run(ws, ["b"])
+    assert ws.status()["b"]["state"] == "failed"
+    (tmp_path / "flag.txt").write_text("down")
+    finals = run(ws, ["a", "b"], force={"a", "b"})
+    assert finals["a"]["status"] == "failed" and finals["b"]["status"] == "skipped"
+    st = ws.status()["b"]
+    assert st["state"] == "failed" and "b is broken" in st["reason"]
+    assert st["last_run"]["status"] == "skipped"  # the latest run is still what it was
+
+
 def test_sql_node_and_query(tmp_path):
     py(tmp_path, "a", body="return pd.DataFrame({'x': [1, 2, 3]})")
     write(tmp_path, "total.sql", "select sum(x) as s from a\n")

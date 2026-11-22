@@ -346,6 +346,17 @@ class Store:
         )
         return _row(rows[0]) if rows else None
 
+    def last_attempt(self, node: str, params_key: str = "") -> dict[str, Any] | None:
+        """The latest run that executed the node's code: one that succeeded or
+        failed. Runs that were cached or skipped, or are still queued, didn't
+        try, so they say nothing about whether the node works."""
+        rows = self._q(
+            "select id,status,queued_at,error from runs where project=? and node=? and params_key=? "
+            "and status in ('success','failed') order by queued_at desc limit 1",
+            (self.scope, node, params_key),
+        )
+        return _row(rows[0]) if rows else None
+
     def history(self, node: str, limit: int = 400) -> list[dict[str, Any]]:
         """The current output of ``node`` for every parameter set it has run
         with: one row per ``params_key``, most recent first."""
