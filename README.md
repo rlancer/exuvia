@@ -1217,6 +1217,62 @@ What follows from baking packages in:
   installed again only if they no longer resolve to the same versions (see
   [Packages](#packages)).
 
+### Kerberos
+
+The image can connect nodes to services that sign in with Kerberos (Trino,
+Impala, Hive, HDFS, SQL Server, HTTP APIs behind SPNEGO) without an image of
+your own. On Linux, PyPI has
+[gssapi](https://pypi.org/project/gssapi/), the package those clients use
+underneath, only as source, and building it needs a compiler and the
+Kerberos headers. So the image carries a wheel of it, built when the image
+is, in `/opt/exuvia/wheels`, plus the system Kerberos library it loads.
+
+**List what you use in the project's `pyproject.toml`,** like any other
+package: `gssapi`, or a client that needs it (`requests-kerberos`,
+`pyspnego[kerberos]`, `trino[kerberos]`). The install takes the wheel from
+the image instead of building it. A project that doesn't list it installs
+nothing.
+
+**gssapi comes in the image's version** (1.12.0 now). Leave it unpinned or
+pin that version. uv is set (`/etc/uv/uv.toml`) never to build gssapi from
+source, so a project that pins another version fails at once with
+`gssapi==… has no usable wheels`, rather than with a compiler error, and a
+newer gssapi on PyPI isn't picked over the wheel. A newer gssapi comes with
+a newer exuvia image.
+
+**Sign in with a keytab, without `kinit`.** Mount your `krb5.conf` and the
+service account's keytab into the container, and point Kerberos at them.
+Given a client keytab, Kerberos gets a ticket from it when a node first
+connects, and a new one when it expires:
+
+```yaml
+# added to compose.yaml (swarm.yaml and Kubernetes take the same two
+# variables, with the files as secrets)
+services:
+  hub:
+    environment:
+      KRB5_CONFIG: /run/secrets/krb5.conf
+      KRB5_CLIENT_KTNAME: /run/secrets/exuvia.keytab
+    secrets: [krb5.conf, exuvia.keytab]
+
+secrets:
+  krb5.conf:
+    file: ./krb5.conf
+  exuvia.keytab:
+    file: ./exuvia.keytab
+```
+
+Nodes see these variables (exuvia keeps only its own `EXUVIA_` settings
+from them), and the ticket is cached for the user exuvia runs as. Set them
+where the nodes run: on a remote executor's container, not the hub's. The
+keytab has to be readable by uid 10001.
+
+**Your own wheels next to it.** An image built on exuvia's (see
+[Packages your nodes import](#packages-your-nodes-import)) can add wheels
+to `/opt/exuvia/wheels` and the package's name to the lists in
+`/etc/uv/uv.toml`. A `UV_FIND_LINKS` set on the server replaces the file's
+`find-links` instead of adding to it, so list `/opt/exuvia/wheels` in it too.
+
 ### Package installs on an isolated network
 
 A hub on a network with no route out (an internal-only Swarm overlay, a
