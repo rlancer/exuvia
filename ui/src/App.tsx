@@ -1,37 +1,66 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { api, apiUrl, HUB_PROJECT, type PackagesState, type Project } from "./api";
+import { api, apiUrl, HUB_PROJECT, type CodeRevision, type PackagesState, type Project } from "./api";
 import { Canvas } from "./Canvas";
 import { Inspector, Overview } from "./Inspector";
-import { AgentPanel, type AgentHandle } from "./AgentPanel";
+import { AgentPanel, type AgentHandle, type SideTab } from "./AgentPanel";
 import { NewNodeDialog } from "./NewNodeDialog";
 import { PackagesDialog } from "./PackagesDialog";
-import { HelpersDialog } from "./HelpersDialog";
-import { HistoryDialog } from "./History";
-import { Views, showViewNext } from "./Views";
-import { Files } from "./Files";
+import { HistoryBrowser, HistoryRail } from "./History";
+import { Views, type OpenView } from "./Views";
+import { FileTree, HelperEditor } from "./Files";
+import type { FileRef } from "./tree";
 import { SignedInAs } from "./Me";
 import { HelpMenu } from "./Help";
 import { useTheme } from "./theme";
 import { Brand, Mark } from "./Brand";
-import { IconClock, IconCode, IconMoon, IconPackage, IconPlay, IconPlus, IconSpark, IconSun } from "./icons";
+import { IconClock, IconClose, IconFolder, IconMoon, IconPackage, IconPlay, IconPlus, IconSpark, IconSun } from "./icons";
 import { failed, Toasts } from "./toast";
 
 const embed = new URLSearchParams(location.search).has("embed");
 
-type Mode = "graph" | "views" | "files";
-const modeFromHash = (): Mode => (location.hash === "#views" ? "views" : location.hash.startsWith("#files") ? "files" : "graph");
-/** The file open in Files mode, kept in the address: `#files/nodes/prices.py`. */
-const fileFromHash = (): string | null => {
-  const m = /^#files\/(.+)$/.exec(location.hash);
+/** What the main area shows: the graph, the views, a shared helper, or the code's history. */
+type Mode = "graph" | "views" | "helper" | "history";
+
+/**
+ * Where the address points on load. `#files/<path>` opens a file where it
+ * lives: a node on the graph, a view file in its Code tab, a helper in the
+ * editor; `#history` the code's history.
+ */
+function fromHash(): { mode: Mode; node?: string; view?: OpenView; helper?: string } {
+  const h = location.hash;
+  if (h === "#views") return { mode: "views" };
+  if (h === "#history") return { mode: "history" };
+  let path = "";
   try {
-    return m ? decodeURI(m[1]) : null;
+    path = decodeURI(/^#files\/(.+)$/.exec(h)?.[1] ?? "");
   } catch {
-    return null; // a malformed address
+    /* a malformed address */
   }
-};
-const hashFor = (m: Mode, file: string | null) =>
-  m === "views" ? "#views" : m === "files" ? (file ? `#files/${encodeURI(file)}` : "#files") : location.pathname + location.search;
+  const node = /^nodes\/([^/]+)\.(py|sql)$/.exec(path);
+  if (node) return { mode: "graph", node: node[1] };
+  const view = /^views\/([^/]+)\/(.+)$/.exec(path);
+  if (view) return { mode: "views", view: { view: view[1], file: view[2], seq: 1 } };
+  if (path.startsWith("lib/")) return { mode: "helper", helper: path };
+  return { mode: "graph" };
+}
+const start = fromHash();
+const hashFor = (m: Mode, helper: string | null) =>
+  m === "views" ? "#views" : m === "history" ? "#history" : m === "helper" && helper ? `#files/${encodeURI(helper)}` : location.pathname + location.search;
+
+/** A narrow window, where the side panel is a sheet over the main area. */
+const narrow = () => window.matchMedia("(max-width: 1100px)").matches;
+
+/** The side panel's tab, as it was left. */
+function sideStartsOn(): SideTab {
+  try {
+    const kept = localStorage.getItem("exuvia-side");
+    if (kept === "files" || kept === "history") return kept;
+  } catch {
+    /* private mode */
+  }
+  return "agent";
+}
 
 /** Whether the agent panel starts open: as it was left, else open where there is room beside the graph. */
 function agentStartsOpen(): boolean {
@@ -47,7 +76,7 @@ function agentStartsOpen(): boolean {
 export default function App() {
   const [project, setProject] = useState<Project | null>(null);
   const [cfg, setCfg] = useState<{ ai_enabled: boolean; model: string } | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(start.node ?? null);
   const [logs, setLogs] = useState<Record<string, string>>({});
   const [flash, setFlash] = useState<Record<string, number>>({});
   const [newOpen, setNewOpen] = useState(false);
@@ -61,24 +90,33 @@ export default function App() {
     }
   }, []);
   const [conn, setConn] = useState(true);
-  const [mode, setModeState] = useState<Mode>(modeFromHash);
-  const [file, setFileState] = useState<string | null>(fileFromHash);
-  const fileRef = useRef(file);
-  fileRef.current = file;
-  const setMode = useCallback((m: Mode) => {
+  const [mode, setModeState] = useState<Mode>(start.mode);
+  const [helper, setHelper] = useState<string | null>(start.helper ?? null);
+  const helperRef = useRef(helper);
+  helperRef.current = helper;
+  const setMode = useCallback((m: Mode, helperPath?: string) => {
+    if (helperPath) setHelper((helperRef.current = helperPath));
     setModeState(m);
-    history.replaceState(null, "", hashFor(m, fileRef.current));
+    history.replaceState(null, "", hashFor(m, helperRef.current));
   }, []);
-  const setFile = useCallback((f: string | null) => {
-    setFileState(f);
-    history.replaceState(null, "", hashFor("files", f));
+  // What the side panel's Files and History tabs opened last.
+  const [viewOpen, setViewOpen] = useState<OpenView | null>(start.view ?? null);
+  const [showCode, setShowCode] = useState(0);
+  const [treePath, setTreePath] = useState<string | null>(null);
+  const [rev, setRev] = useState<CodeRevision | null>(null);
+  const [sideTab, setSideTabState] = useState<SideTab>(sideStartsOn);
+  const setSideTab = useCallback((t: SideTab) => {
+    setSideTabState(t);
+    try {
+      localStorage.setItem("exuvia-side", t);
+    } catch {
+      /* private mode */
+    }
   }, []);
   const [dark, toggleTheme] = useTheme();
   const agent = useRef<AgentHandle>(null);
   const [pkgs, setPkgs] = useState<PackagesState | null>(null);
   const [pkgOpen, setPkgOpen] = useState(false);
-  const [helpersOpen, setHelpersOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
   // Nodes to re-run once the packages installed for them are ready.
   const [rerun, setRerun] = useState<string[]>([]);
   const refreshPkgs = useCallback(() => api.packages().then(setPkgs).catch(() => {}), []);
@@ -134,7 +172,7 @@ export default function App() {
     if (project?.name) document.title = `${project.name} · exuvia`;
   }, [project?.name]);
   const sel = nodes.find((n) => n.name === selected) ?? null;
-  // Changes whenever any node's or view's code does: the history dialog reads its list again.
+  // Changes whenever any node's or view's code does: the history lists are read again.
   const codeTick = useMemo(
     () => [...nodes.map((n) => n.code_hash), ...(project?.views ?? []).map((v) => v.hash)].join(),
     [nodes, project],
@@ -154,7 +192,36 @@ export default function App() {
     setFlash((f) => ({ ...f, [name]: Date.now() }));
   }, []);
 
+  /** A file picked in the side panel's Files tab, opened where it is edited. */
+  const openFile = (ref: FileRef) => {
+    setTreePath(ref.path);
+    if (ref.kind === "node") {
+      setMode("graph");
+      setSelected(ref.node);
+      setShowCode((n) => n + 1);
+    } else if (ref.kind === "view") {
+      setMode("views");
+      setViewOpen((o) => ({ view: ref.view, file: ref.file, seq: (o?.seq ?? 1) + 1 }));
+    } else setMode("helper", ref.path);
+    // The panel is a sheet over the main area there: get it out of the way.
+    if (narrow()) setAgentOpen(false);
+  };
+  /** A revision picked in the side panel's History tab: that file's versions in the main area. */
+  const openRev = (r: CodeRevision) => {
+    setRev(r);
+    setMode("history");
+    if (narrow()) setAgentOpen(false);
+  };
+  const openSide = (t: SideTab) => {
+    setSideTab(t);
+    setAgentOpen(true);
+  };
+  const toGraph = () => setMode("graph");
+  const treeCurrent =
+    mode === "graph" ? (sel?.path ?? null) : mode === "helper" ? helper : mode === "history" ? (rev?.path ?? null) : treePath?.startsWith("views/") ? treePath : null;
+
   const askAI = (prompt: string) => {
+    setSideTab("agent");
     setAgentOpen(true);
     setTimeout(() => agent.current?.send(prompt), 0);
   };
@@ -172,15 +239,6 @@ export default function App() {
           </button>
           <button className={mode === "views" ? "on" : ""} onClick={() => setMode("views")} role="tab" aria-selected={mode === "views"}>
             Views{project?.views.length ? <span className="n">{project.views.length}</span> : null}
-          </button>
-          <button
-            className={mode === "files" ? "on" : ""}
-            onClick={() => setMode("files")}
-            role="tab"
-            aria-selected={mode === "files"}
-            title="Browse and edit the files of the graph and the views"
-          >
-            Files
           </button>
         </div>
         <div className="counts">
@@ -207,17 +265,6 @@ export default function App() {
         <button className="btn has-icon" onClick={() => setNewOpen(true)} title="Add a node to the graph" aria-label="New node">
           <IconPlus size={12} /> <span className="lbl">Node</span>
         </button>
-        <button className="btn has-icon" onClick={() => setHelpersOpen(true)} title="Browse the project's shared Python helpers" aria-label="Helpers">
-          <IconCode /> <span className="lbl">Helpers</span>
-        </button>
-        <button
-          className="btn has-icon"
-          onClick={() => setHistoryOpen(true)}
-          title="Every saved version of the project's code, and deleted nodes and views to bring back"
-          aria-label="History"
-        >
-          <IconClock /> <span className="lbl">History</span>
-        </button>
         <button
           className={`btn has-icon pk-btn pk-${pkgs?.status ?? "none"}`}
           onClick={() => setPkgOpen(true)}
@@ -237,26 +284,38 @@ export default function App() {
       </header>
 
       <div className={mainCls}>
-        {mode === "files" ? (
-          <Files
-            project={project}
-            dark={dark}
-            file={file}
-            onFile={setFile}
-            onOpenNode={(name) => {
-              setMode("graph");
-              setSelected(name);
-            }}
-            onOpenView={(name) => {
-              showViewNext(name);
-              setMode("views");
-            }}
-          />
+        {mode === "helper" && helper && project ? (
+          <section className="main-wide">
+            <HelperEditor key={helper} path={helper} project={project} dark={dark} onClose={toGraph} onOpenNode={(name) => { setMode("graph"); setSelected(name); setShowCode((n) => n + 1); }} />
+          </section>
+        ) : mode === "history" ? (
+          <section className="main-wide main-history">
+            <div className="main-wide-head">
+              <IconClock />
+              <h3>Code history</h3>
+              <span className="hint">Every saved version of the code. Pick one to compare it and restore it.</span>
+              <span className="spacer" />
+              <button className="btn ghost icon-btn sm" onClick={toGraph} title="Close and go back to the graph" aria-label="Close the history">
+                <IconClose />
+              </button>
+            </div>
+            <HistoryBrowser
+              filter={{}}
+              tick={codeTick}
+              dark={dark}
+              layout="side"
+              path={rev?.path}
+              rev={rev?.id}
+              deletedFilter
+              onRestored={() => refresh()}
+            />
+          </section>
         ) : mode === "views" ? (
           <Views
             project={project}
             nodes={nodes}
             dark={dark}
+            open={viewOpen}
             onOpenNode={(name) => {
               setMode("graph");
               setSelected(name);
@@ -295,6 +354,7 @@ export default function App() {
                   onDeleted={() => setSelected(null)}
                   onInstall={(pkg) => installFor(sel.name, pkg)}
                   installing={rerun.includes(sel.name)}
+                  showCode={showCode}
                 />
               ) : (
                 <Overview nodes={nodes} onSelect={setSelected} />
@@ -311,30 +371,32 @@ export default function App() {
             selected={sel}
             hasNodes={nodes.length > 0}
             onTouch={touch}
-            onSelect={setSelected}
+            onSelect={(name) => {
+              setMode("graph");
+              setSelected(name);
+            }}
             onCollapse={() => setAgentOpen(false)}
+            tab={sideTab}
+            onTab={setSideTab}
+            files={<FileTree project={project} current={treeCurrent} onOpen={openFile} />}
+            history={<HistoryRail tick={codeTick} current={mode === "history" ? (rev?.id ?? null) : null} onOpen={openRev} />}
           />
         ) : (
-          <button className="agent-collapsed-rail" onClick={() => setAgentOpen(true)} title="Open the agent">
-            <IconSpark /> Agent
-          </button>
+          <div className="agent-collapsed-rail" role="group" aria-label="Side panel">
+            <button onClick={() => openSide("agent")} title="Open the agent">
+              <IconSpark /> Agent
+            </button>
+            <button onClick={() => openSide("files")} title="Open the files of the graph and the views">
+              <IconFolder /> Files
+            </button>
+            <button onClick={() => openSide("history")} title="Open the code's history">
+              <IconClock /> History
+            </button>
+          </div>
         )}
       </div>
 
       {pkgOpen && <PackagesDialog state={pkgs} onChange={setPkgs} onClose={() => setPkgOpen(false)} />}
-      {helpersOpen && <HelpersDialog onClose={() => setHelpersOpen(false)} />}
-      {historyOpen && (
-        <HistoryDialog
-          dark={dark}
-          tick={codeTick}
-          onClose={() => setHistoryOpen(false)}
-          onRestored={(rev) => {
-            // A node brought back: show it once the graph has it.
-            refresh().then(() => rev.node && mode === "graph" && setSelected(rev.node));
-          }}
-        />
-      )}
-
       {newOpen && (
         <NewNodeDialog
           nodes={nodes}

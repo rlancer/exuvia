@@ -1,7 +1,7 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from "react";
 import { api, streamAgent, type AgentEvent, type GraphNode } from "./api";
 import { renderMarkdown } from "./util";
-import { IconAlert, IconChevronRight, IconSpark } from "./icons";
+import { IconAlert, IconChevronRight, IconClock, IconFolder, IconSpark } from "./icons";
 
 type Item =
   | { kind: "user"; text: string }
@@ -12,6 +12,9 @@ type Item =
 export interface AgentHandle {
   send: (text: string) => void;
 }
+
+/** What the side panel shows: the agent's chat, the project's files or its code history. */
+export type SideTab = "agent" | "files" | "history";
 
 const ICONS: Record<string, string> = {
   list_nodes: "☰",
@@ -78,8 +81,13 @@ export const AgentPanel = forwardRef<
     onTouch: (node: string) => void;
     onSelect: (node: string) => void;
     onCollapse: () => void;
+    tab: SideTab;
+    onTab: (tab: SideTab) => void;
+    /** The Files and History tabs' contents. The chat stays mounted under them, so a reply keeps streaming. */
+    files: ReactNode;
+    history: ReactNode;
   }
->(function AgentPanel({ enabled, model, selected, hasNodes, onTouch, onSelect, onCollapse }, ref) {
+>(function AgentPanel({ enabled, model, selected, hasNodes, onTouch, onSelect, onCollapse, tab, onTab, files, history }, ref) {
   const [items, setItems] = useState<Item[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -90,6 +98,10 @@ export const AgentPanel = forwardRef<
   const scroller = useRef<HTMLDivElement>(null);
 
   useEffect(() => setUseCtx(true), [selected?.name]);
+  // How much of the chat was on screen when another tab took over: more since then shows a dot on the Agent tab.
+  const seen = useRef(0);
+  if (tab === "agent") seen.current = items.length;
+  const news = tab !== "agent" && (busy || items.length > seen.current);
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
   }, [items, thinking]);
@@ -183,16 +195,28 @@ export const AgentPanel = forwardRef<
 
   return (
     <aside className="agent">
-      <div className="agent-head">
-        <span className="title">
-          <IconSpark /> Agent
-          {enabled && <span className="model">{model}</span>}
-        </span>
-        {items.length > 0 && <button className="btn sm ghost" onClick={reset}>New chat</button>}
-        <button className="btn sm ghost icon-btn collapse" title="Collapse the agent" aria-label="Collapse the agent" onClick={onCollapse}>
+      <div className="agent-head side-head">
+        <div className="side-tabs" role="tablist" aria-label="Side panel">
+          <button role="tab" aria-selected={tab === "agent"} className={`side-tab ${tab === "agent" ? "on" : ""}`} onClick={() => onTab("agent")} title={enabled ? `The agent (${model})` : "The agent"}>
+            <IconSpark /> Agent
+            {news && <span className={`side-news ${busy ? "pulse" : ""}`} title={busy ? "The agent is working" : "New in the chat"} />}
+          </button>
+          <button role="tab" aria-selected={tab === "files"} className={`side-tab ${tab === "files" ? "on" : ""}`} onClick={() => onTab("files")} title="The files of the graph and the views">
+            <IconFolder /> Files
+          </button>
+          <button role="tab" aria-selected={tab === "history"} className={`side-tab ${tab === "history" ? "on" : ""}`} onClick={() => onTab("history")} title="Every saved version of the code, and deleted nodes and views to bring back">
+            <IconClock /> History
+          </button>
+        </div>
+        <span className="spacer" />
+        {tab === "agent" && items.length > 0 && <button className="btn sm ghost" onClick={reset}>New chat</button>}
+        <button className="btn sm ghost icon-btn collapse" title="Collapse the side panel" aria-label="Collapse the side panel" onClick={onCollapse}>
           <IconChevronRight />
         </button>
       </div>
+      {tab === "files" && files}
+      {tab === "history" && history}
+      <div className="side-body" hidden={tab !== "agent"}>
       {!enabled ? (
         <div className="agent-off">
           The agent builds, runs, and fixes nodes for you. To turn it on, set <code>ANTHROPIC_API_KEY</code> (Claude) or{" "}
@@ -265,6 +289,7 @@ export const AgentPanel = forwardRef<
             />
             <div className="row">
               <span>Enter to send · Shift+Enter newline</span>
+              {model && <span className="model" title="The agent's model">{model}</span>}
               <span className="spacer" />
               {busy ? (
                 <button className="btn sm" onClick={() => abort.current?.abort()}>Stop</button>
@@ -275,6 +300,7 @@ export const AgentPanel = forwardRef<
           </div>
         </>
       )}
+      </div>
     </aside>
   );
 });

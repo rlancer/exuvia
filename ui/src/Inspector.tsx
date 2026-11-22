@@ -30,6 +30,8 @@ export function Inspector(props: {
   onInstall: (pkg: string) => Promise<void>;
   /** An install started from this node is under way. */
   installing: boolean;
+  /** Changes when the node's file is picked in the side panel: show the Code tab. */
+  showCode?: number;
 }) {
   const { node, logs, dark, onDeleted, onAskAI, aiEnabled, onInstall, installing } = props;
   const [tab, setTab] = useState<Tab>("code");
@@ -40,6 +42,9 @@ export function Inspector(props: {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const dirty = source !== saved;
   const loadedFor = useRef<string>("");
+  useEffect(() => {
+    if (props.showCode) setTab("code");
+  }, [props.showCode]);
 
   // Load source on selection, and again when the file changes on disk
   // (agent or external editor) — unless the user has unsaved edits.
