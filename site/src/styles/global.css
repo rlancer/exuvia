@@ -1,4 +1,4 @@
-/* The site wears the app's own skin (ui/src/styles.css, dark theme): its
+/* The site wears the app's own skin (ui/src/theme/brand.ts, dark column): its
    colours, its two typefaces and its token names, so the screenshots look like
    part of the page. Inter is for reading; JetBrains Mono is for code and for
    headings, the way the app sets a node's name. */

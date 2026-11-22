@@ -5,11 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build && vite build -c vite.runtime.config.ts",
+    "theme": "astryx theme build src/theme/exuviaTheme.ts",
+    "build": "astryx theme build src/theme/exuviaTheme.ts --check && tsc --noEmit && vite build && vite build -c vite.runtime.config.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "doctor": "astryx doctor --built ."
   },
   "dependencies": {
+    "@astryxdesign/core": "0.7.17",
     "@codemirror/lang-css": "^6.3.1",
     "@codemirror/lang-javascript": "^6.2.5",
     "@codemirror/lang-json": "^6.0.2",
@@ -19,19 +22,22 @@
     "@dagrejs/dagre": "^1.1.4",
     "@fontsource-variable/inter": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@stylexjs/stylex": "^0.19.2",
     "@uiw/react-codemirror": "^4.23.7",
     "@xyflow/react": "^12.3.6",
     "apache-arrow": "^21.2.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "sucrase": "^3.35.1",
     "vega": "^5.30.0",
     "vega-embed": "^6.29.0",
     "vega-lite": "^5.23.0"
   },
   "devDependencies": {
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
+    "@astryxdesign/cli": "0.7.17",
+    "@stylexjs/unplugin": "^0.19.2",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.6.3",
     "vite": "^5.4.11",

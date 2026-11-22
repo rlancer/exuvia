@@ -1,8 +1,35 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import * as stylex from "@stylexjs/stylex";
+import { colorVars, spacingVars } from "@astryxdesign/core/theme/tokens.stylex";
+import { Button } from "@astryxdesign/core/Button";
+import { Divider } from "@astryxdesign/core/Divider";
+import { Heading } from "@astryxdesign/core/Heading";
+import { HStack } from "@astryxdesign/core/HStack";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { Link } from "@astryxdesign/core/Link";
+import { Popover } from "@astryxdesign/core/Popover";
+import { StatusDot } from "@astryxdesign/core/StatusDot";
+import { Text } from "@astryxdesign/core/Text";
+import { VStack } from "@astryxdesign/core/VStack";
 import { about as fetchAbout, type About } from "./api";
 import { Code } from "./Code";
 import { IconHelp } from "./icons";
+import { StateDot } from "./ui/state";
 import { ago } from "./util";
+
+const styles = stylex.create({
+  button: { position: "relative", display: "inline-flex" },
+  // The news of a release: a dot on the button's corner, ringed in the bar's ground.
+  dot: {
+    position: "absolute",
+    insetBlockStart: spacingVars["--spacing-1"],
+    insetInlineEnd: spacingVars["--spacing-1"],
+    pointerEvents: "none",
+    boxShadow: `0 0 0 2px ${colorVars["--color-background-surface"]}`,
+  },
+  baseline: { alignItems: "baseline" },
+  grow: { flexGrow: 1, minWidth: 0 },
+});
 
 const SEEN_KEY = "exuvia-update-seen";
 
@@ -45,8 +72,6 @@ export function HelpMenu() {
   const [open, setOpen] = useState(false);
   const [checking, setChecking] = useState(false);
   const [seen, setSeen] = useState(seenUpdate);
-  const wrap = useRef<HTMLDivElement>(null);
-  const button = useRef<HTMLButtonElement>(null);
 
   const load = useCallback((refresh = false) => {
     setChecking(true);
@@ -72,120 +97,122 @@ export function HelpMenu() {
     }
   }, [open, fresh, seen]);
 
-  useEffect(() => {
-    if (!open) return;
-    // Capture phase: the graph canvas stops pointer events from bubbling.
-    const onDown = (e: PointerEvent) => {
-      if (!wrap.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setOpen(false);
-        button.current?.focus();
-      }
-    };
-    document.addEventListener("pointerdown", onDown, true);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onDown, true);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
   const dot = !!fresh && seen !== fresh;
   const label = dot ? `Help · exuvia ${fresh} is available` : "Help and version";
 
   return (
-    <div className="help" ref={wrap}>
-      <button
-        ref={button}
-        className="btn ghost icon-btn help-btn"
-        onClick={() => setOpen((o) => !o)}
-        title={label}
-        aria-label={label}
-        aria-expanded={open}
-        aria-haspopup="dialog"
-      >
-        <IconHelp />
-        {dot && <span className="help-dot" />}
-      </button>
-      {open && (
-        <div className="help-pop" role="dialog" aria-label="Help">
-          <div className="help-version">
-            <span className="help-name">exuvia</span>
-            <span className="mono">{info?.version ?? (failed ? "unknown" : "…")}</span>
-          </div>
-          {info && <div className="help-install">{INSTALL[info.install]}</div>}
+    <Popover
+      label="Help"
+      isOpen={open}
+      onOpenChange={setOpen}
+      placement="below"
+      alignment="end"
+      width={340}
+      padding={4}
+      content={
+        <VStack gap={3}>
+          <VStack gap={1}>
+            <HStack gap={2} wrap="wrap" xstyle={styles.baseline}>
+              <Heading level={3}>exuvia</Heading>
+              <Text type="code" color="secondary">
+                {info?.version ?? (failed ? "unknown" : "…")}
+              </Text>
+            </HStack>
+            {info && (
+              <Text type="supporting" color="secondary">
+                {INSTALL[info.install]}
+              </Text>
+            )}
+          </VStack>
           {info && <Update info={info} checking={checking} onCheck={() => load(true)} />}
-          {failed && !info && <p className="help-muted">This server doesn't say which version it runs.</p>}
-          <nav className="help-links">
-            <a href={info?.docs_url ?? "https://exuvia.lobster.mp/"} target="_blank" rel="noreferrer">Documentation</a>
-            <a href={info?.issues_url ?? "https://github.com/rlancer/exuvia/issues"} target="_blank" rel="noreferrer">Report an issue</a>
-            <a href={info?.repo_url ?? "https://github.com/rlancer/exuvia"} target="_blank" rel="noreferrer">Source on GitHub</a>
-          </nav>
-        </div>
-      )}
-    </div>
+          {failed && !info && (
+            <Text type="supporting" color="secondary">
+              This server doesn't say which version it runs.
+            </Text>
+          )}
+          <Divider />
+          <VStack as="nav" gap={1.5}>
+            <Link isExternalLink href={info?.docs_url ?? "https://exuvia.lobster.mp/"}>
+              Documentation
+            </Link>
+            <Link isExternalLink href={info?.issues_url ?? "https://github.com/rlancer/exuvia/issues"}>
+              Report an issue
+            </Link>
+            <Link isExternalLink href={info?.repo_url ?? "https://github.com/rlancer/exuvia"}>
+              Source on GitHub
+            </Link>
+          </VStack>
+        </VStack>
+      }
+    >
+      <span {...stylex.props(styles.button)}>
+        <IconButton variant="ghost" label={label} tooltip={label} icon={<IconHelp />} />
+        {dot && <StatusDot variant="accent" label="A new version is available" xstyle={styles.dot} />}
+      </span>
+    </Popover>
   );
 }
 
 function Update(props: { info: About; checking: boolean; onCheck: () => void }) {
   const { info, checking, onCheck } = props;
-  const again = (
-    <button className="btn sm" onClick={onCheck} disabled={checking}>
-      {checking ? "Checking…" : "Check again"}
-    </button>
+  const again = <Button size="sm" label={checking ? "Checking…" : "Check again"} isDisabled={checking} onClick={onCheck} />;
+  const muted = (text: string) => (
+    <Text type="supporting" color="secondary">
+      {text}
+    </Text>
   );
-  if (info.update === "off") {
-    return <p className="help-muted">Update checks are off on this server.</p>;
-  }
-  if (info.update === "dev") {
-    return <p className="help-muted">A development build: there is no release to compare it with.</p>;
-  }
+  if (info.update === "off") return muted("Update checks are off on this server.");
+  if (info.update === "dev") return muted("A development build: there is no release to compare it with.");
   if (info.update === "error") {
     return (
-      <div className="help-update">
-        <p className="help-muted">Couldn't check for a newer version{info.error ? `: ${info.error}` : ""}.</p>
+      <VStack gap={2} hAlign="start">
+        {muted(`Couldn't check for a newer version${info.error ? `: ${info.error}` : ""}.`)}
         {again}
-      </div>
+      </VStack>
     );
   }
   if (info.update === "current") {
     return (
-      <div className="help-update help-row">
-        <span className="help-ok">
-          <span className="dot s-fresh" /> Up to date
-          {info.checked_at ? <span className="help-muted"> · checked {ago(info.checked_at)}</span> : null}
-        </span>
+      <HStack gap={2} vAlign="center">
+        <StateDot state="fresh" label="Up to date" />
+        <Text xstyle={styles.grow}>
+          Up to date
+          {info.checked_at ? (
+            <Text type="supporting" color="secondary">
+              {" "}
+              · checked {ago(info.checked_at)}
+            </Text>
+          ) : null}
+        </Text>
         {again}
-      </div>
+      </HStack>
     );
   }
   // A newer release is out.
   return (
-    <div className="help-update help-new">
-      <p>
-        <strong>exuvia {info.latest}</strong> is out.{" "}
+    <VStack gap={2}>
+      <Text>
+        <Text weight="semibold">exuvia {info.latest}</Text> is out.{" "}
         {info.changes_url && (
-          <a href={info.changes_url} target="_blank" rel="noreferrer">
+          <Link isExternalLink href={info.changes_url}>
             What changed
-          </a>
+          </Link>
         )}
-      </p>
+      </Text>
       {info.upgrade ? (
         <>
-          <p className="help-muted">To update, run this, then start exuvia again:</p>
+          {muted("To update, run this, then start exuvia again:")}
           <Code text={info.upgrade} />
         </>
       ) : (
-        <p className="help-muted">
+        <Text type="supporting" color="secondary">
           Whoever runs this server updates it by deploying the new image,{" "}
-          <span className="mono">
+          <Text type="code" size="xsm" color="inherit">
             {info.image}:{info.latest}
-          </span>
+          </Text>
           . Nothing to install on your side.
-        </p>
+        </Text>
       )}
-    </div>
+    </VStack>
   );
 }

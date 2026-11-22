@@ -1,7 +1,21 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState, type ReactNode } from "react";
+import * as stylex from "@stylexjs/stylex";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
+import { Center } from "@astryxdesign/core/Center";
+import { Code as InlineCode } from "@astryxdesign/core/Code";
+import { Heading } from "@astryxdesign/core/Heading";
+import { HStack } from "@astryxdesign/core/HStack";
+import { Link } from "@astryxdesign/core/Link";
+import { List, ListItem } from "@astryxdesign/core/List";
+import { Spinner } from "@astryxdesign/core/Spinner";
+import { Tab, TabList } from "@astryxdesign/core/TabList";
+import { Text } from "@astryxdesign/core/Text";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { VStack } from "@astryxdesign/core/VStack";
 import { tokensApi, type AgentToken } from "./api";
 import { Code } from "./Code";
-import { Dialog } from "./Dialog";
+import { AppDialog } from "./ui/AppDialog";
 import { mcpSetup } from "./mcp";
 import { useMe } from "./useMe";
 import { ago } from "./util";
@@ -13,6 +27,25 @@ const CLIENTS: { id: Client; label: string; hint: string }[] = [
   { id: "codex", label: "Codex", hint: "Run this in a terminal. The tools are there from your next session." },
   { id: "json", label: "JSON config", hint: "Add this under mcpServers in your client's MCP config (Cursor, a project's .mcp.json, ...)." },
 ];
+
+/** A hint under a step's title or beside a block to copy. */
+function Note({ children }: { children: ReactNode }) {
+  return (
+    <Text type="supporting" color="secondary">
+      {children}
+    </Text>
+  );
+}
+
+/** One step of the setup: its title, then what to read, type or copy. */
+function Step({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <VStack gap={2}>
+      <Heading level={3}>{title}</Heading>
+      {children}
+    </VStack>
+  );
+}
 
 /**
  * The MCP setup for the hub. Someone signed in through the sign-in proxy
@@ -29,71 +62,74 @@ export function ConnectDialog(props: { auth?: boolean; onClose: () => void }) {
   const setup = mcpSetup({ origin: location.origin, host: location.host, auth: !!props.auth, token: made?.token });
   const current = CLIENTS.find((c) => c.id === client)!;
   const showCommands = who !== undefined && (!personal || made);
+  const panel = useId();
 
   return (
-    <Dialog title="Connect an agent to this hub" className="connect-dialog" onClose={props.onClose}>
-        <p className="hub-muted">
+    <AppDialog title="Connect an agent to this hub" width={620} onClose={props.onClose} footer={<Button label="Done" onClick={props.onClose} />}>
+      <VStack gap={5}>
+        <Text color="secondary">
           Over MCP, your coding agent works in every project here: it lists and creates projects, and reads, writes and
           runs their nodes, and you see each change in the workbench as it happens. One connection covers the whole
           hub.{" "}
           {setup.endpoint ? (
             <>
-              The hub is the MCP server, at <span className="mono">{setup.endpoint}</span>: nothing to install.
+              The hub is the MCP server, at <InlineCode>{setup.endpoint}</InlineCode>: nothing to install.
             </>
           ) : (
             <>
-              It needs <a href="https://docs.astral.sh/uv/" target="_blank" rel="noreferrer">uv</a> (or pipx) on its machine.
+              It needs{" "}
+              <Link href="https://docs.astral.sh/uv/" isExternalLink>
+                uv
+              </Link>{" "}
+              (or pipx) on its machine.
             </>
           )}
-        </p>
+        </Text>
         {who === undefined ? (
-          <p className="hub-muted">Loading…</p>
+          <Center padding={4}>
+            <Spinner label="Loading…" />
+          </Center>
         ) : personal ? (
           <NewToken made={made} onMade={setMade} />
         ) : (
           setup.saveToken && (
-            <div className="connect-step">
-              <div className="connect-label">1. Save the hub's API token in a file only you can read</div>
+            <Step title="1. Save the hub's API token in a file only you can read">
               <Code text={setup.saveToken} />
-              <div className="hub-muted connect-note">Run it, paste the token, press Enter, then Ctrl-D. Agents read the token from this file; it never goes into their config.</div>
-            </div>
+              <Note>Run it, paste the token, press Enter, then Ctrl-D. Agents read the token from this file; it never goes into their config.</Note>
+            </Step>
           )
         )}
         {showCommands && (
-          <div className="connect-step">
-            <div className="connect-label">{personal || setup.saveToken ? "2. " : ""}{personal ? "Copy it into your agent" : "Add the MCP server"}</div>
-            <div className="seg connect-tabs" role="tablist">
+          <Step title={`${personal || setup.saveToken ? "2. " : ""}${personal ? "Copy it into your agent" : "Add the MCP server"}`}>
+            <TabList role="tablist" size="sm" hasDivider value={client} onChange={(c) => setClient(c as Client)}>
               {CLIENTS.map((c) => (
-                <button key={c.id} type="button" role="tab" aria-selected={client === c.id} className={client === c.id ? "on" : ""} onClick={() => setClient(c.id)}>
-                  {c.label}
-                </button>
+                <Tab key={c.id} value={c.id} label={c.label} panelId={panel} />
               ))}
-            </div>
-            {client === "codex" && setup.codexToken && (
-              <>
-                <div className="hub-muted connect-note">
-                  Codex reads the token from the <span className="mono">EXUVIA_API_TOKEN</span> environment variable. On macOS
-                  or Linux, add this to your shell profile (<span className="mono">~/.zshrc</span>,{" "}
-                  <span className="mono">~/.bashrc</span>) and open a new terminal:
-                </div>
-                <Code text={setup.codexToken.posix} />
-                <div className="hub-muted connect-note">On Windows, run this, then open a new terminal:</div>
-                <Code text={setup.codexToken.windows} />
-                <div className="hub-muted connect-note">Then add the server:</div>
-              </>
-            )}
-            <Code text={setup[client]} wrap={client === "prompt"} />
-            <div className="hub-muted connect-note">
-              {current.hint}
-              {personal && " Your token is in it: keep it to yourself, and don't commit it."}
-            </div>
-          </div>
+            </TabList>
+            <VStack gap={2} id={panel} role="tabpanel" aria-label={current.label}>
+              {client === "codex" && setup.codexToken && (
+                <>
+                  <Note>
+                    Codex reads the token from the <InlineCode>EXUVIA_API_TOKEN</InlineCode> environment variable. On macOS or Linux, add this to
+                    your shell profile (<InlineCode>~/.zshrc</InlineCode>, <InlineCode>~/.bashrc</InlineCode>) and open a new terminal:
+                  </Note>
+                  <Code text={setup.codexToken.posix} />
+                  <Note>On Windows, run this, then open a new terminal:</Note>
+                  <Code text={setup.codexToken.windows} />
+                  <Note>Then add the server:</Note>
+                </>
+              )}
+              <Code text={setup[client]} wrap={client === "prompt"} />
+              <Note>
+                {current.hint}
+                {personal && " Your token is in it: keep it to yourself, and don't commit it."}
+              </Note>
+            </VStack>
+          </Step>
         )}
         {personal && <TokenList fresh={made?.id} />}
-        <div className="actions">
-          <button type="button" className="btn" onClick={props.onClose}>Done</button>
-        </div>
-    </Dialog>
+      </VStack>
+    </AppDialog>
   );
 }
 
@@ -104,6 +140,7 @@ function NewToken(props: { made: (AgentToken & { token: string }) | null; onMade
   const [busy, setBusy] = useState(false);
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (busy) return;
     setErr(null);
     setBusy(true);
     try {
@@ -116,27 +153,36 @@ function NewToken(props: { made: (AgentToken & { token: string }) | null; onMade
   };
   if (props.made)
     return (
-      <div className="connect-step">
-        <div className="connect-label">1. Your agent token</div>
-        <div className="hub-muted connect-note">
-          <span className="mono">{props.made.name}</span> (…{props.made.hint}) is ready, and already in the commands below. It
-          signs the agent in as you, and this is the only time it is shown: if you lose it, make another.
-        </div>
-      </div>
+      <Step title="1. Your agent token">
+        <Note>
+          <InlineCode>{props.made.name}</InlineCode> (…{props.made.hint}) is ready, and already in the commands below. It signs the agent in as
+          you, and this is the only time it is shown: if you lose it, make another.
+        </Note>
+      </Step>
     );
   return (
-    <form className="connect-step" onSubmit={create}>
-      <label className="connect-label" htmlFor="token-name">1. Make an agent token</label>
-      <div className="hub-muted connect-note">
-        A token of your own: the agent signs in as you, and what it changes and runs is recorded as yours. Revoke it here
-        whenever you like.
-      </div>
-      <div className="token-new">
-        <input id="token-name" autoFocus maxLength={80} placeholder="What it's for, e.g. Claude Code on my laptop" value={name} onChange={(e) => setName(e.target.value)} />
-        <button type="submit" className="btn primary" disabled={busy}>Create token</button>
-      </div>
-      {err && <div className="form-err" role="alert">{err}</div>}
-    </form>
+    <Step title="1. Make an agent token">
+      <Note>
+        A token of your own: the agent signs in as you, and what it changes and runs is recorded as yours. Revoke it here whenever you
+        like.
+      </Note>
+      <form onSubmit={create}>
+        <HStack gap={2} vAlign="start">
+          <TextInput
+            label="What the token is for"
+            isLabelHidden
+            hasAutoFocus
+            containerXstyle={styles.grow}
+            placeholder="What it's for, e.g. Claude Code on my laptop"
+            value={name}
+            onChange={(v) => setName(v.slice(0, 80))}
+            status={err ? { type: "error", message: err } : undefined}
+            statusVariant="detached"
+          />
+          <Button type="submit" variant="primary" label="Create token" isDisabled={busy} />
+        </HStack>
+      </form>
+    </Step>
   );
 }
 
@@ -159,23 +205,39 @@ function TokenList(props: { fresh?: string }) {
   };
   if (!tokens?.length && !err) return null;
   return (
-    <div className="connect-step">
-      <div className="connect-label">Your tokens</div>
-      {err && <div className="form-err" role="alert">{err}</div>}
+    <Step title="Your tokens">
+      {err && <Banner role="alert" status="error" title={err} />}
       {tokens && (
-        <ul className="token-list">
+        <List hasDividers edge="flush">
           {tokens.map((t) => (
-            <li key={t.id}>
-              <span className="token-name">{t.name}</span>
-              <span className="hub-muted mono">…{t.hint}</span>
-              <span className="hub-muted">{t.last_used ? `used ${ago(t.last_used)}` : "never used"}</span>
-              <button type="button" className="btn ghost sm danger" onClick={() => revoke(t)} title={`Revoke ${t.name}: agents using it are turned away`}>
-                Revoke
-              </button>
-            </li>
+            <ListItem
+              key={t.id}
+              label={
+                <HStack gap={2} vAlign="center">
+                  <Text maxLines={1}>{t.name}</Text>
+                  <Text type="code" color="secondary">
+                    …{t.hint}
+                  </Text>
+                </HStack>
+              }
+              description={t.last_used ? `used ${ago(t.last_used)}` : "never used"}
+              endContent={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  label="Revoke"
+                  tooltip={`Revoke ${t.name}: agents using it are turned away`}
+                  onClick={() => revoke(t)}
+                />
+              }
+            />
           ))}
-        </ul>
+        </List>
       )}
-    </div>
+    </Step>
   );
 }
+
+const styles = stylex.create({
+  grow: { flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 },
+});

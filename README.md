@@ -469,7 +469,7 @@ The runtime (`ui/src/views/runtime.tsx`, built to
 fetched from a CDN, so views work where exuvia has no internet. It compiles
 each file in the browser with [Sucrase](https://github.com/alangpierce/sucrase)
 (TypeScript + JSX to CommonJS) the first time it is imported, then renders the
-entry file's `export default` with React 18. A view can import:
+entry file's `export default` with React 19. A view can import:
 
 - its own files by relative path, with or without the extension (`./Chart`,
   `../lib/format.ts`; `./dir` finds `dir/index.tsx`), never outside its folder;
@@ -602,7 +602,7 @@ requires-python = ">=3.11"
 dependencies = ["scikit-learn==1.9.1", "acme-models>=2.3"]
 ```
 
-**Adding a package in the workbench.** The **Packages** button in the top
+**Adding a package in the workbench.** The **Packages** button above the graph, in the project's
 bar lists what the project has and what is installed for it, adds packages
 (`scikit-learn`, `acme-models>=2`) and removes them, edits `pyproject.toml`
 directly, and shows the install's status and log. A package added without a
@@ -2400,7 +2400,7 @@ updating that map. The getting-started tutorial is the one hand-written page
 the mark, the colours, the type, the animals and every social card, all read
 from the code that draws them (`site/src/lib/brand.ts`). The app wears the
 same brand: `ui/src/brand.test.ts` fails when its mark (`ui/src/mark.ts`),
-its accent or its dark theme's colours stop matching the site's. Every page names a
+its accent or its dark theme's colours (`ui/src/theme/brand.ts`) stop matching the site's. Every page names a
 social card, a PNG in `site/public/og/` listed in `site/src/lib/cards.ts`: a
 picture with no words on it, one for the home page, one for the docs' front
 page, one for each group of docs pages and one for the brand page. The build
@@ -2444,7 +2444,7 @@ exuvia/
   agent.py      agent tools + provider-neutral tool loop
   llm.py        model providers: Anthropic, OpenAI-compatible (OpenRouter / Portkey / DeepSeek)
   server.py     FastAPI routes + SSE + static UI
-ui/             React + React Flow + CodeMirror + Vega-Lite
+ui/             React + Astryx (components) + StyleX (styles) + React Flow + CodeMirror + Vega-Lite; ui/AGENTS.md says how it is built
 ui/src/views/   views runtime (sandboxed iframe), its postMessage protocol and the page's side of it
 examples/       demo projects
 site/           the website: landing page + docs portal (Astro, static)

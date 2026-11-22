@@ -111,7 +111,9 @@ async function shot(page, name, locator) {
 }
 
 const tab = (page, name) => page.getByRole("tab", { name, exact: true });
-const node = (page, name) => page.locator(".bnode", { hasText: name });
+// A node's card on the graph, and the side panel (agent, files, history).
+const node = (page, name) => page.locator(".react-flow__node", { hasText: name });
+const side = (page) => page.locator('aside[aria-label="Side panel"]');
 
 // -- app: the example project ----------------------------------------------------
 
@@ -149,13 +151,13 @@ async function app() {
   await page.goto(base);
   await node(page, "rolling_vol").click();
   await tab(page, "Chart").click();
-  await page.locator(".insp-body canvas, .insp-body svg").first().waitFor();
+  await page.locator(".vega-embed canvas, .vega-embed svg").first().waitFor();
   await shot(page, "workbench");
 
   // Downloads: the node's rows, and the formats they save as.
   await page.getByRole("tab", { name: /^Data/ }).click();
   await page.locator("button", { hasText: "Download" }).last().click();
-  await page.getByText("Parquet", { exact: true }).waitFor();
+  await page.getByText("Parquet", { exact: true }).last().waitFor();
   await shot(page, "downloads");
   await page.keyboard.press("Escape");
 
@@ -192,7 +194,7 @@ async function app() {
   await page.goto(base);
   await tab(page, "Agent").click();
   await node(page, "prices").click();
-  await page.locator(".agent textarea").fill("Add a drawdown node per ticker with a chart");
+  await side(page).getByRole("textbox").fill("Add a drawdown node per ticker with a chart");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByRole("button", { name: "Stop", exact: true }).waitFor({ timeout: 15_000 });
   await page.getByRole("button", { name: "Stop", exact: true }).waitFor({ state: "detached", timeout: 300_000 });
@@ -202,7 +204,7 @@ async function app() {
   }
   await page.waitForTimeout(1200);
   await shot(page, "agent");
-  await shot(page, "agent-panel", page.locator(".agent"));
+  await shot(page, "agent-panel", side(page));
 }
 
 // -- hub: projects, people and sharing -------------------------------------------
@@ -313,7 +315,7 @@ async function tutorial() {
   await page.goto(base);
   await node(page, "summary").click();
   await page.getByRole("tab", { name: /^Data/ }).click();
-  await page.locator(".insp-body table").first().waitFor();
+  await page.locator("table").first().waitFor();
   await shot(page, "tutorial-graph");
 
   await page.getByRole("tab", { name: /Views/ }).click();

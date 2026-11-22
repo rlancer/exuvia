@@ -1,17 +1,32 @@
-import { useEffect, useMemo, useState } from "react";
-import CodeMirror, { EditorState, EditorView } from "@uiw/react-codemirror";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import * as stylex from "@stylexjs/stylex";
+import { EditorState } from "@uiw/react-codemirror";
 import { unifiedMergeView } from "@codemirror/merge";
+import { colorVars, spacingVars } from "@astryxdesign/core/theme/tokens.stylex";
+import { AlertDialog } from "@astryxdesign/core/AlertDialog";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { List, ListItem } from "@astryxdesign/core/List";
+import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
+import { Selector } from "@astryxdesign/core/Selector";
+import { Text } from "@astryxdesign/core/Text";
+import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { api, type CodeRevision } from "./api";
-import { Dialog } from "./Dialog";
 import { currentVersion, deletedFiles, isDeleted, ORIGIN_LABEL, paths, previousVersion, restoreTarget } from "./revisions";
 import { language } from "./lang";
-import { ago, pressable } from "./util";
+import { ago } from "./util";
 import { useAccess } from "./Access";
+import { CodeEditor } from "./ui/CodeEditor";
 
 /** What the selected version is compared with. */
 type Against = "current" | "previous";
 
 const when = (ts: number) => new Date(ts * 1000).toLocaleString();
+
+/** The file filter's "every file" choice: no path is spelled like it. */
+const ALL_FILES = "*";
 
 /**
  * Saved versions of some code files (a node's, a view's, or the whole
@@ -133,131 +148,175 @@ export function HistoryBrowser(props: {
       setReload((n) => n + 1);
       props.onRestored?.(rev);
     } catch (e) {
+      setConfirm(null);
       setErr((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
 
-  if (!revs) return err ? <div className="err-banner"><div>{err}</div></div> : <div className="placeholder">Loading history…</div>;
-  if (!all.length) return <div className="placeholder">No saved versions yet. Every save of the code is kept here.</div>;
+  if (!revs)
+    return (
+      <div {...stylex.props(styles.frame, styles.alone)}>
+        {err ? <Banner status="error" container="section" title={err} /> : <Note>Loading history…</Note>}
+      </div>
+    );
+  if (!all.length)
+    return (
+      <div {...stylex.props(styles.frame, styles.alone)}>
+        <div {...stylex.props(styles.note)}>
+          <EmptyState isCompact title="No saved versions yet" description="Every save of the code is kept here." />
+        </div>
+      </div>
+    );
 
   const multi = files.length > 1;
+  const oneFile = !!path && files.includes(path) && !deletedOnly;
+  const side = props.layout === "side";
   return (
-    <div className={`history ${props.layout}`}>
-      <div className="history-list">
+    <div {...stylex.props(styles.frame, styles.history, side ? styles.side : styles.stack)}>
+      <div {...stylex.props(styles.list)}>
         {(multi || props.deletedFilter) && (
-          <div className="history-filter">
+          <div {...stylex.props(styles.bar)}>
             {props.deletedFilter && (
-              <div className="seg" role="tablist" aria-label="Which revisions">
-                <button role="tab" aria-selected={!deletedOnly} className={!deletedOnly ? "on" : ""} onClick={() => setDeletedOnly(false)}>
-                  All
-                </button>
-                <button role="tab" aria-selected={deletedOnly} className={deletedOnly ? "on" : ""} onClick={() => setDeletedOnly(true)}>
-                  Deleted{deleted.length ? <span className="n">{deleted.length}</span> : null}
-                </button>
-              </div>
+              <SegmentedControl size="sm" label="Which revisions" value={deletedOnly ? "deleted" : "all"} onChange={(v) => setDeletedOnly(v === "deleted")} xstyle={styles.fixed}>
+                <SegmentedControlItem value="all" label="All" />
+                <SegmentedControlItem value="deleted" label={deleted.length ? `Deleted (${deleted.length})` : "Deleted"} />
+              </SegmentedControl>
             )}
             {multi && !deletedOnly && (
-              <select value={files.includes(path) ? path : ""} onChange={(e) => setPath(e.target.value)} aria-label="Show the history of one file">
-                <option value="">All files ({files.length})</option>
-                {files.map((f) => (
-                  <option key={f} value={f}>
-                    {f}
-                    {isDeleted(all, f) ? " (deleted)" : ""}
-                  </option>
-                ))}
-              </select>
+              <Selector
+                size="sm"
+                label="Show the history of one file"
+                isLabelHidden
+                hasSearch={files.length > 8}
+                searchPlaceholder="Find a file…"
+                value={files.includes(path) ? path : ALL_FILES}
+                onChange={(v) => setPath(!v || v === ALL_FILES ? "" : v)}
+                options={[
+                  { value: ALL_FILES, label: `All files (${files.length})` },
+                  ...files.map((f) => ({ value: f, label: `${f}${isDeleted(all, f) ? " (deleted)" : ""}` })),
+                ]}
+                containerXstyle={styles.grow}
+              />
             )}
           </div>
         )}
-        <ul className="runs history-revs" aria-label="Saved versions">
-          {shown.map((r) => (
-            <li key={r.id} className={r.id === sel?.id ? "on" : ""} {...pressable(() => setSelId(r.id))} aria-pressed={r.id === sel?.id}>
-              <span className="rev-line">
-                <span className="rev-when" title={when(r.saved_at)}>{ago(r.saved_at)}</span>
-                <span className="rev-who">{r.author ?? "—"}</span>
-                <span className="rev-origin" title={`saved through ${r.origin}`}>{ORIGIN_LABEL[r.origin] ?? r.origin}</span>
-                {r.current && <span className="rev-tag cur">current</span>}
-                {(r.hash === null || (deletedOnly && isDeleted(all, r.path))) && <span className="rev-tag del">deleted</span>}
-              </span>
-              {(multi || deletedOnly) && !(path && files.includes(path) && !deletedOnly) && <span className="rev-path mono">{r.path}</span>}
-            </li>
-          ))}
-          {!shown.length && <li className="none">{deletedOnly ? "No deleted nodes, views or files." : "No saved versions."}</li>}
-        </ul>
+        <div {...stylex.props(styles.revs)}>
+          <List density="compact" hasDividers aria-label="Saved versions">
+            {shown.map((r) => (
+              <ListItem
+                key={r.id}
+                isSelected={r.id === sel?.id}
+                onClick={() => setSelId(r.id)}
+                label={<Saved rev={r} />}
+                description={
+                  (multi || deletedOnly) && !oneFile ? (
+                    <Text type="code" size="sm" color="secondary" maxLines={1} hasTruncateTooltip={false}>
+                      {r.path}
+                    </Text>
+                  ) : undefined
+                }
+                endContent={
+                  r.hash === null || (deletedOnly && isDeleted(all, r.path)) ? (
+                    <Badge variant="error" label="deleted" />
+                  ) : r.current ? (
+                    <Badge label="current" />
+                  ) : undefined
+                }
+              />
+            ))}
+          </List>
+          {!shown.length && <Note>{deletedOnly ? "No deleted nodes, views or files." : "No saved versions."}</Note>}
+        </div>
       </div>
-      <div className="history-diff code-wrap">
-        {err && <div className="err-banner"><div>{err}</div></div>}
+      <div {...stylex.props(styles.diff)}>
+        {err && <Banner status="error" container="section" title={err} />}
         {sel && (
-          <div className="history-head">
-            <div className="seg" role="tablist" aria-label="Compare with">
-              <button role="tab" aria-selected={against === "previous"} className={against === "previous" ? "on" : ""} onClick={() => setAgainst("previous")}>
-                vs previous
-              </button>
-              <button role="tab" aria-selected={against === "current"} className={against === "current" ? "on" : ""} onClick={() => setAgainst("current")}>
-                vs current
-              </button>
-            </div>
-            <span className="hint">{sel.hash === null ? "this revision deleted the file" : baseLabel}</span>
+          // What the version is compared with, and the one thing done to it.
+          <div {...stylex.props(styles.bar)}>
+            <Selector
+              size="sm"
+              label="Compare with"
+              isLabelHidden
+              width={132}
+              value={against}
+              onChange={(v) => setAgainst(v === "current" ? "current" : "previous")}
+              options={[
+                { value: "previous", label: "vs previous" },
+                { value: "current", label: "vs current" },
+              ]}
+            />
+            <Text type="supporting" color="secondary" maxLines={1} xstyle={styles.grow}>
+              {sel.hash === null ? "this revision deleted the file" : baseLabel}
+            </Text>
+            {target && canEdit ? (
+              <Button
+                size="sm"
+                variant={canRestore ? "primary" : "secondary"}
+                label={fileGone && sel.hash ? (target.kind === "node" ? "Restore node" : "Restore file") : "Restore"}
+                tooltip={sel.current ? "This is the current version" : sel.hash ? "Make this version current again" : "Pick a saved version to restore"}
+                isDisabled={!canRestore || busy}
+                onClick={() => setConfirm(sel)}
+              />
+            ) : (
+              <Tooltip content={canEdit ? "Only node and view files can be restored from the workbench" : "You can view this project but not change it"}>
+                <Text type="supporting" color="secondary">
+                  read-only
+                </Text>
+              </Tooltip>
+            )}
           </div>
         )}
         {sel && ready ? (
-          <CodeMirror
+          <CodeEditor
             // The merge view reads `original` once: a new pair is a new editor.
             key={`${sel.id}:${base?.id ?? "none"}`}
             value={doc}
             editable={false}
-            theme={dark ? "dark" : "light"}
+            activeLine={false}
+            dark={dark}
             extensions={[
               ...language(sel.path),
-              EditorView.lineWrapping,
               EditorState.readOnly.of(true),
               ...(same || !base ? [] : [unifiedMergeView({ original, mergeControls: false, collapseUnchanged: { margin: 3, minSize: 6 } })]),
             ]}
-            basicSetup={{ foldGutter: false, highlightActiveLine: false }}
-            style={{ flex: 1, minHeight: 0, overflow: "auto" }}
-            height="100%"
           />
         ) : (
-          <div className="placeholder">{sel ? "Loading…" : "Pick a version."}</div>
+          <Note>{sel ? "Loading…" : "Pick a version."}</Note>
         )}
         {sel && (
-          <div className="code-bar">
-            <span className="mono" title={sel.hash ?? undefined}>{sel.path}</span>
-            <span className="spacer" />
-            <span title={when(sel.saved_at)}>{sel.hash ? `saved ${ago(sel.saved_at)}` : `deleted ${ago(sel.saved_at)}`}</span>
-            {target && canEdit ? (
-              <button
-                className="btn sm"
-                disabled={!canRestore || busy}
-                onClick={() => setConfirm(sel)}
-                title={sel.current ? "This is the current version" : sel.hash ? "Make this version current again" : "Pick a saved version to restore"}
-              >
-                {fileGone && sel.hash ? (target.kind === "node" ? "Restore node" : "Restore file") : "Restore"}
-              </button>
-            ) : (
-              <span className="hint" title={canEdit ? "Only node and view files can be restored from the workbench" : "You can view this project but not change it"}>read-only</span>
-            )}
+          <div {...stylex.props(styles.status)}>
+            <span title={sel.hash ?? undefined} {...stylex.props(styles.grow)}>
+              <Text type="code" size="sm" color="secondary" maxLines={1} hasTruncateTooltip={false}>
+                {sel.path}
+              </Text>
+            </span>
+            <span title={when(sel.saved_at)}>
+              <Text type="supporting" color="secondary" hasTabularNumbers>
+                {sel.hash ? `saved ${ago(sel.saved_at)}` : `deleted ${ago(sel.saved_at)}`}
+              </Text>
+            </span>
           </div>
         )}
       </div>
       {confirm && (
-        <Dialog title={`Restore ${confirm.path}?`} onClose={() => !busy && setConfirm(null)}>
-          <p className="hub-muted">
-            This makes the version saved {ago(confirm.saved_at)}
-            {confirm.author ? ` by ${confirm.author}` : ""} ({when(confirm.saved_at)}) the current code
-            {isDeleted(all, confirm.path) ? ", bringing the deleted file back" : ""}. The code there now stays in the history, so
-            this can be undone.
-          </p>
-          {props.restoreNote?.(confirm) && <p className="hub-muted">{props.restoreNote(confirm)}</p>}
-          <div className="actions">
-            <button type="button" className="btn ghost" onClick={() => setConfirm(null)} disabled={busy}>Cancel</button>
-            <button type="button" className="btn primary" onClick={restore} disabled={busy}>
-              {busy ? "Restoring…" : "Restore"}
-            </button>
-          </div>
-        </Dialog>
+        <AlertDialog
+          isOpen
+          onOpenChange={(open) => {
+            if (!open && !busy) setConfirm(null);
+          }}
+          title={`Restore ${confirm.path}?`}
+          description={
+            `This makes the version saved ${ago(confirm.saved_at)}${confirm.author ? ` by ${confirm.author}` : ""} (${when(confirm.saved_at)}) the current code` +
+            `${isDeleted(all, confirm.path) ? ", bringing the deleted file back" : ""}. The code there now stays in the history, so this can be undone.` +
+            `${props.restoreNote?.(confirm) ? ` ${props.restoreNote(confirm)}` : ""}`
+          }
+          actionLabel="Restore"
+          actionVariant="primary"
+          isActionLoading={busy}
+          onAction={restore}
+        />
       )}
     </div>
   );
@@ -296,39 +355,140 @@ export function HistoryRail(props: {
   const shown = deletedOnly ? deleted.map((d) => ({ rev: d.last ?? d.deleted, gone: d.deleted })) : all.slice(0, 200).map((r) => ({ rev: r, gone: null }));
 
   return (
-    <div className="side-history">
-      <div className="history-filter">
-        <div className="seg" role="tablist" aria-label="Which revisions">
-          <button role="tab" aria-selected={!deletedOnly} className={!deletedOnly ? "on" : ""} onClick={() => setDeletedOnly(false)}>
-            Latest saves
-          </button>
-          <button role="tab" aria-selected={deletedOnly} className={deletedOnly ? "on" : ""} onClick={() => setDeletedOnly(true)}>
-            Deleted{deleted.length ? <span className="n">{deleted.length}</span> : null}
-          </button>
-        </div>
+    <div {...stylex.props(styles.rail)}>
+      <div {...stylex.props(styles.bar)}>
+        <SegmentedControl size="sm" layout="fill" label="Which revisions" value={deletedOnly ? "deleted" : "latest"} onChange={(v) => setDeletedOnly(v === "deleted")} xstyle={styles.switch}>
+          <SegmentedControlItem value="latest" label="Latest saves" />
+          <SegmentedControlItem value="deleted" label={deleted.length ? `Deleted (${deleted.length})` : "Deleted"} />
+        </SegmentedControl>
       </div>
-      {err && <div className="err-banner"><div>{err}</div></div>}
-      <ul className="runs history-revs" aria-label={deletedOnly ? "Deleted files" : "Latest saves"}>
-        {shown.map(({ rev: r, gone }) => (
-          <li
-            key={r.id}
-            className={r.id === props.current ? "on" : ""}
-            {...pressable(() => props.onOpen(r))}
-            aria-pressed={r.id === props.current}
-            title={gone ? `Deleted ${when(gone.saved_at)}: open its last version to restore it` : `${r.path}, saved ${when(r.saved_at)}`}
-          >
-            <span className="rev-path mono">{r.path}</span>
-            <span className="rev-line">
-              <span className="rev-when">{ago((gone ?? r).saved_at)}</span>
-              <span className="rev-who">{(gone ?? r).author ?? "—"}</span>
-              <span className="rev-origin">{ORIGIN_LABEL[(gone ?? r).origin] ?? (gone ?? r).origin}</span>
-              {gone || r.hash === null ? <span className="rev-tag del">deleted</span> : r.current ? <span className="rev-tag cur">current</span> : null}
-            </span>
-          </li>
-        ))}
-        {revs && !shown.length && <li className="none">{deletedOnly ? "No deleted nodes, views or files." : "No saved versions yet. Every save of the code is kept here."}</li>}
-        {!revs && !err && <li className="none">Loading…</li>}
-      </ul>
+      {err && <Banner status="error" container="section" title={err} />}
+      <div {...stylex.props(styles.revs)}>
+        <List density="compact" hasDividers aria-label={deletedOnly ? "Deleted files" : "Latest saves"}>
+          {shown.map(({ rev: r, gone }) => (
+            <ListItem
+              key={r.id}
+              isSelected={r.id === props.current}
+              onClick={() => props.onOpen(r)}
+              label={
+                // The file is what a save is told by here; when and by whom comes second.
+                <span title={gone ? `Deleted ${when(gone.saved_at)}: open its last version to restore it` : `${r.path}, saved ${when(r.saved_at)}`}>
+                  <Text type="code" maxLines={1} hasTruncateTooltip={false}>
+                    {r.path}
+                  </Text>
+                </span>
+              }
+              description={<Saved rev={gone ?? r} quiet />}
+              endContent={
+                gone || r.hash === null ? <Badge variant="error" label="deleted" /> : r.current ? <Badge label="current" /> : undefined
+              }
+            />
+          ))}
+        </List>
+        {revs && !shown.length && <Note>{deletedOnly ? "No deleted nodes, views or files." : "No saved versions yet. Every save of the code is kept here."}</Note>}
+        {!revs && !err && <Note>Loading…</Note>}
+      </div>
     </div>
   );
 }
+
+/**
+ * When a revision was saved, by whom and through what, on one line. `quiet`
+ * sets all of it in the secondary colour, for under a row's own label.
+ */
+function Saved({ rev, quiet = false }: { rev: CodeRevision; quiet?: boolean }) {
+  return (
+    <span {...stylex.props(styles.saved)}>
+      <span title={when(rev.saved_at)} {...stylex.props(styles.when)}>
+        <Text type={quiet ? "supporting" : "body"} color={quiet ? "secondary" : "primary"} hasTabularNumbers>
+          {ago(rev.saved_at)}
+        </Text>
+      </span>
+      {rev.author && (
+        <Text type={quiet ? "supporting" : "body"} color={quiet ? "secondary" : "primary"} maxLines={1}>
+          {rev.author}
+        </Text>
+      )}
+      <span title={`saved through ${rev.origin}`} {...stylex.props(styles.origin)}>
+        <Text type="supporting" color="secondary" maxLines={1} hasTruncateTooltip={false}>
+          {ORIGIN_LABEL[rev.origin] ?? rev.origin}
+        </Text>
+      </span>
+    </span>
+  );
+}
+
+/** A line in place of a list or a diff: loading, or nothing to show. */
+function Note({ children }: { children: ReactNode }) {
+  return (
+    <div {...stylex.props(styles.note)}>
+      <Text color="secondary" justify="center">
+        {children}
+      </Text>
+    </div>
+  );
+}
+
+/**
+ * The history's frame: the list of versions and the diff of the picked one.
+ *
+ *   side    list 300 | diff     (the main area)
+ *   stack   list over diff      (a narrow pane: a node's or a view's History tab)
+ *   <= 900px `side` stacks too
+ *
+ * The bar over the list and the bar over the diff are as tall as each other,
+ * so side by side their rules meet in one line.
+ */
+const COMPACT = "@media (max-width: 900px)";
+
+const styles = stylex.create({
+  // It fills what it is in, a column that grows or a box with a height.
+  frame: { flexGrow: 1, minWidth: 0, minHeight: 0, height: "100%" },
+  alone: { display: "flex", flexDirection: "column" },
+  // The rule between the list and the diff is the gap between them, in the
+  // rule's colour: it is there whichever way the two are laid out.
+  history: { display: "grid", gap: "1px", backgroundColor: colorVars["--color-border"] },
+  stack: { gridTemplateColumns: "minmax(0, 1fr)", gridTemplateRows: "fit-content(34%) minmax(0, 1fr)" },
+  side: {
+    gridTemplateColumns: { default: "300px minmax(0, 1fr)", [COMPACT]: "minmax(0, 1fr)" },
+    gridTemplateRows: { default: "minmax(0, 1fr)", [COMPACT]: "fit-content(36%) minmax(0, 1fr)" },
+  },
+  list: { display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, backgroundColor: colorVars["--color-background-surface"] },
+  bar: {
+    display: "flex",
+    alignItems: "center",
+    gap: spacingVars["--spacing-2"],
+    flexShrink: 0,
+    boxSizing: "border-box",
+    minHeight: "40px",
+    paddingBlock: spacingVars["--spacing-1-5"],
+    paddingInline: spacingVars["--spacing-2"],
+    borderBottomWidth: "1px",
+    borderBottomStyle: "solid",
+    borderBottomColor: colorVars["--color-border"],
+  },
+  grow: { flexGrow: 1, minWidth: 0 },
+  // The switch keeps its words; the file's name beside it is what gets cut.
+  fixed: { flexShrink: 0 },
+  revs: { flexGrow: 1, minHeight: 0, overflowY: "auto" },
+  saved: { display: "flex", alignItems: "baseline", gap: spacingVars["--spacing-2"], minWidth: 0 },
+  when: { flexShrink: 0 },
+  origin: { minWidth: 0 },
+  diff: { display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, backgroundColor: colorVars["--color-background-surface"] },
+  note: { display: "grid", placeItems: "center", flexGrow: 1, minHeight: 0, padding: spacingVars["--spacing-6"] },
+  status: {
+    display: "flex",
+    alignItems: "center",
+    gap: spacingVars["--spacing-3"],
+    flexShrink: 0,
+    paddingBlock: spacingVars["--spacing-1"],
+    paddingInline: spacingVars["--spacing-2"],
+    borderTopWidth: "1px",
+    borderTopStyle: "solid",
+    borderTopColor: colorVars["--color-border"],
+  },
+  // The History tab: the switch stays put, the saves under it scroll.
+  rail: { display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0, minHeight: 0 },
+  // As wide as the panel beside the graph; no wider where the panel is a sheet across the window.
+  switch: { flexGrow: 1, minWidth: 0, maxWidth: "324px" },
+});

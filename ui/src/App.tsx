@@ -1,24 +1,41 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import * as stylex from "@stylexjs/stylex";
+import { colorVars, spacingVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { ReactFlowProvider } from "@xyflow/react";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Button } from "@astryxdesign/core/Button";
+import { Divider } from "@astryxdesign/core/Divider";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { Heading } from "@astryxdesign/core/Heading";
+import { HStack } from "@astryxdesign/core/HStack";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { Tab, TabList } from "@astryxdesign/core/TabList";
+import { Text } from "@astryxdesign/core/Text";
+import { useMediaQuery } from "@astryxdesign/core/hooks";
 import { access, api, apiUrl, HUB_PROJECT, type Access, type CodeRevision, type PackagesState, type Project } from "./api";
 import { AccessContext, accessState, NoAccess, useAccess, ViewOnlyBanner } from "./Access";
-import { ShareDialog } from "./Share";
 import { Canvas } from "./Canvas";
 import { Inspector, Overview } from "./Inspector";
-import { AgentPanel, type AgentHandle, type SideTab } from "./AgentPanel";
-import { NewNodeDialog } from "./NewNodeDialog";
-import { PackagesDialog } from "./PackagesDialog";
+import { SidePanel, SideRail, type AgentHandle, type SideTab } from "./AgentPanel";
 import { HistoryBrowser, HistoryRail } from "./History";
-import { Views, type OpenView } from "./Views";
+import type { OpenView } from "./Views";
 import { FileTree, HelperEditor } from "./Files";
 import { codeGroup, DownloadMenu } from "./Export";
 import type { FileRef } from "./tree";
 import { SignedInAs } from "./Me";
 import { HelpMenu } from "./Help";
-import { useTheme } from "./theme";
+import { useColorMode } from "./theme/colorMode";
 import { Brand, Mark } from "./Brand";
-import { IconClock, IconClose, IconFolder, IconMoon, IconPackage, IconPlay, IconPlus, IconShare, IconSpark, IconSun } from "./icons";
+import { IconClock, IconClose, IconMoon, IconPackage, IconPlay, IconPlus, IconShare, IconSun } from "./icons";
+import { StateDot } from "./ui/state";
 import { failed, Toasts } from "./toast";
+
+// What is not on the first screen is fetched when it is opened: the Views
+// mode and the dialogs.
+const Views = lazy(() => import("./Views").then((m) => ({ default: m.Views })));
+const ShareDialog = lazy(() => import("./Share").then((m) => ({ default: m.ShareDialog })));
+const NewNodeDialog = lazy(() => import("./NewNodeDialog").then((m) => ({ default: m.NewNodeDialog })));
+const PackagesDialog = lazy(() => import("./PackagesDialog").then((m) => ({ default: m.PackagesDialog })));
 
 const embed = new URLSearchParams(location.search).has("embed");
 
@@ -142,7 +159,7 @@ function Workbench() {
       /* private mode */
     }
   }, []);
-  const [dark, toggleTheme] = useTheme();
+  const [dark, toggleTheme] = useColorMode();
   const agent = useRef<AgentHandle>(null);
   const [pkgs, setPkgs] = useState<PackagesState | null>(null);
   const [pkgOpen, setPkgOpen] = useState(false);
@@ -256,173 +273,187 @@ function Workbench() {
   };
 
   const aiOn = !!cfg?.ai_enabled;
-  const mainCls = `main ${agentOpen ? "" : "agent-collapsed"}`;
+  // The bars give up their words before their controls.
+  const compact = useMediaQuery("(max-width: 900px)");
+  const sheet = useMediaQuery("(max-width: 1100px)");
+  const openNode = (name: string) => {
+    setMode("graph");
+    setSelected(name);
+  };
 
   return (
-    <div className={`app ${embed ? "embed" : ""} ${canEdit ? "" : "has-banner"}`}>
-      <header className="topbar">
-        <Brand home={HUB_PROJECT ? "/" : undefined}>{project?.name ?? "…"}</Brand>
-        <div className="seg mode-seg" role="tablist" aria-label="Mode">
-          <button className={mode === "graph" ? "on" : ""} onClick={() => setMode("graph")} role="tab" aria-selected={mode === "graph"}>
-            Graph
-          </button>
-          <button className={mode === "views" ? "on" : ""} onClick={() => setMode("views")} role="tab" aria-selected={mode === "views"}>
-            Views{project?.views.length ? <span className="n">{project.views.length}</span> : null}
-          </button>
-        </div>
-        <div className="counts">
-          {(["fresh", "stale", "new", "failed", "error", "running"] as const).map((s) =>
-            counts[s] ? (
-              <span key={s} className={`s-${s}`}>
-                <span className="dot" /> {counts[s]} <span className="word">{s}</span>
-              </span>
-            ) : null,
-          )}
-          {!conn && <span className="offline" role="status">reconnecting…</span>}
-        </div>
-        <span className="spacer" />
-        {canShare && (
-          <button className="btn has-icon" onClick={() => setSharing(true)} title="Who can open and change this project" aria-label="Share">
-            <IconShare size={12} /> <span className="lbl">Share</span>
-          </button>
-        )}
-        {canEdit && (<>
-        <button
-          className="btn has-icon"
-          onClick={() => api.runStale().catch(failed("Couldn't start the run"))}
-          disabled={!staleCount}
-          title={staleCount ? "Run every stale, new, or failed node" : "Every node is up to date"}
-          aria-label="Run stale"
-        >
-          <IconPlay size={11} /> <span className="lbl">Run stale</span>
-          {staleCount ? <span>({staleCount})</span> : null}
-        </button>
-        <button className="btn has-icon" onClick={() => setNewOpen(true)} title="Add a node to the graph" aria-label="New node">
-          <IconPlus size={12} /> <span className="lbl">Node</span>
-        </button>
-        <button
-          className={`btn has-icon pk-btn pk-${pkgs?.status ?? "none"}`}
-          onClick={() => setPkgOpen(true)}
-          title={pkgs?.requests.length ? "The agent is waiting for you to approve packages" : "The packages your nodes import"}
-          aria-label="Packages"
-        >
-          <IconPackage /> <span className="lbl">Packages</span>
-          {pkgs?.requests.length ? <span className="pk-badge">{pkgs.requests.length}</span> : null}
-          {pkgs?.status === "installing" || pkgs?.status === "pending" ? <span className="pk-spin" /> : null}
-          {pkgs?.status === "failed" ? <span className="pk-bang">!</span> : null}
-        </button>
-        </>)}
-        <DownloadMenu
-          title="Download the project's code"
-          groups={[codeGroup({ title: "Project" })]}
-        />
-        <HelpMenu />
-        <button className="btn ghost icon-btn" onClick={toggleTheme} title={dark ? "Light theme" : "Dark theme"} aria-label={dark ? "Light theme" : "Dark theme"}>
-          {dark ? <IconSun /> : <IconMoon />}
-        </button>
-        <SignedInAs />
-      </header>
+    <div {...stylex.props(styles.app, !canEdit && styles.appBanner, embed && styles.appEmbed, embed && !canEdit && styles.appEmbedBanner)}>
+      {/* The app bar: where you are, what you do with the project as a whole, and the app's own menus. */}
+      {!embed && (
+        <header {...stylex.props(styles.bar, styles.appBar)}>
+          <Brand home={HUB_PROJECT ? "/" : undefined}>{project?.name ?? "…"}</Brand>
+          <span {...stylex.props(styles.grow)} />
+          <HStack gap={1} vAlign="center">
+            {canShare && (
+              <Button
+                label="Share"
+                icon={<IconShare />}
+                isIconOnly={compact}
+                tooltip="Who can open and change this project"
+                onClick={() => setSharing(true)}
+              />
+            )}
+            <DownloadMenu title="Download the project's code" groups={[codeGroup({ title: "Project" })]} />
+          </HStack>
+          <Divider orientation="vertical" xstyle={styles.rule} />
+          <HStack gap={0.5} vAlign="center">
+            <HelpMenu />
+            <IconButton
+              variant="ghost"
+              label={dark ? "Light theme" : "Dark theme"}
+              tooltip={dark ? "Light theme" : "Dark theme"}
+              icon={dark ? <IconSun /> : <IconMoon />}
+              onClick={toggleTheme}
+            />
+            <SignedInAs />
+          </HStack>
+        </header>
+      )}
       {!canEdit && <ViewOnlyBanner />}
 
-      <div className={mainCls}>
-        {mode === "helper" && helper && project ? (
-          <section className="main-wide">
-            <HelperEditor key={helper} path={helper} project={project} dark={dark} onClose={toGraph} onOpenNode={(name) => { setMode("graph"); setSelected(name); setShowCode((n) => n + 1); }} />
-          </section>
-        ) : mode === "history" ? (
-          <section className="main-wide main-history">
-            <div className="main-wide-head">
-              <IconClock />
-              <h3>Code history</h3>
-              <span className="hint">Every saved version of the code. Pick one to compare it and restore it.</span>
-              <span className="spacer" />
-              <button className="btn ghost icon-btn sm" onClick={toGraph} title="Close and go back to the graph" aria-label="Close the history">
-                <IconClose />
-              </button>
-            </div>
-            <HistoryBrowser
-              filter={{}}
-              tick={codeTick}
-              dark={dark}
-              layout="side"
-              path={rev?.path}
-              rev={rev?.id}
-              deletedFilter
-              onRestored={() => refresh()}
-            />
-          </section>
-        ) : mode === "views" ? (
-          <Views
-            project={project}
-            nodes={nodes}
-            dark={dark}
-            open={viewOpen}
-            onOpenNode={(name) => {
-              setMode("graph");
-              setSelected(name);
-            }}
-          />
-        ) : (
-          <>
-            <div className="canvas-wrap">
-              <ReactFlowProvider>
-                <Canvas nodes={nodes} selected={selected} flash={flash} onSelect={setSelected} />
-              </ReactFlowProvider>
-              {project && nodes.length === 0 && (
-                <div className="empty-canvas">
-                  <div className="empty-card">
-                    <Mark size={40} />
-                    <h2>An empty graph</h2>
-                    {canEdit ? (
-                      <>
-                        <p>
-                          {aiOn ? "Describe a pipeline to the agent, or add a node by hand." : "Add your first node — a Python function or a SQL query."}
-                        </p>
-                        <button className="btn primary" onClick={() => setNewOpen(true)}><IconPlus size={12} /> New node</button>
-                      </>
-                    ) : (
-                      <p>Nobody has added a node yet.</p>
-                    )}
-                  </div>
-                </div>
+      <div {...stylex.props(styles.workspace, !agentOpen && styles.workspaceRail)}>
+        <div {...stylex.props(styles.main)}>
+          {/* The project's bar: its two faces, and what the graph is doing and can be told to do. */}
+          <div {...stylex.props(styles.bar, styles.workBar)}>
+            <TabList role="tablist" value={mode === "views" ? "views" : mode === "graph" ? "graph" : ""} onChange={(v) => setMode(v as Mode)} xstyle={styles.modes}>
+              <Tab value="graph" label="Graph" />
+              <Tab value="views" label="Views" endContent={project?.views.length ? <Badge label={project.views.length} /> : undefined} />
+            </TabList>
+            <span {...stylex.props(styles.grow)} />
+            {!conn && <Badge variant="error" label="Reconnecting…" />}
+            {/* The graph's own state and actions: with the graph, not with the views. */}
+            {mode === "graph" && (<>
+            <HStack gap={3} vAlign="center" xstyle={styles.counts}>
+              {(["fresh", "stale", "new", "failed", "error", "running"] as const).map((s) =>
+                counts[s] ? (
+                  <HStack key={s} gap={1.5} vAlign="center">
+                    <StateDot state={s} />
+                    <Text type="supporting" color="secondary" hasTabularNumbers>
+                      {counts[s]} {s}
+                    </Text>
+                  </HStack>
+                ) : null,
               )}
-            </div>
-
-            <section className="pane">
-              {sel ? (
-                <Inspector
-                  key={sel.name}
-                  node={sel}
-                  nodes={nodes}
-                  logs={logs}
-                  dark={dark}
-                  aiEnabled={aiOn}
-                  onAskAI={askAI}
-                  onDeleted={() => setSelected(null)}
-                  onInstall={(pkg) => installFor(sel.name, pkg)}
-                  installing={rerun.includes(sel.name)}
-                  showCode={showCode}
+            </HStack>
+            {canEdit && (
+              <HStack gap={1} vAlign="center">
+                <Button
+                  label="Packages"
+                  icon={<IconPackage />}
+                  isIconOnly={compact}
+                  tooltip={pkgs?.requests.length ? "The agent is waiting for you to approve packages" : "The packages your nodes import"}
+                  endContent={
+                    pkgs?.requests.length ? (
+                      <Badge variant="info" label={pkgs.requests.length} />
+                    ) : pkgs?.status === "failed" ? (
+                      <Badge variant="error" label="Failed" />
+                    ) : pkgs?.status === "installing" || pkgs?.status === "pending" ? (
+                      <Badge variant="info" label="Installing" />
+                    ) : undefined
+                  }
+                  onClick={() => setPkgOpen(true)}
                 />
-              ) : (
-                <Overview nodes={nodes} onSelect={setSelected} />
-              )}
+                <Button label="New node" icon={<IconPlus />} isIconOnly={compact} tooltip="Add a node to the graph" onClick={() => setNewOpen(true)} />
+                <Button
+                  label="Run stale"
+                  variant={staleCount ? "primary" : "secondary"}
+                  icon={<IconPlay />}
+                  isIconOnly={compact}
+                  isDisabled={!staleCount}
+                  tooltip={staleCount ? "Run every stale, new, or failed node" : "Every node is up to date"}
+                  endContent={staleCount ? <Badge label={staleCount} /> : undefined}
+                  onClick={() => api.runStale().catch(failed("Couldn't start the run"))}
+                />
+              </HStack>
+            )}
+            </>)}
+          </div>
+
+          {mode === "helper" && helper && project ? (
+            <section {...stylex.props(styles.wide)}>
+              <HelperEditor key={helper} path={helper} project={project} dark={dark} onClose={toGraph} onOpenNode={(name) => { openNode(name); setShowCode((n) => n + 1); }} />
             </section>
-          </>
-        )}
+          ) : mode === "history" ? (
+            <section {...stylex.props(styles.wide)}>
+              <div {...stylex.props(styles.wideHead)}>
+                <IconClock />
+                <Heading level={4} accessibilityLevel={2}>Code history</Heading>
+                <Text type="supporting" color="secondary" maxLines={1} xstyle={styles.wideHint}>
+                  Every saved version of the code. Pick one to compare it and restore it.
+                </Text>
+                <span {...stylex.props(styles.grow)} />
+                <IconButton variant="ghost" size="sm" label="Close the history" tooltip="Close and go back to the graph" icon={<IconClose />} onClick={toGraph} />
+              </div>
+              <HistoryBrowser filter={{}} tick={codeTick} dark={dark} layout="side" path={rev?.path} rev={rev?.id} deletedFilter onRestored={() => refresh()} />
+            </section>
+          ) : mode === "views" ? (
+            <Suspense fallback={<div {...stylex.props(styles.wide)} />}>
+              <Views project={project} nodes={nodes} dark={dark} open={viewOpen} onOpenNode={openNode} />
+            </Suspense>
+          ) : (
+            <div {...stylex.props(styles.graph, !agentOpen && styles.graphRail)}>
+              <div {...stylex.props(styles.canvas)}>
+                <ReactFlowProvider>
+                  <Canvas nodes={nodes} selected={selected} flash={flash} onSelect={setSelected} />
+                </ReactFlowProvider>
+                {project && nodes.length === 0 && (
+                  <div {...stylex.props(styles.emptyCanvas)}>
+                    <EmptyState
+                      xstyle={styles.emptyCard}
+                      icon={<Mark size={40} />}
+                      title="An empty graph"
+                      headingLevel={2}
+                      description={
+                        !canEdit
+                          ? "Nobody has added a node yet."
+                          : aiOn
+                            ? "Describe a pipeline to the agent, or add a node by hand."
+                            : "Add your first node: a Python function or a SQL query."
+                      }
+                      actions={canEdit ? <Button variant="primary" label="New node" icon={<IconPlus />} onClick={() => setNewOpen(true)} /> : undefined}
+                    />
+                  </div>
+                )}
+              </div>
+              <section {...stylex.props(styles.pane)}>
+                {sel ? (
+                  <Inspector
+                    key={sel.name}
+                    node={sel}
+                    nodes={nodes}
+                    logs={logs}
+                    dark={dark}
+                    aiEnabled={aiOn}
+                    onAskAI={askAI}
+                    onDeleted={() => setSelected(null)}
+                    onInstall={(pkg) => installFor(sel.name, pkg)}
+                    installing={rerun.includes(sel.name)}
+                    showCode={showCode}
+                  />
+                ) : (
+                  <Overview nodes={nodes} onSelect={setSelected} />
+                )}
+              </section>
+            </div>
+          )}
+        </div>
 
         {agentOpen ? (
-          <AgentPanel
+          <SidePanel
             ref={agent}
+            sheet={sheet}
             enabled={aiOn}
             agent={canEdit}
             model={cfg?.model ?? ""}
             selected={sel}
             hasNodes={nodes.length > 0}
             onTouch={touch}
-            onSelect={(name) => {
-              setMode("graph");
-              setSelected(name);
-            }}
+            onSelect={openNode}
             onCollapse={() => setAgentOpen(false)}
             tab={sideTab}
             onTab={setSideTab}
@@ -430,38 +461,117 @@ function Workbench() {
             history={<HistoryRail tick={codeTick} current={mode === "history" ? (rev?.id ?? null) : null} onOpen={openRev} />}
           />
         ) : (
-          <div className="agent-collapsed-rail" role="group" aria-label="Side panel">
-            {canEdit && (
-              <button onClick={() => openSide("agent")} title="Open the agent">
-                <IconSpark /> Agent
-              </button>
-            )}
-            <button onClick={() => openSide("files")} title="Open the files of the graph and the views">
-              <IconFolder /> Files
-            </button>
-            <button onClick={() => openSide("history")} title="Open the code's history">
-              <IconClock /> History
-            </button>
-          </div>
+          <SideRail agent={canEdit} bar={sheet} onOpen={openSide} />
         )}
       </div>
 
-      {sharing && HUB_PROJECT && (
-        <ShareDialog project={HUB_PROJECT} name={project?.name} self={acc?.user?.uid ?? null} onClose={() => setSharing(false)} />
-      )}
-      {pkgOpen && <PackagesDialog state={pkgs} onChange={setPkgs} onClose={() => setPkgOpen(false)} />}
-      {newOpen && (
-        <NewNodeDialog
-          nodes={nodes}
-          initialDeps={selected ? [selected] : []}
-          onClose={() => setNewOpen(false)}
-          onCreated={(name) => {
-            setNewOpen(false);
-            refresh().then(() => setSelected(name));
-          }}
-        />
-      )}
+      <Suspense fallback={null}>
+        {sharing && HUB_PROJECT && (
+          <ShareDialog project={HUB_PROJECT} name={project?.name} self={acc?.user?.uid ?? null} onClose={() => setSharing(false)} />
+        )}
+        {pkgOpen && <PackagesDialog state={pkgs} onChange={setPkgs} onClose={() => setPkgOpen(false)} />}
+        {newOpen && (
+          <NewNodeDialog
+            nodes={nodes}
+            initialDeps={selected ? [selected] : []}
+            onClose={() => setNewOpen(false)}
+            onCreated={(name) => {
+              setNewOpen(false);
+              refresh().then(() => setSelected(name));
+            }}
+          />
+        )}
+      </Suspense>
       <Toasts />
     </div>
   );
 }
+
+/**
+ * The workbench's frame. Two bars, from the outside in: the app bar (the
+ * project and the app), then the project's bar (Graph and Views, and the
+ * graph's own state and actions). Under them the main area, and the side
+ * panel beside it.
+ *
+ *   > 1100px   main | side panel 340 (or its 40px rail)
+ *              the graph: canvas | inspector
+ *   <= 1100px  one column: canvas over inspector; the side panel is a bar
+ *              along the bottom that opens as a sheet over them
+ *   <= 900px   the bars' buttons lose their words (`compact`)
+ */
+const NARROW = "@media (max-width: 1100px)";
+const COMPACT = "@media (max-width: 900px)";
+
+const styles = stylex.create({
+  app: { display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", height: "100dvh" },
+  appBanner: { gridTemplateRows: "auto auto minmax(0, 1fr)" },
+  appEmbed: { gridTemplateRows: "minmax(0, 1fr)" },
+  appEmbedBanner: { gridTemplateRows: "auto minmax(0, 1fr)" },
+  bar: {
+    display: "flex",
+    alignItems: "center",
+    gap: { default: spacingVars["--spacing-3"], [COMPACT]: spacingVars["--spacing-2"] },
+    minWidth: 0,
+    paddingInline: { default: spacingVars["--spacing-4"], [COMPACT]: spacingVars["--spacing-2"] },
+    backgroundColor: colorVars["--color-background-surface"],
+    borderBottomWidth: "1px",
+    borderBottomStyle: "solid",
+    borderBottomColor: colorVars["--color-border"],
+  },
+  appBar: { paddingBlock: spacingVars["--spacing-2"] },
+  // The tabs sit on the bar's bottom edge, so the bar itself has no padding there.
+  workBar: { paddingBlock: 0, minHeight: "40px" },
+  modes: { alignSelf: "flex-end" },
+  grow: { flexGrow: 1 },
+  rule: { alignSelf: "stretch", marginBlock: spacingVars["--spacing-1"] },
+  // The state counts are on the canvas's nodes too: the first thing to go.
+  counts: { display: { default: "flex", "@media (max-width: 700px)": "none" } },
+  workspace: {
+    display: "grid",
+    gridTemplateColumns: { default: "minmax(0, 1fr) 340px", [NARROW]: "minmax(0, 1fr)" },
+    gridTemplateRows: "minmax(0, 1fr)",
+    minHeight: 0,
+  },
+  workspaceRail: {
+    gridTemplateColumns: { default: "minmax(0, 1fr) 40px", [NARROW]: "minmax(0, 1fr)" },
+    gridTemplateRows: { default: "minmax(0, 1fr)", [NARROW]: "minmax(0, 1fr) 40px" },
+  },
+  main: { display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", minWidth: 0, minHeight: 0 },
+  graph: {
+    display: "grid",
+    gridTemplateColumns: { default: "minmax(0, 1fr) clamp(380px, 32vw, 600px)", [NARROW]: "minmax(0, 1fr)" },
+    gridTemplateRows: { default: "minmax(0, 1fr)", [NARROW]: "minmax(180px, 42%) minmax(0, 1fr)" },
+    minHeight: 0,
+  },
+  graphRail: {
+    gridTemplateColumns: { default: "minmax(0, 1fr) clamp(400px, 38vw, 680px)", [NARROW]: "minmax(0, 1fr)" },
+  },
+  canvas: { position: "relative", minWidth: 0, minHeight: 0 },
+  emptyCanvas: { position: "absolute", inset: 0, display: "grid", placeItems: "center", pointerEvents: "none" },
+  emptyCard: { pointerEvents: "auto" },
+  pane: {
+    display: "flex",
+    flexDirection: "column",
+    minWidth: 0,
+    minHeight: 0,
+    backgroundColor: colorVars["--color-background-surface"],
+    borderColor: colorVars["--color-border"],
+    borderStyle: "solid",
+    borderWidth: 0,
+    borderInlineStartWidth: { default: "1px", [NARROW]: 0 },
+    borderTopWidth: { default: 0, [NARROW]: "1px" },
+  },
+  wide: { display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, backgroundColor: colorVars["--color-background-surface"] },
+  wideHead: {
+    display: "flex",
+    alignItems: "center",
+    gap: spacingVars["--spacing-2"],
+    paddingBlock: spacingVars["--spacing-2"],
+    paddingInline: spacingVars["--spacing-4"],
+    color: colorVars["--color-text-secondary"],
+    borderBottomWidth: "1px",
+    borderBottomStyle: "solid",
+    borderBottomColor: colorVars["--color-border"],
+  },
+  wideHint: { display: { default: "block", [NARROW]: "none" } },
+});

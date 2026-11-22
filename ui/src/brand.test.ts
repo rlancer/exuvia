@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { MARK } from "./mark";
+import { BRAND, type BrandColor } from "./theme/brand";
 
 const read = (path: string) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
 
@@ -15,7 +16,6 @@ function token(css: string, selector: string, name: string): string | undefined 
 describe("one brand, in the app and on the website", () => {
   const site = read("../../site/src/lib/brand.ts");
   const siteCss = read("../../site/src/styles/global.css");
-  const appCss = read("./styles.css");
 
   it("draws the same mark as the website", () => {
     const block = site.slice(site.indexOf("export const MARK"), site.indexOf("};", site.indexOf("export const MARK")));
@@ -25,16 +25,29 @@ describe("one brand, in the app and on the website", () => {
   });
 
   it("has the website's colours as its dark theme", () => {
-    for (const name of ["--bg", "--panel", "--panel-2", "--line", "--line-strong", "--text", "--accent", "--accent-hover", "--accent-ink", "--fresh", "--stale", "--running"]) {
-      expect(token(appCss, ':root[data-theme="dark"]', name), name).toBe(token(siteCss, ":root", name));
+    // The site's token names, and the app's palette entry each one is.
+    const same: Record<string, BrandColor> = {
+      "--bg": "bg",
+      "--panel": "panel",
+      "--panel-2": "panel2",
+      "--line": "line",
+      "--line-strong": "lineStrong",
+      "--text": "text",
+      "--accent": "accent",
+      "--accent-hover": "accentHover",
+      "--accent-ink": "accentInk",
+      "--fresh": "fresh",
+      "--stale": "stale",
+      "--running": "running",
+    };
+    for (const [name, color] of Object.entries(same)) {
+      expect(BRAND[color][1], name).toBe(token(siteCss, ":root", name));
     }
   });
 
   it("gives views the accent the app has, in both themes", () => {
     const host = read("./views/host.ts");
-    const light = token(appCss, ":root", "--accent")!;
-    const dark = token(appCss, ':root[data-theme="dark"]', "--accent")!;
-    expect(host).toContain(`--accent:${light};`);
-    expect(host).toContain(`--accent:${dark};`);
+    expect(host).toContain(`--accent:${BRAND.accent[0]};`);
+    expect(host).toContain(`--accent:${BRAND.accent[1]};`);
   });
 });

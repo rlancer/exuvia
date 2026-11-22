@@ -6,6 +6,11 @@
     <!-- The exuvia mark, written in from src/mark.ts by vite.config.ts. -->
     <link rel="icon" type="image/svg+xml" href="data:,exuvia-icon" />
     <meta name="color-scheme" content="light dark" />
+    <!-- The order of the cascade layers, before any stylesheet names one:
+         Astryx's reset, its components, its theme, and then (declared later,
+         so over them) the layers of the app's own StyleX styles. Without it
+         the order is whichever stylesheet happens to load first. -->
+    <style>@layer reset, astryx-base, astryx-theme;</style>
     <title>exuvia</title>
   </head>
   <body>

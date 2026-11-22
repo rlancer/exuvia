@@ -1,9 +1,26 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import * as stylex from "@stylexjs/stylex";
+import { Avatar } from "@astryxdesign/core/Avatar";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
+import { Center } from "@astryxdesign/core/Center";
+import { Code } from "@astryxdesign/core/Code";
+import { Divider } from "@astryxdesign/core/Divider";
+import { DropdownMenu, type DropdownMenuOption } from "@astryxdesign/core/DropdownMenu";
+import { HStack } from "@astryxdesign/core/HStack";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { Selector } from "@astryxdesign/core/Selector";
+import { Spinner } from "@astryxdesign/core/Spinner";
+import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
+import { Text } from "@astryxdesign/core/Text";
+import { Tooltip } from "@astryxdesign/core/Tooltip";
+import { VStack } from "@astryxdesign/core/VStack";
 import { HUB_PROJECT, usersApi, type UserRow } from "./api";
 import { ConnectDialog } from "./Connect";
 import { ago } from "./util";
-import { Dialog } from "./Dialog";
-import { IconUser } from "./icons";
+import { AppDialog } from "./ui/AppDialog";
+import { IconSpark, IconUser } from "./icons";
 import { useMe } from "./useMe";
 
 /**
@@ -15,68 +32,65 @@ import { useMe } from "./useMe";
  */
 export function SignedInAs(props: { hub?: boolean }) {
   const who = useMe()?.user ?? null;
-  const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<"users" | "connect" | null>(null);
-  const root = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const away = (e: MouseEvent) => root.current && !root.current.contains(e.target as Node) && setOpen(false);
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("mousedown", away);
-    document.addEventListener("keydown", esc);
-    return () => {
-      document.removeEventListener("mousedown", away);
-      document.removeEventListener("keydown", esc);
-    };
-  }, [open]);
 
   if (!who) return null;
   // The connect setup is for a whole hub; someone in by agent token is an agent.
   const canConnect = (props.hub || !!HUB_PROJECT) && who.method !== "token";
-  const pick = (d: "users" | "connect") => {
-    setOpen(false);
-    setDialog(d);
-  };
+  const email = who.email && who.email !== who.id ? who.email : null;
+  const items: DropdownMenuOption[] = [
+    ...(canConnect
+      ? [{ label: "Connect an agent…", description: "Your agent token and the MCP setup", icon: <IconSpark />, onClick: () => setDialog("connect") }]
+      : []),
+    ...(who.role === "admin"
+      ? [{ label: "Users…", description: "Roles and disabled accounts", icon: <IconUser />, onClick: () => setDialog("users") }]
+      : []),
+  ];
   return (
-    <div className="account" ref={root}>
-      <button
-        className="btn ghost icon-btn account-btn"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label="Account"
-        title={who.email && who.email !== who.id ? `${who.id} · ${who.email}` : who.id}
-        onClick={() => setOpen((o) => !o)}
-      >
-        <IconUser size={16} />
-      </button>
-      {open && (
-        <div className="account-menu" role="menu">
-          <div className="account-who">
-            <div className="account-name">{who.id}</div>
-            {who.email && who.email !== who.id && <div className="account-email">{who.email}</div>}
-            {who.role === "admin" && <div className="account-role">admin</div>}
-          </div>
-          {canConnect && (
-            <button role="menuitem" onClick={() => pick("connect")}>
-              Connect an agent…
-              <span>Your agent token and the MCP setup</span>
-            </button>
-          )}
-          {who.role === "admin" && (
-            <button role="menuitem" onClick={() => pick("users")}>
-              Users…
-              <span>Roles and disabled accounts</span>
-            </button>
-          )}
-        </div>
-      )}
+    <>
+      <DropdownMenu
+        alignment="end"
+        menuWidth={260}
+        items={items}
+        renderTrigger={(trigger) => (
+          <IconButton {...trigger} variant="ghost" label="Account" tooltip={email ? `${who.id} · ${email}` : who.id} icon={<IconUser size={16} />} />
+        )}
+        header={
+          <VStack gap={1}>
+            <HStack gap={3} vAlign="center" padding={2}>
+              <Avatar name={who.id} tooltip={false} />
+              <VStack gap={0.5} xstyle={styles.who}>
+                <HStack gap={2} vAlign="center">
+                  <Text weight="semibold" maxLines={1}>
+                    {who.id}
+                  </Text>
+                  {who.role === "admin" && <Badge variant="info" label="admin" />}
+                </HStack>
+                {email && (
+                  <Text type="supporting" color="secondary" maxLines={1}>
+                    {email}
+                  </Text>
+                )}
+              </VStack>
+            </HStack>
+            {items.length > 0 && <Divider />}
+          </VStack>
+        }
+      />
       {dialog === "users" && <UsersDialog self={who.uid} onClose={() => setDialog(null)} />}
       {dialog === "connect" && <ConnectDialog onClose={() => setDialog(null)} />}
-    </div>
+    </>
   );
 }
 
+/** A user as a table row: Astryx's Table takes a record, which an interface is not. */
+type Row = Pick<UserRow, keyof UserRow>;
+
+/**
+ * The user list, for an admin: who has signed in, what each may do, and a way
+ * to turn someone away. A person's role is set in their row; a disabled one
+ * stays in the list, greyed and struck through, so they can be let back in.
+ */
 function UsersDialog(props: { self: string | null; onClose: () => void }) {
   const [users, setUsers] = useState<UserRow[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -93,70 +107,109 @@ function UsersDialog(props: { self: string | null; onClose: () => void }) {
       setErr((e as Error).message);
     }
   };
+  const isSelf = (u: UserRow) => u.id === props.self;
+  const locked = (u: UserRow) => u.pinned_admin || isSelf(u);
+  const dim = (u: UserRow) => (u.disabled ? "disabled" : undefined);
+
+  const columns: TableColumn<Row>[] = [
+    {
+      key: "name",
+      header: "Name",
+      width: proportional(1, { minWidth: 120 }),
+      renderCell: (u) => (
+        <Tooltip content={u.identities.map((i) => `${i.method}: ${i.subject}`).join("\n")} isEnabled={u.identities.length > 0}>
+          <Text weight="medium" color={dim(u)} hasStrikethrough={u.disabled} maxLines={1}>
+            {u.name}
+            {isSelf(u) ? " (you)" : ""}
+          </Text>
+        </Tooltip>
+      ),
+    },
+    {
+      key: "email",
+      header: "Email",
+      width: proportional(1.15, { minWidth: 120 }),
+      renderCell: (u) => (
+        <Text color={dim(u) ?? "secondary"} maxLines={1}>
+          {u.email ?? ""}
+        </Text>
+      ),
+    },
+    {
+      key: "role",
+      header: "Role",
+      width: pixel(120),
+      renderCell: (u) => (
+        <Selector
+          size="sm"
+          label={`Role of ${u.name}`}
+          isLabelHidden
+          value={u.role}
+          options={["member", "admin"]}
+          isDisabled={locked(u)}
+          disabledMessage={u.pinned_admin ? "Named in EXUVIA_ADMINS" : isSelf(u) ? "Another admin can change your role" : undefined}
+          onChange={(role) => role && role !== u.role && change(u, { role: role as "admin" | "member" })}
+        />
+      ),
+    },
+    {
+      key: "last_seen",
+      header: "Last seen",
+      width: pixel(92),
+      renderCell: (u) => (
+        <Tooltip content={new Date(u.last_seen * 1000).toLocaleString()}>
+          <Text color={dim(u) ?? "secondary"} hasTabularNumbers>
+            {ago(u.last_seen)}
+          </Text>
+        </Tooltip>
+      ),
+    },
+    {
+      key: "disabled",
+      header: "",
+      width: pixel(96),
+      align: "end",
+      renderCell: (u) => (
+        <Button
+          size="sm"
+          variant={u.disabled ? "secondary" : "ghost"}
+          label={u.disabled ? "Enable" : "Disable"}
+          isDisabled={locked(u) && !u.disabled}
+          onClick={() => change(u, { disabled: !u.disabled })}
+        />
+      ),
+    },
+  ];
+
   return (
-    <Dialog title="Users" className="users-dialog" onClose={props.onClose}>
-        <p className="hint">
-          Everyone who has signed in. A disabled user is turned away even when the sign-in proxy lets them in.
-          People named in <span className="mono">EXUVIA_ADMINS</span> are always admins.
-        </p>
-        {err && <div className="err-banner"><div>{err}</div></div>}
+    <AppDialog
+      title="Users"
+      subtitle="Everyone who has signed in."
+      width={760}
+      onClose={props.onClose}
+      footer={<Button label="Close" onClick={props.onClose} />}
+    >
+      <VStack gap={4}>
+        <Text type="supporting" color="secondary">
+          A disabled user is turned away even when the sign-in proxy lets them in. People named in <Code>EXUVIA_ADMINS</Code> are always
+          admins.
+        </Text>
+        {err && <Banner role="alert" status="error" title={err} />}
         {!users ? (
-          <div className="placeholder">Loading…</div>
+          !err && (
+            <Center padding={6}>
+              <Spinner aria-label="Loading the users" />
+            </Center>
+          )
         ) : (
-          <div className="users-scroll">
-            <table className="grid users">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Email</th>
-                  <th>Role</th>
-                  <th>Last seen</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {users.map((u) => {
-                  const self = u.id === props.self;
-                  const locked = u.pinned_admin || self;
-                  return (
-                    <tr key={u.id} className={u.disabled ? "disabled" : ""}>
-                      <td title={u.identities.map((i) => `${i.method}: ${i.subject}`).join("\n")}>
-                        {u.name}
-                        {self ? " (you)" : ""}
-                      </td>
-                      <td>{u.email ?? ""}</td>
-                      <td>
-                        <select
-                          value={u.role}
-                          aria-label={`Role of ${u.name}`}
-                          disabled={locked}
-                          title={u.pinned_admin ? "Named in EXUVIA_ADMINS" : self ? "Another admin can change your role" : ""}
-                          onChange={(e) => change(u, { role: e.target.value as "admin" | "member" })}
-                        >
-                          <option value="member">member</option>
-                          <option value="admin">admin</option>
-                        </select>
-                      </td>
-                      <td title={new Date(u.last_seen * 1000).toLocaleString()}>{ago(u.last_seen)}</td>
-                      <td>
-                        <button
-                          className="btn sm"
-                          disabled={locked && !u.disabled}
-                          onClick={() => change(u, { disabled: !u.disabled })}
-                        >
-                          {u.disabled ? "Enable" : "Disable"}
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <Table<Row> data={users} columns={columns} idKey="id" density="compact" textOverflow="truncate" xstyle={styles.table} />
         )}
-        <div className="actions">
-          <button className="btn" onClick={props.onClose}>Close</button>
-        </div>
-    </Dialog>
+      </VStack>
+    </AppDialog>
   );
 }
+
+const styles = stylex.create({
+  who: { minWidth: 0 },
+  table: { minWidth: 0 },
+});

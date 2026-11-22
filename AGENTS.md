@@ -2,6 +2,8 @@
 
 Instructions for coding agents working in this repo. `README.md` is the
 reference for what exuvia is and how it is built, run and deployed.
+`ui/AGENTS.md` says how the UI is built (Astryx components and StyleX, and
+nothing else) and what its hierarchy is: read it before changing `ui/`.
 
 ## Every change ships as a PR against `main`
 
