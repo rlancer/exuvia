@@ -157,13 +157,13 @@ export function HistoryBrowser(props: {
 
   if (!revs)
     return (
-      <div {...stylex.props(styles.history, styles.alone)}>
+      <div {...stylex.props(styles.frame, styles.alone)}>
         {err ? <Banner status="error" container="section" title={err} /> : <Note>Loading history…</Note>}
       </div>
     );
   if (!all.length)
     return (
-      <div {...stylex.props(styles.history, styles.alone)}>
+      <div {...stylex.props(styles.frame, styles.alone)}>
         <div {...stylex.props(styles.note)}>
           <EmptyState isCompact title="No saved versions yet" description="Every save of the code is kept here." />
         </div>
@@ -174,8 +174,8 @@ export function HistoryBrowser(props: {
   const oneFile = !!path && files.includes(path) && !deletedOnly;
   const side = props.layout === "side";
   return (
-    <div {...stylex.props(styles.history, side ? styles.side : styles.stack)}>
-      <div {...stylex.props(styles.list, side ? styles.listSide : styles.listStack)}>
+    <div {...stylex.props(styles.frame, styles.history, side ? styles.side : styles.stack)}>
+      <div {...stylex.props(styles.list)}>
         {(multi || props.deletedFilter) && (
           <div {...stylex.props(styles.bar)}>
             {props.deletedFilter && (
@@ -439,35 +439,22 @@ function Note({ children }: { children: ReactNode }) {
  * The bar over the list and the bar over the diff are as tall as each other,
  * so side by side their rules meet in one line.
  */
-const COMPACT = "@media (max-width: 900px)";
-// Each width has its own rule and neither is the default: a default would be
-// one of Astryx's own atomic classes, and those are in a later cascade layer
-// than the app's, where a condition of ours cannot override them.
 const WIDE = "@media (min-width: 901px)";
+const COMPACT = "@media (max-width: 900px)";
 
 const styles = stylex.create({
   // It fills what it is in, a column that grows or a box with a height.
-  history: { display: "grid", flexGrow: 1, minWidth: 0, minHeight: 0, height: "100%" },
-  alone: { gridTemplateColumns: "minmax(0, 1fr)", gridTemplateRows: "minmax(0, 1fr)", alignContent: "start" },
-  stack: { gridTemplateColumns: "minmax(0, 1fr)", gridTemplateRows: "minmax(120px, 34%) minmax(0, 1fr)" },
+  frame: { flexGrow: 1, minWidth: 0, minHeight: 0, height: "100%" },
+  alone: { display: "flex", flexDirection: "column" },
+  // The rule between the list and the diff is the gap between them, in the
+  // rule's colour: it is there whichever way the two are laid out.
+  history: { display: "grid", gap: "1px", backgroundColor: colorVars["--color-border"] },
+  stack: { gridTemplateColumns: "minmax(0, 1fr)", gridTemplateRows: "fit-content(34%) minmax(0, 1fr)" },
   side: {
     gridTemplateColumns: { default: null, [WIDE]: "300px minmax(0, 1fr)", [COMPACT]: "minmax(0, 1fr)" },
-    gridTemplateRows: { default: null, [WIDE]: "minmax(0, 1fr)", [COMPACT]: "minmax(140px, 36%) minmax(0, 1fr)" },
+    gridTemplateRows: { default: null, [WIDE]: "minmax(0, 1fr)", [COMPACT]: "fit-content(36%) minmax(0, 1fr)" },
   },
-  list: {
-    display: "flex",
-    flexDirection: "column",
-    minWidth: 0,
-    minHeight: 0,
-    borderColor: colorVars["--color-border"],
-    borderStyle: "solid",
-    borderWidth: 0,
-  },
-  listStack: { borderBottomWidth: "1px" },
-  listSide: {
-    borderInlineEndWidth: { default: null, [WIDE]: "1px" },
-    borderBottomWidth: { default: null, [COMPACT]: "1px" },
-  },
+  list: { display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, backgroundColor: colorVars["--color-background-surface"] },
   bar: {
     display: "flex",
     alignItems: "center",
@@ -488,7 +475,7 @@ const styles = stylex.create({
   saved: { display: "flex", alignItems: "baseline", gap: spacingVars["--spacing-2"], minWidth: 0 },
   when: { flexShrink: 0 },
   origin: { minWidth: 0 },
-  diff: { display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 },
+  diff: { display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, backgroundColor: colorVars["--color-background-surface"] },
   note: { display: "grid", placeItems: "center", flexGrow: 1, minHeight: 0, padding: spacingVars["--spacing-6"] },
   status: {
     display: "flex",

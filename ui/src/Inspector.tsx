@@ -158,7 +158,7 @@ export function Inspector(props: {
   const running = node.state === "running" || node.state === "queued";
   const problem = node.parse_error || (node.state === "failed" ? node.reason : null);
   // What went wrong with a save, a run or a delete shows on every tab; the node's own error with its code.
-  const shownErr = err ?? (tab === "code" ? problem : null);
+  const shownErr = err || (tab === "code" ? problem : null);
 
   /** The editor's shortcuts, taken before CodeMirror sees the keys (it would add a line on Ctrl+Enter). */
   const onKeys = (e: KeyboardEvent) => {

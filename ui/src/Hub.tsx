@@ -531,7 +531,8 @@ const styles = stylex.create({
     borderBottomColor: colorVars["--color-border"],
   },
   grow: { flexGrow: 1 },
-  rule: { alignSelf: "stretch", marginBlock: spacingVars["--spacing-1"] },
+  // The page is a flex column, where the rule's own 100% height comes to nothing: it stretches instead.
+  rule: { alignSelf: "stretch", height: "auto", marginBlock: spacingVars["--spacing-1"] },
   main: {
     boxSizing: "border-box",
     width: "100%",

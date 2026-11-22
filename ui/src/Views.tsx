@@ -65,13 +65,6 @@ const VIEW_STATE_LABEL: Record<ProjectView["state"], string> = {
   stale: "stale",
   error: "error",
 };
-// View states mapped onto the node state colours.
-export const VIEW_STATE_CLASS: Record<ProjectView["state"], string> = {
-  ready: "s-fresh",
-  missing: "s-new",
-  stale: "s-stale",
-  error: "s-failed",
-};
 
 /**
  * Views mode: the project's views (custom UI under views/) next to the
@@ -665,43 +658,47 @@ function ViewCode(props: {
           <Text type="code" color="secondary" maxLines={1} xstyle={styles.codePath}>
             {current ? `${view.path}/${current}` : view.path}
           </Text>
-          <Text type="supporting" color="secondary" xstyle={styles.fixed}>
-            {dirty ? `unsaved · ${MOD}S save` : "saved"}
-          </Text>
-          <Button
-            size="sm"
-            variant="ghost"
-            label="History"
-            tooltip={current ? `Every saved version of ${current}` : "Every saved version of this view's files"}
-            onClick={() => {
-              if (current) props.onFile(current);
-              props.onHistory();
-            }}
-          />
-          {dirty && (
-            <Button size="sm" variant="ghost" label="Discard" tooltip="Throw away the unsaved edits to this file" isDisabled={busy} onClick={() => setDiscarding(true)} />
-          )}
-          {canEdit && unsaved.length > 1 && <Button size="sm" label={`Save all (${unsaved.length})`} isDisabled={busy} onClick={() => save(unsaved)} />}
-          {canEdit ? (
-            <Button size="sm" variant={dirty ? "primary" : "secondary"} label="Save" isDisabled={!dirty || busy} onClick={() => save([current!])} />
-          ) : (
-            <Text type="supporting" color="secondary" xstyle={styles.fixed}>
-              read-only
+          <HStack gap={2} vAlign="center" xstyle={styles.fixed}>
+            <Text type="supporting" color="secondary">
+              {dirty ? `unsaved · ${MOD}S save` : "saved"}
             </Text>
-          )}
+            <Button
+              size="sm"
+              variant="ghost"
+              label="History"
+              tooltip={current ? `Every saved version of ${current}` : "Every saved version of this view's files"}
+              onClick={() => {
+                if (current) props.onFile(current);
+                props.onHistory();
+              }}
+            />
+            {dirty && (
+              <Button size="sm" variant="ghost" label="Discard" tooltip="Throw away the unsaved edits to this file" isDisabled={busy} onClick={() => setDiscarding(true)} />
+            )}
+            {canEdit && unsaved.length > 1 && <Button size="sm" label={`Save all (${unsaved.length})`} isDisabled={busy} onClick={() => save(unsaved)} />}
+            {canEdit ? (
+              <Button size="sm" variant={dirty ? "primary" : "secondary"} label="Save" isDisabled={!dirty || busy} onClick={() => save([current!])} />
+            ) : (
+              <Text type="supporting" color="secondary">
+                read-only
+              </Text>
+            )}
+          </HStack>
         </div>
       </div>
-      <AlertDialog
-        isOpen={discarding && dirty}
-        onOpenChange={setDiscarding}
-        title={`Discard the edits to ${current}?`}
-        description="The unsaved edits to this file are thrown away. The file stays as it was last saved."
-        actionLabel="Discard"
-        onAction={() => {
-          onDraft(current!, null);
-          setDiscarding(false);
-        }}
-      />
+      {discarding && dirty && (
+        <AlertDialog
+          isOpen
+          onOpenChange={setDiscarding}
+          title={`Discard the edits to ${current}?`}
+          description="The unsaved edits to this file are thrown away. The file stays as it was last saved."
+          actionLabel="Discard"
+          onAction={() => {
+            onDraft(current, null);
+            setDiscarding(false);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -927,7 +924,8 @@ const styles = stylex.create({
     paddingInline: spacingVars["--spacing-3"],
     backgroundColor: colorVars["--color-background-surface"],
   },
-  codePath: { flexGrow: 1, minWidth: 0 },
+  // The path gives way first; the state and the actions keep their words.
+  codePath: { flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 },
 
   // The errors drawer: under the pane, never more than a third of it.
   errors: { flexShrink: 0 },

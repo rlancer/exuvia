@@ -484,9 +484,7 @@ const styles = stylex.create({
     paddingInlineEnd: spacingVars["--spacing-2"],
     borderRadius: radiusVars["--radius-inner"],
   },
-  // A row that is pressed: a folder or a file. Its conditions have no default,
-  // which would be one of Astryx's own atomic classes: those are in a later
-  // cascade layer than the app's, where a condition of ours cannot override them.
+  // A row that is pressed: a folder or a file.
   rowLive: {
     cursor: "pointer",
     userSelect: "none",
