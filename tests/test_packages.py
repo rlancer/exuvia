@@ -106,8 +106,9 @@ def test_declared_package_from_a_private_index(project):
     assert "pandas" not in names  # exuvia's own packages are not installed again
 
 
-def test_install_is_reused_then_replaced_when_pyproject_changes(project):
+def test_install_is_reused_then_replaced_when_pyproject_changes(project, monkeypatch):
     root, index, ws = project
+    monkeypatch.setattr(packages, "KEEP_S", 0)  # an install no project uses goes at once
     run(ws, ["answer"])
     [first] = installs(root)
     finals = run(ws, ["answer"])
@@ -118,7 +119,137 @@ def test_install_is_reused_then_replaced_when_pyproject_changes(project):
     assert finals["answer"]["status"] == "success", finals["answer"].get("error")
     assert ws.preview("answer")["rows"] == [[43]]
     [second] = installs(root)
-    assert second != first  # the old install is pruned
+    assert second != first  # the old install is removed: no project uses it
+
+
+def test_an_install_no_project_uses_is_kept_for_an_hour(project):
+    root, index, ws = project
+    run(ws, ["answer"])
+    make_wheel(index, "acme-internal", "2.0", "ANSWER = 43\n")
+    pyproject(root, index, ["acme-internal>=2"])
+    run(ws, ["answer"])
+    assert len(installs(root)) == 2  # another project may be about to use the first
+
+
+def _other_exuvia(monkeypatch, **versions):
+    """exuvia's environment as a new exuvia version would have it."""
+    base = dict(packages._base())
+    base.update(versions)
+    monkeypatch.setattr(packages, "_base", lambda: tuple(sorted(base.items())))
+
+
+def test_an_exuvia_upgrade_that_keeps_the_packages_reuses_their_install(project, monkeypatch):
+    root, index, ws = project
+    first = run(ws, ["answer"])["answer"]
+    assert "installing the packages" in ws.store.run(first["id"])["log"]
+    [install] = installs(root)
+    # A newer release appears, and exuvia is upgraded (another DuckDB): the
+    # list is resolved again, preferring the version installed before, so the
+    # same install serves it and nothing is installed.
+    make_wheel(index, "acme-internal", "2.0", "ANSWER = 43\n")
+    _other_exuvia(monkeypatch, duckdb="0.0.1")
+    finals = run(ws, ["answer"])["answer"]
+    assert finals["status"] == "success", finals.get("error")
+    assert "installing the packages" not in ws.store.run(finals["id"])["log"]
+    assert ws.preview("answer")["rows"] == [[42]]
+    assert installs(root) == [install]
+
+
+def test_an_exuvia_upgrade_to_another_numpy_major_installs_again(project, monkeypatch):
+    root, _, ws = project
+    run(ws, ["answer"])
+    [install] = installs(root)
+    _other_exuvia(monkeypatch, numpy="99.0.0")  # compiled extensions are built against NumPy
+    finals = run(ws, ["answer"])["answer"]
+    assert finals["status"] == "success", finals.get("error")
+    assert "installing the packages" in ws.store.run(finals["id"])["log"]
+    assert install in installs(root) and len(installs(root)) == 2
+
+
+def _second_project(tmp_path: Path, name: str, index: Path, store: Path | None) -> tuple[Path, Workspace]:
+    root = tmp_path / name
+    pyproject(root, index, ["acme-internal"])
+    write(root, "nodes/answer.py", (tmp_path / "proj" / "nodes" / "answer.py").read_text(encoding="utf-8"))
+    return root, Workspace(root, packages_store=store)
+
+
+def test_projects_on_a_server_share_an_install_and_uvs_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    monkeypatch.setattr(packages, "KEEP_S", 0)
+    index = tmp_path / "wheels"
+    make_wheel(index, "acme-internal", "1.0", "ANSWER = 42\n")
+    store = tmp_path / "server-store"
+    write(tmp_path, "proj/nodes/answer.py", '''
+        import exuvia
+
+        @exuvia.node()
+        def answer():
+            import acme_internal
+            import pandas as pd
+
+            return pd.DataFrame({"answer": [acme_internal.ANSWER]})
+    ''')
+    a, ws_a = _second_project(tmp_path, "a", index, store)
+    b, ws_b = _second_project(tmp_path, "b", index, store)
+    try:
+        assert "installing the packages" in ws_a.store.run(run(ws_a, ["answer"])["answer"]["id"])["log"]
+        finals = run(ws_b, ["answer"])["answer"]
+        assert finals["status"] == "success", finals.get("error")
+        assert "installing the packages" not in ws_b.store.run(finals["id"])["log"]
+        [install] = [p for p in store.iterdir() if not p.name.startswith(".")]
+        assert (store / packages.UV_CACHE).is_dir()  # on the server's volume, not in the container
+        assert not (a / ".exuvia" / "packages").exists()
+        # b moves on; a still uses the install, so it stays.
+        make_wheel(index, "acme-internal", "2.0", "ANSWER = 43\n")
+        pyproject(b, index, ["acme-internal>=2"])
+        assert run(ws_b, ["answer"])["answer"]["status"] == "success"
+        assert install in store.iterdir()
+        # a is deleted: nothing uses its install any more.
+        ws_a.executor.close()
+        import shutil
+
+        shutil.rmtree(a)
+        packages._collect(store)
+        assert install not in store.iterdir()
+        assert len([p for p in store.iterdir() if not p.name.startswith(".")]) == 1
+    finally:
+        ws_a.executor.close()
+        ws_b.executor.close()
+
+
+def test_the_same_name_and_version_from_another_index_is_another_install(tmp_path, monkeypatch):
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    store = tmp_path / "server-store"
+    roots = []
+    for name, answer in (("a", 1), ("b", 2)):
+        index = tmp_path / f"wheels-{name}"
+        make_wheel(index, "acme-internal", "1.0", f"ANSWER = {answer}\n")
+        root = tmp_path / name
+        pyproject(root, index, ["acme-internal"])
+        roots.append(packages.ensure(root, store, lambda _: None, shared=True))
+    a, b = roots
+    assert a != b
+    assert (a / "acme_internal" / "__init__.py").read_text() == "ANSWER = 1\n"
+    assert (b / "acme_internal" / "__init__.py").read_text() == "ANSWER = 2\n"
+
+
+def test_a_hub_keeps_its_projects_installs_beside_them(tmp_path):
+    from exuvia.hub import HUB_PACKAGES, Hub
+
+    hub = Hub(tmp_path)
+
+    async def go():
+        await hub.create("one")
+        ctx = await hub.get("one")
+        try:
+            return ctx.ws.packages.store, ctx.ws.packages.shared
+        finally:
+            ctx.ws.executor.close()
+
+    store, shared = asyncio.run(go())
+    assert store == tmp_path.resolve() / HUB_PACKAGES and shared
+    assert "one" in hub.ids() and ".exuvia" not in hub.ids()
 
 
 def test_conflict_with_exuvias_own_versions_fails_the_run(project):

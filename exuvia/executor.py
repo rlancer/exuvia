@@ -114,7 +114,7 @@ class LocalExecutor:
                     req.root,
                     self.packages_dir or req.root / ".exuvia" / "packages",
                     on_log,
-                    prune=self.packages_dir is None,
+                    shared=self.packages_dir is not None,
                 )
         except packages.PackagesError as e:
             on_log(f"{e}\n")

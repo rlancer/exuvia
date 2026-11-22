@@ -88,10 +88,12 @@ def params_key(params: dict[str, Any]) -> str:
 
 
 class Workspace:
-    def __init__(self, root: str | Path, origin: str = "load"):
+    def __init__(self, root: str | Path, origin: str = "load", packages_store: Path | None = None):
         """``origin`` labels code found changed since the last recorded
         revision when the project loads (a template applied, an import, edits
-        made while nothing was watching)."""
+        made while nothing was watching). ``packages_store`` is where a
+        server shared by many projects (a hub) keeps their package installs
+        (see packages.py); without one the project keeps its own."""
         self.project = Project(root)
         # Held while project files are written and reloaded (see editing()).
         self._edit_lock = threading.RLock()
@@ -109,7 +111,7 @@ class Workspace:
         self.executor = make_executor(self.project.root, MAX_PARALLEL)
         # The packages the project lists in its pyproject.toml (packages.py).
         local = isinstance(self.executor, LocalExecutor)
-        self.packages = Packages(self.project.root, publish=self.bus.publish, local=local)
+        self.packages = Packages(self.project.root, publish=self.bus.publish, local=local, store=packages_store)
         if local:
             self.executor.packages = self.packages
         self.packages.on_edit = self.reload  # records pyproject.toml as a revision

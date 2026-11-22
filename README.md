@@ -511,9 +511,30 @@ version is ready before anyone runs it. A run that starts during an install
 waits for it. An install that fails (a package that doesn't exist, a
 registry that refuses the credentials) shows uv's explanation in the panel,
 and runs fail at once with the same error until the list changes or
-someone retries. Installs live in `.exuvia/packages/` and are reused until
-the list or exuvia's own environment changes; hub exports leave them out.
-Every change to `pyproject.toml` is kept as a code revision.
+someone retries. Every change to `pyproject.toml` is kept as a code
+revision.
+
+**Installed once, kept across restarts and upgrades.** An install is named
+after what it holds: the packages and versions the list resolved to, the
+index each came from, the Python version and the platform. So:
+
+- A restart reuses it without resolving anything.
+- When the list or exuvia's version changes, the list is resolved again
+  (seconds, nothing installed), preferring the versions installed before.
+  If that gives the same packages, which is usual after an exuvia upgrade,
+  the install is reused. Only packages that changed, a new Python, or a new
+  NumPy major version (compiled packages are built against it) install
+  again.
+- On a hub, projects whose lists resolve to the same packages share one
+  install, kept in the hub's `.exuvia/packages/` beside the projects. A
+  project on its own keeps its installs in its own `.exuvia/packages/`.
+- uv's download cache sits in the hub's `.exuvia/packages/.uv-cache/`, on
+  the hub's volume, so an install that does run after a restart copies files
+  instead of downloading and building them again. A `UV_CACHE_DIR` set on
+  the server wins. Deleting the cache is safe; it fills again as needed.
+- An install no project uses any more is removed, at the earliest an hour
+  after it was made. Hub exports leave installs out; a restored project
+  installs from its `pyproject.toml`.
 
 **They sit on top of exuvia's own packages.** Nodes keep using the pandas,
 pyarrow and DuckDB that exuvia runs with, so the project's list is resolved
@@ -1095,9 +1116,8 @@ prevents a build that succeeds and then fails later, when exuvia runs:
   run time instead of at build time. With it, a conflict fails the build
   with uv's explanation, and the fixes are the ones under
   [When a package conflicts with exuvia's versions](#packages).
-- **Keep `--no-cache`.** The image points uv's cache at `/tmp/uv-cache`. A
-  cache written there as root can't be written by the `exuvia` user, and
-  every project's own package installs then fail.
+- **Keep `--no-cache`.** It keeps uv's download cache out of the image's
+  layers, where it only makes the image bigger.
 - **Install as root and end on `USER exuvia`.** The environment belongs to
   root; exuvia runs as its own user (uid 10001).
 - **Pin exact versions.** The file is the record of what the image holds,
@@ -1116,9 +1136,10 @@ What follows from baking packages in:
   editor, or to run somewhere else): on this image the install skips it,
   and the Packages panel shows it as exuvia's.
 - **Upgrading a package means a new image.** Change the version in the
-  file, rebuild and redeploy. Every new image (or exuvia release) changes
-  exuvia's environment, so each project with packages of its own installs
-  them once more, in the background, when the server starts.
+  file, rebuild and redeploy. On a new image (or exuvia release), each
+  project's own packages are resolved again when the server starts, and
+  installed again only if they no longer resolve to the same versions (see
+  [Packages](#packages)).
 
 ### Package installs on an isolated network
 
