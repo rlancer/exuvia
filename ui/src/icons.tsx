@@ -1,4 +1,7 @@
 import type { ReactNode } from "react";
+import * as stylex from "@stylexjs/stylex";
+
+const styles = stylex.create({ icon: { display: "block", flexShrink: 0 } });
 
 /**
  * The app's icons: one 16 x 16 grid and one stroke, so they sit alike next to
@@ -9,7 +12,7 @@ function icon(body: ReactNode, filled = false) {
   return function Icon({ size = 14 }: { size?: number }) {
     return (
       <svg
-        className="icon"
+        {...stylex.props(styles.icon)}
         width={size}
         height={size}
         viewBox="0 0 16 16"

@@ -1,7 +1,22 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from "react";
+import * as stylex from "@stylexjs/stylex";
+import { colorVars, radiusVars, shadowVars, spacingVars } from "@astryxdesign/core/theme/tokens.stylex";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
+import { ChatComposer, ChatComposerDrawer, ChatLayout, ChatMessage, ChatMessageBubble, ChatMessageList, ChatSystemMessage, ChatToolCalls, type ChatToolCallItem } from "@astryxdesign/core/Chat";
+import { Code } from "@astryxdesign/core/Code";
+import { HStack } from "@astryxdesign/core/HStack";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { List, ListItem } from "@astryxdesign/core/List";
+import { Markdown } from "@astryxdesign/core/Markdown";
+import { Spinner } from "@astryxdesign/core/Spinner";
+import { StatusDot } from "@astryxdesign/core/StatusDot";
+import { Tab, TabList } from "@astryxdesign/core/TabList";
+import { Text } from "@astryxdesign/core/Text";
+import { Token } from "@astryxdesign/core/Token";
+import { VStack } from "@astryxdesign/core/VStack";
 import { api, streamAgent, type AgentEvent, type GraphNode } from "./api";
-import { renderMarkdown } from "./util";
-import { IconAlert, IconChevronRight, IconClock, IconFolder, IconSpark } from "./icons";
+import { IconChevronRight, IconClock, IconFolder, IconSpark } from "./icons";
 
 type Item =
   | { kind: "user"; text: string }
@@ -15,19 +30,6 @@ export interface AgentHandle {
 
 /** What the side panel shows: the agent's chat, the project's files or its code history. */
 export type SideTab = "agent" | "files" | "history";
-
-const ICONS: Record<string, string> = {
-  list_nodes: "☰",
-  read_node: "◇",
-  write_node: "✎",
-  delete_node: "✕",
-  run_node: "▶",
-  query_data: "⌕",
-  list_files: "☰",
-  read_file: "◇",
-  write_file: "✎",
-  delete_file: "✕",
-};
 
 function toolLabel(it: Extract<Item, { kind: "tool" }>): string {
   const i = it.input ?? {};
@@ -73,7 +75,26 @@ function toolLabel(it: Extract<Item, { kind: "tool" }>): string {
   }
 }
 
-export const AgentPanel = forwardRef<
+/** A run of the agent's steps, one after the other, as Astryx's list of tool calls. */
+type Tool = Extract<Item, { kind: "tool" }>;
+type Block = Exclude<Item, Tool> | { kind: "tools"; tools: Tool[] };
+
+function blocks(items: Item[]): Block[] {
+  const out: Block[] = [];
+  for (const it of items) {
+    const last = out[out.length - 1];
+    if (it.kind !== "tool") out.push(it);
+    else if (last?.kind === "tools") last.tools.push(it);
+    else out.push({ kind: "tools", tools: [it] });
+  }
+  return out;
+}
+
+/**
+ * The side panel: the agent's chat, the project's files and its code history,
+ * one tab each. On a narrow window (`sheet`) it is a sheet over the main area.
+ */
+export const SidePanel = forwardRef<
   AgentHandle,
   {
     enabled: boolean;
@@ -83,6 +104,8 @@ export const AgentPanel = forwardRef<
     onTouch: (node: string) => void;
     onSelect: (node: string) => void;
     onCollapse: () => void;
+    /** Drawn as a sheet along the bottom of a narrow window. */
+    sheet?: boolean;
     tab: SideTab;
     onTab: (tab: SideTab) => void;
     /** The Files and History tabs' contents. The chat stays mounted under them, so a reply keeps streaming. */
@@ -91,7 +114,7 @@ export const AgentPanel = forwardRef<
     /** Whether this page has the Agent tab: not for a viewer of a shared project (the agent changes it). */
     agent?: boolean;
   }
->(function AgentPanel({ enabled, model, selected, hasNodes, onTouch, onSelect, onCollapse, tab, onTab, files, history, agent = true }, ref) {
+>(function SidePanel({ enabled, model, selected, hasNodes, onTouch, onSelect, onCollapse, sheet, tab, onTab, files, history, agent = true }, ref) {
   const [items, setItems] = useState<Item[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -99,16 +122,12 @@ export const AgentPanel = forwardRef<
   const [useCtx, setUseCtx] = useState(true);
   const session = useRef<string | null>(null);
   const abort = useRef<AbortController | null>(null);
-  const scroller = useRef<HTMLDivElement>(null);
 
   useEffect(() => setUseCtx(true), [selected?.name]);
   // How much of the chat was on screen when another tab took over: more since then shows a dot on the Agent tab.
   const seen = useRef(0);
   if (tab === "agent") seen.current = items.length;
   const news = tab !== "agent" && (busy || items.length > seen.current);
-  useEffect(() => {
-    scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
-  }, [items, thinking]);
 
   const send = async (text: string) => {
     const msg = text.trim();
@@ -197,116 +216,234 @@ export const AgentPanel = forwardRef<
           "Schedule the source nodes for every 30 minutes during market hours",
         ];
 
-  return (
-    <aside className="agent">
-      <div className="agent-head side-head">
-        <div className="side-tabs" role="tablist" aria-label="Side panel">
-          {agent && (
-            <button role="tab" aria-selected={tab === "agent"} className={`side-tab ${tab === "agent" ? "on" : ""}`} onClick={() => onTab("agent")} title={enabled ? `The agent (${model})` : "The agent"}>
-              <IconSpark /> Agent
-              {news && <span className={`side-news ${busy ? "pulse" : ""}`} title={busy ? "The agent is working" : "New in the chat"} />}
-            </button>
+  /** A step that touched a node opens that node, from the step's detail. */
+  const call = (it: Tool, i: number): ChatToolCallItem => ({
+    key: it.id || String(i),
+    name: toolLabel(it),
+    status: it.ok === undefined ? "running" : it.ok ? "complete" : "error",
+    node: it.node,
+    errorMessage: it.ok === false ? it.summary : undefined,
+    resultDetail:
+      it.node || it.summary ? (
+        <VStack gap={2} hAlign="start">
+          {it.summary && (
+            <Text type="code" color="secondary" wordBreak="break-word">
+              {it.summary}
+            </Text>
           )}
-          <button role="tab" aria-selected={tab === "files"} className={`side-tab ${tab === "files" ? "on" : ""}`} onClick={() => onTab("files")} title="The files of the graph and the views">
-            <IconFolder /> Files
-          </button>
-          <button role="tab" aria-selected={tab === "history"} className={`side-tab ${tab === "history" ? "on" : ""}`} onClick={() => onTab("history")} title="Every saved version of the code, and deleted nodes and views to bring back">
-            <IconClock /> History
-          </button>
-        </div>
-        <span className="spacer" />
-        {tab === "agent" && items.length > 0 && <button className="btn sm ghost" onClick={reset}>New chat</button>}
-        <button className="btn sm ghost icon-btn collapse" title="Collapse the side panel" aria-label="Collapse the side panel" onClick={onCollapse}>
-          <IconChevronRight />
-        </button>
+          {it.node && <Button size="sm" label={`Open ${it.node}`} onClick={() => onSelect(it.node!)} />}
+        </VStack>
+      ) : undefined,
+  });
+
+  return (
+    <aside {...stylex.props(styles.panel, sheet && styles.sheet)} aria-label="Side panel">
+      <div {...stylex.props(styles.head)}>
+        <TabList value={tab} onChange={(t) => onTab(t as SideTab)} xstyle={styles.tabs}>
+          {agent && (
+            <Tab
+              value="agent"
+              label="Agent"
+              icon={<IconSpark />}
+              endContent={news ? <StatusDot variant="accent" isPulsing={busy} label={busy ? "The agent is working" : "New in the chat"} /> : undefined}
+            />
+          )}
+          <Tab value="files" label="Files" icon={<IconFolder />} />
+          <Tab value="history" label="History" icon={<IconClock />} />
+        </TabList>
+        <span {...stylex.props(styles.grow)} />
+        {tab === "agent" && items.length > 0 && <Button size="sm" variant="ghost" label="New chat" onClick={reset} />}
+        <IconButton
+          size="sm"
+          variant="ghost"
+          label="Collapse the side panel"
+          tooltip="Collapse the side panel"
+          icon={<span {...stylex.props(sheet && styles.down)}><IconChevronRight /></span>}
+          onClick={onCollapse}
+        />
       </div>
       {tab === "files" && files}
       {tab === "history" && history}
-      <div className="side-body" hidden={tab !== "agent" || !agent}>
-      {!enabled ? (
-        <div className="agent-off">
-          The agent builds, runs, and fixes nodes for you. To turn it on, set <code>ANTHROPIC_API_KEY</code> (Claude) or{" "}
-          <code>OPENROUTER_API_KEY</code> (DeepSeek and other models via OpenRouter) in your environment or the
-          project's <code>.env</code>, then restart <code>exuvia serve</code>. <code>EXUVIA_MODEL</code> picks the model.
-          Through a Portkey gateway, set <code>PORTKEY_API_KEY</code> and <code>EXUVIA_MODEL</code>.
-          <br />
-          <br />
-          Everything else (editing, running, scheduling, querying) works without it.
-        </div>
-      ) : (
-        <>
-          <div className="msgs" ref={scroller}>
-            {items.length === 0 && (
-              <div className="suggest">
-                <div className="lead">Try asking</div>
-                {suggestions.map((s) => (
-                  <button key={s} onClick={() => send(s)}>{s}</button>
-                ))}
-              </div>
-            )}
-            {items.map((it, i) => {
-              if (it.kind === "user") return <div key={i} className="msg user">{it.text}</div>;
-              if (it.kind === "error")
-                return (
-                  <div key={i} className="msg err" role="alert">
-                    <IconAlert size={13} />
-                    <span>{it.text}</span>
-                  </div>
-                );
-              if (it.kind === "ai")
-                return <div key={i} className="msg ai" dangerouslySetInnerHTML={{ __html: renderMarkdown(it.text) }} />;
-              const done = it.ok !== undefined;
-              const body = (
-                <>
-                  <span className="ic">{done ? (it.ok ? ICONS[it.name] ?? "•" : "!") : <span className="dot pulse" style={{ background: "var(--running)" }} />}</span>
-                  <span className="lbl">{toolLabel(it)}</span>
-                </>
-              );
-              const cls = `tool ${it.node ? "link" : ""} ${done ? (it.ok ? "ok" : "bad") : ""}`;
-              // A step that touched a node opens that node.
-              return it.node ? (
-                <button key={i} className={cls} title={it.summary ?? `Open ${it.node}`} onClick={() => onSelect(it.node!)}>{body}</button>
-              ) : (
-                <div key={i} className={cls} title={it.summary}>{body}</div>
-              );
-            })}
-            {thinking && busy && (
-              <div className="thinking" role="status"><span className="dot pulse" style={{ background: "var(--running)" }} /> thinking…</div>
-            )}
-          </div>
-          <div className="composer">
-            {selected && useCtx && (
-              <span className="ctx-chip">
-                context: {selected.name}
-                <button onClick={() => setUseCtx(false)} title="Don't send the selected node" aria-label="Don't send the selected node">×</button>
-              </span>
-            )}
-            <textarea
-              value={input}
-              aria-label="Message the agent"
-              placeholder={hasNodes ? "Ask for a node, a fix, a chart, an analysis…" : "Describe the pipeline you want…"}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  send(input);
+      {/* The chat stays mounted under the other tabs, so a reply keeps streaming. */}
+      <div {...stylex.props(styles.body, (tab !== "agent" || !agent) && styles.hidden)}>
+        {!enabled ? (
+          <VStack gap={3} padding={4}>
+            <Text>
+              The agent builds, runs, and fixes nodes for you. To turn it on, set <Code>ANTHROPIC_API_KEY</Code> (Claude) or{" "}
+              <Code>OPENROUTER_API_KEY</Code> (DeepSeek and other models via OpenRouter) in your environment or the project's{" "}
+              <Code>.env</Code>, then restart <Code>exuvia serve</Code>. <Code>EXUVIA_MODEL</Code> picks the model. Through a Portkey
+              gateway, set <Code>PORTKEY_API_KEY</Code> and <Code>EXUVIA_MODEL</Code>.
+            </Text>
+            <Text color="secondary">Everything else (editing, running, scheduling, querying) works without it.</Text>
+          </VStack>
+        ) : (
+          <ChatLayout
+            density="compact"
+            composer={
+              <ChatComposer
+                density="compact"
+                value={input}
+                onChange={setInput}
+                onSubmit={send}
+                onStop={() => abort.current?.abort()}
+                isStopShown={busy}
+                placeholder={hasNodes ? "Ask for a node, a fix, a chart, an analysis…" : "Describe the pipeline you want…"}
+                drawer={
+                  selected && useCtx ? (
+                    <ChatComposerDrawer>
+                      <HStack gap={1.5} vAlign="center">
+                        <Text type="supporting" color="secondary">
+                          Context
+                        </Text>
+                        <Token size="sm" color="blue" label={selected.name} onRemove={() => setUseCtx(false)} />
+                      </HStack>
+                    </ChatComposerDrawer>
+                  ) : undefined
                 }
-              }}
-            />
-            <div className="row">
-              <span>Enter to send · Shift+Enter newline</span>
-              {model && <span className="model" title="The agent's model">{model}</span>}
-              <span className="spacer" />
-              {busy ? (
-                <button className="btn sm" onClick={() => abort.current?.abort()}>Stop</button>
-              ) : (
-                <button className="btn sm primary" onClick={() => send(input)} disabled={!input.trim()}>Send</button>
-              )}
-            </div>
-          </div>
-        </>
-      )}
+                footerActions={
+                  model ? (
+                    <Text type="code" size="sm" color="secondary" maxLines={1}>
+                      {model}
+                    </Text>
+                  ) : undefined
+                }
+              />
+            }
+            emptyState={
+              <VStack gap={1} padding={3}>
+                <Text type="supporting" color="secondary">
+                  Try asking
+                </Text>
+                <List density="compact" hasDividers>
+                  {suggestions.map((s) => (
+                    <ListItem key={s} label={<Text color="secondary">{s}</Text>} onClick={() => send(s)} />
+                  ))}
+                </List>
+              </VStack>
+            }
+          >
+            {items.length > 0 && (
+              <ChatMessageList density="compact" isStreaming={busy}>
+                {blocks(items).map((b, i, all) => {
+                  if (b.kind === "user")
+                    return (
+                      <ChatMessage key={i} sender="user">
+                        <ChatMessageBubble>{b.text}</ChatMessageBubble>
+                      </ChatMessage>
+                    );
+                  if (b.kind === "error") return <Banner key={i} status="error" title={b.text} />;
+                  if (b.kind === "ai")
+                    return (
+                      <ChatMessage key={i} sender="assistant">
+                        <ChatMessageBubble variant="ghost" width="100%">
+                          <Markdown density="compact" headingLevelStart={3} isStreaming={busy && i === all.length - 1}>
+                            {b.text}
+                          </Markdown>
+                        </ChatMessageBubble>
+                      </ChatMessage>
+                    );
+                  return (
+                    <ChatMessage key={i} sender="assistant">
+                      <ChatMessageBubble variant="ghost" width="100%">
+                        <ChatToolCalls calls={b.tools.map(call)} />
+                      </ChatMessageBubble>
+                    </ChatMessage>
+                  );
+                })}
+                {thinking && busy && <ChatSystemMessage icon={<Spinner size="sm" />}>Thinking…</ChatSystemMessage>}
+              </ChatMessageList>
+            )}
+          </ChatLayout>
+        )}
       </div>
     </aside>
   );
+});
+
+/**
+ * The collapsed side panel: its tabs as a rail of icons beside the main area,
+ * or, on a narrow window (`bar`), as a bar of buttons along the bottom.
+ */
+export function SideRail(props: { agent: boolean; bar?: boolean; onOpen: (tab: SideTab) => void }) {
+  const tabs: { tab: SideTab; label: string; tip: string; icon: ReactNode }[] = [
+    ...(props.agent ? [{ tab: "agent" as const, label: "Agent", tip: "Open the agent", icon: <IconSpark /> }] : []),
+    { tab: "files", label: "Files", tip: "Open the files of the graph and the views", icon: <IconFolder /> },
+    { tab: "history", label: "History", tip: "Open the code's history", icon: <IconClock /> },
+  ];
+  return (
+    <div {...stylex.props(styles.rail, props.bar && styles.railBar)} role="group" aria-label="Side panel">
+      {tabs.map((t) =>
+        props.bar ? (
+          <Button key={t.tab} variant="ghost" label={t.label} icon={t.icon} onClick={() => props.onOpen(t.tab)} />
+        ) : (
+          <IconButton key={t.tab} variant="ghost" label={t.label} tooltip={t.tip} icon={t.icon} onClick={() => props.onOpen(t.tab)} />
+        ),
+      )}
+    </div>
+  );
+}
+
+const styles = stylex.create({
+  panel: {
+    display: "flex",
+    flexDirection: "column",
+    minWidth: 0,
+    minHeight: 0,
+    backgroundColor: colorVars["--color-background-surface"],
+    borderInlineStartWidth: "1px",
+    borderInlineStartStyle: "solid",
+    borderInlineStartColor: colorVars["--color-border"],
+  },
+  sheet: {
+    position: "fixed",
+    insetInline: 0,
+    bottom: 0,
+    zIndex: 40,
+    height: "min(72vh, 620px)",
+    borderInlineStartWidth: 0,
+    borderTopWidth: "1px",
+    borderTopStyle: "solid",
+    borderTopColor: colorVars["--color-border-emphasized"],
+    borderStartStartRadius: radiusVars["--radius-container"],
+    borderStartEndRadius: radiusVars["--radius-container"],
+    boxShadow: shadowVars["--shadow-high"],
+  },
+  // As tall as the project's bar beside it, so the two read as one band.
+  head: {
+    display: "flex",
+    alignItems: "center",
+    gap: spacingVars["--spacing-1"],
+    minHeight: "40px",
+    flexShrink: 0,
+    paddingInline: spacingVars["--spacing-2"],
+    borderBottomWidth: "1px",
+    borderBottomStyle: "solid",
+    borderBottomColor: colorVars["--color-border"],
+  },
+  tabs: { alignSelf: "flex-end", minWidth: 0 },
+  grow: { flexGrow: 1 },
+  down: { display: "block", transform: "rotate(90deg)" },
+  body: { display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 },
+  hidden: { display: "none" },
+  rail: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: spacingVars["--spacing-1"],
+    paddingBlock: spacingVars["--spacing-2"],
+    minHeight: 0,
+    backgroundColor: colorVars["--color-background-surface"],
+    borderInlineStartWidth: "1px",
+    borderInlineStartStyle: "solid",
+    borderInlineStartColor: colorVars["--color-border"],
+  },
+  railBar: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    paddingBlock: 0,
+    borderInlineStartWidth: 0,
+    borderTopWidth: "1px",
+    borderTopStyle: "solid",
+    borderTopColor: colorVars["--color-border"],
+  },
 });

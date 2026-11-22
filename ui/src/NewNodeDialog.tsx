@@ -1,7 +1,20 @@
-import { useState } from "react";
+import { useId, useState } from "react";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
+import { Field } from "@astryxdesign/core/Field";
+import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
+import { Text } from "@astryxdesign/core/Text";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { ToggleButton, ToggleButtonGroup } from "@astryxdesign/core/ToggleButton";
+import { VStack } from "@astryxdesign/core/VStack";
 import { api, type GraphNode } from "./api";
-import { Dialog } from "./Dialog";
+import { AppDialog } from "./ui/AppDialog";
 
+/**
+ * A new node: its name (which is its file's), whether it is Python or SQL,
+ * the nodes it reads and a line on what it makes. The inputs are chips to
+ * press, every node of the graph in sight at once.
+ */
 export function NewNodeDialog(props: {
   nodes: GraphNode[];
   initialDeps: string[];
@@ -15,9 +28,11 @@ export function NewNodeDialog(props: {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const taken = props.nodes.some((n) => n.name === name);
+  const kindId = useId();
+  const depsId = useId();
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submit = async () => {
+    if (!name || taken || busy) return;
     setErr(null);
     setBusy(true);
     try {
@@ -30,58 +45,52 @@ export function NewNodeDialog(props: {
   };
 
   return (
-    <Dialog title="New node" onClose={props.onClose} onSubmit={submit}>
-        <div className="field">
-          <label htmlFor="nn-name">Name</label>
-          <input
-            id="nn-name"
-            autoFocus
-            spellCheck={false}
-            className="mono"
-            value={name}
-            placeholder="rolling_corr"
-            onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_"))}
-          />
-          <span className="hint">
-            The file is <span className="mono">nodes/{name || "name"}.{kind === "sql" ? "sql" : "py"}</span>; other nodes read it by this name.
-          </span>
-        </div>
-        <div className="field">
-          <label id="nn-kind">Kind</label>
-          <div className="seg" role="radiogroup" aria-labelledby="nn-kind" style={{ alignSelf: "flex-start" }}>
-            {(["python", "sql"] as const).map((k) => (
-              <button type="button" role="radio" aria-checked={kind === k} key={k} className={kind === k ? "on" : ""} onClick={() => setKind(k)}>
-                {k === "python" ? "Python" : "SQL"}
-              </button>
-            ))}
-          </div>
-        </div>
+    <AppDialog
+      title="New node"
+      onClose={props.onClose}
+      onSubmit={submit}
+      footer={(formId) => (
+        <>
+          <Button variant="ghost" label="Cancel" onClick={props.onClose} />
+          <Button variant="primary" type="submit" form={formId} label="Create" isDisabled={!name || taken} isLoading={busy} />
+        </>
+      )}
+    >
+      <VStack gap={4}>
+        {err && <Banner status="error" title="Couldn't create the node" description={err} />}
+        <TextInput
+          label="Name"
+          hasAutoFocus
+          hasSpellCheck={false}
+          autoCapitalize="none"
+          autoComplete="off"
+          value={name}
+          placeholder="rolling_corr"
+          description={`The file is nodes/${name || "name"}.${kind === "sql" ? "sql" : "py"}; other nodes read it by this name.`}
+          status={taken ? { type: "error", message: `There is already a node ${name}.` } : undefined}
+          onChange={(v) => setName(v.toLowerCase().replace(/[^a-z0-9_]/g, "_"))}
+        />
+        <Field label="Kind" inputID={kindId} isGroupLabel>
+          <SegmentedControl label="Kind" value={kind} onChange={(k) => setKind(k as "python" | "sql")}>
+            <SegmentedControlItem value="python" label="Python" />
+            <SegmentedControlItem value="sql" label="SQL" />
+          </SegmentedControl>
+        </Field>
         {props.nodes.length > 0 && (
-          <div className="field">
-            <label id="nn-deps">Inputs (upstream nodes)</label>
-            <div className="deps" role="group" aria-labelledby="nn-deps">
+          <Field label="Inputs (upstream nodes)" inputID={depsId} isGroupLabel>
+            <ToggleButtonGroup type="multiple" size="sm" label="Inputs (upstream nodes)" value={deps} onChange={setDeps}>
               {props.nodes.map((n) => (
-                <label key={n.name} className={deps.includes(n.name) ? "on" : ""}>
-                  <input
-                    type="checkbox"
-                    checked={deps.includes(n.name)}
-                    onChange={(e) => setDeps((d) => (e.target.checked ? [...d, n.name] : d.filter((x) => x !== n.name)))}
-                  />
-                  {n.name}
-                </label>
+                <ToggleButton key={n.name} value={n.name} label={n.name}>
+                  <Text type="code" color="inherit">
+                    {n.name}
+                  </Text>
+                </ToggleButton>
               ))}
-            </div>
-          </div>
+            </ToggleButtonGroup>
+          </Field>
         )}
-        <div className="field">
-          <label htmlFor="nn-desc">Description</label>
-          <input id="nn-desc" value={description} placeholder="What this node produces" onChange={(e) => setDescription(e.target.value)} />
-        </div>
-        {(taken || err) && <div className="form-err" role="alert">{taken ? `There is already a node ${name}.` : err}</div>}
-        <div className="actions">
-          <button type="button" className="btn ghost" onClick={props.onClose}>Cancel</button>
-          <button type="submit" className="btn primary" disabled={!name || taken || busy}>Create</button>
-        </div>
-    </Dialog>
+        <TextInput label="Description" value={description} placeholder="What this node produces" onChange={setDescription} />
+      </VStack>
+    </AppDialog>
   );
 }

@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
+import { DropdownMenu, type DropdownMenuOption } from "@astryxdesign/core/DropdownMenu";
+import { IconButton } from "@astryxdesign/core/IconButton";
 import { IconDownload } from "./icons";
 import { failed } from "./toast";
 import type { GraphNode, ViewOutput } from "./api";
@@ -96,7 +98,11 @@ export function codeGroup(o: { node?: string; view?: string; title?: string } = 
   return { title: o.title ?? "Code", items: [{ key: "code", label: "Code (.zip)", hint, onPick: () => saveUrl(codeArchiveUrl(o)) }] };
 }
 
-/** A "Download" button and its menu of what can be saved from here. */
+/**
+ * A "Download" button and its menu of what can be saved from here: each group
+ * under its title, each item with a line that says what it is, or why it
+ * can't be picked now. The menu stays open while a download is prepared.
+ */
 export function DownloadMenu(props: {
   groups: DownloadGroup[];
   /** Button text; unset shows the icon alone. */
@@ -112,29 +118,7 @@ export function DownloadMenu(props: {
   const { groups, label, small, align = "right" } = props;
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const wrap = useRef<HTMLDivElement>(null);
-  const button = useRef<HTMLButtonElement>(null);
   const title = props.title ?? "Download";
-
-  useEffect(() => {
-    if (!open) return;
-    // Capture phase: the graph canvas stops pointer events from bubbling.
-    const onDown = (e: PointerEvent) => {
-      if (!wrap.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setOpen(false);
-        button.current?.focus();
-      }
-    };
-    document.addEventListener("pointerdown", onDown, true);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onDown, true);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
 
   const pick = async (item: DownloadItem) => {
     setBusy(item.key);
@@ -149,45 +133,42 @@ export function DownloadMenu(props: {
   };
 
   const shown = groups.filter((g) => g.items.length);
-  return (
-    <div className="dl" ref={wrap}>
-      <button
-        ref={button}
-        type="button"
-        className={`btn ${small ? "sm" : ""} ${label ? "has-icon" : "ghost icon-btn"}`}
-        onClick={() => setOpen((o) => !o)}
-        title={title}
-        aria-label={title}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        disabled={props.disabled || !shown.length}
-      >
-        <IconDownload size={small ? 12 : 14} />
-        {label && <span className="lbl">{label}</span>}
-      </button>
-      {open && (
-        <div className={`dl-pop ${align} ${props.up ? "up" : ""}`} role="menu" aria-label={title}>
-          {shown.map((g, i) => (
-            <div className="dl-group" key={g.title ?? i} role="group" aria-label={g.title}>
-              {g.title && <div className="dl-title">{g.title}</div>}
-              {g.items.map((item) => (
-                <button
-                  key={item.key}
-                  type="button"
-                  role="menuitem"
-                  className="dl-item"
-                  disabled={!!item.disabled || busy !== null}
-                  title={item.disabled ?? item.hint}
-                  onClick={() => pick(item)}
-                >
-                  <span>{busy === item.key ? "Preparing…" : item.label}</span>
-                  {item.hint && <span className="dl-hint">{item.disabled ?? item.hint}</span>}
-                </button>
-              ))}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+  const items: DropdownMenuOption[] = shown.flatMap((g, i): DropdownMenuOption[] => [
+    ...(i ? [{ type: "divider" as const }] : []),
+    {
+      type: "section",
+      id: g.title ?? String(i),
+      title: g.title,
+      items: g.items.map((item) => ({
+        id: item.key,
+        label: busy === item.key ? "Preparing…" : item.label,
+        description: item.disabled ?? item.hint,
+        isDisabled: !!item.disabled || busy !== null,
+        // The menu closes when the download has started, not when it is asked for.
+        hasCloseOnSelect: false,
+        onClick: () => void pick(item),
+      })),
+    },
+  ]);
+
+  const size = small ? "sm" : "md";
+  const icon = <IconDownload size={small ? 12 : 14} />;
+  const isDisabled = props.disabled || !shown.length;
+  const menu = {
+    items,
+    isMenuOpen: open,
+    onOpenChange: setOpen,
+    placement: props.up ? ("above" as const) : ("below" as const),
+    alignment: align === "left" ? ("start" as const) : ("end" as const),
+    menuWidth: 240,
+    menuMaxHeight: 420,
+  };
+  return label ? (
+    <DropdownMenu {...menu} hasChevron={false} button={{ label, icon, size, isDisabled, tooltip: title === label ? undefined : title }} />
+  ) : (
+    <DropdownMenu
+      {...menu}
+      renderTrigger={(trigger) => <IconButton {...trigger} variant="ghost" size={size} label={title} tooltip={title} icon={icon} isDisabled={isDisabled} />}
+    />
   );
 }

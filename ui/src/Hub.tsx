@@ -1,14 +1,36 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import * as stylex from "@stylexjs/stylex";
+import { colorVars, radiusVars, spacingVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
+import { Card } from "@astryxdesign/core/Card";
+import { Center } from "@astryxdesign/core/Center";
+import { Code } from "@astryxdesign/core/Code";
+import { Divider } from "@astryxdesign/core/Divider";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { Heading } from "@astryxdesign/core/Heading";
+import { HStack } from "@astryxdesign/core/HStack";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { List, ListItem } from "@astryxdesign/core/List";
+import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
+import { Selector } from "@astryxdesign/core/Selector";
+import { Spinner } from "@astryxdesign/core/Spinner";
+import { Text } from "@astryxdesign/core/Text";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { Tooltip } from "@astryxdesign/core/Tooltip";
+import { VStack } from "@astryxdesign/core/VStack";
+import { useMediaQuery } from "@astryxdesign/core/hooks";
 import { ApiError, hubApi, PROJECT_ID, type GeneralAccess, type HubListing, type HubProject } from "./api";
 import { GENERAL_LABEL, ShareDialog } from "./Share";
 import { ConnectDialog } from "./Connect";
 import { SignedInAs } from "./Me";
 import { HelpMenu } from "./Help";
 import { useMe } from "./useMe";
-import { useTheme } from "./theme";
+import { useColorMode } from "./theme/colorMode";
 import { Brand, Mark } from "./Brand";
-import { Dialog } from "./Dialog";
-import { IconMoon, IconPlus, IconSun } from "./icons";
+import { AppDialog } from "./ui/AppDialog";
+import { IconMoon, IconPlus, IconShare, IconSpark, IconSun, IconTrash } from "./icons";
 import { Toasts } from "./toast";
 
 const workbench = (id: string) => `/p/${encodeURIComponent(id)}/`;
@@ -34,6 +56,10 @@ const ROLE_WORD = { viewer: "can view", editor: "can edit", owner: "owner" } as 
  * The hub's home page, at `/` of `exuvia hub`: every project, with a button
  * to create one and a way to delete one; each opens its workbench at
  * `/p/<id>/`. Without the API token it asks for it.
+ *
+ * The top bar is the workbench's app bar: where you are, then the hub's own
+ * menus. Under it the page is a document that scrolls, one column wide: its
+ * title with the one thing to do here (New project), then the projects as rows.
  */
 export default function Hub() {
   const [listing, setListing] = useState<Listing | null>(null);
@@ -44,10 +70,12 @@ export default function Hub() {
   const [sharing, setSharing] = useState<HubProject | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [connecting, setConnecting] = useState(false);
-  const [dark, toggleTheme] = useTheme();
+  const [dark, toggleTheme] = useColorMode();
   // Someone signed in reaches Connect agent from their account menu.
   const who = useMe();
   const signedIn = !!who?.user;
+  // The bar and the rows give up their words before their controls.
+  const compact = useMediaQuery("(max-width: 600px)");
 
   const load = useCallback(
     () =>
@@ -85,101 +113,158 @@ export default function Hub() {
     document.title = "Projects · exuvia";
   }, []);
 
+  /** A row's second line: the id, the size, then whose it is and who else can open it. */
+  const meta = (p: HubProject) => {
+    const parts: ReactNode[] = [
+      <span key="id" {...stylex.props(styles.mono)}>
+        {p.id}
+      </span>,
+      `${p.nodes} node${p.nodes === 1 ? "" : "s"}`,
+    ];
+    if (people && p.access) {
+      parts.push(mine(p) ? "yours" : p.owner ? `${p.owner.name}'s` : "no owner");
+      if (!mine(p)) parts.push(`you ${ROLE_WORD[p.access]}`);
+      if (p.general)
+        parts.push(
+          <Tooltip key="general" content={GENERAL_LABEL[p.general]}>
+            <span>{p.general === "private" ? (p.shared ? "shared" : "private") : `everyone can ${p.general}`}</span>
+          </Tooltip>,
+        );
+    }
+    if (!people && listing?.sharing && p.shared) parts.push("shared by link");
+    return parts.flatMap((part, i) => (i ? [" · ", part] : [part]));
+  };
+
   return (
-    <div className="hub">
-      <header className="topbar">
+    <div {...stylex.props(styles.page)}>
+      <header {...stylex.props(styles.bar)}>
         <Brand>projects</Brand>
-        <span className="spacer" />
-        {listing && (
+        <span {...stylex.props(styles.grow)} />
+        {listing && who !== undefined && !signedIn && (
           <>
-            {who !== undefined && !signedIn && (
-              <button className="btn" onClick={() => setConnecting(true)} title="Connect a coding agent to every project on this hub over MCP">
-                Connect agent
-              </button>
-            )}
-            <button className="btn primary" onClick={() => setNewOpen(true)}><IconPlus size={12} /> Project</button>
+            <Button
+              label="Connect agent"
+              icon={<IconSpark />}
+              isIconOnly={compact}
+              tooltip="Connect a coding agent to every project on this hub over MCP"
+              onClick={() => setConnecting(true)}
+            />
+            <Divider orientation="vertical" xstyle={styles.rule} />
           </>
         )}
-        <HelpMenu />
-        <button className="btn ghost icon-btn" onClick={toggleTheme} title={dark ? "Light theme" : "Dark theme"} aria-label={dark ? "Light theme" : "Dark theme"}>
-          {dark ? <IconSun /> : <IconMoon />}
-        </button>
-        <SignedInAs hub />
+        <HStack gap={0.5} vAlign="center">
+          <HelpMenu />
+          <IconButton
+            variant="ghost"
+            label={dark ? "Light theme" : "Dark theme"}
+            tooltip={dark ? "Light theme" : "Dark theme"}
+            icon={dark ? <IconSun /> : <IconMoon />}
+            onClick={toggleTheme}
+          />
+          <SignedInAs hub />
+        </HStack>
       </header>
 
-      <main className="hub-main">
+      <main {...stylex.props(styles.main)}>
         {needToken ? (
           <TokenForm />
         ) : err ? (
-          <div className="hub-card">
-            <p className="form-err" role="alert">Couldn't load the projects: {err}</p>
-            <button className="btn" onClick={load}>Try again</button>
-          </div>
+          <Banner
+            status="error"
+            title="Couldn't load the projects"
+            description={err}
+            endContent={<Button size="sm" label="Try again" onClick={load} />}
+          />
         ) : !listing ? (
-          <p className="hub-muted">Loading…</p>
+          <Center padding={8}>
+            <Spinner label="Loading…" />
+          </Center>
         ) : all.length === 0 ? (
-          <div className="hub-card hub-empty">
-            <Mark size={40} />
-            <h2>No projects yet</h2>
-            <p>A project is one graph of Python and SQL nodes, with its own runs, outputs and views.</p>
-            <button className="btn primary" onClick={() => setNewOpen(true)}><IconPlus size={12} /> New project</button>
-          </div>
+          <EmptyState
+            icon={<Mark size={40} />}
+            title="No projects yet"
+            headingLevel={1}
+            description="A project is one graph of Python and SQL nodes, with its own runs, outputs and views."
+            actions={<Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewOpen(true)} />}
+          />
         ) : (
-          <>
-            <div className="hub-head">
-              <h1 className="hub-title">
-                Projects <span className="hub-muted">{projects.length}</span>
-              </h1>
-              {people && (
-                <div className="seg" role="tablist" aria-label="Which projects">
-                  {(["all", "mine", "shared"] as const).map((f) => (
-                    <button key={f} role="tab" aria-selected={filter === f} className={filter === f ? "on" : ""} onClick={() => setFilter(f)}>
-                      {f === "all" ? "All" : f === "mine" ? "Owned by me" : "Shared with me"}
-                    </button>
+          <VStack gap={4}>
+            <HStack gap={3} vAlign="center">
+              <div {...stylex.props(styles.title)}>
+                <Heading level={1}>Projects</Heading>
+                <Text color="secondary" hasTabularNumbers>
+                  {projects.length}
+                </Text>
+              </div>
+              <span {...stylex.props(styles.grow)} />
+              <Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewOpen(true)} />
+            </HStack>
+            {people && (
+              <SegmentedControl label="Which projects" size="sm" value={filter} onChange={(f) => setFilter(f as Filter)} xstyle={styles.filter}>
+                <SegmentedControlItem value="all" label="All" />
+                <SegmentedControlItem value="mine" label="Owned by me" />
+                <SegmentedControlItem value="shared" label="Shared with me" />
+              </SegmentedControl>
+            )}
+            {projects.length === 0 ? (
+              <Text color="secondary">No projects here.</Text>
+            ) : (
+              <div {...stylex.props(styles.list)}>
+                <List hasDividers density="spacious">
+                  {projects.map((p) => (
+                    <ListItem
+                      key={p.id}
+                      href={workbench(p.id)}
+                      label={
+                        <HStack gap={2} vAlign="center">
+                          <Text weight="semibold" maxLines={1}>
+                            {p.name || p.id}
+                          </Text>
+                          {p.requests ? (
+                            <Tooltip content="People asking for access: open Share to answer">
+                              <Badge variant="info" label={`${p.requests} request${p.requests === 1 ? "" : "s"}`} />
+                            </Tooltip>
+                          ) : null}
+                        </HStack>
+                      }
+                      description={
+                        <Text type="supporting" color="secondary" maxLines={1} hasTruncateTooltip={false}>
+                          {meta(p)}
+                        </Text>
+                      }
+                      endContent={
+                        listing.sharing || canDelete(p) ? (
+                          <HStack gap={0.5} vAlign="center">
+                            {listing.sharing && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                label={p.access === "owner" ? "Share" : "Access"}
+                                icon={<IconShare />}
+                                isIconOnly={compact}
+                                tooltip={p.access === "owner" ? `Share ${p.id}` : `Who has access to ${p.id}`}
+                                onClick={() => setSharing(p)}
+                              />
+                            )}
+                            {canDelete(p) && (
+                              <IconButton
+                                variant="ghost"
+                                size="sm"
+                                label={`Delete ${p.id}`}
+                                tooltip={`Delete ${p.id}`}
+                                icon={<IconTrash />}
+                                onClick={() => setDeleting(p)}
+                              />
+                            )}
+                          </HStack>
+                        ) : undefined
+                      }
+                    />
                   ))}
-                </div>
-              )}
-            </div>
-            {projects.length === 0 && <p className="hub-muted">No projects here.</p>}
-            <ul className="hub-list">
-              {projects.map((p) => (
-                <li key={p.id}>
-                  <a className="hub-open" href={workbench(p.id)}>
-                    <span className="hub-name">
-                      {p.name || p.id}
-                      {p.requests ? (
-                        <span className="badge accent" title="People asking for access: open Share to answer">
-                          {p.requests} request{p.requests === 1 ? "" : "s"}
-                        </span>
-                      ) : null}
-                    </span>
-                    <span className="hub-meta">
-                      <span className="mono">{p.id}</span> · {p.nodes} node{p.nodes === 1 ? "" : "s"}
-                      {people && p.access && (
-                        <>
-                          {" · "}
-                          {mine(p) ? "yours" : p.owner ? `${p.owner.name}'s` : "no owner"}
-                          {!mine(p) && ` · you ${ROLE_WORD[p.access]}`}
-                          {p.general && <span title={GENERAL_LABEL[p.general]}>{" · "}{p.general === "private" ? (p.shared ? "shared" : "private") : `everyone can ${p.general}`}</span>}
-                        </>
-                      )}
-                      {!people && listing.sharing && p.shared && " · shared by link"}
-                    </span>
-                  </a>
-                  {listing.sharing && (
-                    <button className="btn ghost sm" onClick={() => setSharing(p)} title={p.access === "owner" ? `Share ${p.id}` : `Who has access to ${p.id}`}>
-                      {p.access === "owner" ? "Share" : "Access"}
-                    </button>
-                  )}
-                  {canDelete(p) && (
-                    <button className="btn ghost sm danger" onClick={() => setDeleting(p)} title={`Delete ${p.id}`}>
-                      Delete
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </>
+                </List>
+              </div>
+            )}
+          </VStack>
         )}
       </main>
 
@@ -232,22 +317,38 @@ function TokenForm() {
   };
 
   return (
-    <form className="hub-card" onSubmit={submit}>
-      <Mark size={40} />
-      <h2>Sign in to this hub</h2>
-      <p>Enter the hub's API token. This browser keeps it in a cookie, so you only enter it once.</p>
-      <p className="hub-muted connect-note">
-        Hub on a private network? Setting <code>EXUVIA_BROWSER_AUTH=open</code> on it lets browsers in without the token.
-      </p>
-      <div className="field">
-        <label htmlFor="hub-token">API token</label>
-        <input id="hub-token" type="password" className="mono" autoFocus autoComplete="current-password" value={token} onChange={(e) => setToken(e.target.value)} />
-      </div>
-      {err && <div className="form-err" role="alert">{err}</div>}
-      <div className="actions">
-        <button type="submit" className="btn primary" disabled={!token.trim() || busy}>Continue</button>
-      </div>
-    </form>
+    <Center axis="horizontal">
+      <Card width="100%" maxWidth={460} padding={6} elevation="low">
+        <form onSubmit={submit}>
+          <VStack gap={4}>
+            <VStack gap={2} hAlign="center">
+              <Mark size={40} />
+              <Heading level={2} accessibilityLevel={1} justify="center">
+                Sign in to this hub
+              </Heading>
+              <Text color="secondary" justify="center">
+                Enter the hub's API token. This browser keeps it in a cookie, so you only enter it once.
+              </Text>
+            </VStack>
+            <TextInput
+              type="password"
+              label="API token"
+              hasAutoFocus
+              autoComplete="current-password"
+              value={token}
+              onChange={setToken}
+              status={err ? { type: "error", message: err } : undefined}
+            />
+            <Text type="supporting" color="secondary">
+              Hub on a private network? Setting <Code>EXUVIA_BROWSER_AUTH=open</Code> on it lets browsers in without the token.
+            </Text>
+            <HStack hAlign="end">
+              <Button type="submit" variant="primary" label="Continue" isDisabled={!token.trim() || busy} />
+            </HStack>
+          </VStack>
+        </form>
+      </Card>
+    </Center>
   );
 }
 
@@ -278,6 +379,7 @@ function NewProjectDialog(props: {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!finalId || problem || busy) return;
     setErr(null);
     setBusy(true);
     try {
@@ -295,54 +397,65 @@ function NewProjectDialog(props: {
   };
 
   return (
-    <Dialog title="New project" onClose={props.onClose} onSubmit={submit}>
-        <div className="field">
-          <label htmlFor="np-name">Name</label>
-          <input id="np-name" autoFocus value={name} placeholder="Market research" onChange={(e) => setName(e.target.value)} />
-        </div>
-        <div className="field">
-          <label htmlFor="np-id">Id (in its URL, /p/&lt;id&gt;/)</label>
-          <input
-            id="np-id"
-            className="mono"
-            value={finalId}
-            placeholder="market-research"
-            onChange={(e) => {
-              setIdEdited(true);
-              setId(toProjectId(e.target.value));
-            }}
-          />
-        </div>
+    <AppDialog
+      title="New project"
+      onClose={props.onClose}
+      onSubmit={submit}
+      footer={(formId) => (
+        <>
+          <Button variant="ghost" label="Cancel" onClick={props.onClose} />
+          <Button type="submit" form={formId} variant="primary" label="Create and open" isDisabled={!finalId || !!problem || busy} />
+        </>
+      )}
+    >
+      <VStack gap={4}>
+        <TextInput label="Name" hasAutoFocus value={name} placeholder="Market research" onChange={setName} />
+        <TextInput
+          label="Id"
+          description="In its URL: /p/<id>/"
+          controlXstyle={styles.mono}
+          value={finalId}
+          placeholder="market-research"
+          hasSpellCheck={false}
+          autoCapitalize="off"
+          status={problem ? { type: "error", message: problem } : undefined}
+          onChange={(v) => {
+            setIdEdited(true);
+            setId(toProjectId(v));
+          }}
+        />
         {props.templates.length > 0 && (
-          <div className="field">
-            <label htmlFor="np-template">Start from</label>
-            <select id="np-template" value={template} onChange={(e) => setTemplate(e.target.value)}>
-              <option value="">An empty graph</option>
-              {props.templates.map((t) => (
-                <option key={t} value={t}>Template: {t}</option>
-              ))}
-            </select>
-          </div>
+          <Selector
+            label="Start from"
+            value={template || BLANK}
+            onChange={(t) => setTemplate(!t || t === BLANK ? "" : t)}
+            options={[{ value: BLANK, label: "An empty graph" }, ...props.templates.map((t) => ({ value: t, label: `Template: ${t}` }))]}
+          />
         )}
         {props.access && (
-          <div className="field">
-            <label htmlFor="np-access">Who else can open it</label>
-            <select id="np-access" value={access} onChange={(e) => setAccess(e.target.value as GeneralAccess)}>
-              {(Object.keys(GENERAL_LABEL) as GeneralAccess[]).map((g) => (
-                <option key={g} value={g}>{g === "private" ? "Only me, and people I share it with" : GENERAL_LABEL[g]}</option>
-              ))}
-            </select>
-          </div>
+          <Selector
+            label="Who else can open it"
+            value={access}
+            onChange={(g) => g && setAccess(g as GeneralAccess)}
+            options={(Object.keys(GENERAL_LABEL) as GeneralAccess[]).map((g) => ({
+              value: g,
+              label: g === "private" ? "Only me, and people I share it with" : GENERAL_LABEL[g],
+            }))}
+          />
         )}
-        {(problem || err) && <div className="form-err" role="alert">{problem ?? err}</div>}
-        <div className="actions">
-          <button type="button" className="btn ghost" onClick={props.onClose}>Cancel</button>
-          <button type="submit" className="btn primary" disabled={!finalId || !!problem || busy}>Create and open</button>
-        </div>
-    </Dialog>
+        {err && <Banner status="error" title={err} />}
+      </VStack>
+    </AppDialog>
   );
 }
 
+/** The Start from choice that is no template. */
+const BLANK = "(empty)";
+
+/**
+ * Deleting a project takes its code, runs and outputs with it, so a click is
+ * not enough: the button works once the project's id is typed.
+ */
 function DeleteDialog(props: { project: HubProject; onClose: () => void; onDeleted: () => void }) {
   const [typed, setTyped] = useState("");
   const [err, setErr] = useState<string | null>(null);
@@ -351,6 +464,7 @@ function DeleteDialog(props: { project: HubProject; onClose: () => void; onDelet
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (typed !== id || busy) return;
     setErr(null);
     setBusy(true);
     try {
@@ -363,19 +477,77 @@ function DeleteDialog(props: { project: HubProject; onClose: () => void; onDelet
   };
 
   return (
-    <Dialog title={`Delete ${props.project.name || id}?`} onClose={props.onClose} onSubmit={submit}>
-        <p className="hub-muted">Its code, run history and outputs are deleted. This can't be undone.</p>
-        <div className="field">
-          <label htmlFor="del-id">
-            Type <span className="mono">{id}</span> to confirm
-          </label>
-          <input id="del-id" className="mono" autoFocus spellCheck={false} autoComplete="off" value={typed} onChange={(e) => setTyped(e.target.value)} />
-        </div>
-        {err && <div className="form-err" role="alert">{err}</div>}
-        <div className="actions">
-          <button type="button" className="btn ghost" onClick={props.onClose}>Cancel</button>
-          <button type="submit" className="btn destroy" disabled={typed !== id || busy}>Delete project</button>
-        </div>
-    </Dialog>
+    <AppDialog
+      title={`Delete ${props.project.name || id}?`}
+      subtitle="Its code, run history and outputs are deleted. This can't be undone."
+      onClose={props.onClose}
+      onSubmit={submit}
+      footer={(formId) => (
+        <>
+          <Button variant="ghost" label="Cancel" onClick={props.onClose} />
+          <Button type="submit" form={formId} variant="destructive" label="Delete project" isDisabled={typed !== id || busy} />
+        </>
+      )}
+    >
+      <VStack gap={4}>
+        <TextInput
+          label={`Type ${id} to confirm`}
+          controlXstyle={styles.mono}
+          hasAutoFocus
+          hasSpellCheck={false}
+          autoCapitalize="off"
+          autoComplete="off"
+          value={typed}
+          onChange={setTyped}
+        />
+        {err && <Banner status="error" title={err} />}
+      </VStack>
+    </AppDialog>
   );
 }
+
+/**
+ * The page's frame: the bar is the workbench's app bar (src/App.tsx), and the
+ * column under it is as wide as a line of text reads well.
+ */
+const COMPACT = "@media (max-width: 900px)";
+
+const styles = stylex.create({
+  page: { display: "flex", flexDirection: "column", minHeight: "100dvh" },
+  bar: {
+    display: "flex",
+    alignItems: "center",
+    flexShrink: 0,
+    gap: { default: spacingVars["--spacing-3"], [COMPACT]: spacingVars["--spacing-2"] },
+    minWidth: 0,
+    paddingBlock: spacingVars["--spacing-2"],
+    paddingInline: { default: spacingVars["--spacing-4"], [COMPACT]: spacingVars["--spacing-2"] },
+    backgroundColor: colorVars["--color-background-surface"],
+    borderBottomWidth: "1px",
+    borderBottomStyle: "solid",
+    borderBottomColor: colorVars["--color-border"],
+  },
+  grow: { flexGrow: 1 },
+  rule: { alignSelf: "stretch", marginBlock: spacingVars["--spacing-1"] },
+  main: {
+    boxSizing: "border-box",
+    width: "100%",
+    maxWidth: "760px",
+    marginInline: "auto",
+    paddingInline: spacingVars["--spacing-4"],
+    paddingBlockStart: spacingVars["--spacing-8"],
+    paddingBlockEnd: spacingVars["--spacing-10"],
+  },
+  title: { display: "flex", alignItems: "baseline", gap: spacingVars["--spacing-2"], minWidth: 0 },
+  filter: { alignSelf: "flex-start" },
+  // The rows stand on one surface, as a panel of the workbench does.
+  list: {
+    overflow: "hidden",
+    backgroundColor: colorVars["--color-background-surface"],
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: colorVars["--color-border"],
+    borderRadius: radiusVars["--radius-container"],
+  },
+  mono: { fontFamily: typographyVars["--font-family-code"] },
+});

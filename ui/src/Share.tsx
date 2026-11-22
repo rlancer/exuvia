@@ -1,6 +1,24 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import * as stylex from "@stylexjs/stylex";
+import { AlertDialog } from "@astryxdesign/core/AlertDialog";
+import { Avatar } from "@astryxdesign/core/Avatar";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
+import { Center } from "@astryxdesign/core/Center";
+import { Heading } from "@astryxdesign/core/Heading";
+import { HStack } from "@astryxdesign/core/HStack";
+import { List, ListItem } from "@astryxdesign/core/List";
+import { MoreMenu } from "@astryxdesign/core/MoreMenu";
+import { Selector } from "@astryxdesign/core/Selector";
+import { Spinner } from "@astryxdesign/core/Spinner";
+import { Text } from "@astryxdesign/core/Text";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { Typeahead, TypeaheadItem } from "@astryxdesign/core/Typeahead";
+import type { SearchableItem, SearchSource } from "@astryxdesign/core/Typeahead";
+import { VStack } from "@astryxdesign/core/VStack";
 import { sharingApi, type GeneralAccess, type Member, type Person, type Role, type Sharing } from "./api";
-import { Dialog } from "./Dialog";
+import { AppDialog } from "./ui/AppDialog";
 import { ago } from "./util";
 
 export const GENERAL_LABEL: Record<GeneralAccess, string> = {
@@ -9,7 +27,17 @@ export const GENERAL_LABEL: Record<GeneralAccess, string> = {
   edit: "Everyone signed in can edit",
 };
 
+const GENERAL_HINT: Record<GeneralAccess, string> = {
+  private: "Nobody else on the hub can open it",
+  view: "They read its code, data and views",
+  edit: "They also change code and run nodes",
+};
+
 const ROLE_LABEL: Record<Role, string> = { viewer: "Viewer", editor: "Editor", owner: "Owner" };
+const ROLES = [
+  { value: "viewer", label: "Viewer", description: "Reads the code, data and views" },
+  { value: "editor", label: "Editor", description: "Also changes code and runs nodes" },
+];
 
 const EXPIRY: { label: string; days: number | null }[] = [
   { label: "Never expires", days: null },
@@ -19,7 +47,12 @@ const EXPIRY: { label: string; days: number | null }[] = [
 ];
 
 const looksLikeEmail = (s: string) => /^[^\s@]+@[^\s@]+$/.test(s.trim());
-const who = (p: Person | null | undefined) => (p ? (p.email && p.email !== p.name ? `${p.name} · ${p.email}` : p.name) : "nobody");
+
+const styles = stylex.create({
+  grow: { flexGrow: 1, flexShrink: 1, flexBasis: "200px", minWidth: 0 },
+  role: { flexShrink: 0 },
+  expired: { opacity: 0.55 },
+});
 
 /**
  * Share a hub project, as its owner (or an admin) does: add people as viewers
@@ -27,6 +60,9 @@ const who = (p: Person | null | undefined) => (p ? (p.email && p.email !== p.nam
  * what everyone else signed in gets, make read-only links, answer access
  * requests and hand the project to a new owner. Everyone else who can open
  * the project sees who has access and can take themselves off it.
+ *
+ * From the top: the one thing most people came to do (add someone), then who
+ * is asking, who has access, what everyone else gets, and links last.
  */
 export function ShareDialog(props: { project: string; name?: string; self: string | null; onClose: () => void; onChanged?: () => void }) {
   const { project, onChanged } = props;
@@ -73,177 +109,212 @@ export function ShareDialog(props: { project: string; name?: string; self: strin
   };
 
   return (
-    <Dialog title={`Share ${props.name || project}`} className="share-dialog" onClose={props.onClose}>
-      {err && <div className="err-banner" role="alert"><div>{err}</div></div>}
-      {!s ? (
-        <div className="placeholder">{err ? "" : "Loading…"}</div>
-      ) : (
-        <>
-          {manage && s.people_enabled && (
-            <AddPeople
-              busy={busy}
-              have={new Set([s.owner?.id, ...s.people.map((m) => m.user.id)].filter((x): x is string => !!x))}
-              onShare={(w) => act(() => sharingApi.share(project, w))}
-            />
-          )}
-
-          {manage && !!s.requests?.length && (
-            <section className="share-section">
-              <h4>Asking for access</h4>
-              <ul className="share-list">
-                {s.requests.map((r) => (
-                  <RequestRow
-                    key={r.user_id}
-                    name={who(r.user)}
-                    asked={r.role}
-                    message={r.message}
-                    at={r.created_at}
-                    busy={busy}
-                    onApprove={(role) => act(() => sharingApi.approve(project, r.user_id, role))}
-                    onDismiss={() => act(() => sharingApi.dismiss(project, r.user_id))}
-                  />
-                ))}
-              </ul>
-            </section>
-          )}
-
-          {s.people_enabled && (
-            <section className="share-section">
-              <h4>People with access</h4>
-              <ul className="share-list">
-                <li>
-                  <span className="share-who">
-                    {s.owner ? who(s.owner) : <span className="hub-muted">No owner: hub admins manage it</span>}
-                    {s.owner && s.owner.id === props.self ? " (you)" : ""}
-                  </span>
-                  <span className="share-role">Owner</span>
-                </li>
-                {s.people.map((m) => {
-                  const mine = m.kind === "user" && m.user.id === props.self;
-                  return (
-                    <li key={m.principal}>
-                      <span className="share-who">
-                        {who(m.user)}
-                        {mine ? " (you)" : ""}
-                        {m.pending && <span className="badge" title="Nobody has signed in with this email yet: it takes effect when they do">invited</span>}
-                      </span>
-                      {manage ? (
-                        <>
-                          <select
-                            aria-label={`Role of ${m.user.name}`}
-                            value={m.role}
-                            disabled={busy}
-                            onChange={(e) =>
-                              act(() =>
-                                sharingApi.share(project, {
-                                  ...(m.kind === "user" ? { user: m.user.id! } : { email: m.user.email! }),
-                                  role: e.target.value as Role,
-                                }),
-                              )
-                            }
-                          >
-                            <option value="viewer">Viewer</option>
-                            <option value="editor">Editor</option>
-                          </select>
-                          {m.kind === "user" && (
-                            <button className="btn sm ghost" disabled={busy} onClick={() => setHandOver(m)} title="Make them the owner; you stay on as an editor">
-                              Make owner
-                            </button>
-                          )}
-                          <button className="btn sm ghost danger" disabled={busy} onClick={() => act(() => sharingApi.unshare(project, m.principal))} aria-label={`Remove ${m.user.name}`}>
-                            Remove
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <span className="share-role">{ROLE_LABEL[m.role]}</span>
-                          {mine && <button className="btn sm ghost" onClick={() => leave(m)}>Leave</button>}
-                        </>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          )}
-
-          {s.people_enabled && (
-            <section className="share-section">
-              <h4>General access</h4>
-              {manage ? (
-                <select
-                  aria-label="General access"
-                  value={s.general}
-                  disabled={busy}
-                  onChange={(e) => act(() => sharingApi.patch(project, { general: e.target.value as GeneralAccess }))}
-                >
-                  {(Object.keys(GENERAL_LABEL) as GeneralAccess[]).map((g) => (
-                    <option key={g} value={g}>{GENERAL_LABEL[g]}</option>
-                  ))}
-                </select>
-              ) : (
-                <p>{GENERAL_LABEL[s.general]}</p>
+    <>
+      <AppDialog
+        title="Share"
+        subtitle={props.name || project}
+        width={560}
+        onClose={props.onClose}
+        footer={<Button label="Done" onClick={props.onClose} />}
+        footerNote={
+          s && !manage ? (
+            <Text type="supporting" color="secondary">
+              You're {s.you === "editor" ? "an editor" : "a viewer"} here. Only the owner{s.owner ? ` (${s.owner.name})` : ""} or a hub admin changes
+              who has access.
+            </Text>
+          ) : undefined
+        }
+      >
+        <VStack gap={5}>
+          {err && <Banner status="error" title={err} />}
+          {!s ? (
+            !err && (
+              <Center>
+                <Spinner aria-label="Loading who has access" />
+              </Center>
+            )
+          ) : (
+            <>
+              {manage && s.people_enabled && (
+                <AddPeople
+                  busy={busy}
+                  have={new Set([s.owner?.id, ...s.people.map((m) => m.user.id)].filter((x): x is string => !!x))}
+                  onShare={(w) => act(() => sharingApi.share(project, w))}
+                />
               )}
-              {s.default && <p className="hint">The hub's default, since the project has no setting of its own yet.</p>}
-            </section>
-          )}
 
-          {manage && (
-            <Links
-              links={s.links ?? []}
-              busy={busy}
-              made={made}
-              onCreate={async (name, days) => {
-                setErr(null);
-                setBusy(true);
-                try {
-                  const l = await sharingApi.createLink(project, { name, expires_in_days: days });
-                  setMade({ url: location.origin + l.url, name: l.name });
-                  await load();
-                  onChanged?.();
-                } catch (e) {
-                  setErr((e as Error).message);
-                } finally {
-                  setBusy(false);
-                }
-              }}
-              onRevoke={(id) => act(() => sharingApi.revokeLink(project, id))}
-            />
-          )}
+              {manage && !!s.requests?.length && (
+                <VStack gap={2}>
+                  <Heading level={3}>Asking for access</Heading>
+                  <List hasDividers edge="flush">
+                    {s.requests.map((r) => (
+                      <RequestRow
+                        key={r.user_id}
+                        person={r.user}
+                        asked={r.role}
+                        message={r.message}
+                        at={r.created_at}
+                        busy={busy}
+                        onApprove={(role) => act(() => sharingApi.approve(project, r.user_id, role))}
+                        onDismiss={() => act(() => sharingApi.dismiss(project, r.user_id))}
+                      />
+                    ))}
+                  </List>
+                </VStack>
+              )}
 
-          {!manage && (
-            <p className="hint">
-              You're {s.you === "editor" ? "an editor" : "a viewer"} here. Only the owner{s.owner ? ` (${s.owner.name})` : ""} or a hub admin changes who has access.
-            </p>
-          )}
-        </>
-      )}
-      <div className="actions">
-        <button className="btn" onClick={props.onClose}>Done</button>
-      </div>
+              {s.people_enabled && (
+                <VStack gap={2}>
+                  <Heading level={3}>People with access</Heading>
+                  <List hasDividers edge="flush">
+                    <ListItem
+                      startContent={<Avatar size="sm" name={s.owner?.name} tooltip={false} />}
+                      label={s.owner ? `${s.owner.name}${s.owner.id === props.self ? " (you)" : ""}` : "No owner"}
+                      description={s.owner ? (s.owner.email !== s.owner.name ? (s.owner.email ?? undefined) : undefined) : "Hub admins manage this project"}
+                      endContent={<Text color="secondary">Owner</Text>}
+                    />
+                    {s.people.map((m) => {
+                      const mine = m.kind === "user" && m.user.id === props.self;
+                      return (
+                        <ListItem
+                          key={m.principal}
+                          startContent={<Avatar size="sm" name={m.user.name} tooltip={false} />}
+                          label={
+                            <HStack gap={2} vAlign="center">
+                              <Text maxLines={1}>
+                                {m.user.name}
+                                {mine ? " (you)" : ""}
+                              </Text>
+                              {m.pending && <Badge label="Invited" />}
+                            </HStack>
+                          }
+                          description={
+                            m.pending
+                              ? "Takes effect when they first sign in with this email"
+                              : m.user.email && m.user.email !== m.user.name
+                                ? m.user.email
+                                : undefined
+                          }
+                          endContent={
+                            manage ? (
+                              <HStack gap={1} vAlign="center">
+                                <Selector
+                                  label={`Role of ${m.user.name}`}
+                                  isLabelHidden
+                                  size="sm"
+                                  variant="ghost"
+                                  options={ROLES}
+                                  value={m.role}
+                                  isDisabled={busy}
+                                  onChange={(role) =>
+                                    role &&
+                                    act(() =>
+                                      sharingApi.share(project, {
+                                        ...(m.kind === "user" ? { user: m.user.id! } : { email: m.user.email! }),
+                                        role: role as Role,
+                                      }),
+                                    )
+                                  }
+                                />
+                                <MoreMenu
+                                  size="sm"
+                                  label={`More for ${m.user.name}`}
+                                  isDisabled={busy}
+                                  alignment="end"
+                                  items={[
+                                    ...(m.kind === "user"
+                                      ? [{ label: "Make owner", description: "You stay on as an editor", onClick: () => setHandOver(m) }]
+                                      : []),
+                                    { label: "Remove", variant: "destructive" as const, onClick: () => void act(() => sharingApi.unshare(project, m.principal)) },
+                                  ]}
+                                />
+                              </HStack>
+                            ) : (
+                              <HStack gap={2} vAlign="center">
+                                <Text color="secondary">{ROLE_LABEL[m.role]}</Text>
+                                {mine && <Button size="sm" label="Leave" onClick={() => leave(m)} />}
+                              </HStack>
+                            )
+                          }
+                        />
+                      );
+                    })}
+                  </List>
+                </VStack>
+              )}
 
-      {handOver && (
-        <Dialog title={`Make ${handOver.user.name} the owner?`} onClose={() => setHandOver(null)}>
-          <p>They'll manage who has access and can delete the project. The current owner stays on as an editor.</p>
-          <div className="actions">
-            <button className="btn ghost" onClick={() => setHandOver(null)}>Cancel</button>
-            <button
-              className="btn primary"
-              disabled={busy}
-              onClick={async () => {
-                const m = handOver;
-                setHandOver(null);
-                await act(() => sharingApi.patch(project, { owner: m.user.id! }));
-              }}
-            >
-              Make owner
-            </button>
-          </div>
-        </Dialog>
-      )}
-    </Dialog>
+              {s.people_enabled && (
+                <VStack gap={2}>
+                  <Heading level={3}>General access</Heading>
+                  {manage ? (
+                    <Selector
+                      label="General access"
+                      isLabelHidden
+                      width="100%"
+                      options={(Object.keys(GENERAL_LABEL) as GeneralAccess[]).map((g) => ({ value: g, label: GENERAL_LABEL[g], description: GENERAL_HINT[g] }))}
+                      value={s.general}
+                      isDisabled={busy}
+                      onChange={(g) => g && act(() => sharingApi.patch(project, { general: g as GeneralAccess }))}
+                    />
+                  ) : (
+                    <Text>{GENERAL_LABEL[s.general]}</Text>
+                  )}
+                  {s.default && (
+                    <Text type="supporting" color="secondary">
+                      The hub's default, since the project has no setting of its own yet.
+                    </Text>
+                  )}
+                </VStack>
+              )}
+
+              {manage && (
+                <Links
+                  links={s.links ?? []}
+                  busy={busy}
+                  made={made}
+                  onCreate={async (name, days) => {
+                    setErr(null);
+                    setBusy(true);
+                    try {
+                      const l = await sharingApi.createLink(project, { name, expires_in_days: days });
+                      setMade({ url: location.origin + l.url, name: l.name });
+                      await load();
+                      onChanged?.();
+                    } catch (e) {
+                      setErr((e as Error).message);
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                  onRevoke={(id) => act(() => sharingApi.revokeLink(project, id))}
+                />
+              )}
+            </>
+          )}
+        </VStack>
+      </AppDialog>
+
+      <AlertDialog
+        isOpen={!!handOver}
+        onOpenChange={(open) => {
+          if (!open) setHandOver(null);
+        }}
+        title={`Make ${handOver?.user.name ?? "them"} the owner?`}
+        description="They'll manage who has access and can delete the project. The current owner stays on as an editor."
+        actionLabel="Make owner"
+        actionVariant="primary"
+        onAction={async () => {
+          const m = handOver;
+          setHandOver(null);
+          if (m) await act(() => sharingApi.patch(project, { owner: m.user.id! }));
+        }}
+      />
+    </>
   );
 }
+
+/** Someone to share with: a person from the user list, or an email nobody has signed in with yet. */
+type Pick = SearchableItem<{ person?: Person; email?: string }>;
 
 /** A name or email box that suggests people from the user list, a role, and Share. */
 function AddPeople(props: {
@@ -252,76 +323,63 @@ function AddPeople(props: {
   have: Set<string>;
   onShare: (w: { user?: string; email?: string; role: Role }) => Promise<boolean>;
 }) {
-  const [q, setQ] = useState("");
   const [role, setRole] = useState<Role>("viewer");
-  const [found, setFound] = useState<Person[]>([]);
-  const [picked, setPicked] = useState<Person | null>(null);
-  const timer = useRef<number | null>(null);
+  const [picked, setPicked] = useState<Pick | null>(null);
+  const { have } = props;
 
-  useEffect(() => {
-    if (timer.current) window.clearTimeout(timer.current);
-    if (!q.trim() || picked) {
-      setFound([]);
-      return;
-    }
-    timer.current = window.setTimeout(() => {
-      sharingApi.people(q).then((ps) => setFound(ps.filter((p) => !p.id || !props.have.has(p.id)))).catch(() => setFound([]));
-    }, 150);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, picked]);
+  const source = useMemo<SearchSource<Pick>>(
+    () => ({
+      bootstrap: () => [],
+      async search(q) {
+        const people = await sharingApi.people(q).catch(() => [] as Person[]);
+        const items: Pick[] = people
+          .filter((p) => p.id && !have.has(p.id))
+          .map((p) => ({ id: p.id!, label: p.name, auxiliaryData: { person: p } }));
+        const email = q.trim();
+        if (looksLikeEmail(email) && !people.some((p) => p.email === email)) {
+          items.push({ id: `email:${email}`, label: email, auxiliaryData: { email } });
+        }
+        return items;
+      },
+    }),
+    [have],
+  );
 
-  const target = picked ? { user: picked.id! } : looksLikeEmail(q) ? { email: q.trim() } : null;
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!target) return;
-    if (await props.onShare({ ...target, role })) {
-      setQ("");
-      setPicked(null);
-    }
+  const target = picked?.auxiliaryData?.person ? { user: picked.auxiliaryData.person.id! } : picked?.auxiliaryData?.email ? { email: picked.auxiliaryData.email } : null;
+  const share = async () => {
+    if (target && (await props.onShare({ ...target, role }))) setPicked(null);
   };
 
   return (
-    <form className="share-add" onSubmit={submit}>
-      <div className="share-add-row">
-        <div className="share-search">
-          <input
-            aria-label="Add people by name or email"
-            placeholder="Add people by name or email"
-            value={picked ? who(picked) : q}
-            onChange={(e) => {
-              setPicked(null);
-              setQ(e.target.value);
-            }}
-            autoComplete="off"
+    <VStack gap={2}>
+      <Heading level={3}>Add people</Heading>
+      <HStack gap={2} vAlign="end" wrap="wrap">
+      <Typeahead<Pick>
+        label="Add people by name or email"
+        isLabelHidden
+        placeholder="Name or email"
+        searchSource={source}
+        value={picked}
+        onChange={setPicked}
+        containerXstyle={styles.grow}
+        emptySearchText="Nobody matches. Type a full email to invite someone who hasn't signed in yet."
+        renderItem={(item) => (
+          <TypeaheadItem
+            item={item}
+            icon={<Avatar size="xsm" name={item.label} tooltip={false} />}
+            description={item.auxiliaryData?.email ? "Invite: takes effect when they first sign in" : (item.auxiliaryData?.person?.email ?? undefined)}
           />
-          {found.length > 0 && (
-            <ul className="share-suggest" role="listbox">
-              {found.map((p) => (
-                <li key={p.id} role="option" aria-selected={false}>
-                  <button type="button" onClick={() => setPicked(p)}>
-                    <span>{p.name}</span>
-                    {p.email && <span className="hub-muted">{p.email}</span>}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-        <select aria-label="Role" value={role} onChange={(e) => setRole(e.target.value as Role)}>
-          <option value="viewer">Viewer</option>
-          <option value="editor">Editor</option>
-        </select>
-        <button type="submit" className="btn primary" disabled={!target || props.busy}>Share</button>
-      </div>
-      {q.trim() && !picked && !found.length && !looksLikeEmail(q) && (
-        <p className="hint">Nobody matches. Type a full email to invite someone who hasn't signed in yet.</p>
-      )}
-    </form>
+        )}
+      />
+      <Selector label="Role" isLabelHidden options={ROLES} value={role} onChange={(r) => r && setRole(r as Role)} containerXstyle={styles.role} />
+      <Button variant="primary" label="Share" isDisabled={!target || props.busy} onClick={share} />
+      </HStack>
+    </VStack>
   );
 }
 
 function RequestRow(props: {
-  name: string;
+  person: Person;
   asked: Role;
   message: string;
   at: number;
@@ -330,20 +388,26 @@ function RequestRow(props: {
   onDismiss: () => void;
 }) {
   const [role, setRole] = useState<Role>(props.asked);
+  const name = props.person.name;
   return (
-    <li className="share-request">
-      <span className="share-who">
-        {props.name}
-        <span className="hub-muted"> asked for {props.asked === "editor" ? "edit" : "view"} access {ago(props.at)}</span>
-        {props.message && <span className="share-message">“{props.message}”</span>}
-      </span>
-      <select aria-label={`Role to give ${props.name}`} value={role} onChange={(e) => setRole(e.target.value as Role)}>
-        <option value="viewer">Viewer</option>
-        <option value="editor">Editor</option>
-      </select>
-      <button className="btn sm primary" disabled={props.busy} onClick={() => props.onApprove(role)}>Approve</button>
-      <button className="btn sm ghost" disabled={props.busy} onClick={props.onDismiss}>Dismiss</button>
-    </li>
+    <ListItem
+      align="start"
+      startContent={<Avatar size="sm" name={name} tooltip={false} />}
+      label={name}
+      description={
+        <Text type="supporting" color="secondary">
+          Asked for {props.asked === "editor" ? "edit" : "view"} access {ago(props.at)}
+          {props.message ? `: “${props.message}”` : ""}
+        </Text>
+      }
+      endContent={
+        <HStack gap={1} vAlign="center">
+          <Selector label={`Role to give ${name}`} isLabelHidden size="sm" variant="ghost" options={ROLES} value={role} onChange={(r) => r && setRole(r as Role)} />
+          <Button size="sm" variant="primary" label="Approve" isDisabled={props.busy} onClick={() => props.onApprove(role)} />
+          <Button size="sm" variant="ghost" label="Dismiss" isDisabled={props.busy} onClick={props.onDismiss} />
+        </HStack>
+      }
+    />
   );
 }
 
@@ -355,7 +419,7 @@ function Links(props: {
   onRevoke: (id: string) => void;
 }) {
   const [name, setName] = useState("");
-  const [expiry, setExpiry] = useState(0);
+  const [expiry, setExpiry] = useState("0");
   const [copied, setCopied] = useState(false);
   const copy = async (text: string) => {
     try {
@@ -366,51 +430,66 @@ function Links(props: {
       /* the field is selectable: copy by hand */
     }
   };
+  const create = () => {
+    props.onCreate(name.trim(), EXPIRY[Number(expiry)].days);
+    setName("");
+  };
   return (
-    <section className="share-section">
-      <h4>Share links</h4>
-      <p className="hint">Anyone with a link can open this project read-only, without signing in. Revoke a link to close it.</p>
+    <VStack gap={2}>
+      <VStack gap={0.5}>
+        <Heading level={3}>Share links</Heading>
+        <Text type="supporting" color="secondary">
+          Anyone with a link can open this project read-only, without signing in. Revoke a link to close it.
+        </Text>
+      </VStack>
       {props.made && (
-        <div className="share-made" role="status">
-          <input readOnly className="mono" value={props.made.url} aria-label="The new link" onFocus={(e) => e.currentTarget.select()} />
-          <button className="btn sm" onClick={() => copy(props.made!.url)}>{copied ? "Copied" : "Copy"}</button>
-          <span className="hint">Shown once: copy it now.</span>
-        </div>
+        <Banner status="success" title="Link created. It is shown once: copy it now." collapsible={false}>
+          <HStack gap={2} vAlign="end">
+            <TextInput label="The new link" isLabelHidden isReadOnly value={props.made.url} containerXstyle={styles.grow} />
+            <Button label={copied ? "Copied" : "Copy"} onClick={() => copy(props.made!.url)} />
+          </HStack>
+        </Banner>
       )}
       {props.links.length > 0 && (
-        <ul className="share-list">
+        <List hasDividers edge="flush">
           {props.links.map((l) => (
-            <li key={l.id} className={l.expired ? "disabled" : ""}>
-              <span className="share-who">
-                {l.name} <span className="mono hub-muted">…{l.hint}</span>
-                <span className="hub-muted">
-                  {" · "}
-                  {l.expired ? "expired" : l.expires_at ? `expires ${new Date(l.expires_at * 1000).toLocaleDateString()}` : "no expiry"}
-                  {" · "}
-                  {l.last_used ? `opened ${ago(l.last_used)}` : "never opened"}
-                </span>
-              </span>
-              <button className="btn sm ghost danger" disabled={props.busy} onClick={() => props.onRevoke(l.id)}>Revoke</button>
-            </li>
+            <ListItem
+              key={l.id}
+              label={
+                <HStack gap={2} vAlign="center" xstyle={l.expired ? styles.expired : undefined}>
+                  <Text maxLines={1}>{l.name}</Text>
+                  <Text type="code" color="secondary">
+                    …{l.hint}
+                  </Text>
+                  {l.expired && <Badge variant="warning" label="Expired" />}
+                </HStack>
+              }
+              description={`${l.expired ? "Expired" : l.expires_at ? `Expires ${new Date(l.expires_at * 1000).toLocaleDateString()}` : "No expiry"} · ${l.last_used ? `opened ${ago(l.last_used)}` : "never opened"}`}
+              endContent={<Button size="sm" variant="ghost" label="Revoke" isDisabled={props.busy} onClick={() => props.onRevoke(l.id)} />}
+            />
           ))}
-        </ul>
+        </List>
       )}
-      <form
-        className="share-add-row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          props.onCreate(name.trim(), EXPIRY[expiry].days);
-          setName("");
-        }}
-      >
-        <input aria-label="Link name" placeholder="What it's for (e.g. the board)" value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
-        <select aria-label="Link expiry" value={expiry} onChange={(e) => setExpiry(Number(e.target.value))}>
-          {EXPIRY.map((x, i) => (
-            <option key={x.label} value={i}>{x.label}</option>
-          ))}
-        </select>
-        <button type="submit" className="btn" disabled={props.busy}>Create link</button>
-      </form>
-    </section>
+      <HStack gap={2} vAlign="end" wrap="wrap">
+        <TextInput
+          label="Link name"
+          isLabelHidden
+          placeholder="What it's for (e.g. the board)"
+          value={name}
+          onChange={(v) => setName(v.slice(0, 80))}
+          onEnter={create}
+          containerXstyle={styles.grow}
+        />
+        <Selector
+          label="Link expiry"
+          isLabelHidden
+          options={EXPIRY.map((x, i) => ({ value: String(i), label: x.label }))}
+          value={expiry}
+          onChange={(v) => v && setExpiry(v)}
+          containerXstyle={styles.role}
+        />
+        <Button label="Create link" isDisabled={props.busy} onClick={create} />
+      </HStack>
+    </VStack>
   );
 }

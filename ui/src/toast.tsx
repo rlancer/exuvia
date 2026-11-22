@@ -1,49 +1,31 @@
-import { useEffect, useState } from "react";
-import { IconClose } from "./icons";
+import { useEffect } from "react";
+import { useToast } from "@astryxdesign/core/Toast";
 
-type Toast = { id: number; text: string };
-
-let toasts: Toast[] = [];
-let seq = 0;
-const listeners = new Set<() => void>();
-const emit = () => listeners.forEach((l) => l());
-
-function dismiss(id: number) {
-  toasts = toasts.filter((t) => t.id !== id);
-  emit();
-}
+// Errors are raised from anywhere (a promise's catch, outside React); the
+// page's one <Toasts /> shows them with Astryx's toast.
+let show: ((text: string) => void) | null = null;
+const waiting: string[] = [];
 
 /** Say that something the user asked for did not happen. */
 export function notifyError(what: string, e?: unknown) {
   const why = e instanceof Error ? e.message : e ? String(e) : "";
-  const t = { id: ++seq, text: why ? `${what}: ${why}` : what };
-  toasts = [...toasts.slice(-3), t];
-  emit();
-  setTimeout(() => dismiss(t.id), 8000);
+  const text = why ? `${what}: ${why}` : what;
+  if (show) show(text);
+  else waiting.push(text);
 }
 
 /** For a button's promise: `api.runStale().catch(failed("Couldn't start the run"))`. */
 export const failed = (what: string) => (e: unknown) => notifyError(what, e);
 
-/** The stack of messages, bottom centre. Mounted once per page. */
+/** Shows what `notifyError` raises. Mounted once per page. */
 export function Toasts() {
-  const [, tick] = useState(0);
+  const showToast = useToast();
   useEffect(() => {
-    const on = () => tick((n) => n + 1);
-    listeners.add(on);
-    return () => void listeners.delete(on);
-  }, []);
-  if (!toasts.length) return null;
-  return (
-    <div className="toasts" role="status" aria-live="polite">
-      {toasts.map((t) => (
-        <div key={t.id} className="toast">
-          <span>{t.text}</span>
-          <button className="btn ghost icon-btn sm" onClick={() => dismiss(t.id)} aria-label="Dismiss">
-            <IconClose size={12} />
-          </button>
-        </div>
-      ))}
-    </div>
-  );
+    show = (text) => void showToast({ body: text, type: "error", isAutoHide: true, autoHideDuration: 8000 });
+    waiting.splice(0).forEach(show);
+    return () => {
+      show = null;
+    };
+  }, [showToast]);
+  return null;
 }
