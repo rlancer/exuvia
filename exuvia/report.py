@@ -49,12 +49,22 @@ async def node_report(
     out: dict[str, Any] = {"runs": summary, "run_id": run.get("id"), "rows": run.get("rows"), "schema": run.get("schema")}
     if run.get("params"):
         out["run_params"] = run["params"]
+    if preview.get("kind") == "multi":
+        # Several outputs: each one's first rows (or value), by name.
+        out["parts"] = {}
+        for part in preview.get("parts") or []:
+            one = await asyncio.to_thread(ws.preview, target, limit=head, params=params, part=part["name"])
+            out["parts"][part["name"]] = _shown(one)
+    else:
+        out.update(_shown(preview))
+    return True, out
+
+
+def _shown(preview: dict[str, Any]) -> dict[str, Any]:
     if preview.get("kind") == "table":
         cols = [c["name"] for c in preview["columns"]]
-        out["head"] = [dict(zip(cols, r)) for r in preview["rows"]]
-    else:
-        out["value"] = preview.get("value")
-    return True, out
+        return {"head": [dict(zip(cols, r)) for r in preview["rows"]]}
+    return {"value": preview.get("value")}
 
 
 def graph_report(ws: Workspace, finals: dict[str, Any]) -> tuple[bool, dict[str, Any]]:

@@ -46,8 +46,8 @@ STATIC = Path(__file__).parent / "static"
 BACKFILL_MAX = 400
 RUN_WAIT_MAX = 300.0
 # Stored output files by extension (see runner.save_artifact), and how each is served.
-ARTIFACT_KINDS = {"parquet": "table", "json": "json"}
-ARTIFACT_MEDIA_TYPES = {"table": "application/vnd.apache.parquet", "json": "application/json"}
+ARTIFACT_KINDS = {"parquet": "table", "json": "json", "zip": "multi"}
+ARTIFACT_MEDIA_TYPES = {"table": "application/vnd.apache.parquet", "json": "application/json", "multi": "application/zip"}
 
 
 async def _await_run(task: "asyncio.Task[dict[str, Any]]", wait: float) -> dict[str, Any] | None:
@@ -518,6 +518,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         limit: int | None = None,
         offset: int = 0,
         params: str | None = None,
+        part: str | None = None,
         ctx: Ctx = Depends(get_ctx),
     ) -> Any:
         """``GET /nodes/{node}/data`` for a view: 403 unless the view reads ``node``."""
@@ -527,7 +528,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
             raise HTTPException(404, f"no view {name}") from e
         except PermissionError as e:
             raise HTTPException(403, str(e)) from e
-        return data(request, node, limit=limit, offset=offset, params=params, run_id=None, ctx=ctx)
+        return data(request, node, limit=limit, offset=offset, params=params, run_id=None, part=part, ctx=ctx)
 
     @r.post("/views/{name}/query", response_model=None)
     def view_query(name: str, body: QueryReq, request: Request, ctx: Ctx = Depends(get_ctx)) -> Any:
@@ -638,25 +639,33 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         offset: int = 0,
         params: str | None = None,
         run_id: str | None = None,
+        part: str | None = None,
         ctx: Ctx = Depends(get_ctx),
     ) -> Any:
         """A node's output. JSON: the first ``limit`` rows (200 unless given,
         5000 at most). With ``Accept: application/vnd.apache.arrow.stream`` a
         table output is an Arrow stream of every row, or of ``limit`` rows
-        when given; an output that is not a table is still answered as JSON."""
+        when given; an output that is not a table is still answered as JSON.
+        A node with several outputs answers ``kind: multi`` and its
+        ``parts``; ``part`` picks one, which is then answered like an output
+        of its own."""
         _need(ctx.ws, name)
         resolved = _resolve(ctx.ws, _query_params(params))
         if wants_arrow(request.headers.get("accept")):
-            stream = ctx.ws.preview_arrow(name, limit=limit, offset=offset, params=resolved, run_id=run_id)
+            stream = ctx.ws.preview_arrow(name, limit=limit, offset=offset, params=resolved, run_id=run_id, part=part)
             if stream is not None:
                 return _arrow(stream)
         rows = 200 if limit is None else min(limit, 5000)
-        return ctx.ws.preview(name, limit=rows, offset=offset, params=resolved, run_id=run_id)
+        try:
+            return ctx.ws.preview(name, limit=rows, offset=offset, params=resolved, run_id=run_id, part=part)
+        except KeyError as e:
+            raise HTTPException(404, str(e.args[0])) from e
 
     @r.api_route("/artifacts/{node}/{filename}", methods=["GET", "HEAD"], response_model=None)
     def artifact(node: str, filename: str, ctx: Ctx = Depends(get_ctx)) -> FileResponse:
-        """The stored file of one output, ``<artifact_id>.parquet`` or
-        ``<artifact_id>.json``, byte for byte. An artifact id names its
+        """The stored file of one output, ``<artifact_id>.parquet``,
+        ``<artifact_id>.json`` or ``<artifact_id>.zip`` (several outputs),
+        byte for byte. An artifact id names its
         content, so the answer never changes and can be cached for good;
         ``Range`` requests are honoured, which lets a client read part of a
         Parquet file."""
@@ -669,6 +678,22 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
             found[0],
             media_type=ARTIFACT_MEDIA_TYPES[kind],
             headers={"Cache-Control": "private, max-age=31536000, immutable", "ETag": f'"{artifact_id}"'},
+        )
+
+    @r.api_route("/artifacts/{node}/{artifact_id}/{filename}", methods=["GET", "HEAD"], response_model=None)
+    def artifact_part(node: str, artifact_id: str, filename: str, ctx: Ctx = Depends(get_ctx)) -> FileResponse:
+        """One part of an output with several (``<artifact_id>.zip``), as a
+        file of its own: ``<part>.parquet`` or ``<part>.json``. Cached like
+        the whole artifact, since the id names the content of every part."""
+        part, _, ext = filename.rpartition(".")
+        kind = ARTIFACT_KINDS.get(ext)
+        found = ctx.ws.artifact_file(node, artifact_id, part=part) if kind in ("table", "json") and part else None
+        if found is None or found[1] != kind:
+            raise HTTPException(404, f"no output {artifact_id}/{filename} of {node}")
+        return FileResponse(
+            found[0],
+            media_type=ARTIFACT_MEDIA_TYPES[kind],
+            headers={"Cache-Control": "private, max-age=31536000, immutable", "ETag": f'"{artifact_id}/{part}"'},
         )
 
     @r.get("/nodes/{name}/runs")
