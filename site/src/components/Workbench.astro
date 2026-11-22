@@ -3,6 +3,8 @@ import { Image } from "astro:assets";
 import workbench from "../assets/shots/workbench.png";
 import views from "../assets/shots/views.png";
 import agent from "../assets/shots/agent.png";
+import history from "../assets/shots/history.png";
+import share from "../assets/shots/share.png";
 
 // Real screenshots of `exuvia serve` on the example project (tools/capture.mjs),
 // shown in the app's own colours.
@@ -11,15 +13,15 @@ const tabs = [
     id: "graph",
     label: "Graph and outputs",
     image: workbench,
-    alt: "The exuvia workbench. On the left a graph of five nodes, all fresh. On the right the selected node, rolling_vol, with its chart of 20-day volatility for eight tickers.",
+    alt: "The exuvia workbench. On the left a graph of five nodes, all fresh. In the middle the selected node, rolling_vol, with its chart of 20-day volatility for eight tickers. On the right the agent panel, with its Files and History tabs.",
     caption:
-      "The canvas is the project. Select a node to see its code, its data, its chart and every run it has had.",
+      "The canvas is the project. Select a node to see its code, its data, its chart, every run it has had and every version of its code.",
   },
   {
     id: "agent",
     label: "The agent at work",
     image: agent,
-    alt: "The workbench after an agent turn. The agent panel lists its steps: looked at the graph, read prices, wrote drawdown, ran drawdown. A new drawdown node sits on the canvas under prices.",
+    alt: "The workbench after an agent turn. The agent panel lists its steps: looked at the graph, read prices, wrote drawdown, ran drawdown. The new drawdown node is selected under prices, with its chart of each ticker's drawdown.",
     caption:
       "Asked for a drawdown node, the agent read the graph and the upstream code, wrote a new file, ran it, and reported what it made. The new node is on the canvas.",
   },
@@ -31,7 +33,24 @@ const tabs = [
     caption:
       "A view is your own React UI over node outputs. It runs in a sandboxed frame and can read only the nodes it names.",
   },
+  {
+    id: "history",
+    label: "Code history",
+    image: history,
+    alt: "The History tab of rolling_vol: two saved versions, and a diff against the earlier one that swaps an inline calculation for a helper imported from lib/stats.py.",
+    caption:
+      "Every save of a node, a view or a helper is kept, by you or by the agent. See what each one changed, and restore any of them.",
+  },
+  {
+    id: "share",
+    label: "Sharing",
+    image: share,
+    alt: "The Share dialog for a project on a hub: an access request to approve, two people with their roles, general access set to only people added here, and a read-only share link.",
+    caption:
+      "On a hub, each project is shared the way a document is: viewers, editors, read-only links, and requests to answer.",
+  },
 ];
+---
 ---
 
 <section class="workbench reverse" id="workbench">
@@ -40,7 +59,7 @@ const tabs = [
       <h2>One command opens the workbench</h2>
       <p>
         <code>exuvia serve</code> starts the UI, the API and the scheduler on your machine. These are screenshots of
-        it running the example project.
+        it running the example project, and of a hub serving it to a team.
       </p>
     </header>
 

@@ -5,10 +5,14 @@
  * neither PAGES nor OMITTED fails the build, so a section added to the README
  * is published or left out on purpose, never dropped by accident. The one page
  * that is not a README section is the tutorial in `src/docs/getting-started.md`.
+ *
+ * Screenshots of the app (`src/assets/shots/`, taken by `tools/capture.mjs`)
+ * go into README pages through FIGURES, so the README itself stays text for
+ * PyPI. The tutorial places its own as Markdown images with a `shot:` address.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { Marked, type Tokens } from "marked";
+import { Lexer, Marked, type Tokens } from "marked";
 import { codeFigure, escapeHtml, getHighlighter } from "./highlight";
 import { absolute, markdownPath, url } from "./paths";
 import { SITE } from "./project";
@@ -143,6 +147,124 @@ const PAGES: PageSpec[] = [
     summary: "What exuvia does not do yet.",
   },
 ];
+
+type Figure = {
+  /** A screenshot in src/assets/shots/, without `.png`. */
+  shot: string;
+  /** The figure goes after the paragraph, list or heading whose first line starts with this. */
+  after: string;
+  alt: string;
+  caption: string;
+};
+
+/**
+ * Screenshots in README pages, by page slug. The build fails when a figure's
+ * `after` text is no longer in its section, or its screenshot is missing.
+ * In the tutorial the same thing is `![alt](shot:<name> "caption")`.
+ */
+const FIGURES: Record<string, Figure[]> = {
+  nodes: [
+    {
+      shot: "files",
+      after: "The workbench's side panel has three tabs",
+      alt: "The Files tab of the side panel: nodes/, lib/ and views/vol_board/ as one tree. lib/stats.py is open in place of the graph, used by rolling_vol.",
+      caption: "The Files tab. A helper opens in place of the graph, with the nodes that import it.",
+    },
+  ],
+  packages: [
+    {
+      shot: "packages",
+      after: "**Adding a package in the workbench.**",
+      alt: "The Packages dialog over the workbench: a field to add packages, scipy 1.18.1 installed, and buttons to edit pyproject.toml and show the install log.",
+      caption: "The Packages button in the top bar: scipy added and installed for this project alone.",
+    },
+  ],
+  views: [
+    {
+      shot: "views",
+      after: "A **view** is custom UI over node outputs",
+      alt: "A view named Volatility board: summary tiles, a table of sectors ranked by average volatility, and a line chart for the selected sector.",
+      caption: "The example project's view, Volatility board. It reads sector_summary, rolling_vol and universe, and nothing else.",
+    },
+    {
+      shot: "view-code",
+      after: "The view's **Code** tab lists its files",
+      alt: "The Code tab of the Volatility board view: its five files on the left, App.tsx open in the editor with useTable and useQuery calls.",
+      caption: "A view's Code tab: its files, edited in place, with a History button for the one that is open.",
+    },
+  ],
+  downloads: [
+    {
+      shot: "downloads",
+      after: "Anything you can see in the workbench you can save as a file.",
+      alt: "The Data tab of rolling_vol, with the Download menu open under it: CSV, Excel, Parquet and JSON, each with what it is for.",
+      caption: "Every row of a node's output, in the format the next tool wants.",
+    },
+  ],
+  agent: [
+    {
+      shot: "agent",
+      after: "The agent runs a tool loop over the live workspace",
+      alt: "The workbench after an agent turn. The agent panel lists its steps: looked at the graph, read prices, wrote drawdown, ran drawdown, then a summary. The new drawdown node is selected on the canvas, with its chart.",
+      caption: "Asked for a drawdown node, the agent read the graph and the upstream code, wrote the node, ran it and said what it made.",
+    },
+  ],
+  "execution-model": [
+    {
+      shot: "history",
+      after: "Each lists the revisions newest first",
+      alt: "The History tab of rolling_vol: two revisions, the newer one saved from the workbench, and a diff against the version before it that swaps an inline rolling standard deviation for an import from lib.stats.",
+      caption: "A node's History tab, showing what one save changed. Restore makes a version current again.",
+    },
+  ],
+  hub: [
+    {
+      shot: "hub",
+      after: "`exuvia hub <dir>` serves every project under one directory",
+      alt: "The hub's home page: three projects, Customer churn, Credit risk and Markets, each with its node count, owner and who can edit it.",
+      caption: "The hub's home page, for a signed-in person: their own project and two shared with them.",
+    },
+    {
+      shot: "share",
+      after: "Each project on a hub is one workflow, and it is shared the way a document",
+      alt: "The Share dialog for the Markets project: a request for edit access with a note, the people with access and their roles, general access set to only people added here, and a share link that expires in a month.",
+      caption: "The Share dialog: an access request to answer, people and their roles, general access, and a read-only link.",
+    },
+  ],
+};
+
+const SHOTS_DIR = path.join(process.cwd(), "src", "assets", "shots");
+const SHOT_IMAGE = /^!\[([^\]]*)\]\(shot:([\w-]+) "([^"]*)"\)$/;
+
+/** A section's Markdown with its FIGURES written in as `shot:` images. */
+function withFigures(slug: string, markdown: string): string {
+  const lines = markdown.split("\n");
+  for (const figure of FIGURES[slug] ?? []) {
+    let fenced = false;
+    const start = lines.findIndex((line) => {
+      if (line.trimStart().startsWith("```")) fenced = !fenced;
+      return !fenced && line.startsWith(figure.after);
+    });
+    if (start < 0) {
+      throw new Error(`FIGURES in site/src/lib/docs.ts: the "${slug}" page has no paragraph starting "${figure.after}".`);
+    }
+    let end = start + 1;
+    while (end < lines.length && lines[end].trim() !== "") end++;
+    if (/["\]]/.test(figure.alt + figure.caption)) {
+      throw new Error(`FIGURES in site/src/lib/docs.ts: the ${figure.shot} figure's alt and caption can't hold " or ].`);
+    }
+    lines.splice(end, 0, "", `![${figure.alt}](shot:${figure.shot} "${figure.caption}")`);
+  }
+  return lines.join("\n");
+}
+
+/** A `shot:` image as the docs page shows it. The page puts the real image in place of the `data-shot` one. */
+function shotFigure(slug: string, name: string, alt: string, caption: string): string {
+  if (!existsSync(path.join(SHOTS_DIR, `${name}.png`))) {
+    throw new Error(`"${slug}" shows the screenshot ${name}, but src/assets/shots/${name}.png does not exist.`);
+  }
+  return `<figure class="shot"><img data-shot="${name}" alt="${alt}"><figcaption>${caption}</figcaption></figure>\n`;
+}
 
 /** README sections that are deliberately not published, and why. */
 const OMITTED: Record<string, string> = {
@@ -326,6 +448,10 @@ function stepsFor(steps: string, label: string): string {
  */
 function agentMarkdown(spec: PageSpec, title: string, markdown: string, anchors: Map<string, string>): string {
   const fromReadme = "heading" in spec.source;
+  // Screenshots are for the HTML page: an agent reading the Markdown gets the text.
+  markdown = markdown
+    .replace(/\r\n/g, "\n")
+    .replace(/^!\[[^\]]*\]\(shot:.*\)\n\n?/gm, "");
   let fenced = false;
   const body = markdown
     .replace(/\r\n/g, "\n")
@@ -379,6 +505,13 @@ async function build(): Promise<DocPage[]> {
     }
   }
 
+  for (const slug of Object.keys(FIGURES)) {
+    const spec = PAGES.find((p) => p.slug === slug);
+    if (!spec || !("heading" in spec.source)) {
+      throw new Error(`FIGURES in site/src/lib/docs.ts names "${slug}", which is not a README page.`);
+    }
+  }
+
   // README links are `#anchor` within one long file. Here each section is a
   // page, so resolve an anchor to the page that now holds that heading.
   const anchors = new Map<string, string>();
@@ -411,6 +544,18 @@ async function build(): Promise<DocPage[]> {
           const inner = this.parser.parseInline(token.tokens);
           return `<h${token.depth} id="${id}"><a class="anchor" href="#${id}">${inner}</a></h${token.depth}>\n`;
         },
+        paragraph(token) {
+          const shot = SHOT_IMAGE.exec(token.raw.trim());
+          if (!shot) return `<p>${this.parser.parseInline(token.tokens)}</p>\n`;
+          const [, alt, name, caption] = shot;
+          return shotFigure(spec.slug, name, escapeHtml(alt), this.parser.parseInline(Lexer.lexInline(caption)));
+        },
+        image(token) {
+          if (token.href.startsWith("shot:")) {
+            throw new Error(`"${spec.slug}" has a shot: image inside a paragraph. Give it a paragraph of its own.`);
+          }
+          return `<img src="${escapeHtml(token.href)}" alt="${escapeHtml(token.text)}">`;
+        },
         code(token) {
           const [lang, ...meta] = (token.lang ?? "").split(/\s+/);
           const file = meta.find((m) => m.startsWith("file="))?.slice(5);
@@ -439,7 +584,8 @@ async function build(): Promise<DocPage[]> {
         },
       },
     });
-    const html = marked.parse(markdown, { async: false });
+    const shown = "heading" in spec.source ? withFigures(spec.slug, markdown) : markdown;
+    const html = marked.parse(shown, { async: false });
     const title = spec.title ?? ("heading" in spec.source ? spec.source.heading : spec.slug);
     const text = html
       .replace(/<button[^>]*>.*?<\/button>/g, " ")

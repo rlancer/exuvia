@@ -119,6 +119,8 @@ from squares
 The canvas now shows `hello → squares → summary`. Run `summary`: exuvia runs
 the node you asked for and every stale node upstream of it, in order.
 
+![The workbench with three nodes, hello, squares and summary, all fresh. summary is selected, and its Data tab shows one row: n is 2 and total is 13.](shot:tutorial-graph "The graph after running `summary`. Every node is fresh, and the output of `summary` is in its Data tab.")
+
 The same thing from a terminal, without the UI:
 
 ```bash
@@ -175,7 +177,9 @@ runs too:
 ```
 
 Both outputs of `squares` are still on disk. Earlier outputs stay readable for
-as long as the project exists.
+as long as the project exists. The code is kept the same way: select
+`squares` and open its **History** tab to see each save, what it changed, and
+restore any of them (see [Execution model](#execution-model)).
 
 ## Put a node on a schedule
 
@@ -271,6 +275,8 @@ and run it again, and the view redraws with the new rows. It never runs a
 node itself. [Views](#views) covers the whole API and what the sandbox
 allows.
 
+![The Overview view in the workbench: the heading 2 rows, total 13, and one bar for each row of squares.](shot:tutorial-view "Overview over the first version of `squares`, where `y > 1` keeps two rows.")
+
 ## Turn on the agent
 
 The agent is a model with tools over your project. It can list and read
@@ -302,11 +308,17 @@ flash on the canvas. What it writes are ordinary files in `nodes/`, which you
 can read, edit and commit like the ones you wrote. [The agent](#the-agent)
 covers providers, local models and project notes.
 
+![The workbench after an agent turn. The agent panel lists its steps: looked at the graph, read prices, wrote drawdown, ran drawdown, then a summary. The new drawdown node is selected on the canvas, with its chart.](shot:agent "The agent on the example project in the repository (`examples/markets`), asked for a drawdown node per ticker with a chart.")
+
 ## Where to go next
 
 - [Nodes](#nodes) has everything the decorator and SQL header accept.
 - [Run parameters and replays](#run-parameters-and-replays) runs one graph
   for many dates and keeps an output for each.
 - [Views](#views) has the view API, the sandbox, and what a view can import.
+- [Downloads](#downloads) saves any table as CSV, Excel, Parquet or JSON,
+  and the project's code as a zip.
+- [Hub](#hub-many-projects-from-one-process) serves many projects from one
+  process, and shares each one with the people who should see it.
 - [Deploying](#deploying) moves node execution into a container and outputs
   into object storage.

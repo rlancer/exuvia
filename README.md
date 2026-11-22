@@ -2405,9 +2405,14 @@ social card, a PNG in `site/public/og/` listed in `site/src/lib/cards.ts`: a
 picture with no words on it, one for the home page, one for the docs' front
 page, one for each group of docs pages and one for the brand page. The build
 fails when a page's card is missing.
-`site/tools/capture.mjs` retakes the product screenshots from a running
-`exuvia serve`, and photographs the social cards from the site's own
-`/card/` pages, which exist only under `astro dev`. The animals on the landing page are low-poly models built in code
+`site/tools/capture.mjs` retakes the product screenshots
+(`site/src/assets/shots/`) from a running `exuvia serve` of the example
+project, a scratch `exuvia hub` and the getting-started project, and
+photographs the social cards from the site's own `/card/` pages, which exist
+only under `astro dev`. The docs pages show those screenshots without the
+README holding any: `FIGURES` in `site/src/lib/docs.ts` places each one after
+a paragraph of a section, and the build fails when that paragraph or the
+picture is gone. The animals on the landing page are low-poly models built in code
 (`site/src/lib/poly.ts`), with no image or model files. The site is static (`site/dist`). It is built for the
 root of its host unless `SITE_BASE` (for example `/exuvia`) names a sub-path
 to serve it from; every link, asset and the search index follow that base.

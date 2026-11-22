@@ -120,6 +120,21 @@ const more = [
     href: "/docs/http-api/",
     body: "Everything the UI does is a plain HTTP call, with Arrow streams and Parquet files when you want the data itself.",
   },
+  {
+    title: "Share a project",
+    href: "/docs/hub/#sharing-projects",
+    body: "Share each project on a hub the way you share a document: viewers, editors, read-only links and access requests.",
+  },
+  {
+    title: "Sign-in you already have",
+    href: "/docs/deploying/#schedules-auth-and-settings",
+    body: "Behind your SSO proxy everyone is a named user, and each run and code save says who made it.",
+  },
+  {
+    title: "Schedules that recover",
+    href: "/docs/execution-model/",
+    body: "A failed run retries with a growing delay, a late run computes the day it was due for, and overlapping fires queue or skip.",
+  },
 ];
 
 const steps = [
@@ -244,7 +259,7 @@ const steps = [
         <div class="clip">
           <Image
             src={agentPanel}
-            alt="An agent conversation. The request: add a drawdown node per ticker with a chart. Its steps: looked at the graph, read prices, wrote drawdown in 20 lines, ran drawdown for 2,080 rows. Then a summary of the new node."
+            alt="An agent conversation. The request: add a drawdown node per ticker with a chart. Its steps: looked at the graph, read prices, wrote drawdown in 24 lines, ran drawdown for 2,080 rows. Then a summary of the new node."
             widths={[340, 678]}
             sizes="340px"
             loading="lazy"
