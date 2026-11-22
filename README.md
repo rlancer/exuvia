@@ -593,9 +593,12 @@ address information` never reached the index: run the check from inside the
 running hub, as in
 [Package installs on an isolated network](#package-installs-on-an-isolated-network).
 
-**Packages for every project.** What every project on a server should have
-without waiting for an install (your team's standard stack, packages that
-need system libraries) belongs in the image: see
+**Packages for every project.** A project's install is its own: projects
+that list the same packages each install them. What every project on a
+server should have without waiting for an install (your team's internal
+libraries, a standard stack, packages that need system libraries) belongs
+in the image, listed in a `pyproject.toml` of its own and installed with
+`uv pip install` (not `uv add` or `uv sync`): see
 [Packages your nodes import](#packages-your-nodes-import) under Deploying.
 
 ## Execution model
@@ -1010,21 +1013,112 @@ EXUVIA_EXECUTOR_TOKEN=change-me exuvia serve my-research --executor http://local
 
 A project's `pyproject.toml` works in a container too (see
 [Packages](#packages)): the container installs what it lists before the
-first run that needs it. To build the packages into the image instead, for
-system libraries or a host with no route to a package index, put this in a
-`Dockerfile` of your own:
+first run that needs it. That install is per project, so a package that
+ten projects list is installed ten times.
+
+Packages that every project on the server should have go into the image
+instead: your team's internal libraries, a standard stack, packages that
+need system libraries, or anything a host with no route to a package index
+can't install. Every project can import them from the start, no project
+installs them again, and the packages a project adds are resolved against
+their versions, as they are against exuvia's own.
+
+**1. List them in a `pyproject.toml` of their own**, in a folder with the
+`Dockerfile`, and keep both in git. This file belongs to the image, not to
+a project: don't put it in a project folder.
+
+```toml
+[project]
+name = "acme-exuvia-base"
+version = "0"
+requires-python = ">=3.11"
+dependencies = ["acme-core==1.4.2", "acme-data==2.1.0", "scipy==1.16.2"]
+
+# Only for packages from a private index. uv reads this at build time.
+[[tool.uv.index]]
+name = "internal"
+url = "https://pypi.example.com/simple"
+explicit = true
+
+[tool.uv.sources]
+acme-core = { index = "internal" }
+acme-data = { index = "internal" }
+```
+
+**2. Install it into exuvia's environment** with this `Dockerfile`:
 
 ```dockerfile
+# syntax=docker/dockerfile:1
 FROM ghcr.io/rlancer/exuvia:0.3
 USER root
-RUN uv pip install --python /opt/venv/bin/python scipy statsmodels
+WORKDIR /opt/exuvia-base
+COPY pyproject.toml ./
+# exuvia's packages, held at the versions it runs with (-c), plus the list.
+RUN --mount=type=secret,id=index_password,env=UV_INDEX_INTERNAL_PASSWORD \
+    UV_INDEX_INTERNAL_USERNAME=deploy \
+    uv pip freeze --python /opt/venv/bin/python > /tmp/exuvia.txt \
+ && uv pip install --no-cache --python /opt/venv/bin/python \
+      -r pyproject.toml -c /tmp/exuvia.txt
+WORKDIR /app
 USER exuvia
 ```
 
-`docker build -t my-exuvia .` builds it. Use it in place of the published
-image: in `docker run`, or as `EXUVIA_IMAGE` or the Deployment's `image`
-(Swarm and Kubernetes pull it from a registry, so push it to one first).
-With a remote executor, the executor is the one that needs the packages.
+**3. Build it**, passing the index password as a build secret so it stays
+out of the image's layers. Without a private index, leave out the
+`--mount=...` and `UV_INDEX_INTERNAL_USERNAME` lines and the `--secret`
+flag.
+
+```bash
+docker build --secret id=index_password,src=pypi-token.txt -t my-exuvia .
+```
+
+Use the result in place of the published image: in `docker run`, or as
+`EXUVIA_IMAGE` or the Deployment's `image` (Swarm and Kubernetes pull it
+from a registry, so push it to one first). With a remote executor, the
+executor is the one that needs the packages, so build the executor's image
+this way.
+
+**Rules for this Dockerfile, for people and agents alike.** Each one
+prevents a build that succeeds and then fails later, when exuvia runs:
+
+- **Use `uv pip install`. Never use `uv add` or `uv sync` here.** `/opt/venv`
+  is exuvia's own environment, built from exuvia's `pyproject.toml` and
+  `uv.lock` in `/app`, and the image sets `UV_PROJECT_ENVIRONMENT=/opt/venv`.
+  `uv sync` run anywhere in the image makes `/opt/venv` match that one
+  folder's `pyproject.toml` and uninstalls everything else in it, exuvia
+  included. `uv add` in `/app` rewrites exuvia's own files and rebuilds
+  exuvia from source with no version (the image has no `.git` to read it
+  from).
+- **Keep `-c` with exuvia's frozen versions.** Without it, uv upgrades or
+  downgrades packages exuvia runs with to satisfy yours (a library that
+  needs `pandas<2` silently replaces exuvia's pandas 3), and exuvia breaks at
+  run time instead of at build time. With it, a conflict fails the build
+  with uv's explanation, and the fixes are the ones under
+  [When a package conflicts with exuvia's versions](#packages).
+- **Keep `--no-cache`.** The image points uv's cache at `/tmp/uv-cache`. A
+  cache written there as root can't be written by the `exuvia` user, and
+  every project's own package installs then fail.
+- **Install as root and end on `USER exuvia`.** The environment belongs to
+  root; exuvia runs as its own user (uid 10001).
+- **Pin exact versions.** The file is the record of what the image holds,
+  and pins make a rebuild produce the same image.
+- **Check the result** before you deploy it:
+  `docker run --rm my-exuvia uv pip check --python /opt/venv/bin/python`
+  reports any broken requirement, and
+  `docker run --rm my-exuvia python -c "import acme_core"` (your import
+  names) shows that the packages load.
+
+What follows from baking packages in:
+
+- **Projects get the image's versions.** A project can't use a different
+  version of a package that the image has; it is held to that version, as
+  it is to exuvia's pandas. A project may still list the package (for its
+  editor, or to run somewhere else): on this image the install skips it,
+  and the Packages panel shows it as exuvia's.
+- **Upgrading a package means a new image.** Change the version in the
+  file, rebuild and redeploy. Every new image (or exuvia release) changes
+  exuvia's environment, so each project with packages of its own installs
+  them once more, in the background, when the server starts.
 
 ### Package installs on an isolated network
 
