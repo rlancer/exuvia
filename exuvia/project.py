@@ -70,6 +70,9 @@ class Node:
     description: str = ""
     schedule: str | None = None
     cascade: bool = True
+    retries: int = 0  # extra attempts after a failed run
+    retry_delay: float = 30.0  # seconds before the first retry; doubles each time
+    overlap: str = "queue"  # a fire while the node runs: "queue" it or "skip" it
     chart: dict[str, Any] | None = None
     tags: list[str] = field(default_factory=list)
     params: list[str] = field(default_factory=list)  # run parameters this node reads
@@ -687,6 +690,8 @@ def _parse_python(node: Node, text: str) -> None:
                 raise ValueError(f"@exuvia.node({kw.arg}=...) must be a literal value.") from e
             if kw.arg in {"schedule", "cascade", "chart", "tags"}:
                 setattr(node, kw.arg, value)
+            elif kw.arg in RUN_OPTIONS:
+                _set_run_option(node, kw.arg, value)
             elif kw.arg == "params":
                 node.params = _param_names(value)
     if node.schedule:
@@ -741,6 +746,8 @@ def _parse_sql(node: Node, text: str) -> None:
                 node.tags = [t.strip() for t in val.split(",") if t.strip()]
             elif key == "params":
                 node.params = _param_names([t.strip() for t in val.split(",") if t.strip()])
+            elif key in RUN_OPTIONS and val:
+                _set_run_option(node, key, val)
             else:
                 desc.append(line.strip()[2:].strip())
         else:
@@ -835,6 +842,38 @@ def check_view_manifest(raw: Any) -> tuple[dict[str, Any], list[str]]:
         else:
             problems.append('`reads` must be a list of node names, e.g. ["prices", "rolling_vol"].')
     return clean, problems
+
+
+RUN_OPTIONS = ("retries", "retry_delay", "overlap")
+MAX_RETRIES = 10
+OVERLAP_POLICIES = ("queue", "skip")
+
+
+def _set_run_option(node: Node, key: str, value: Any) -> None:
+    """Validate one of a node's run options (``retries``, ``retry_delay``,
+    ``overlap``) and set it. ``value`` is a Python literal or, from a SQL
+    header, its text."""
+    if key == "retries":
+        try:
+            n = int(str(value).strip()) if not isinstance(value, bool) else -1
+        except ValueError:
+            n = -1
+        if not 0 <= n <= MAX_RETRIES:
+            raise ValueError(f"`retries` must be a whole number from 0 to {MAX_RETRIES}, not {value!r}.")
+        node.retries = n
+    elif key == "retry_delay":
+        try:
+            secs = float(str(value).strip()) if not isinstance(value, bool) else -1.0
+        except ValueError:
+            secs = -1.0
+        if not 0 <= secs <= 3600:
+            raise ValueError(f"`retry_delay` must be a number of seconds from 0 to 3600, not {value!r}.")
+        node.retry_delay = secs
+    elif key == "overlap":
+        policy = str(value).strip().lower()
+        if policy not in OVERLAP_POLICIES:
+            raise ValueError(f'`overlap` must be "queue" or "skip", not {value!r}.')
+        node.overlap = policy
 
 
 def _validate_cron(expr: str) -> None:
