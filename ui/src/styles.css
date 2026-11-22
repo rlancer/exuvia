@@ -176,6 +176,27 @@ a.brand-name:hover .mark { transform: rotate(-12deg); }
 .help-pop a { color: var(--accent); }
 .help-links { display: flex; flex-wrap: wrap; gap: 4px 14px; padding-top: 2px; }
 
+/* ---------- download menus (Export.tsx) ---------- */
+.dl { position: relative; display: inline-flex; }
+.dl-pop {
+  position: absolute; top: calc(100% + 6px); z-index: 60; min-width: 220px; max-width: min(320px, calc(100vw - 24px));
+  max-height: min(420px, 70vh); overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow);
+  padding: 4px; display: flex; flex-direction: column; font-size: 12.5px; animation: rise 0.12s ease-out;
+}
+.dl-pop.right { right: 0; }
+.dl-pop.left { left: 0; }
+.dl-pop.up { top: auto; bottom: calc(100% + 6px); }
+.dl-group + .dl-group { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; }
+.dl-title { padding: 6px 8px 2px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.dl-item {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%; text-align: left;
+  padding: 6px 8px; border: 0; border-radius: 6px; background: none; color: var(--text); cursor: pointer; font: inherit;
+}
+.dl-item:hover:not(:disabled), .dl-item:focus-visible { background: var(--panel-2); }
+.dl-item:disabled { cursor: default; opacity: 0.55; }
+.dl-hint { color: var(--muted); font-size: 11.5px; }
+
 .main { display: grid; grid-template-columns: minmax(0, 1fr) clamp(380px, 32vw, 600px) 340px; min-height: 0; }
 .main.agent-collapsed { grid-template-columns: minmax(0, 1fr) clamp(400px, 38vw, 680px) 40px; }
 .canvas-wrap { position: relative; min-width: 0; }
@@ -285,7 +306,8 @@ table.grid th { position: sticky; top: 0; background: var(--panel-2); font-weigh
 table.grid th .t { display: block; color: var(--faint); font-weight: 400; font-size: 10.5px; }
 table.grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.grid tr:hover td { background: var(--panel-2); }
-.data-foot { position: sticky; bottom: 0; background: var(--panel); border-top: 1px solid var(--line); padding: 6px 10px; color: var(--muted); font-size: 12px; }
+.data-foot { position: sticky; bottom: 0; background: var(--panel); border-top: 1px solid var(--line); padding: 6px 10px; color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 8px; }
+.data-foot .dl { margin-left: auto; }
 .placeholder { padding: 28px 18px; color: var(--muted); text-align: center; }
 pre.json { margin: 0; padding: 12px 14px; font-size: 12px; white-space: pre-wrap; }
 .chart-wrap { padding: 14px; }
@@ -309,6 +331,7 @@ pre.log { margin: 0; padding: 10px 14px; font-size: 11.5px; line-height: 1.5; wh
 .overview h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
 .sql-box textarea { width: 100%; min-height: 84px; resize: vertical; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--code-bg); font: 12px/1.5 var(--mono); }
 .sql-box .row { display: flex; gap: 8px; align-items: center; margin-top: 6px; color: var(--muted); font-size: 12px; }
+.run-dl { padding: 6px 10px; border-top: 1px solid var(--line); }
 .sql-result { border: 1px solid var(--line); border-radius: 6px; overflow: auto; max-height: 340px; margin-top: 8px; }
 
 /* ---------- agent ---------- */
@@ -498,7 +521,8 @@ pre.log { margin: 0; padding: 10px 14px; font-size: 11.5px; line-height: 1.5; wh
   .agent-collapsed-rail { flex-direction: row; border-left: 0; border-top: 1px solid var(--line); }
   .agent-collapsed-rail button { writing-mode: horizontal-tb; justify-content: center; padding: 0; height: 100%; }
 }
-.files-filter { margin: 0 2px 2px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: 12px var(--sans); }
+.files-bar { display: flex; align-items: center; gap: 4px; margin: 0 2px 2px; }
+.files-filter { flex: 1; min-width: 0; margin: 0; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: 12px var(--sans); }
 .files-filter:focus { outline: none; border-color: var(--accent); }
 .tree, .tree ul { list-style: none; margin: 0; padding: 0; }
 .tree-row { width: 100%; text-align: left; border: 0; background: none; border-radius: 6px; padding: 4px 8px 4px 6px; cursor: pointer; font: 12px var(--mono); color: var(--muted); display: flex; align-items: center; gap: 6px; }

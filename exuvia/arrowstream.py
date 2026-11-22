@@ -58,6 +58,17 @@ class ArrowStream:
         self._batches = iter(reader)
         self._first = next(self._batches, None)
 
+    def batches(self) -> Iterator[Any]:
+        """The record batches themselves, for a writer other than Arrow IPC
+        (``exports.py``). Like iterating the stream, this reads it once."""
+        try:
+            batch = self._first
+            while batch is not None:
+                yield batch
+                batch = next(self._batches, None)
+        finally:
+            self._owner = None
+
     def __iter__(self) -> Iterator[bytes]:
         import pyarrow as pa
 

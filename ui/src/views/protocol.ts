@@ -12,7 +12,7 @@
  *   host → iframe   runtime {source}            the runtime script; the bootstrap evaluates it
  *   iframe → host   ready                       runtime loaded, send the view
  *   host → iframe   load {view, params, dark}   compile `view.entry` and render it
- *   iframe → host   request {id, method, args}  table | json | query | params | setParams
+ *   iframe → host   request {id, method, args}  table | json | query | params | setParams | download
  *   host → iframe   response {id, ok, ...}      the answer (Arrow bytes are transferred)
  *   host → iframe   changed {nodes, params}     outputs the view reads were replaced
  *   host → iframe   theme {dark}
@@ -46,7 +46,11 @@ export interface ViewBundle {
   files: Record<string, string>;
 }
 
-export type Method = "table" | "json" | "query" | "params" | "setParams";
+export type Method = "table" | "json" | "query" | "params" | "setParams" | "download";
+
+/** The file formats a view can save a table in. */
+export type DownloadFormat = "csv" | "xlsx" | "parquet" | "json";
+export const DOWNLOAD_FORMATS: readonly DownloadFormat[] = ["csv", "xlsx", "parquet", "json"];
 
 export interface RequestArgs {
   table: { node: string };
@@ -54,6 +58,8 @@ export interface RequestArgs {
   query: { sql: string };
   params: Record<string, never>;
   setParams: { params: Params };
+  /** Save a read node's output (`node`) or a query's whole result (`sql`) as a file. */
+  download: { node?: string; sql?: string; format: DownloadFormat; filename?: string };
 }
 
 export interface ParamsState {
@@ -70,6 +76,7 @@ export interface ResultOf {
   query: ArrayBuffer;
   params: ParamsState;
   setParams: ParamsState;
+  download: null;
 }
 
 /** Where a view failed: compiling its files, or while running. */
@@ -95,7 +102,7 @@ type Bare<T> = T extends unknown ? Omit<T, "channel"> : never;
 export type ToHostBody = Bare<ToHost>;
 export type ToFrameBody = Bare<ToFrame>;
 
-const METHODS: ReadonlySet<string> = new Set<Method>(["table", "json", "query", "params", "setParams"]);
+const METHODS: ReadonlySet<string> = new Set<Method>(["table", "json", "query", "params", "setParams", "download"]);
 
 function tagged(data: unknown): data is { channel: string; type: string } {
   return typeof data === "object" && data !== null && (data as { channel?: unknown }).channel === CHANNEL;
@@ -118,6 +125,12 @@ export function isToHost(data: unknown): data is ToHost {
       if (d.method === "table" || d.method === "json") return typeof a.node === "string";
       if (d.method === "query") return typeof a.sql === "string";
       if (d.method === "setParams") return typeof a.params === "object" && a.params !== null && !Array.isArray(a.params);
+      if (d.method === "download")
+        return (
+          (typeof a.node === "string") !== (typeof a.sql === "string") &&
+          (DOWNLOAD_FORMATS as readonly unknown[]).includes(a.format) &&
+          (a.filename === undefined || typeof a.filename === "string")
+        );
       return true;
     }
     default:

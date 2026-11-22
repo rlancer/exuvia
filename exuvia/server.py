@@ -35,6 +35,7 @@ from pydantic import BaseModel
 from . import _STARTED, __version__, about as about_mod, auth, mcp_http
 from .agent import READ_TOOLS, TOOLS, Agent
 from .arrowstream import MEDIA_TYPE as ARROW_STREAM, ArrowStream, wants_arrow
+from .exports import ExportError, check_format, code_archive, file_response, file_stem, json_response, slug, table_response, zip_response
 from .packages import PackagesError
 from .project import NODE_NAME, PARAM_TYPES, coerce_param
 from .report import graph_report, node_report
@@ -151,6 +152,13 @@ class QueryReq(BaseModel):
     params: dict[str, Any] | None = None
 
 
+class QueryExport(BaseModel):
+    sql: str
+    params: dict[str, Any] | None = None
+    format: str = "csv"  # csv | xlsx | parquet | json
+    filename: str | None = None  # without the extension; default "query"
+
+
 class AgentReq(BaseModel):
     message: str
     session_id: str | None = None
@@ -220,6 +228,66 @@ def _sse(event: dict[str, Any]) -> str:
 
 def _arrow(stream: ArrowStream) -> StreamingResponse:
     return StreamingResponse(stream, media_type=ARROW_STREAM, headers={"Cache-Control": "no-store"})
+
+
+def _export_format(fmt: str, allow_zip: bool = False) -> str:
+    if allow_zip and (fmt or "").lower() == "zip":
+        return "zip"
+    try:
+        return check_format(fmt)
+    except ExportError as e:
+        raise HTTPException(e.status, str(e)) from e
+
+
+def _table_export(stream: ArrowStream, fmt: str, stem: str) -> Any:
+    try:
+        return table_response(stream, fmt, stem)
+    except ExportError as e:
+        raise HTTPException(e.status, str(e)) from e
+
+
+def _stream_meta(stream: ArrowStream) -> dict[str, Any]:
+    """What ``preview_arrow`` put in the stream's metadata (run id, parameters, ...)."""
+    raw = (stream.schema.metadata or {}).get(b"exuvia")
+    return json.loads(raw) if raw else {}
+
+
+def _export_output(
+    ws: Workspace,
+    name: str,
+    fmt: str,
+    params: dict[str, Any],
+    run_id: str | None,
+    part: str | None,
+    filename: str | None = None,
+) -> Any:
+    """A node's output as a download: a table in ``fmt``; a JSON output as
+    .json; a node with several outputs as the stored zip of all of them
+    (``fmt`` zip) or, with ``part``, one of them like an output of its own."""
+    fmt = _export_format(fmt, allow_zip=True)
+    stream = None if fmt == "zip" else ws.preview_arrow(name, params=params, run_id=run_id, part=part)
+    if stream is not None:
+        return _table_export(stream, fmt, filename or file_stem(name, part, _stream_meta(stream).get("run_params")))
+    try:
+        out = ws.preview(name, limit=0, params=params, run_id=run_id, part=part)
+    except KeyError as e:
+        raise HTTPException(404, str(e.args[0])) from e
+    kind = out.get("kind")
+    stem = filename or file_stem(name, part, out.get("run_params"))
+    if kind == "json":
+        if fmt != "json":
+            raise HTTPException(400, f"{name}'s output is JSON, not a table: download it as json")
+        return json_response(out.get("value"), stem)
+    if kind == "multi":
+        run = ws.store.run(out["run_id"]) if out.get("run_id") else None
+        found = ws.artifact_file(name, run["artifact_id"]) if run and run.get("artifact_id") else None
+        if fmt == "zip" and found is not None:
+            return file_response(found[0], ARTIFACT_MEDIA_TYPES["multi"], f"{slug(stem)}.zip")
+        names = ", ".join(p["name"] for p in out.get("parts") or [])
+        raise HTTPException(400, f"{name} has several outputs ({names}): pick one with part, or download them all as zip")
+    if kind == "table" and fmt == "zip":
+        raise HTTPException(400, "zip is for a node with several outputs: pick csv, xlsx, parquet or json")
+    raise HTTPException(404, f"{name} has no output yet for these parameters")
 
 
 def _query_params(raw: str | None) -> dict[str, Any] | None:
@@ -584,6 +652,38 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         except Exception as e:
             raise HTTPException(400, f"{type(e).__name__}: {e}") from e
 
+    @r.get("/views/{name}/data/{node}/export", response_model=None)
+    def view_data_export(
+        name: str,
+        node: str,
+        format: str = "csv",
+        params: str | None = None,
+        part: str | None = None,
+        filename: str | None = None,
+        ctx: Ctx = Depends(get_ctx),
+    ) -> Any:
+        """``GET /nodes/{node}/export`` for a view: 403 unless the view reads ``node``."""
+        try:
+            ctx.ws.view_node(name, node)
+        except KeyError as e:
+            raise HTTPException(404, f"no view {name}") from e
+        except PermissionError as e:
+            raise HTTPException(403, str(e)) from e
+        resolved = _resolve(ctx.ws, _query_params(params))
+        return _export_output(ctx.ws, node, format, resolved, None, part, filename)
+
+    @r.post("/views/{name}/query/export", response_model=None)
+    def view_query_export(name: str, body: QueryExport, ctx: Ctx = Depends(get_ctx)) -> Any:
+        """``POST /query/export`` for a view: the SQL sees only the view's ``reads``."""
+        fmt = _export_format(body.format)
+        try:
+            stream = ctx.ws.view_query_arrow(name, body.sql, params=body.params)
+        except KeyError as e:
+            raise HTTPException(404, f"no view {name}") from e
+        except Exception as e:
+            raise HTTPException(400, f"{type(e).__name__}: {e}") from e
+        return _table_export(stream, fmt, body.filename or f"{name}-query")
+
     @r.post("/nodes/{name}/run")
     async def run_node(name: str, body: RunReq, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         _need(ctx.ws, name)
@@ -700,6 +800,26 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         except KeyError as e:
             raise HTTPException(404, str(e.args[0])) from e
 
+    @r.get("/nodes/{name}/export", response_model=None)
+    def export_node(
+        name: str,
+        format: str = "csv",
+        params: str | None = None,
+        run_id: str | None = None,
+        part: str | None = None,
+        filename: str | None = None,
+        ctx: Ctx = Depends(get_ctx),
+    ) -> Any:
+        """A node's whole output as a file to save: ``format`` csv, xlsx,
+        parquet or json for a table (json only for a JSON output), or zip for
+        every output of a node with several. ``params``, ``run_id`` and
+        ``part`` pick the output as for ``GET /nodes/{name}/data``.
+        ``filename`` (no extension) names the download; the default is the
+        node's name and the run's parameter values. Excel takes at most one
+        sheet's 1,048,575 rows: a bigger table is a 413."""
+        _need(ctx.ws, name)
+        return _export_output(ctx.ws, name, format, _resolve(ctx.ws, _query_params(params)), run_id, part, filename)
+
     @r.api_route("/artifacts/{node}/{filename}", methods=["GET", "HEAD"], response_model=None)
     def artifact(node: str, filename: str, ctx: Ctx = Depends(get_ctx)) -> FileResponse:
         """The stored file of one output, ``<artifact_id>.parquet``,
@@ -770,6 +890,20 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
             raise HTTPException(404, "no saved version with that hash")
         return {"hash": digest, "source": source}
 
+    @r.get("/code/archive", response_model=None)
+    def code_zip(node: str | None = None, view: str | None = None, ctx: Ctx = Depends(get_ctx)) -> Any:
+        """The project's code as a .zip: every node, ``lib/`` helper and view,
+        with ``exuvia.json``, ``pyproject.toml``, ``uv.lock`` and the like.
+        ``node`` narrows it to that node and the helpers it imports, ``view``
+        to that view's files. Never ``.env``, run history or outputs."""
+        if node and view:
+            raise HTTPException(400, "give node or view, not both")
+        try:
+            body, filename = code_archive(ctx.ws.project, ctx.ws.graph, node=node, view=view)
+        except KeyError as e:
+            raise HTTPException(404, f"not found: {e.args[0]}") from e
+        return zip_response(body, filename)
+
     @r.post("/nodes/{name}/restore")
     def restore_node(name: str, body: NodeRestore, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         """Make a saved version of ``name`` its current code (a deleted node
@@ -808,6 +942,17 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
             return ctx.ws.query(body.sql, limit=rows, params=body.params)
         except Exception as e:
             raise HTTPException(400, f"{type(e).__name__}: {e}") from e
+
+    @r.post("/query/export", response_model=None)
+    def query_export(body: QueryExport, ctx: Ctx = Depends(get_ctx)) -> Any:
+        """``POST /query``'s whole result as a file to save, in ``format``
+        csv, xlsx, parquet or json; ``filename`` (no extension) names it."""
+        fmt = _export_format(body.format)
+        try:
+            stream = ctx.ws.query_arrow(body.sql, params=body.params)
+        except Exception as e:
+            raise HTTPException(400, f"{type(e).__name__}: {e}") from e
+        return _table_export(stream, fmt, body.filename or "query")
 
     @r.get("/events")
     async def events(request: Request, ctx: Ctx = Depends(get_ctx)) -> StreamingResponse:
@@ -1170,8 +1315,9 @@ def create_app(root: str | Path) -> FastAPI:
 
 # A hub project's API path, after /p/<id>/api.
 _PROJECT_API_REST = re.compile(r"^/p/[^/]+/api(/.*)?$")
-# POSTs that read and change nothing: SQL over outputs (DuckDB, read-only).
-_READ_POSTS = re.compile(r"^/(query|views/[^/]+/query)$")
+# POSTs that read and change nothing: SQL over outputs (DuckDB, read-only),
+# and the same result as a download.
+_READ_POSTS = re.compile(r"^/(query|views/[^/]+/query)(/export)?$")
 _TOOL_POST = re.compile(r"^/tools/([^/]+)$")
 
 

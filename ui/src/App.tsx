@@ -11,6 +11,7 @@ import { PackagesDialog } from "./PackagesDialog";
 import { HistoryBrowser, HistoryRail } from "./History";
 import { Views, type OpenView } from "./Views";
 import { FileTree, HelperEditor } from "./Files";
+import { codeGroup, DownloadMenu } from "./Export";
 import type { FileRef } from "./tree";
 import { SignedInAs } from "./Me";
 import { HelpMenu } from "./Help";
@@ -311,6 +312,10 @@ function Workbench() {
           {pkgs?.status === "failed" ? <span className="pk-bang">!</span> : null}
         </button>
         </>)}
+        <DownloadMenu
+          title="Download the project's code"
+          groups={[codeGroup({ title: "Project" })]}
+        />
         <HelpMenu />
         <button className="btn ghost icon-btn" onClick={toggleTheme} title={dark ? "Light theme" : "Dark theme"} aria-label={dark ? "Light theme" : "Dark theme"}>
           {dark ? <IconSun /> : <IconMoon />}

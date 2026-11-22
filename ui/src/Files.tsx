@@ -5,7 +5,8 @@ import { buildTree, countFiles, parents, projectFiles, type FileRef, type TreeDi
 import { HistoryBrowser } from "./History";
 import { VIEW_STATE_CLASS } from "./Views";
 import { language } from "./lang";
-import { IconChevronRight, IconClose, IconFile, IconFolder, MOD } from "./icons";
+import { IconChevronRight, IconClose, IconDownload, IconFile, IconFolder, MOD } from "./icons";
+import { codeArchiveUrl, saveUrl } from "./download";
 import { useAccess } from "./Access";
 
 // Kept outside the components, so closing the panel or switching its tab
@@ -80,14 +81,25 @@ export function FileTree(props: {
 
   return (
     <div className="side-files">
-      <input
-        className="files-filter"
-        type="search"
-        placeholder={`Filter ${refs.length} files by path…`}
-        value={filter}
-        onChange={(e) => setFilter(e.target.value)}
-        aria-label="Filter files by path"
-      />
+      <div className="files-bar">
+        <input
+          className="files-filter"
+          type="search"
+          placeholder={`Filter ${refs.length} files by path…`}
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          aria-label="Filter files by path"
+        />
+        <button
+          type="button"
+          className="btn ghost icon-btn sm"
+          onClick={() => saveUrl(codeArchiveUrl())}
+          title="Download every file as a .zip"
+          aria-label="Download every file as a .zip"
+        >
+          <IconDownload size={13} />
+        </button>
+      </div>
       <ul className="tree" role="tree" aria-label="Project files">
         {tree.map((d) => (
           <TreeItem key={d.path} entry={d} depth={0} ctx={ctx} />
