@@ -169,15 +169,29 @@ export class ApiError extends Error {
   }
 }
 
-/** Send one request to a project API path; an error answer is thrown as an {@link ApiError}. */
+/**
+ * Send one request to a project API path; an error answer is thrown as an {@link ApiError}.
+ * Code it changes is recorded as saved from the `ui` (the revision's `origin`), not `api`.
+ */
 function send(method: string, url: string, body?: unknown, accept?: string): Promise<Response> {
-  return sendTo(method, apiUrl(url), body, accept);
+  return sendTo(method, apiUrl(url), body, accept, undefined, UI_ORIGIN);
 }
 
-async function sendTo(method: string, url: string, body?: unknown, accept?: string, auth?: string): Promise<Response> {
+/** The `X-Exuvia-Origin` the workbench sends: revisions it saves say `ui`. */
+export const UI_ORIGIN = "ui";
+
+async function sendTo(
+  method: string,
+  url: string,
+  body?: unknown,
+  accept?: string,
+  auth?: string,
+  origin?: string,
+): Promise<Response> {
   const headers: Record<string, string> = {};
   if (accept) headers.Accept = accept;
   if (auth) headers.Authorization = `Bearer ${auth}`;
+  if (origin) headers["X-Exuvia-Origin"] = origin;
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const res = await fetch(url, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   if (!res.ok) {
