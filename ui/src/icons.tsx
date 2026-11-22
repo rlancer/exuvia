@@ -37,6 +37,7 @@ export const IconMoon = icon(<path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 
 export const IconChevronRight = icon(<path d="M6 3.5L10.5 8 6 12.5" />);
 export const IconChevronLeft = icon(<path d="M10 3.5L5.5 8l4.5 4.5" />);
 export const IconPackage = icon(<path d="M2.5 5L8 2l5.5 3v6L8 14l-5.5-3zM2.5 5L8 8l5.5-3M8 8v6" />);
+export const IconCode = icon(<path d="m5 4-3.5 4L5 12m6-8 3.5 4-3.5 4M9.5 3l-3 10" />);
 export const IconHelp = icon(<path d="M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM6.3 6.2a1.8 1.8 0 0 1 3.5.5c0 1.2-1.8 1.5-1.8 2.6M8 11.3v.1" />);
 export const IconAlert = icon(<path d="M8 2.2l6.2 10.9H1.8zM8 6.5v3M8 11.4v.1" />);
 /** The agent's sign: a four-pointed spark. */

@@ -6,12 +6,13 @@ import { Inspector, Overview } from "./Inspector";
 import { AgentPanel, type AgentHandle } from "./AgentPanel";
 import { NewNodeDialog } from "./NewNodeDialog";
 import { PackagesDialog } from "./PackagesDialog";
+import { HelpersDialog } from "./HelpersDialog";
 import { Views } from "./Views";
 import { SignedInAs } from "./Me";
 import { HelpMenu } from "./Help";
 import { useTheme } from "./theme";
 import { Brand, Mark } from "./Brand";
-import { IconMoon, IconPackage, IconPlay, IconPlus, IconSpark, IconSun } from "./icons";
+import { IconCode, IconMoon, IconPackage, IconPlay, IconPlus, IconSpark, IconSun } from "./icons";
 import { failed, Toasts } from "./toast";
 
 const embed = new URLSearchParams(location.search).has("embed");
@@ -56,6 +57,7 @@ export default function App() {
   const agent = useRef<AgentHandle>(null);
   const [pkgs, setPkgs] = useState<PackagesState | null>(null);
   const [pkgOpen, setPkgOpen] = useState(false);
+  const [helpersOpen, setHelpersOpen] = useState(false);
   // Nodes to re-run once the packages installed for them are ready.
   const [rerun, setRerun] = useState<string[]>([]);
   const refreshPkgs = useCallback(() => api.packages().then(setPkgs).catch(() => {}), []);
@@ -170,6 +172,9 @@ export default function App() {
         <button className="btn has-icon" onClick={() => setNewOpen(true)} title="Add a node to the graph" aria-label="New node">
           <IconPlus size={12} /> <span className="lbl">Node</span>
         </button>
+        <button className="btn has-icon" onClick={() => setHelpersOpen(true)} title="Browse the project's shared Python helpers" aria-label="Helpers">
+          <IconCode /> <span className="lbl">Helpers</span>
+        </button>
         <button
           className={`btn has-icon pk-btn pk-${pkgs?.status ?? "none"}`}
           onClick={() => setPkgOpen(true)}
@@ -259,6 +264,7 @@ export default function App() {
       </div>
 
       {pkgOpen && <PackagesDialog state={pkgs} onChange={setPkgs} onClose={() => setPkgOpen(false)} />}
+      {helpersOpen && <HelpersDialog onClose={() => setHelpersOpen(false)} />}
 
       {newOpen && (
         <NewNodeDialog
