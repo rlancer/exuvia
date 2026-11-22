@@ -681,7 +681,8 @@ in the image, listed in a `pyproject.toml` of its own and installed with
 - **Every version of the code is kept.** Each time a node file, a `lib/` helper,
   a view file, `exuvia.json` or `AGENTS.md` changes, by any route (UI, API,
   agent, an editor, a template), the new text is saved as a revision with who
-  saved it (`agent`, `api` or the caller's `X-Exuvia-Origin`, `file`,
+  saved it (`agent`, `ui` for the workbench, `api` or the caller's
+  `X-Exuvia-Origin`, `file`,
   `template`, `import`, `restore`, `load`). A deletion is a revision too.
   Revisions are keyed by the same hash each run records, so every output can
   show the exact code that produced it, and any version can be restored (a
@@ -1908,7 +1909,7 @@ headlessly or iframe the UI:
 
 Requests that change code may send `X-Exuvia-Origin` (letters, digits, `-`,
 `_`; e.g. `ui` or `mcp`) to label the revisions they create; otherwise they
-are recorded as `api`. With `EXUVIA_AUTH=headers` the signed-in person is
+are recorded as `api`. The workbench sends `ui` on every project request. With `EXUVIA_AUTH=headers` the signed-in person is
 recorded as well: as `author` on each revision, and as `started_by` on each
 run row (`/api/runs`, `/api/nodes/{name}/runs`, `/api/runs/{id}`), with
 their user id beside each (`author_user`, `started_by_user`); all are null
