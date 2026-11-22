@@ -8,7 +8,8 @@ import { NewNodeDialog } from "./NewNodeDialog";
 import { PackagesDialog } from "./PackagesDialog";
 import { HelpersDialog } from "./HelpersDialog";
 import { HistoryDialog } from "./History";
-import { Views } from "./Views";
+import { Views, showViewNext } from "./Views";
+import { Files } from "./Files";
 import { SignedInAs } from "./Me";
 import { HelpMenu } from "./Help";
 import { useTheme } from "./theme";
@@ -18,8 +19,19 @@ import { failed, Toasts } from "./toast";
 
 const embed = new URLSearchParams(location.search).has("embed");
 
-type Mode = "graph" | "views";
-const modeFromHash = (): Mode => (location.hash === "#views" ? "views" : "graph");
+type Mode = "graph" | "views" | "files";
+const modeFromHash = (): Mode => (location.hash === "#views" ? "views" : location.hash.startsWith("#files") ? "files" : "graph");
+/** The file open in Files mode, kept in the address: `#files/nodes/prices.py`. */
+const fileFromHash = (): string | null => {
+  const m = /^#files\/(.+)$/.exec(location.hash);
+  try {
+    return m ? decodeURI(m[1]) : null;
+  } catch {
+    return null; // a malformed address
+  }
+};
+const hashFor = (m: Mode, file: string | null) =>
+  m === "views" ? "#views" : m === "files" ? (file ? `#files/${encodeURI(file)}` : "#files") : location.pathname + location.search;
 
 /** Whether the agent panel starts open: as it was left, else open where there is room beside the graph. */
 function agentStartsOpen(): boolean {
@@ -50,9 +62,16 @@ export default function App() {
   }, []);
   const [conn, setConn] = useState(true);
   const [mode, setModeState] = useState<Mode>(modeFromHash);
+  const [file, setFileState] = useState<string | null>(fileFromHash);
+  const fileRef = useRef(file);
+  fileRef.current = file;
   const setMode = useCallback((m: Mode) => {
     setModeState(m);
-    history.replaceState(null, "", m === "views" ? "#views" : location.pathname + location.search);
+    history.replaceState(null, "", hashFor(m, fileRef.current));
+  }, []);
+  const setFile = useCallback((f: string | null) => {
+    setFileState(f);
+    history.replaceState(null, "", hashFor("files", f));
   }, []);
   const [dark, toggleTheme] = useTheme();
   const agent = useRef<AgentHandle>(null);
@@ -154,6 +173,15 @@ export default function App() {
           <button className={mode === "views" ? "on" : ""} onClick={() => setMode("views")} role="tab" aria-selected={mode === "views"}>
             Views{project?.views.length ? <span className="n">{project.views.length}</span> : null}
           </button>
+          <button
+            className={mode === "files" ? "on" : ""}
+            onClick={() => setMode("files")}
+            role="tab"
+            aria-selected={mode === "files"}
+            title="Browse and edit the files of the graph and the views"
+          >
+            Files
+          </button>
         </div>
         <div className="counts">
           {(["fresh", "stale", "new", "failed", "error", "running"] as const).map((s) =>
@@ -209,7 +237,22 @@ export default function App() {
       </header>
 
       <div className={mainCls}>
-        {mode === "views" ? (
+        {mode === "files" ? (
+          <Files
+            project={project}
+            dark={dark}
+            file={file}
+            onFile={setFile}
+            onOpenNode={(name) => {
+              setMode("graph");
+              setSelected(name);
+            }}
+            onOpenView={(name) => {
+              showViewNext(name);
+              setMode("views");
+            }}
+          />
+        ) : mode === "views" ? (
           <Views
             project={project}
             nodes={nodes}

@@ -237,6 +237,14 @@ the workbench to read a module and see which nodes use it. Besides `nodes/`,
 `lib/**/*.py` and view folders (see "Views") are the only places the API and
 the agent can write.
 
+The workbench's **Files** mode (next to Graph and Views) shows those files as
+one tree: `nodes/`, `lib/` and each view's folder under `views/`. Pick a file
+to read and edit it, with what it reads and what reads it (a node's upstreams,
+the nodes and views downstream, the nodes that import a helper), and its saved
+versions on the History tab. Saving there is the same save as in the
+inspector or a view's Code tab. The open file is in the address
+(`#files/nodes/prices.py`), so a link opens it.
+
 ## Run parameters and replays
 
 A project can declare **run parameters** in `exuvia.json`. A node that reads

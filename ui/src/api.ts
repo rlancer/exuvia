@@ -262,6 +262,9 @@ export const api = {
   /** Write one file of a view (`App.tsx`, `components/Chart.tsx`, `view.json`); answers the view as listed. */
   saveViewFile: (name: string, path: string, source: string) =>
     req<ProjectView>("PUT", `/api/views/${name}/files/${path.split("/").map(encodeURIComponent).join("/")}`, { source }),
+  /** The text of one file of a view; `path` is relative to the view's folder. */
+  viewFile: async (name: string, path: string) =>
+    (await req<{ source: string }>("GET", `/api/views/${name}/files/${path.split("/").map(encodeURIComponent).join("/")}`)).source,
   viewData,
   /** DuckDB SQL that sees only the view's `reads`; the whole result as Arrow bytes. */
   viewQuery: async (view: string, sql: string, params?: Record<string, unknown>) =>
@@ -270,6 +273,9 @@ export const api = {
   helpers: () => req<{ files: HelperFile[] }>("GET", "/api/files"),
   helper: (path: string) =>
     req<HelperFile & { source: string }>("GET", `/api/files/${path.split("/").map(encodeURIComponent).join("/")}`),
+  /** Write a helper (`lib/stats.py`); `parse_error` is set when it is not valid Python (it is written all the same). */
+  saveHelper: (path: string, source: string) =>
+    req<HelperFile & { parse_error: string | null }>("PUT", `/api/files/${path.split("/").map(encodeURIComponent).join("/")}`, { source }),
   save: (name: string, source: string) => req<Project>("PUT", `/api/nodes/${name}`, { source }),
   create: (b: { name: string; kind: string; deps: string[]; description: string }) =>
     req<Project>("POST", "/api/nodes", b),
