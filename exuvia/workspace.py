@@ -377,6 +377,7 @@ class Workspace:
             own, key = self.node_params(name, params)
             ls = self.store.last_success(name, key)
             lr = self.store.last_run(name, key)
+            la = self.store.last_attempt(name, key)
             current[name] = ls["artifact_id"] if ls else None
             reason = None
             if node.parse_error:
@@ -401,9 +402,11 @@ class Workspace:
             # Fresh apart from a later failed run: the last good output is still
             # what the code and the inputs would produce, so it can be read.
             output_current = state == "fresh"
-            if lr and lr["status"] == "failed" and (ls is None or lr["queued_at"] > ls["queued_at"]):
+            # A failure stands until the code runs again: a later run that was
+            # cached, skipped or is only queued doesn't clear it.
+            if la and la["status"] == "failed" and (ls is None or la["queued_at"] > ls["queued_at"]):
                 if state != "error":
-                    state, reason = "failed", lr.get("error")
+                    state, reason = "failed", la.get("error")
             if (name, key) in self._inflight:
                 run = self.store.run(self._inflight[(name, key)])
                 state = run["status"] if run else "running"
