@@ -157,7 +157,7 @@ async function app() {
   // Downloads: the node's rows, and the formats they save as.
   await page.getByRole("tab", { name: /^Data/ }).click();
   await page.locator("button", { hasText: "Download" }).last().click();
-  await page.getByText("Parquet", { exact: true }).first().waitFor();
+  await page.getByText("Parquet", { exact: true }).last().waitFor();
   await shot(page, "downloads");
   await page.keyboard.press("Escape");
 
