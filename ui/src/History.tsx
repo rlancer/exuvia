@@ -28,6 +28,8 @@ export function HistoryBrowser(props: {
   layout: "stack" | "side";
   /** Open with the list narrowed to this file. */
   path?: string;
+  /** Open with this revision selected. */
+  rev?: number;
   /** Offer a "Deleted" filter: files whose newest revision deleted them. */
   deletedFilter?: boolean;
   /** A note for the restore confirmation, e.g. that unsaved edits will be replaced. */
@@ -37,7 +39,7 @@ export function HistoryBrowser(props: {
   const { filter, dark } = props;
   const [revs, setRevs] = useState<CodeRevision[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [selId, setSelId] = useState<number | null>(null);
+  const [selId, setSelId] = useState<number | null>(props.rev ?? null);
   const [against, setAgainst] = useState<Against>("previous");
   const [path, setPath] = useState<string>(props.path ?? "");
   const [deletedOnly, setDeletedOnly] = useState(false);
@@ -58,8 +60,14 @@ export function HistoryBrowser(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter.node, filter.view, props.tick, reload]);
 
-  // Follow the file the caller has open.
+  // Follow the file and the version the caller has open.
   useEffect(() => setPath(props.path ?? ""), [props.path]);
+  useEffect(() => {
+    if (props.rev != null) {
+      setSelId(props.rev);
+      setDeletedOnly(false);
+    }
+  }, [props.rev]);
 
   const all = revs ?? [];
   const files = useMemo(() => paths(all), [all]);
@@ -253,11 +261,72 @@ export function HistoryBrowser(props: {
   );
 }
 
-/** The project's whole code history, from the top bar: every file, and the deleted nodes and views to bring back. */
-export function HistoryDialog(props: { dark: boolean; tick: unknown; onClose: () => void; onRestored: (rev: CodeRevision) => void }) {
+/**
+ * The History tab of the side panel: the project's latest saves, newest first,
+ * or the files whose newest revision deleted them. Picking one opens that
+ * file's versions next to the graph, where it can be compared and restored.
+ */
+export function HistoryRail(props: {
+  /** Changes when the files change (a code or view hash): the list is read again. */
+  tick: unknown;
+  /** The revision open in the main area, highlighted. */
+  current: number | null;
+  onOpen: (rev: CodeRevision) => void;
+}) {
+  const [revs, setRevs] = useState<CodeRevision[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [deletedOnly, setDeletedOnly] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    api.codeRevisions({ limit: 1000 }).then(
+      (r) => live && (setRevs(r), setErr(null)),
+      (e: Error) => live && setErr(e.message),
+    );
+    return () => {
+      live = false;
+    };
+  }, [props.tick]);
+
+  const all = revs ?? [];
+  const deleted = useMemo(() => deletedFiles(all), [all]);
+  // A deleted file opens on its last saved version: the one to restore.
+  const shown = deletedOnly ? deleted.map((d) => ({ rev: d.last ?? d.deleted, gone: d.deleted })) : all.slice(0, 200).map((r) => ({ rev: r, gone: null }));
+
   return (
-    <Dialog title="Code history" onClose={props.onClose} className="history-dialog">
-      <HistoryBrowser filter={{}} tick={props.tick} dark={props.dark} layout="side" deletedFilter onRestored={props.onRestored} />
-    </Dialog>
+    <div className="side-history">
+      <div className="history-filter">
+        <div className="seg" role="tablist" aria-label="Which revisions">
+          <button role="tab" aria-selected={!deletedOnly} className={!deletedOnly ? "on" : ""} onClick={() => setDeletedOnly(false)}>
+            Latest saves
+          </button>
+          <button role="tab" aria-selected={deletedOnly} className={deletedOnly ? "on" : ""} onClick={() => setDeletedOnly(true)}>
+            Deleted{deleted.length ? <span className="n">{deleted.length}</span> : null}
+          </button>
+        </div>
+      </div>
+      {err && <div className="err-banner"><div>{err}</div></div>}
+      <ul className="runs history-revs" aria-label={deletedOnly ? "Deleted files" : "Latest saves"}>
+        {shown.map(({ rev: r, gone }) => (
+          <li
+            key={r.id}
+            className={r.id === props.current ? "on" : ""}
+            {...pressable(() => props.onOpen(r))}
+            aria-pressed={r.id === props.current}
+            title={gone ? `Deleted ${when(gone.saved_at)}: open its last version to restore it` : `${r.path}, saved ${when(r.saved_at)}`}
+          >
+            <span className="rev-path mono">{r.path}</span>
+            <span className="rev-line">
+              <span className="rev-when">{ago((gone ?? r).saved_at)}</span>
+              <span className="rev-who">{(gone ?? r).author ?? "—"}</span>
+              <span className="rev-origin">{ORIGIN_LABEL[(gone ?? r).origin] ?? (gone ?? r).origin}</span>
+              {gone || r.hash === null ? <span className="rev-tag del">deleted</span> : r.current ? <span className="rev-tag cur">current</span> : null}
+            </span>
+          </li>
+        ))}
+        {revs && !shown.length && <li className="none">{deletedOnly ? "No deleted nodes, views or files." : "No saved versions yet. Every save of the code is kept here."}</li>}
+        {!revs && !err && <li className="none">Loading…</li>}
+      </ul>
+    </div>
   );
 }

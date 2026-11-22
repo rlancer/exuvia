@@ -232,18 +232,22 @@ def basket_corr(returns):
 
 A node's code hash covers every `lib/` file it imports, directly or through
 other helpers, so editing a helper marks exactly those nodes stale. Only
-static `import` / `from … import` statements are tracked. Open **Helpers** in
-the workbench to read a module and see which nodes use it. Besides `nodes/`,
+static `import` / `from … import` statements are tracked. Open a helper from
+the workbench's **Files** tab (below) to edit it and see which nodes use it.
+Besides `nodes/`,
 `lib/**/*.py` and view folders (see "Views") are the only places the API and
 the agent can write.
 
-The workbench's **Files** mode (next to Graph and Views) shows those files as
-one tree: `nodes/`, `lib/` and each view's folder under `views/`. Pick a file
-to read and edit it, with what it reads and what reads it (a node's upstreams,
-the nodes and views downstream, the nodes that import a helper), and its saved
-versions on the History tab. Saving there is the same save as in the
-inspector or a view's Code tab. The open file is in the address
-(`#files/nodes/prices.py`), so a link opens it.
+The workbench's side panel has three tabs: **Agent**, **Files** and
+**History**. **Files** shows those files as one tree: `nodes/`, `lib/` and
+each view's folder under `views/`, with each node's and view's state. It only
+finds files; picking one opens it where it is edited. A node file selects the
+node on the graph and opens the inspector's Code tab, a view file opens that
+view's Code tab, and a helper opens in an editor in place of the graph, with
+the nodes that import it and its saved versions. A helper's address is
+`#files/lib/stats.py`, and `#files/<path>` opens any of these files from a
+link. The chat keeps running while another tab is showing; a dot on the
+Agent tab means it has something new.
 
 ## Run parameters and replays
 
@@ -733,9 +737,10 @@ three places:
 
 - a node's **History** tab in the inspector, next to Code, Data and Runs;
 - a view's **History** tab (also reached from **History** in its Code tab);
-- **History** in the top bar: every versioned file of the project, with a
-  **Deleted** filter that lists deleted nodes, view files and other files by
-  the last version saved before the deletion.
+- the side panel's **History** tab: the project's latest saves, and a
+  **Deleted** list of deleted nodes, view files and other files by the last
+  version saved before the deletion. Picking one opens the project's whole
+  history in place of the graph (`#history`), on that file and version.
 
 Each lists the revisions newest first with when, who (the signed-in
 `author`, `—` without sign-in), how it was saved (`origin`) and, where

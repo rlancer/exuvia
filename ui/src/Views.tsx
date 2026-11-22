@@ -17,11 +17,14 @@ type Drafts = Record<string, Record<string, string>>;
 let keptDrafts: Drafts = {};
 let keptPane: Pane = "view";
 let keptView: string | null = null;
+/** The newest open request (see `open` on Views) already shown. */
+let shownOpen = 0;
 
-/** Open Views mode on this view, rendered (from the Files mode's "Open view"). */
-export function showViewNext(name: string) {
-  keptView = name;
-  keptPane = "view";
+/** Show one view, rendered or with one of its files in the Code pane; `seq` tells a new request from one already shown. */
+export interface OpenView {
+  view: string;
+  file?: string;
+  seq: number;
 }
 
 /** Overrides → the parameter set a view sees (resolved values + declarations). */
@@ -53,14 +56,23 @@ export function Views(props: {
   nodes: GraphNode[];
   dark: boolean;
   onOpenNode: (name: string) => void;
+  /** A view (and file) picked elsewhere, in the side panel's Files tab. */
+  open?: OpenView | null;
 }) {
-  const { project, dark, onOpenNode } = props;
+  const { project, dark, onOpenNode, open } = props;
   const [overrides, setOverrides] = useState<Params>({});
   const [at, setAt] = useState<Project | null>(null);
   const [paramErr, setParamErr] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(keptView);
   const [pane, setPane] = useState<Pane>(keptPane);
   useEffect(() => void (keptView = selected), [selected]);
+  useEffect(() => {
+    if (!open || open.seq <= shownOpen) return;
+    shownOpen = open.seq;
+    setSelected(open.view);
+    if (open.file) setOpenFiles((f) => ({ ...f, [open.view]: open.file! }));
+    setPane(open.file ? "code" : "view");
+  }, [open]);
   const [drafts, setDrafts] = useState<Drafts>(keptDrafts);
   const [openFiles, setOpenFiles] = useState<Record<string, string>>({});
   useEffect(() => void (keptDrafts = drafts), [drafts]);
