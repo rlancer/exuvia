@@ -194,6 +194,7 @@ import exuvia
 @exuvia.node(
     schedule="0 18 * * 1-5",          # optional: re-run on this cron (local time)
     cascade=True,                      # re-run when upstream output changes (default)
+    retries=2,                         # optional: try a failed run again, up to 2 more times
     chart={"mark": "line", "encoding": {...}},   # optional Vega-Lite spec, no `data`
 )
 def rolling_vol(returns):
@@ -207,6 +208,7 @@ def rolling_vol(returns):
 ```sql
 -- Latest vol by sector.
 -- schedule: */30 9-16 * * 1-5
+-- retries: 2
 -- chart: {"mark": "bar", "encoding": {...}}
 select u.sector, avg(v.vol_20d) as avg_vol
 from universe u join rolling_vol v using (ticker)
@@ -688,6 +690,20 @@ in the image, listed in a `pyproject.toml` of its own and installed with
   cron. If it produces *different* output, downstream nodes with
   `cascade=True` refresh automatically; identical output stops the cascade.
   Schedules can be paused from the UI without editing code.
+- **A scheduled run is for its cron slot.** A `date` run parameter whose
+  default is `today` gets the date of the slot the run was due at, in the
+  project `timezone`, not the date it happened to start. A run delayed past
+  midnight, or a catch-up run on Monday for Friday's missed 16:30, computes
+  the day it was due for.
+- **Overlapping fires.** A fire that comes while the node is still running
+  waits and runs once that run ends (`overlap="queue"`, the default; at most
+  one waits), or is dropped with `overlap="skip"` (SQL: `-- overlap: skip`).
+- **Retries.** `retries=N` (0 to 10; SQL: `-- retries: N`) tries a failed run
+  again up to N more times, `retry_delay` seconds after the failure (default
+  30, SQL `-- retry_delay: 60`), twice as long before each further retry. The
+  attempts share one run and one log, the run waits as `queued` between them,
+  and a failure is reported (webhook, downstream skipped) only once the last
+  attempt fails. Cancelling the run ends its wait and stops the retries.
 - **Run history** lives in a database: status, trigger (manual / schedule /
   cascade / agent / cli), timings, logs, schema. Schedule state (last fire
   per node) is persisted too, so restarts neither drop nor double-fire
@@ -1401,7 +1417,8 @@ its process is asleep. Run the control plane with `--scheduler external` and
 have something call `POST /api/schedule/tick` every minute or so: a Cloudflare
 Durable Object alarm or Cron Trigger, a Kubernetes CronJob, or system cron.
 Ticks are idempotent; fires missed while asleep are coalesced into one
-catch-up run, and paused schedules skip their backlog.
+catch-up run, for the latest missed slot (and its date), and paused schedules
+skip their backlog. Replay any other missed dates with `POST /api/backfill`.
 
 **Failure notifications.** Give a project a webhook and exuvia POSTs JSON to
 it when a scheduled or cascade run fails (manual runs have someone watching

@@ -11,13 +11,13 @@ T0 = datetime(2026, 1, 5, 9, 1).timestamp()  # a Monday, 09:01 local
 MIN = 60
 
 
-def make(tmp_path, cron="*/5 * * * *"):
+def make(tmp_path, cron="*/5 * * * *", extra="", calls=None):
     (tmp_path / "nodes").mkdir(exist_ok=True)
     (tmp_path / "nodes" / "src.py").write_text(
         textwrap.dedent(f'''
             import exuvia
 
-            @exuvia.node(schedule="{cron}")
+            @exuvia.node(schedule="{cron}"{extra})
             def src():
                 return {{"ok": True}}
         '''),
@@ -28,6 +28,8 @@ def make(tmp_path, cron="*/5 * * * *"):
 
     async def fake_run(targets, **kw):
         fired.extend(targets)
+        if calls is not None:
+            calls.append(kw)
         return {}
 
     ws.run = fake_run  # scheduling only; execution is covered elsewhere
@@ -139,3 +141,90 @@ def test_status_reports_next_fire(tmp_path):
     tick(ws, T0)
     nxt = ws.status()["src"]["schedule"]["next"]
     assert nxt == datetime(2026, 1, 5, 9, 5).timestamp()
+
+
+def test_scheduled_run_gets_its_slot_date_not_the_date_it_ran(tmp_path):
+    # Friday's 16:30 fire is missed while the host sleeps; the catch-up run on
+    # Monday morning computes Friday, the day it was due for.
+    calls: list[dict] = []
+    ws, _ = make(tmp_path, cron="30 16 * * 1-5", calls=calls)
+    ws.set_settings(timezone="America/New_York")
+    ws.set_param("as_of", {"type": "date", "default": "today"})
+    ws.set_param("region", {"type": "string", "default": "us"})
+    tick(ws, _et(2026, 11, 13, 9, 0))
+    assert tick(ws, _et(2026, 11, 16, 9, 0)) == ["src"]
+    assert calls[-1]["params"] == {"as_of": "2026-11-13"}  # Friday, other params default
+    assert calls[-1]["trigger"] == "schedule"
+    assert tick(ws, _et(2026, 11, 16, 16, 30, 3)) == ["src"]  # on time (a tick a few seconds late)
+    assert calls[-1]["params"] == {"as_of": "2026-11-16"}
+
+
+def test_slot_date_uses_the_project_timezone(tmp_path):
+    # 23:30 in New York is already the next day in UTC.
+    calls: list[dict] = []
+    ws, _ = make(tmp_path, cron="30 23 * * *", calls=calls)
+    ws.set_settings(timezone="America/New_York")
+    ws.set_param("as_of", {"type": "date", "default": "today"})
+    tick(ws, _et(2026, 11, 13, 12, 0))
+    assert tick(ws, _et(2026, 11, 14, 0, 10)) == ["src"]  # run 40 minutes late
+    assert calls[-1]["params"] == {"as_of": "2026-11-13"}
+
+
+def test_a_fixed_date_default_is_left_alone(tmp_path):
+    calls: list[dict] = []
+    ws, _ = make(tmp_path, calls=calls)
+    ws.set_param("as_of", {"type": "date", "default": "2026-01-02"})
+    tick(ws, T0)
+    assert tick(ws, T0 + 4 * MIN) == ["src"]
+    assert calls[-1]["params"] == {}
+
+
+def test_a_fire_while_running_waits_for_the_run_by_default(tmp_path):
+    ws, fired = make(tmp_path)
+    tick(ws, T0)
+    ws._inflight[("src", "")] = "r1"  # a run of src is in progress
+    assert tick(ws, T0 + 4 * MIN) == []  # 09:05 is due but waits
+    # An external scheduler is told to look again soon, not "now".
+    assert ws.next_fire_at(T0 + 4 * MIN) == T0 + 4 * MIN + 30
+    assert tick(ws, T0 + 6 * MIN) == []
+    del ws._inflight[("src", "")]
+    assert tick(ws, T0 + 7 * MIN) == ["src"]  # the run ended: the queued fire runs
+    assert tick(ws, T0 + 8 * MIN) == []  # once, not once per tick it waited
+    assert tick(ws, T0 + 9 * MIN) == ["src"]  # 09:10, back on the clock
+    assert fired == ["src", "src"]
+
+
+def test_overlap_skip_drops_a_fire_while_running(tmp_path):
+    ws, fired = make(tmp_path, extra=', overlap="skip"')
+    tick(ws, T0)
+    ws._inflight[("src", "")] = "r1"
+    assert tick(ws, T0 + 4 * MIN) == []  # 09:05 dropped
+    assert ws.next_fire_at(T0 + 4 * MIN) == datetime(2026, 1, 5, 9, 10).timestamp()
+    del ws._inflight[("src", "")]
+    assert tick(ws, T0 + 7 * MIN) == []
+    assert tick(ws, T0 + 9 * MIN) == ["src"]  # 09:10
+    assert fired == ["src"]
+
+
+def test_scheduled_runs_are_tracked_and_stopped(tmp_path):
+    ws, _ = make(tmp_path)
+    started = asyncio.Event()
+
+    async def slow_run(targets, **kw):
+        started.set()
+        await asyncio.sleep(3600)
+
+    ws.run = slow_run
+
+    async def go():
+        ws.bus.bind(asyncio.get_running_loop())
+        await ws.tick(T0)
+        await ws.tick(T0 + 4 * MIN)
+        await started.wait()
+        assert len(ws._tasks) == 1  # held until it ends
+        task = ws._tasks[0]
+        await ws.stop()
+        assert task.cancelled()
+        assert ws._tasks == []
+
+    asyncio.run(go())

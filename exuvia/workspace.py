@@ -13,7 +13,13 @@ Execution model
   cascade, so a scheduled source that returns the same data costs nothing
   downstream.
 * Each node may carry its own cron ``schedule``; the scheduler forces that
-  node to re-run on its cadence and lets the cascade carry the result.
+  node to re-run on its cadence and lets the cascade carry the result. A
+  scheduled run is pinned to its cron slot: a ``date`` parameter whose default
+  is ``today`` gets the slot's date, so a late or catch-up run still computes
+  the day it was due for. A fire that comes while the node is still running
+  waits for that run to end (``overlap="queue"``) or is dropped (``"skip"``).
+* A node with ``retries`` tries a failed run again, after ``retry_delay``
+  seconds, doubling each time. The attempts share one run row and one log.
 
 Run parameters
 --------------
@@ -36,11 +42,11 @@ import sys
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import Context, ContextVar
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Coroutine, Iterator
 
 from croniter import croniter
 
@@ -61,6 +67,11 @@ MAX_PARALLEL = int(os.environ.get("EXUVIA_MAX_PARALLEL", "4"))
 SCHEDULER = os.environ.get("EXUVIA_SCHEDULER", "internal")
 HISTORY_VIEW_LIMIT = 400  # parameter sets unioned into a `<node>__runs` view
 _ALL_ROWS = 2**62  # the limit of an offset-only read
+# How soon an external scheduler should tick again while a fire waits for the
+# node's run in progress to end (overlap="queue"; see next_fire_at).
+QUEUED_RECHECK_S = 30
+# What _execute returns for a failed attempt that will be tried again.
+RETRY = "retry"
 # Project files besides nodes/ whose versions are kept as code revisions.
 VERSIONED_FILES = ("exuvia.json", "AGENTS.md", "pyproject.toml")
 
@@ -105,7 +116,10 @@ class Workspace:
         self._node_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._slots = asyncio.Semaphore(MAX_PARALLEL)
         self._inflight: dict[tuple[str, str], str] = {}  # (node, params_key) -> run_id
-        self._tasks: list[asyncio.Task[Any]] = []
+        self._tasks: list[asyncio.Task[Any]] = []  # cancelled by stop()
+        self._cancelled: set[str] = set()  # runs asked to stop: never retried
+        # Runs waiting to retry: run_id -> (loop, event that cuts the wait short).
+        self._retry_waits: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Event]] = {}
         self._stop_watching: asyncio.Event | None = None
         self._backfill: dict[str, Any] | None = None
         self.executor = make_executor(self.project.root, MAX_PARALLEL)
@@ -128,11 +142,23 @@ class Workspace:
         # and a scheduled run was started by the clock, not by whichever
         # request (and signed-in person) happened to load the project.
         self._stop_watching = asyncio.Event()
-        self._tasks = [asyncio.create_task(self._watch_files(self._stop_watching), context=Context())]
+        self._spawn(self._watch_files(self._stop_watching), context=Context())
         if artifact_store() is not None:
-            self._tasks.append(asyncio.create_task(self._sync_artifacts(), context=Context()))
+            self._spawn(self._sync_artifacts(), context=Context())
         if SCHEDULER == "internal":
-            self._tasks.append(asyncio.create_task(self._schedule_loop(), context=Context()))
+            self._spawn(self._schedule_loop(), context=Context())
+
+    def _spawn(self, coro: Coroutine[Any, Any, Any], *, context: Context | None = None) -> asyncio.Task[Any]:
+        """Start a background task and keep a reference to it until it ends:
+        the event loop only holds tasks weakly, and stop() cancels them."""
+        task = asyncio.create_task(coro, context=context)
+        self._tasks.append(task)
+        task.add_done_callback(self._forget)
+        return task
+
+    def _forget(self, task: asyncio.Task[Any]) -> None:
+        with suppress(ValueError):
+            self._tasks.remove(task)
 
     async def stop(self) -> None:
         """Stop the background tasks and wait for them to finish. Once this
@@ -141,9 +167,10 @@ class Workspace:
         thread is reading cannot be deleted; see Hub.apply_template)."""
         if self._stop_watching is not None:
             self._stop_watching.set()  # the watch thread checks it every 50 ms
-        for t in self._tasks:
+        tasks = list(self._tasks)
+        for t in tasks:
             t.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks = []
         self.executor.close()
 
@@ -631,10 +658,22 @@ class Workspace:
                 bad = [d for d, r in zip(deps_in_plan, results) if r != "success"]
                 return self._finish(run_id, name, key, status="skipped", error=f"upstream failed: {', '.join(bad)}")
             lock = self._node_locks.setdefault((name, key), asyncio.Lock())
-            async with lock, self._slots:
-                if name not in force and self._is_fresh_ignoring_inflight(name, key, params):
-                    return self._finish(run_id, name, key, status="cached")
-                return await self._execute(run_id, name, key, params)
+            node = g.nodes[name]
+            attempts = 1 + node.retries
+            # The node's lock is held across retries, so another run of the
+            # same output waits for the last attempt; the parallelism slot is
+            # given back while waiting to retry.
+            async with lock:
+                for attempt in range(1, attempts + 1):
+                    async with self._slots:
+                        if attempt == 1 and name not in force and self._is_fresh_ignoring_inflight(name, key, params):
+                            return self._finish(run_id, name, key, status="cached")
+                        result = await self._execute(run_id, name, key, params, attempt=attempt, attempts=attempts)
+                    if result != RETRY:
+                        return result
+                    if not await self._wait_to_retry(run_id, node.retry_delay * 2 ** (attempt - 1)):
+                        return self._finish(run_id, name, key, status="failed", error="cancelled")
+                return self._finish(run_id, name, key, status="failed", error="no attempts left")  # unreachable
 
         for n in plan:
             tasks[n] = asyncio.create_task(run_one(n))
@@ -649,12 +688,23 @@ class Workspace:
             ]
             downstream = self._cascade_set(changed) - set(plan)
             if downstream:
-                asyncio.create_task(
+                self._spawn(
                     self.run(
                         sorted(downstream), params=params, trigger="cascade", pull_upstream=False, cascade=False
                     )
                 )
         return finals
+
+    async def _wait_to_retry(self, run_id: str, delay: float) -> bool:
+        """Sleep before a retry. False when the run was cancelled meanwhile."""
+        wake = asyncio.Event()
+        self._retry_waits[run_id] = (asyncio.get_running_loop(), wake)
+        try:
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(wake.wait(), delay)
+        finally:
+            self._retry_waits.pop(run_id, None)
+        return run_id not in self._cancelled
 
     @staticmethod
     def _pull(st: dict[str, Any]) -> bool:
@@ -696,6 +746,7 @@ class Workspace:
         self, run_id: str, name: str, key: str, *, status: str, error: str | None = None, **fields: Any
     ) -> str:
         self.store.update_run(run_id, status=status, error=error, finished_at=time.time(), **fields)
+        self._cancelled.discard(run_id)
         if self._inflight.get((name, key)) == run_id:
             del self._inflight[(name, key)]
         self._emit_run(run_id)
@@ -784,7 +835,12 @@ class Workspace:
             # Nothing a client needs to hear, but the next export is smaller.
             self.bus.touch()
 
-    async def _execute(self, run_id: str, name: str, key: str, params: dict[str, Any]) -> str:
+    async def _execute(
+        self, run_id: str, name: str, key: str, params: dict[str, Any], *, attempt: int = 1, attempts: int = 1
+    ) -> str:
+        """Run one attempt of ``name``. Returns the run's final status, or
+        RETRY when the attempt failed and the caller should try again (the
+        run row is then back to ``queued``)."""
         g = self.graph
         node = g.nodes[name]
         if node.parse_error:
@@ -798,9 +854,10 @@ class Workspace:
             inputs[dep] = {"path": path, "kind": ls["kind"], "artifact_id": ls["artifact_id"]}
             input_ids[dep] = ls["artifact_id"]
 
-        self.store.update_run(
-            run_id, status="running", started_at=time.time(), code_hash=node.code_hash, inputs=input_ids
-        )
+        # A retry keeps the first attempt's start time, so the run's duration
+        # covers every attempt.
+        started = {"started_at": time.time()} if attempt == 1 else {}
+        self.store.update_run(run_id, status="running", code_hash=node.code_hash, inputs=input_ids, **started)
         self._emit_run(run_id)
 
         def on_log(text: str) -> None:
@@ -822,6 +879,12 @@ class Workspace:
         # Executors block (subprocess pipes / HTTP streams); keep them off the loop.
         res = await asyncio.to_thread(self.executor.execute, req, on_log)
         if not res.ok:
+            if attempt < attempts and run_id not in self._cancelled and res.error != "cancelled":
+                delay = node.retry_delay * 2 ** (attempt - 1)
+                on_log(f"\nexuvia: attempt {attempt} of {attempts} failed: {res.error}. Retrying in {delay:g}s.\n\n")
+                self.store.update_run(run_id, status="queued")
+                self._emit_run(run_id)
+                return RETRY
             return self._finish(run_id, name, key, status="failed", error=res.error)
         rel = self._rel(res.artifact_path)
         await asyncio.to_thread(self._upload, rel)
@@ -838,7 +901,20 @@ class Workspace:
         )
 
     def cancel(self, run_id: str) -> bool:
-        return self.executor.cancel(run_id)
+        """Stop a run: kill its attempt in progress, or end its wait to retry.
+        Either way it is not tried again. Safe to call from any thread."""
+        waiting = self._retry_waits.get(run_id)
+        if waiting is not None:
+            self._cancelled.add(run_id)
+            loop, wake = waiting
+            loop.call_soon_threadsafe(wake.set)
+            return True
+        # Marked first: the killed attempt must not find itself retryable.
+        self._cancelled.add(run_id)
+        if self.executor.cancel(run_id):
+            return True
+        self._cancelled.discard(run_id)
+        return False
 
     # -- backfill ------------------------------------------------------------
     def backfill_status(self) -> dict[str, Any] | None:
@@ -881,8 +957,7 @@ class Workspace:
             "started_at": time.time(),
             "finished_at": None,
         }
-        task = asyncio.create_task(self._run_backfill(param, resolved, targets, base, force))
-        self._tasks.append(task)
+        self._spawn(self._run_backfill(param, resolved, targets, base, force))
         self.bus.publish({"type": "backfill", "backfill": self.backfill_status()})
         return self.backfill_status() or {}
 
@@ -939,10 +1014,19 @@ class Workspace:
 
         Idempotent and restart-safe: the last fire time is persisted, so an
         external caller can tick as often or as rarely as it likes. Fires
-        missed while the host was asleep are coalesced into one catch-up run.
-        A newly seen (or changed) schedule starts counting from now rather
-        than firing immediately; paused schedules skip their backlog.
-        Scheduled runs use the default parameters, resolved at fire time.
+        missed while the host was asleep are coalesced into one catch-up run,
+        for the latest missed slot. A newly seen (or changed) schedule starts
+        counting from now rather than firing immediately; paused schedules
+        skip their backlog.
+
+        A scheduled run uses the default parameters, except that a ``date``
+        parameter defaulting to ``today`` gets the date of the cron slot the
+        run is for, in the project timezone: a run that starts late, or a
+        catch-up run after a weekend asleep, still computes the day it was
+        due for. A fire that comes while the node is running waits until the
+        run ends (``overlap="queue"``, at most one waits) or is dropped
+        (``overlap="skip"``).
+
         Every change to a schedule's clock is announced on the bus, so the
         change counter moves and a host that persists on change saves it.
         """
@@ -961,25 +1045,38 @@ class Workspace:
                 self.store.set_schedule_state(node.name, node.schedule, now)
                 clock_moved = True
                 continue
-            if self._next_fire(node.schedule, st["last_fired"]) > now:
+            nxt = self._next_fire(node.schedule, st["last_fired"])
+            if nxt > now:
                 continue
+            if node.name in running and node.name not in paused and node.overlap == "queue":
+                continue  # still due at the next tick, once the run has ended
             self.store.set_schedule_state(node.name, node.schedule, now)
             clock_moved = True
-            if node.name in paused or node.name in running:
+            if node.name in paused:
+                continue
+            if node.name in running:
+                print(f"[exuvia] {node.name}: scheduled run skipped, the last one is still running", file=sys.stderr)
                 continue
             due.append(node.name)
+            slot = max(nxt, self._prev_fire(node.schedule, now))
             # The clock started it, not whoever called /api/schedule/tick.
-            asyncio.create_task(self.run([node.name], force={node.name}, trigger="schedule"), context=Context())
+            self._spawn(
+                self.run([node.name], params=self._slot_params(slot), force={node.name}, trigger="schedule"),
+                context=Context(),
+            )
         if clock_moved:
             self.bus.publish({"type": "graph"})
         return due
 
     def next_fire_at(self, now: float | None = None) -> float | None:
         """When the next ``tick`` has work to do (None: nothing is scheduled).
-        Lets an external scheduler sleep until then instead of polling."""
+        Lets an external scheduler sleep until then instead of polling. A
+        fire queued behind a run still in progress is asked about again in
+        QUEUED_RECHECK_S, not "now", so the host does not tick in a loop."""
         now = time.time() if now is None else now
         paused = self.store.paused()
         states = self.store.schedule_states()
+        running = {name for name, _ in self._inflight}
         times: list[float] = []
         for node in self.graph.nodes.values():
             if not node.schedule or node.parse_error or node.name in paused:
@@ -988,13 +1085,32 @@ class Workspace:
             if st is None or st["cron"] != node.schedule:
                 times.append(now)  # a tick has to see it once to start its clock
             else:
-                times.append(self._next_fire(node.schedule, st["last_fired"]))
+                nxt = self._next_fire(node.schedule, st["last_fired"])
+                if nxt <= now and node.name in running and node.overlap == "queue":
+                    nxt = now + QUEUED_RECHECK_S
+                times.append(nxt)
         return min(times) if times else None
 
-    def _next_fire(self, cron: str, after: float) -> float:
+    def _local(self, ts: float) -> datetime:
+        """``ts`` on the project's clock (its timezone, else the host's)."""
         tz = self.project.tz
-        base = datetime.fromtimestamp(after, tz) if tz else datetime.fromtimestamp(after).astimezone()
-        return croniter(cron, base).get_next(datetime).timestamp()
+        return datetime.fromtimestamp(ts, tz) if tz else datetime.fromtimestamp(ts).astimezone()
+
+    def _next_fire(self, cron: str, after: float) -> float:
+        return croniter(cron, self._local(after)).get_next(datetime).timestamp()
+
+    def _prev_fire(self, cron: str, before: float) -> float:
+        return croniter(cron, self._local(before)).get_prev(datetime).timestamp()
+
+    def _slot_params(self, slot: float) -> dict[str, Any]:
+        """The parameters a run for the cron slot at ``slot`` overrides: each
+        ``date`` parameter whose default is ``today`` gets the slot's date."""
+        day = self._local(slot).date().isoformat()
+        return {
+            name: day
+            for name, spec in self.project.params.items()
+            if spec.get("type") == "date" and str(spec.get("default") or "").strip().lower() == "today"
+        }
 
     def set_paused(self, name: str, paused: bool) -> None:
         self.store.set_paused(name, paused)

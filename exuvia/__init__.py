@@ -48,6 +48,9 @@ def node(
     chart: dict[str, Any] | None = None,
     tags: list[str] | None = None,
     params: list[str] | None = None,
+    retries: int = 0,
+    retry_delay: float = 30,
+    overlap: str = "queue",
 ) -> Any:
     """Mark a function as a exuvia node.
 
@@ -62,6 +65,13 @@ def node(
         params: names of the run parameters this node reads with
             ``exuvia.param``. A node's output is stored per value of the
             parameters it (or anything upstream of it) declares.
+        retries: how many more times to try a run that fails (0 to 10).
+            Every attempt is in the same run, with one log.
+        retry_delay: seconds before the first retry (default 30); each
+            further retry waits twice as long as the one before.
+        overlap: what a scheduled fire does while the node is still
+            running: ``"queue"`` (default) runs it once that run ends,
+            ``"skip"`` drops it.
 
     The decorator is a no-op at runtime; exuvia reads these keyword arguments
     from the source with ``ast`` so they must be literals.
@@ -74,6 +84,9 @@ def node(
             "chart": chart,
             "tags": tags or [],
             "params": params or [],
+            "retries": retries,
+            "retry_delay": retry_delay,
+            "overlap": overlap,
         }
         return f
 
