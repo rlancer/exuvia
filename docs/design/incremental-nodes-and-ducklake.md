@@ -463,7 +463,9 @@ runs took 51 s and 131 s.
 
 - **The control plane serves Quack from inside its own process,** from
   something like `.exuvia/lake.duckdb`. That adds no new service, since the
-  control plane is already the one long-running process per project.
+  control plane is already the one long-running process per project. A test
+  of exactly that found no deadlock and little effect on exuvia's API
+  ("Quack inside the control plane" below).
 - **Only the control plane writes.** A lake-backed node returns just its new
   rows, and the control plane appends or merges them in one commit. The
   node's output id becomes the snapshot id, and freshness compares the
@@ -534,13 +536,81 @@ What B implies:
   through it fail twice over: locally the new data file isn't on the
   allowlist, and the server denies the commit.
 - **Not tested:**
-  - the cost of attaching per request (several round trips to the catalog);
+  - the cost of attaching per request, measured later at about 1.1 s on a
+    loaded machine ("Quack inside the control plane" below), with nothing
+    tried to cut it;
   - an allowlist of thousands of files;
   - `DATA_PATH` on S3, where the allowlist would hold `s3://` paths and the
     file list could come from `ducklake_list_files` at the pinned snapshot
     instead of a directory listing;
   - node subprocesses, which run Python under exuvia's own sandbox rather
     than this SQL lock.
+
+### Quack inside the control plane (tested)
+
+[`control_plane.py`](quack-readonly/control_plane.py) builds exuvia's real
+app (`exuvia.server.create_app`) and serves Quack from the same process,
+with the policy, the lockdown and the watchdog. Two threads stand for the
+control plane's own use of the lake. One is a writer committing every 0.2 s.
+The other is a sandboxed reader, set up as in fix B above, attaching and
+counting every 0.5 s. Both connect back to their own process's Quack server.
+That is the case that could deadlock: the caller waits while its statement's
+hook runs on a Quack thread, and the Python hook needs the GIL.
+
+The load ran three 25-second phases:
+
+1. exuvia's HTTP API (`GET /api/project`, and `POST /api/query` with
+   `SELECT 42`) and a Quack "ping" (`quack_query` with the reader token);
+2. the same plus two DuckLake reader processes;
+3. the same with a pure-Python busy loop in the server holding the GIL in
+   5 ms slices, standing for control-plane work in Python.
+
+Each hook ran twice, interleaved, plus a run with no Quack at all. The
+machine has 4 cores and was near 100% busy with other work, so the numbers
+are comparisons, not capacity.
+
+| p50 / p95 ms | No Quack | Python hook | C extension |
+|---|---|---|---|
+| `GET /api/project`, phase 1 | 4.1 / 5.5 | 4.2 / 6.5 | 4.0–4.4 / 6.3–6.7 |
+| `POST /api/query`, phase 1 | 43 / 49 | 55 / 230–244 | 55 / 235–256 |
+| `GET /api/project`, GIL busy | | 106–118 / 243–279 | 99–104 / 245–295 |
+| Quack ping, phase 1 | | 10 / 200–206 | 11 / 201 |
+| Quack ping, GIL busy | | **33–60** / 212–321 | **18–20** / 219–230 |
+| Lake read, other process, GIL busy | | **75–201** / 328–694 | **60–73** / 291–304 |
+| In-process writer commit, GIL busy | | 217–337 / 534–1194 | 270–299 / 644–729 |
+| In-process sandboxed read, phase 1 | | 1,107–1,127 | 1,128–1,139 |
+| In-process sandboxed read, GIL busy | | **2,464–3,846** | **1,938–2,156** |
+
+- **No deadlock and no errors.** With the Python hook, the in-process writer
+  and sandboxed reader kept completing through every phase, including the
+  GIL-busy one. DuckDB releases the GIL while a statement waits on Quack, so
+  a Quack thread can take it to run the hook.
+- **exuvia's own API barely notices Quack.** `GET /api/project` is
+  unchanged. `POST /api/query` keeps its median but its p95 goes from 49 to
+  about 240 ms: the in-process writer and sandboxed reader compete with it
+  for the same CPUs. When Python work holds the GIL, the API slows to
+  about 100 ms at the median with either hook. That is exuvia's own Python,
+  not Quack.
+- **The Python hook pays for a busy GIL; the C extension doesn't.** With the
+  GIL busy, every reader statement waits for it. The ping's median doubles
+  to sextuples, and the sandboxed read takes 2.5–3.8 s against 1.9–2.2 s
+  with the C extension. Both runs showed it. With the GIL free the two hooks
+  are the same speed, as `bench_hooks.py` found.
+- **Attaching per request is slow.** The sandboxed read builds a fresh
+  connection, loads three extensions, attaches at a pinned snapshot and
+  counts. That takes about 1.1 s here, against about 10 ms for a single
+  statement. On a loaded machine it is the main cost of fix B. Keeping a
+  warm reader attached and moving its pin, instead of building one per
+  request, wasn't tried.
+- **The watchdog's limit must allow for a slow attach.** At 5 s it cancelled
+  legitimate reader attaches once the machine was overloaded. These runs
+  used 30 s. The limit stands for a runaway reader statement, so it should
+  be generous, and a cancelled attach should be retried.
+- **The reader token serves only DuckLake readers.** A plain Quack `ATTACH`
+  with the reader token fails on its first query: the statements it sends
+  aren't on the allowlist. A denial reaches the client as "Python exception
+  occurred" with the Python hook. `quack_query` with an allowed statement
+  works.
 
 ### Practical notes
 
@@ -624,10 +694,13 @@ release calendar.
 - Readers get a read-only Quack token. The policy is built and tested
   three ways. Drop the SQL macro: every statement, a writer's included,
   costs about 25 times a no-op hook. Keep the Python UDF hook, with its
-  startup self-test, while Quack is experimental anyway. The C extension is
-  the supported fallback, at the same speed, if a release stops calling
-  Python UDFs; shipping it means a binary per platform, built in CI with
-  zig, and `allow_unsigned_extensions` on the serving instance. A C++
+  startup self-test, while Quack is experimental anyway. Serve it from the
+  control plane's own process: that was tested, with no deadlock. The C
+  extension is the fallback if a release stops calling Python UDFs, or if
+  the control plane's Python work keeps the GIL busy enough to slow readers,
+  since it doesn't need the GIL. It is the same speed otherwise. Shipping it
+  means a binary per platform, built in CI with zig, and
+  `allow_unsigned_extensions` on the serving instance. A C++
   extension would be faster only by calling DuckDB's parser directly, at
   the price of a rebuild for every DuckDB release. Revisit all of it when
   the DuckLake REST API ships.

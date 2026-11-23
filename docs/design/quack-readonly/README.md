@@ -17,6 +17,8 @@ doesn't run it.
 | `attacks.py` | 110 attempts to write, read files, escape or stop the server with the reader token |
 | `concurrency.py` | Six readers in a loop while a writer commits |
 | `sandbox_reader.py` | A DuckLake reader inside a connection locked like exuvia's query sandbox: reads, and escapes from the lock (sections 1 and 3 are expected to show `!!`: they are the failures) |
+| `control_plane.py` | exuvia's real server (`create_app`) with Quack, the policy, the watchdog, an in-process writer and a sandboxed reader in the same process (`serve`), and a load that measures exuvia's HTTP API and the lake under it (`load`) |
+| `control_plane.sh` | Starts `control_plane.py serve`, runs `load` against it, stops it |
 | `shadow_test.py` | Shows why the hook names are qualified with `system.main.` |
 | `bench.py` | Cost of the Python hook per statement, over a log from `serve_log.py` |
 | `bench_hooks.py` | CPU cost per statement of all three hooks and a no-op floor, in one process |
@@ -58,6 +60,21 @@ sh run.sh /tmp/qro-native 9608 serve.py /tmp/qro-native.json --native-policy /tm
 
 ```bash
 sh run.sh /tmp/qro-sandbox 9609 serve.py /tmp/qro-sandbox.json -- sandbox_reader.py
+```
+
+Quack inside exuvia's server, with no Quack (the baseline), the Python hook
+and the C extension. Each run takes about two minutes:
+
+```bash
+sh control_plane.sh /tmp/qro-cp-none 9611 9612 none
+```
+
+```bash
+sh control_plane.sh /tmp/qro-cp-python 9613 9614 python
+```
+
+```bash
+sh control_plane.sh /tmp/qro-cp-native 9615 9616 native /tmp/qro-native-build/exuvia_policy.duckdb_extension
 ```
 
 `serve.py` takes `--no-policy` or `--no-lockdown` to test either layer alone.
