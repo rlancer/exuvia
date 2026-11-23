@@ -15,6 +15,8 @@ from importlib import metadata
 from typing import Any, AsyncIterator
 
 from . import auth, docs, feedback
+from .agent_mcp import McpServers, Toolbox
+from .agent_mcp import enabled as mcp_enabled
 from .llm import Provider, resolve_provider
 from .packages import PackagesError, agent_mode
 from .project import NODE_NAME, coerce_param
@@ -512,6 +514,9 @@ class Agent:
         self.active = 0  # chats in flight (a host must not stop the server mid-turn)
         self.running: dict[str, asyncio.Task[None]] = {}  # session -> background turn
         self.provider: Provider | None = resolve_provider()
+        # The people's outside MCP servers (agent_mcp.py), set by the server
+        # that hosts this agent; None: the agent has exuvia's tools only.
+        self.mcp: McpServers | None = None
 
     @property
     def enabled(self) -> bool:
@@ -727,12 +732,16 @@ class Agent:
         yield {"type": "session", "session_id": session_id}
         transcript.append({"type": "user", "text": message, "at": time.time()})
         self.active += 1
+        toolbox: Toolbox | None = None
         try:
-            async for ev in self._loop(provider, history, message, selected):
+            toolbox = await self._toolbox()
+            async for ev in self._loop(provider, history, message, selected, toolbox):
                 _record(transcript, ev)
                 yield ev
         finally:
             self.active -= 1
+            if toolbox is not None:
+                await toolbox.close()
             # Conversations are part of the project: they survive restarts.
             self.ws.store.save_agent_session(session_id, history, transcript, by, by_user)
             self.ws.bus.publish({"type": "agent", "session_id": session_id})
@@ -771,6 +780,22 @@ class Agent:
 
         self.running[session_id] = asyncio.create_task(work())
         return session_id, queue
+
+    async def _toolbox(self) -> "Toolbox | None":
+        """This turn's outside MCP tools: the servers on the list of whoever
+        asked (agent_mcp.py), connected now. None when they have none."""
+        store = self.mcp
+        if store is None or not mcp_enabled():
+            return None
+        owner = store.owner()
+        if owner is None:
+            return None
+        servers = await asyncio.to_thread(store.active, owner)
+        if not servers:
+            return None
+        box = Toolbox(servers, allow_private=store.allow_private)
+        await box.start({t["name"] for t in TOOLS})
+        return box
 
     def cancel(self, session_id: str) -> bool:
         task = self.running.get(session_id)
@@ -820,7 +845,8 @@ class Agent:
         )
 
     async def _loop(
-        self, provider: Provider, history: list[Any], message: str, selected: str | None
+        self, provider: Provider, history: list[Any], message: str, selected: str | None,
+        toolbox: Toolbox | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
 
         context = ""
@@ -832,10 +858,14 @@ class Agent:
             context += ").</ui_context>"
         provider.add_user(history, message + context)
         system = self.instructions()
+        tools = TOOLS
+        if toolbox is not None:
+            system += toolbox.instructions()
+            tools = [*TOOLS, *toolbox.tools]
 
         for _ in range(MAX_TURNS):
             turn = None
-            async for ev in provider.turn(system, TOOLS, history):
+            async for ev in provider.turn(system, tools, history):
                 if ev["type"] == "turn_end":
                     turn = ev["turn"]
                 else:
@@ -851,6 +881,9 @@ class Agent:
                 yield {"type": "tool", "id": call.id, "name": call.name, "input": _ui_input(call.name, args)}
                 if call.parse_error:
                     ok, text, extra = False, f"INVALID_INPUT: {call.parse_error}", {}
+                elif toolbox is not None and call.name in toolbox:
+                    ok, text = await toolbox.call(call.name, call.args)
+                    extra = {"mcp": toolbox.server_of(call.name)}
                 else:
                     ok, text, extra = await self.call_tool(call.name, call.args)
                 yield {"type": "tool_result", "id": call.id, "name": call.name, "ok": ok, "summary": text[:400], **extra}

@@ -1773,6 +1773,8 @@ empty file, stops exuvia with an error.
 | `EXUVIA_BASE_URL` | OpenRouter | base URL for the `openai` provider (Ollama, vLLM, LiteLLM, …) |
 | `PORTKEY_BASE_URL` | `https://api.portkey.ai/v1` | a self-hosted Portkey gateway, for the `portkey` provider |
 | `PORTKEY_CONFIG` / `PORTKEY_PROVIDER` / `PORTKEY_VIRTUAL_KEY` | — | sent as `x-portkey-config`, `x-portkey-provider` and `x-portkey-virtual-key` (see "The agent") |
+| `EXUVIA_AGENT_MCP` | `on` | `off`: the agent uses no outside MCP servers, and `/api/me/mcp` answers 404 (see "The agent") |
+| `EXUVIA_AGENT_MCP_PRIVATE` | off | `1`: the agent's MCP servers may be on private addresses on a server that needs a sign-in or a token |
 | `EXUVIA_DB` | per-project SQLite | where run history, schedules, sessions and code revisions live: `sqlite:///<path>` or `postgresql://…` |
 | `EXUVIA_DB_SCOPE` | — | prefix for project scopes in a shared `EXUVIA_DB` (e.g. a user id) |
 | `EXUVIA_ARTIFACT_STORE` | local disk | `s3://bucket/prefix`: keep node outputs in an S3-compatible bucket, keyed `<prefix>/<project>/<node>/<sha>.<ext>` |
@@ -1903,6 +1905,39 @@ turn if one is still running. **New chat** keeps the one before, and a new
 chat lists the latest under **Recent chats**, titled by what was first asked,
 to pick up again. `GET /api/agent` lists them; a signed-in person sees the
 conversations they started.
+
+**Outside MCP servers.** The agent can use other tools as well as exuvia's
+own: your tracker, your docs, or your company's tools behind
+[Portkey's MCP gateway](https://portkey.ai/docs/product/mcp-gateway). Open
+**MCP servers** (the plug in the agent panel's header) and add a remote MCP
+server (Streamable HTTP) with a name, its URL and the headers that sign you
+in: `Authorization: Bearer ...` for most servers, or `x-portkey-api-key` for
+a Portkey gateway URL such as `https://mcp.portkey.ai/<server>/mcp`. **Test**
+connects and lists its tools. The servers are connected for each message you
+send, and their tools reach the model as `<name>__<tool>`. A server that
+fails to connect is left out of that turn, and the agent tells you why.
+
+- **Each person has their own list.** On a server where people sign in, your
+  servers are used only in your chats, and nobody else sees them (an agent
+  token reads its owner's list but cannot change it). On a server nobody
+  signs in to, such as a local `exuvia serve`, there is one list for
+  everyone who can open it. A share link alone has none.
+- **Header values are write-only.** The API (`GET`, `PUT` and `DELETE
+  /api/me/mcp/{name}`, `POST /api/me/mcp/{name}/test`) never returns them:
+  a listing shows each header's name and its value's last 4 characters. They
+  are kept in clear in the server's database, beside the user list (the
+  hub's `.exuvia/hub.db`, the project's database, or the shared
+  `EXUVIA_DB`), so anyone who can read that database can read them. A hub
+  export leaves them out.
+- **Where a server may point.** Any public address. On a server that needs
+  a sign-in or a token, addresses on the machine itself, the private network
+  or a cloud's metadata service are refused unless
+  `EXUVIA_AGENT_MCP_PRIVATE=1`. A local server with no auth allows them, so
+  an MCP server on your own machine works. `EXUVIA_AGENT_MCP=off` turns the
+  feature off.
+- **Not yet:** servers that sign in only with OAuth (the agent says so when
+  one asks for it; give it an API key or token header instead), and local
+  servers started as a command (stdio).
 
 Things to ask it:
 

@@ -41,6 +41,8 @@ from .project import NODE_NAME, PARAM_TYPES, coerce_param
 from .report import graph_report, node_report
 from .sharing import GENERAL, GRANT_ROLES, LINK_COOKIE, MAX_LINK_DAYS, at_least, looks_like_link, open_sharing
 from .store import clean_origin
+from .agent_mcp import McpServers, open_mcp_servers, private_allowed, probe
+from .agent_mcp import enabled as agent_mcp_enabled
 from .users import UserStore, looks_like_token, open_users
 from .workspace import SCHEDULER, Workspace, acting_as
 
@@ -128,6 +130,14 @@ class UserPatch(BaseModel):
 
 class TokenReq(BaseModel):
     name: str = ""  # what the token is for: "laptop", "Claude Code", ...
+
+
+class McpServerReq(BaseModel):
+    url: str | None = None  # required for a new server
+    # Merged into the server's headers: a value sets one, null removes it,
+    # and headers left out keep their values (secrets need not be retyped).
+    headers: dict[str, str | None] | None = None
+    enabled: bool | None = None
 
 
 class ScheduleReq(BaseModel):
@@ -1065,6 +1075,68 @@ def _browser_open() -> bool:
     return mode == "open"
 
 
+def _auth_method() -> str:
+    """How this server lets people in: ``headers`` (a sign-in proxy),
+    ``token`` (the shared API token) or ``none``."""
+    return "headers" if auth.header_auth() else ("token" if os.environ.get("EXUVIA_API_TOKEN") else "none")
+
+
+def _open_agent_mcp(local: Any, users: UserStore | None) -> McpServers:
+    """The people's MCP server lists (agent_mcp.py), beside the user list."""
+    return open_mcp_servers(local, people=users is not None, allow_private=private_allowed(_auth_method()))
+
+
+def _agent_mcp_routes(app: FastAPI, store: McpServers) -> None:
+    """``/api/me/mcp``: the MCP servers the built-in agent connects to when
+    this person talks to it (agent_mcp.py). Header values go in and never
+    come back out: a listing shows each header's name and last 4 characters."""
+
+    def owner(write: bool = False) -> str:
+        if not agent_mcp_enabled():
+            raise HTTPException(404, "MCP servers for the agent are off on this server (EXUVIA_AGENT_MCP=off)")
+        ident = auth.current()
+        who = store.owner()
+        if who is None:
+            raise HTTPException(403, "MCP servers belong to a signed-in person: sign in through the proxy")
+        if write and ident is not None and ident.method == "token":
+            raise HTTPException(403, "an agent token can't change MCP servers: sign in through the proxy")
+        return who
+
+    @app.get("/api/me/mcp")
+    def mcp_list() -> dict[str, Any]:
+        """This person's MCP servers. ``shared``: true on a server nobody
+        signs in to, where everyone who can open it shares one list.
+        ``private``: whether servers may point at private addresses."""
+        who = owner()
+        return {"servers": store.list(who), "shared": not store.people, "private": store.allow_private}
+
+    @app.put("/api/me/mcp/{name}")
+    def mcp_put(name: str, body: McpServerReq) -> dict[str, Any]:
+        """Add an MCP server (``url`` required) or change one."""
+        who = owner(write=True)
+        try:
+            return store.put(who, name, url=body.url, headers=body.headers, enabled=body.enabled)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.delete("/api/me/mcp/{name}")
+    def mcp_delete(name: str) -> dict[str, Any]:
+        who = owner(write=True)
+        if not store.delete(who, name):
+            raise HTTPException(404, f"no MCP server {name}")
+        return {"ok": True}
+
+    @app.post("/api/me/mcp/{name}/test")
+    async def mcp_test(name: str) -> dict[str, Any]:
+        """Connect to a saved server and list its tools: ``{ok, tools}`` or
+        ``{ok: false, error}``."""
+        who = owner()
+        server = await asyncio.to_thread(store.get, who, name)
+        if server is None:
+            raise HTTPException(404, f"no MCP server {name}")
+        return await probe(server, allow_private=store.allow_private)
+
+
 def _install_common(app: FastAPI, users: UserStore | None, command: str = "serve", sharing: Any = None) -> None:
     """CORS, who is signed in (EXUVIA_AUTH) and the optional shared-secret
     auth, for both app shapes. ``users`` is the user list each sign-in is
@@ -1078,7 +1150,7 @@ def _install_common(app: FastAPI, users: UserStore | None, command: str = "serve
 
     headers = auth.header_auth()
     api_token = os.environ.get("EXUVIA_API_TOKEN")
-    method = "headers" if headers else ("token" if api_token else "none")
+    method = _auth_method()
 
     @app.get("/api/me")
     def me() -> dict[str, Any]:
@@ -1307,6 +1379,8 @@ def create_app(root: str | Path) -> FastAPI:
     users = open_users(ws.store.db) if auth.identifies_people() else None
     _install_common(app, users)
     app.state.users = users
+    ctx.agent.mcp = _open_agent_mcp(ws.store.db, users)
+    _agent_mcp_routes(app, ctx.agent.mcp)
     app.state.ws = ws
     app.include_router(project_router(lambda: ctx), prefix="/api")
     mcp_http.add_routes(app, "", mcp)  # MCP over HTTP (mcp_http.py), before the UI's catch-all
@@ -1598,6 +1672,8 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
     app = FastAPI(title="exuvia hub", lifespan=lifespan)
     _install_common(app, hub.users, "hub", hub.sharing)
     app.state.hub = hub
+    hub.mcp = _open_agent_mcp(hub.root / HUB_USERS_DB, hub.users)
+    _agent_mcp_routes(app, hub.mcp)
 
     async def get_ctx(project: str, request: Request) -> Ctx:
         # The rules may need a database read: off the event loop (the thread

@@ -386,6 +386,39 @@ export const tokensApi = {
   },
 };
 
+/** One of the MCP servers the built-in agent connects to for you: never the header values. */
+export interface AgentMcpServer {
+  name: string;
+  url: string;
+  enabled: boolean;
+  /** Each header's name and its value's last 4 characters (empty for a short value). */
+  headers: { name: string; hint: string }[];
+  created_at: number;
+  updated_at: number;
+}
+
+/** `GET /api/me/mcp`. `shared`: nobody signs in here, so everyone shares one list. */
+export interface AgentMcpList {
+  servers: AgentMcpServer[];
+  shared: boolean;
+  /** Whether a server may be on a private address (this machine, the local network). */
+  private: boolean;
+}
+
+export type AgentMcpTest = { ok: true; tools: { name: string; description: string }[] } | { ok: false; error: string };
+
+/** Your MCP servers for the built-in agent (`/api/me/mcp`, not under a project; exuvia/agent_mcp.py). */
+export const agentMcpApi = {
+  list: async () => (await sendTo("GET", "/api/me/mcp")).json() as Promise<AgentMcpList>,
+  /** Add or change one. `headers` is merged: a value sets a header, null removes it, one left out keeps its value. */
+  put: async (name: string, body: { url?: string; headers?: Record<string, string | null>; enabled?: boolean }) =>
+    (await sendTo("PUT", `/api/me/mcp/${encodeURIComponent(name)}`, body)).json() as Promise<AgentMcpServer>,
+  remove: async (name: string) => {
+    await sendTo("DELETE", `/api/me/mcp/${encodeURIComponent(name)}`);
+  },
+  test: async (name: string) => (await sendTo("POST", `/api/me/mcp/${encodeURIComponent(name)}/test`)).json() as Promise<AgentMcpTest>,
+};
+
 /** `GET /api/about`: the running version, how it was installed and whether a newer release is out (exuvia/about.py). */
 export interface About {
   version: string;

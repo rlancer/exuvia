@@ -16,7 +16,8 @@ import { Token } from "@astryxdesign/core/Token";
 import { VStack } from "@astryxdesign/core/VStack";
 import { API_BASE, api, apiUrl, streamAgent, type AgentChat, type AgentEvent, type GraphNode } from "./api";
 import { chatKey, itemsOf, type Item } from "./chat";
-import { IconChevronRight, IconClock, IconFolder, IconPlus, IconSpark } from "./icons";
+import { AgentMcpDialog } from "./AgentMcp";
+import { IconChevronRight, IconClock, IconFolder, IconPlug, IconPlus, IconSpark } from "./icons";
 import { ago } from "./util";
 
 // How many saved chats a new chat lists.
@@ -88,8 +89,11 @@ function toolLabel(it: Extract<Item, { kind: "tool" }>): string {
       return i.topic ? `read the docs: ${i.topic}` : i.query ? `searched the docs: ${i.query}` : "looked at the docs";
     case "report_issue":
       return `drafted an issue report: ${String(i.title ?? "").slice(0, 80)}`;
-    default:
-      return it.name;
+    default: {
+      // An outside MCP server's tool (exuvia/agent_mcp.py): <server>__<tool>.
+      const cut = it.name.indexOf("__");
+      return cut > 0 ? `${it.name.slice(0, cut)}: ${it.name.slice(cut + 2)}` : it.name;
+    }
   }
 }
 
@@ -137,6 +141,7 @@ export const SidePanel = forwardRef<
   }
 >(function SidePanel({ enabled, model, selected, hasNodes, onTouch, onSelect, onCollapse, sheet, tab, onTab, files, history, agent = true }, ref) {
   const [items, setItems] = useState<Item[]>([]);
+  const [mcpOpen, setMcpOpen] = useState(false);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [thinking, setThinking] = useState(false);
@@ -363,6 +368,16 @@ export const SidePanel = forwardRef<
           <Tab value="history" label="History" icon={<IconClock />} />
         </TabList>
         <span {...stylex.props(styles.grow)} />
+        {tab === "agent" && agent && enabled && (
+          <IconButton
+            size="sm"
+            variant="ghost"
+            label="MCP servers"
+            tooltip="MCP servers: outside tools for the agent"
+            icon={<IconPlug />}
+            onClick={() => setMcpOpen(true)}
+          />
+        )}
         {tab === "agent" && items.length > 0 && (
           <IconButton size="sm" variant="ghost" label="New chat" tooltip="New chat" icon={<IconPlus />} onClick={reset} />
         )}
@@ -375,6 +390,7 @@ export const SidePanel = forwardRef<
           onClick={onCollapse}
         />
       </div>
+      {mcpOpen && <AgentMcpDialog onClose={() => setMcpOpen(false)} />}
       {tab === "files" && files}
       {tab === "history" && history}
       {/* The chat stays mounted under the other tabs, so a reply keeps streaming. */}

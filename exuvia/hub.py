@@ -72,6 +72,8 @@ class Hub:
         # Who can open and change each project (sharing.py; set by
         # create_hub_app when the hub has any auth). None: everyone can.
         self.sharing: Any = None
+        # The people's MCP servers for the built-in agent (agent_mcp.py).
+        self.mcp: Any = None
         # The projects a request may see (create_hub_app filters by sharing).
         self.visible: Any = self.list
 
@@ -112,6 +114,7 @@ class Hub:
                 ws.api_prefix = f"/p/{project_id}/api"
                 await ws.start()
                 ctx = Ctx(ws, Agent(ws))
+                ctx.agent.mcp = self.mcp
                 self._ctxs[project_id] = ctx
             return ctx
 
@@ -220,6 +223,8 @@ class Hub:
             self.sharing.close()
         if self.users is not None:
             self.users.close()
+        if self.mcp is not None:
+            self.mcp.close()
 
     # -- scheduling ------------------------------------------------------------
     async def tick(self) -> dict[str, Any]:
