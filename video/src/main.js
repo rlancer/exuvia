@@ -312,6 +312,12 @@ const SCENES = {
     lockup.style.transform = `scale(${0.94 + 0.06 * k})`;
     lockup.querySelectorAll("path").forEach((facet, i) => (facet.style.opacity = prog(lt, 0.15 + i * 0.06, 0.5 + i * 0.06)));
     $("#title-line").childNodes.forEach((word, i) => show(word, prog(lt, 1.0 + i * 0.13, 1.5 + i * 0.13, out), 18));
+    // The two halves, as the narration names them.
+    const [graph, rule, views] = $("#title-split").children;
+    const at = LEAD + T.title.voice * 0.42;
+    show(graph, prog(lt, at, at + 0.6, out));
+    rule.style.opacity = prog(lt, at + 0.2, at + 0.8);
+    show(views, prog(lt, at + T.title.voice * 0.2, at + T.title.voice * 0.2 + 0.6, out));
   },
 
   nodes(lt, d) {

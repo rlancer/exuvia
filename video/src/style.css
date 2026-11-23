@@ -183,6 +183,53 @@ body {
   color: var(--accent-hover);
 }
 
+#title-split {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 740px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 40px;
+}
+#title-split .half {
+  width: 520px;
+  padding: 26px 34px 30px;
+  border-radius: 18px;
+  background: rgb(10 13 20 / 0.72);
+  box-shadow: 0 0 0 1.5px var(--line-strong);
+}
+#title-split small {
+  display: block;
+  font: 500 24px/1 var(--mono);
+  color: var(--accent);
+}
+#title-split b {
+  display: block;
+  margin-top: 14px;
+  font: 650 54px/1 var(--sans);
+  letter-spacing: -1px;
+}
+#title-split span {
+  display: block;
+  margin-top: 12px;
+  font: 400 28px/1.2 var(--sans);
+  color: var(--muted);
+}
+#title-split > i {
+  width: 3px;
+  height: 120px;
+  background: var(--accent);
+  box-shadow: 0 0 24px var(--accent);
+}
+#title .lockup {
+  top: 180px;
+}
+#title-line {
+  top: 450px;
+}
+
 /* ---- captions ----------------------------------------------------------- */
 .cap {
   position: absolute;

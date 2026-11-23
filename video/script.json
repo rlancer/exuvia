@@ -2,8 +2,8 @@
   "voice": "The narration, one segment per scene. `est` is the length in seconds used until the voice has been generated; `pad` is the silence left after the segment.",
   "lead": 0.35,
   "segments": [
-    { "id": "hook", "est": 6.0, "pad": 0.9, "text": "Notebooks made exploring data fast. But they were built for one person, typing into cells." },
-    { "id": "title", "est": 6.2, "pad": 0.8, "text": "Exuvia is the notebook for the AI era: a workbench where you and your agent build side by side." },
+    { "id": "hook", "est": 6.0, "pad": 0.9, "text": "Notebooks made exploring data fast. But they mix the data processing and the interface in the same cells, which makes it hard to excel at either." },
+    { "id": "title", "est": 6.2, "pad": 0.8, "text": "Exuvia is the notebook for the AI era. It keeps the two apart: a graph of steps that process the data, and views that present it, built side by side with your agent." },
     { "id": "nodes", "est": 8.6, "pad": 0.6, "text": "Every step is a plain Python or SQL file. Its inputs are just function parameters and table names, so the steps wire themselves into a graph." },
     { "id": "run", "est": 8.8, "pad": 0.6, "text": "Edit a node, run it, and see the data. Only what's stale runs again, and every output is kept: cached, and content-addressed." },
     { "id": "schedule", "est": 6.4, "pad": 0.6, "text": "Unlike a notebook, any step can run on its own schedule. When its output changes, everything downstream follows." },
