@@ -470,7 +470,9 @@ runs took 51 s and 131 s.
   snapshot a downstream run read with the current one.
 - **Readers get a reader token.** The control plane serves Quack with the
   read-only policy, the lockdown and the watchdog. Nodes and the query/view
-  sandbox attach the lake `READ_ONLY` with a reader token. DuckLake then
+  sandbox attach the lake `READ_ONLY` with a reader token. The query sandbox
+  pins a snapshot and allowlists its files; its lock as it is would block
+  the reader (next section). DuckLake then
   handles snapshots, inlined rows and time travel for them. The writer token
   never leaves the control plane. The fallback, if the policy proves too
   brittle across upgrades, is for the control plane to hand out a snapshot's
@@ -480,6 +482,65 @@ runs took 51 s and 131 s.
   hub replica, or analysts querying the lake from their own DuckDB or BI
   tool. If only the control plane ever touches the lake, a plain DuckDB file
   attached in-process would be enough. Quack keeps those uses open.
+
+### A lake reader in exuvia's query sandbox (tested)
+
+exuvia's query/view sandbox (`Workspace.query_connection`) turns off
+extension autoloading, allows reads of only the node files behind its views
+(`allowed_paths`), then sets `enable_external_access = false` and
+`lock_configuration = true`.
+[`sandbox_reader.py`](quack-readonly/sandbox_reader.py) attaches the lake
+over Quack with the reader token in a connection set up the same way, then
+tries reads and escapes. The serving side was `serve.py` with the Python UDF
+policy.
+
+**exuvia's lock as it is breaks the reader.** The extensions load and the
+lake attaches before the lock, but every read afterwards fails: Quack talks
+to the catalog server over HTTP, and with external access off that URL is
+refused like any other ("Cannot access http://127.0.0.1:…/quack"). Attaching
+after the lock fails too.
+
+Two ways to open it up were tested:
+
+| | A: catalog URL + `allowed_directories = DATA_PATH` | B: pinned snapshot + `allowed_paths` = the files on disk + the catalog URL |
+|---|---|---|
+| Reads, time travel, `table_changes` | Work | Work |
+| A commit after the lock | Seen at once | Not seen; the next request (new pin, new list) sees it |
+| Read another file, `ATTACH`, `COPY` elsewhere, another URL, `SET`, `INSTALL` | Fail | Fail |
+| Write the lake or its metadata, `quack_query` with the stored secret | Fail (read-only attach, server policy) | Fail |
+| `COPY` a new file into `DATA_PATH` | **Succeeds** | Fails |
+| `COPY` over an existing data file | **Succeeds, and corrupts the lake** for every client ("Invalid footer length") | Fails |
+| A writable re-attach, then a 100-row insert | Attach works; the file is written, the commit is denied | Attach works; the file write is refused |
+
+**B is the one to use.** `allowed_directories` grants writes as well as
+reads, so A lets sandboxed SQL destroy the lake. `allowed_paths` with exact
+files doesn't let `COPY` overwrite them: exuvia's current sandbox doesn't
+let SQL overwrite node outputs either, which was checked separately. B fits
+how exuvia already works. It builds a fresh sandbox connection for each
+request, so each one pins the current snapshot
+(`ATTACH … (SNAPSHOT_VERSION n)`) and allows exactly the files that exist
+when it is built. A query then sees one consistent snapshot even if a commit
+lands mid-request.
+
+What B implies:
+
+- **The catalog URL must stay reachable, so the server policy is a needed
+  layer even here.** A sandboxed query can send raw SQL with the stored
+  reader secret through `quack_query`. The policy denied it in the test, but
+  without the policy the reader secret would be the writer's power.
+- **The reader token doesn't leak into SQL:** `duckdb_secrets()` shows the
+  secret with its token redacted.
+- **A writable re-attach is possible** because attaching only reads. Writes
+  through it fail twice over: locally the new data file isn't on the
+  allowlist, and the server denies the commit.
+- **Not tested:**
+  - the cost of attaching per request (several round trips to the catalog);
+  - an allowlist of thousands of files;
+  - `DATA_PATH` on S3, where the allowlist would hold `s3://` paths and the
+    file list could come from `ducklake_list_files` at the pinned snapshot
+    instead of a directory listing;
+  - node subprocesses, which run Python under exuvia's own sandbox rather
+    than this SQL lock.
 
 ### Practical notes
 
