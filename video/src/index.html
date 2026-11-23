@@ -107,9 +107,22 @@
       </section>
 
       <section class="scene canvas" id="history">
-        <div class="window" id="history-shot"><img src="../../site/src/assets/shots/history.png" alt="" /></div>
-        <div class="scrim"></div>
-        <div class="cap"><div class="kicker">version control that knows what ran</div><div class="head">Every version, every output</div></div>
+        <div class="part" id="history-a">
+          <div class="terminal" id="git-term">
+            <div class="editor-bar"><span class="dots"><i></i><i></i><i></i></span><span class="file">what you no longer do</span></div>
+            <pre id="git-cmds"></pre>
+          </div>
+          <div class="side" id="saves">
+            <div class="side-title">History · nodes/rolling_vol.py</div>
+            <div class="artifacts" id="save-rows"></div>
+          </div>
+        </div>
+        <div class="part" id="history-b">
+          <div class="window" id="history-shot"><img src="../../site/src/assets/shots/history.png" alt="" /></div>
+          <div class="scrim"></div>
+        </div>
+        <div class="cap" id="history-cap-a"><div class="kicker">no git required</div><div class="head">Nothing to commit</div></div>
+        <div class="cap" id="history-cap-b"><div class="kicker">version control that knows what ran</div><div class="head">Every output knows its code</div></div>
       </section>
 
       <section class="scene canvas" id="scale">

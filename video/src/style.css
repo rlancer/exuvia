@@ -706,6 +706,46 @@ mark {
   color: var(--fresh);
 }
 
+/* ---- history: no git ---------------------------------------------------- */
+#git-term {
+  left: 96px;
+  top: 110px;
+  width: 820px;
+}
+#git-term pre {
+  padding: 26px 34px 30px;
+  min-height: 300px;
+  line-height: 1.75;
+}
+#git-cmds .gone {
+  text-decoration: line-through;
+  text-decoration-color: #e5707a;
+  text-decoration-thickness: 3px;
+  color: var(--faint);
+}
+#git-cmds .gone .dollar {
+  color: var(--faint);
+}
+#saves {
+  left: 1000px;
+  width: 824px;
+}
+.artifact .who {
+  font: 600 20px/1 var(--sans);
+  padding: 8px 14px;
+  border-radius: 999px;
+  color: #0a1230;
+  background: var(--accent);
+}
+.artifact .who.you {
+  color: var(--text);
+  background: var(--panel-2);
+}
+.artifact .path small {
+  font: inherit;
+  color: var(--fresh);
+}
+
 /* ---- scale -------------------------------------------------------------- */
 #scale-term {
   left: 330px;

@@ -10,7 +10,7 @@
     { "id": "agent", "est": 9.2, "pad": 0.5, "text": "And you're not working alone. An AI agent reads, writes, runs and debugs nodes, right on the canvas, with the same tools you have." },
     { "id": "mcp", "est": 5.6, "pad": 0.6, "text": "Use the built-in agent, or bring Claude Code, Cursor or Codex, over MCP." },
     { "id": "views", "est": 7.4, "pad": 0.6, "text": "And the graph is not the end product. Views turn outputs into custom interfaces: React files that only read, with no back end to write." },
-    { "id": "history", "est": 6.4, "pad": 0.6, "text": "Every version of the code is kept, and every output knows exactly which code produced it." },
+    { "id": "history", "est": 16.0, "pad": 0.6, "text": "And there is no git required. Exuvia takes a different approach to version control: every save is kept, yours or the agent's, with nothing to stage, commit or push. Every output remembers the exact code that made it, so your agent spends its time on the analysis, not on commits and branches." },
     { "id": "scale", "est": 6.0, "pad": 0.6, "text": "Start on your laptop with one command. Move to a hub when the team shows up." },
     { "id": "end", "est": 5.0, "pad": 2.6, "text": "Exuvia. Notebooks, for the AI era." }
   ]

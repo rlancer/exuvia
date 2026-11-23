@@ -252,6 +252,17 @@ $("#schedule-triggers").innerHTML = TRIGGERS.map(
 ).join("");
 $("#schedule-code").innerHTML = highlight(CODE_CRON.replace('schedule="0 17 * * 1-5"', '\x01schedule="0 17 * * 1-5"\x02'));
 
+const GIT = ["git add -A", 'git commit -m "wip"', "git checkout -b agent/try-2", "git push"];
+const SAVES = [
+  ["v3", "you", "11-19", "e20b6a"],
+  ["v2", "agent", "11-17", "7c1e09"],
+  ["v1", "you", "11-12", "3fa9c1"],
+];
+$("#save-rows").innerHTML = SAVES.map(
+  ([version, who, when, sha]) =>
+    `<div class="artifact"><span class="who ${who}">${who}</span><span class="path">${version} <span>saved ${when}</span> <small>→ output ${sha}…</small></span></div>`,
+).join("");
+
 const PROMPT = "Add a drawdown node per ticker, with a chart";
 const TOOLS = [
   ["list_nodes", ""],
@@ -448,10 +459,29 @@ const SCENES = {
   },
 
   history(lt, d) {
-    camera($("#history-shot"), lt, [
+    // First what there is no longer to do, then the History tab itself.
+    const cut = 0.52 * d;
+    const b = prog(lt, cut - 0.25, cut + 0.25, linear);
+    $("#history-a").style.opacity = 1 - b;
+    $("#history-b").style.opacity = b;
+    show($("#history-cap-a"), 1 - b, 0);
+    show($("#history-cap-b"), prog(lt, cut, cut + 0.5, out));
+
+    show($("#git-term"), prog(lt, 0, 0.6, out));
+    const caret = '<span class="caret"></span>';
+    $("#git-cmds").innerHTML = GIT.map((line, i) => {
+      const k = prog(lt, (0.03 + i * 0.055) * d, (0.075 + i * 0.055) * d, linear);
+      if (k <= 0) return "";
+      const gone = lt > (0.27 + i * 0.03) * d;
+      return `<span class="${gone ? "gone" : ""}"><span class="dollar">$</span> ${line.slice(0, Math.floor(line.length * k))}</span>${k < 1 ? caret : ""}`;
+    }).filter(Boolean).join("\n");
+    show($("#saves .side-title"), prog(lt, 0.22 * d, 0.22 * d + 0.5, out));
+    document.querySelectorAll("#save-rows .artifact").forEach((row, i) => show(row, prog(lt, (0.26 + i * 0.05) * d, (0.26 + i * 0.05) * d + 0.5, out)));
+
+    camera($("#history-shot"), lt - cut, [
       [0, 0.5, 0.47, 1.02],
-      [0.45 * d, 0.6, 0.4, 1.55],
-      [d, 0.62, 0.42, 1.66],
+      [0.5 * (d - cut), 0.6, 0.4, 1.55],
+      [d - cut, 0.62, 0.42, 1.66],
     ]);
   },
 
