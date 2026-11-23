@@ -29,6 +29,7 @@ import { Brand, Mark } from "./Brand";
 import { IconClock, IconClose, IconMoon, IconPackage, IconPlay, IconPlus, IconShare, IconSun } from "./icons";
 import { StateDot } from "./ui/state";
 import { failed, Toasts } from "./toast";
+import { appViewOf } from "./appMode";
 
 // What is not on the first screen is fetched when it is opened: the Views
 // mode and the dialogs.
@@ -36,8 +37,11 @@ const Views = lazy(() => import("./Views").then((m) => ({ default: m.Views })));
 const ShareDialog = lazy(() => import("./Share").then((m) => ({ default: m.ShareDialog })));
 const NewNodeDialog = lazy(() => import("./NewNodeDialog").then((m) => ({ default: m.NewNodeDialog })));
 const PackagesDialog = lazy(() => import("./PackagesDialog").then((m) => ({ default: m.PackagesDialog })));
+const AppView = lazy(() => import("./AppView"));
 
 const embed = new URLSearchParams(location.search).has("embed");
+/** `?app=<view>`: that one view as an app, without the workbench (AppView.tsx). */
+const appView = appViewOf(location.search);
 
 /** What the main area shows: the graph, the views, a shared helper, or the code's history. */
 type Mode = "graph" | "views" | "helper" | "history";
@@ -45,11 +49,13 @@ type Mode = "graph" | "views" | "helper" | "history";
 /**
  * Where the address points on load. `#files/<path>` opens a file where it
  * lives: a node on the graph, a view file in its Code tab, a helper in the
- * editor; `#history` the code's history.
+ * editor; `#views/<name>` a view, rendered; `#history` the code's history.
  */
 function fromHash(): { mode: Mode; node?: string; view?: OpenView; helper?: string } {
   const h = location.hash;
   if (h === "#views") return { mode: "views" };
+  const shown = /^#views\/([a-z_][a-z0-9_]*)$/.exec(h);
+  if (shown) return { mode: "views", view: { view: shown[1], seq: 1 } };
   if (h === "#history") return { mode: "history" };
   let path = "";
   try {
@@ -108,7 +114,13 @@ export default function App() {
   if (acc && acc.role === null) return <NoAccess access={acc} />;
   return (
     <AccessContext.Provider value={accessState(acc)}>
-      <Workbench />
+      {appView ? (
+        <Suspense fallback={null}>
+          <AppView view={appView} />
+        </Suspense>
+      ) : (
+        <Workbench />
+      )}
     </AccessContext.Provider>
   );
 }
@@ -145,6 +157,9 @@ function Workbench() {
   }, []);
   // What the side panel's Files and History tabs opened last.
   const [viewOpen, setViewOpen] = useState<OpenView | null>(start.view ?? null);
+  // The view Views mode shows: what Share offers as an app first.
+  const shownView = useRef<string | null>(null);
+  const onShown = useCallback((v: string | null) => void (shownView.current = v), []);
   const [showCode, setShowCode] = useState(0);
   const [treePath, setTreePath] = useState<string | null>(null);
   const [rev, setRev] = useState<CodeRevision | null>(null);
@@ -393,7 +408,7 @@ function Workbench() {
             </section>
           ) : mode === "views" ? (
             <Suspense fallback={<div {...stylex.props(styles.wide)} />}>
-              <Views project={project} nodes={nodes} dark={dark} open={viewOpen} onOpenNode={openNode} />
+              <Views project={project} nodes={nodes} dark={dark} open={viewOpen} onOpenNode={openNode} onShown={onShown} />
             </Suspense>
           ) : (
             <div {...stylex.props(styles.graph, !agentOpen && styles.graphRail)}>
@@ -467,7 +482,14 @@ function Workbench() {
 
       <Suspense fallback={null}>
         {sharing && HUB_PROJECT && (
-          <ShareDialog project={HUB_PROJECT} name={project?.name} self={acc?.user?.uid ?? null} onClose={() => setSharing(false)} />
+          <ShareDialog
+            project={HUB_PROJECT}
+            name={project?.name}
+            self={acc?.user?.uid ?? null}
+            views={project?.views}
+            view={mode === "views" ? (shownView.current ?? undefined) : undefined}
+            onClose={() => setSharing(false)}
+          />
         )}
         {pkgOpen && <PackagesDialog state={pkgs} onChange={setPkgs} onClose={() => setPkgOpen(false)} />}
         {newOpen && (

@@ -291,6 +291,11 @@ def test_a_share_link_opens_one_project_read_only_without_signing_in(hub):
     opened = anon.get(made.json()["url"], follow_redirects=False)
     assert opened.status_code == 303 and opened.headers["location"] == "/p/a/"
     assert "path=/p/a/" in opened.headers["set-cookie"].lower()
+    # With ?app=<view> the link lands on that view as an app; anything else is dropped.
+    as_app = anon.get(made.json()["url"] + "?app=board_view", follow_redirects=False)
+    assert as_app.status_code == 303 and as_app.headers["location"] == "/p/a/?app=board_view"
+    odd = anon.get(made.json()["url"] + "?app=//evil.example/x", follow_redirects=False)
+    assert odd.headers["location"] == "/p/a/"
     assert anon.get("/p/a/api/project").status_code == 200
     access = anon.get("/p/a/api/access").json()
     assert (access["role"], access["link"], access["user"]) == ("viewer", True, None)

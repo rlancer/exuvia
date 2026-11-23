@@ -439,6 +439,21 @@ Compile and runtime errors from the view are listed under it with the file
 they came from; click the file to open it. `examples/markets` ships one
 (`views/vol_board`).
 
+**A view as an app.** The view's expand button (or `?app=<view>` on the
+project's address: `/?app=vol_board`, or `/p/<project>/?app=vol_board` on a
+hub) opens the view on its own, full screen, with none of the workbench
+around it. One floating **Tools** button in its corner holds what the
+workbench offered around the view: the run parameters, a switch to the
+project's other views, Run for read nodes that are missing or stale (for
+editors), Copy link, Share (on a hub), Download, the colour theme and the way
+back to the workbench. Parameters other than their defaults ride along in the
+address as `p.<name>=<value>` (`?app=vol_board&p.as_of=2026-11-06`), so a
+copied link opens the view as it was shown; a value the project refuses is
+left out, with a note under Tools. `#views/<view>` opens a view in the
+workbench's Views mode instead. On a hub, the Share dialog gives every view's
+app address, and a share link lands on one when `?app=<view>` is added to it
+(the dialog offers that when it shows a new link).
+
 The view's **Code** tab lists its files (`view.json` first, then the entry)
 and edits them in place, with TypeScript, JSX, CSS and JSON highlighting.
 Ctrl+S (⌘S on a Mac) or **Save** writes the open file
@@ -2136,7 +2151,7 @@ exuvia hub ./projects --templates ./templates --scheduler external
 | `PUT /api/projects/{project}/sharing/people`, `DELETE .../people/{principal}` | share it with someone (`{user}` or `{email}`, and `role`: `viewer` or `editor`), or change their role / stop sharing with `user:<id>` or `email:<address>`; anyone can take themselves off |
 | `POST /api/projects/{project}/sharing/links`, `DELETE .../links/{id}` | a read-only share link (`{name, expires_in_days}`; the answer carries `url`, `/s/<token>`, once) / revoke one |
 | `POST /api/projects/{project}/sharing/requests`, `POST .../requests/{user}/approve`, `DELETE .../requests/{user}` | ask the owner for access (`{role, message}`) / grant what was asked (or `{role}`) / dismiss it, or withdraw your own |
-| `GET /s/{token}` | open a share link: the browser keeps it in a cookie for that project's pages and API, and lands on its workbench |
+| `GET /s/{token}` | open a share link: the browser keeps it in a cookie for that project's pages and API, and lands on its workbench (with `?app=<view>`, on that view as an app) |
 
 With `--scheduler external` nothing fires on its own: the host calls
 `/api/schedule/tick` when it wants schedules evaluated and can sleep until the

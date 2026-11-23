@@ -1580,15 +1580,20 @@ def _sharing_routes(app: FastAPI, hub: Any, require: Callable[[str, str], str], 
         return answer(project) if not mine else {"ok": True}
 
     @app.get("/s/{token}", include_in_schema=False)
-    def share_link(token: str, request: Request) -> Any:
+    def share_link(token: str, request: Request, app: str | None = None) -> Any:
         """Open a share link: the browser keeps it in a cookie for that one
-        project's pages and API, and lands on its workbench."""
+        project's pages and API, and lands on its workbench, or with
+        ``?app=<view>`` on that one view as an app (full screen, no
+        workbench around it)."""
         sh = hub.sharing
         project = sh.link_project(token) if sh is not None else None
         if project is None or not hub.exists(project):
             msg = "This share link doesn't work: it was revoked, it expired, or its project is gone. Ask whoever sent it for a new one."
             return HTMLResponse(f"<!doctype html><title>exuvia: link not found</title><p>{html.escape(msg)}</p>", status_code=404)
-        resp = RedirectResponse(f"/p/{project}/", status_code=303)
+        to = f"/p/{project}/"
+        if app and NODE_NAME.match(app):  # a view name, so the address stays on this project
+            to += f"?app={app}"
+        resp = RedirectResponse(to, status_code=303)
         expires = sh.link_expiry(token)
         max_age = int(expires - _time.time()) if expires else 400 * 86400
         resp.set_cookie(LINK_COOKIE, token, max_age=max(max_age, 1), path=f"/p/{project}/", httponly=True,

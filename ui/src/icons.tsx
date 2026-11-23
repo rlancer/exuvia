@@ -68,3 +68,9 @@ export const IconShare = icon(
     <path d="M5.7 7.1l4.6-2.6M5.7 8.9l4.6 2.6" />
   </>,
 );
+/** A view as an app: arrows out to two corners. */
+export const IconExpand = icon(<path d="M9.5 2.5h4v4M13.5 2.5 9 7M6.5 13.5h-4v-4M2.5 13.5 7 9" />);
+/** The app mode's tools: three sliders. */
+export const IconSliders = icon(<path d="M2.5 4h6M11.5 4h2M2.5 8h2M7.5 8h6M2.5 12h7M12.5 12h1M10 2.5v3M6 6.5v3M11 10.5v3" />);
+/** Copy: two sheets. */
+export const IconCopy = icon(<path d="M5.5 5.5V3a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-.5.5h-2.5M3 5.5h7a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5V6a.5.5 0 0 1 .5-.5z" />);
