@@ -1,0 +1,6 @@
+node_modules/
+out/
+# The generated sound: tools/audio.py makes it again. timings.json stays, so
+# the page lays its scenes out to the narration without it.
+audio/*.mp3
+audio/*.wav

@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>exuvia: the overview video</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="stage">
+      <!-- The sea, behind the scenes that open and close the film. -->
+      <div id="sea">
+        <img id="sea-img" src="../assets/sea.jpg" alt="" />
+        <div id="sea-shade"></div>
+        <div id="bubbles"></div>
+      </div>
+
+      <section class="scene" id="hook">
+        <img class="animal" id="hook-shell" src="../assets/exuvia-lobster-shell.svg" alt="" />
+        <img class="animal" id="hook-lobster" src="../assets/exuvia-lobster.svg" alt="" />
+        <div id="entry">
+          <div class="word">exuvia</div>
+          <div class="pron">/ɪɡˈzuːviə/ <i>noun</i></div>
+          <div class="meaning">The shell a lobster leaves behind when it molts.</div>
+        </div>
+      </section>
+
+      <section class="scene" id="title">
+        <div class="lockup">
+          <span class="mark" data-mark></span>
+          <span class="wordmark">exuvia</span>
+        </div>
+        <h1 id="title-line"></h1>
+      </section>
+
+      <section class="scene canvas" id="nodes">
+        <div class="editor" id="nodes-editor">
+          <div class="editor-bar"><span class="dots"><i></i><i></i><i></i></span><span class="file" id="nodes-file"></span></div>
+          <pre class="code" id="nodes-code"></pre>
+        </div>
+        <div class="graph-slot" id="nodes-graph"></div>
+        <div class="cap"><div class="kicker">one file, one node</div><div class="head">The graph draws itself</div></div>
+      </section>
+
+      <section class="scene canvas" id="run">
+        <div class="part" id="run-a">
+          <div class="window" id="run-shot"><img src="../../site/src/assets/shots/workbench.png" alt="" /><i class="ring" id="run-ring"></i></div>
+        </div>
+        <div class="part" id="run-b">
+          <div class="graph-slot" id="run-graph"></div>
+          <div class="side" id="run-side">
+            <div class="side-title">.exuvia/artifacts/</div>
+            <div class="artifacts" id="run-artifacts"></div>
+          </div>
+        </div>
+        <div class="scrim"></div>
+        <div class="cap" id="run-cap-a"><div class="kicker">the notebook's loop</div><div class="head">Edit. Run. See the data.</div></div>
+        <div class="cap" id="run-cap-b"><div class="kicker">content-addressed outputs</div><div class="head">Only what's stale runs again</div></div>
+      </section>
+
+      <section class="scene canvas" id="schedule">
+        <div class="graph-slot" id="schedule-graph"></div>
+        <div class="side" id="schedule-side">
+          <div class="cron-card">
+            <div class="cron-file">nodes/prices.py</div>
+            <pre class="code" id="schedule-code"></pre>
+            <div class="clock"><span id="schedule-clock">16:59:57</span><small>weekdays at 17:00</small></div>
+          </div>
+          <div class="triggers" id="schedule-triggers"></div>
+        </div>
+        <div class="cap"><div class="kicker">the orchestrator's schedule</div><div class="head">Per node. Cascades downstream.</div></div>
+      </section>
+
+      <section class="scene canvas" id="agent">
+        <div class="window" id="agent-shot">
+          <img src="../../site/src/assets/shots/workbench.png" alt="" />
+          <img id="agent-after" src="../../site/src/assets/shots/agent.png" alt="" />
+          <i class="ring box" id="agent-ring"></i>
+        </div>
+        <div class="prompt" id="agent-prompt"><span class="who">you</span><span id="agent-typed"></span></div>
+        <div class="tools" id="agent-tools"></div>
+        <div class="scrim"></div>
+        <div class="cap"><div class="kicker">not a chat box beside your work</div><div class="head">An agent with tools over the graph</div></div>
+      </section>
+
+      <section class="scene canvas" id="mcp">
+        <div class="mcp">
+          <div class="clients" id="mcp-clients">
+            <div class="pill own">built-in agent</div>
+            <div class="pill">Claude Code</div>
+            <div class="pill">Cursor</div>
+            <div class="pill">Codex</div>
+          </div>
+          <svg id="mcp-wires" viewBox="0 0 1920 1080"></svg>
+          <div class="server" id="mcp-server">
+            <span class="mark" data-mark></span>
+            <div><b>exuvia</b><small>MCP server</small></div>
+          </div>
+          <div class="toolgrid" id="mcp-tools"></div>
+        </div>
+        <div class="terminal slim" id="mcp-term"><pre id="mcp-cmd"></pre></div>
+        <div class="cap"><div class="kicker">bring the agent you already use</div><div class="head">The same tools, over MCP</div></div>
+      </section>
+
+      <section class="scene canvas" id="views">
+        <div class="window" id="views-shot">
+          <img src="../../site/src/assets/shots/views.png" alt="" />
+          <img id="views-code" src="../../site/src/assets/shots/view-code.png" alt="" />
+        </div>
+        <div class="scrim"></div>
+        <div class="cap"><div class="kicker">no back end to write</div><div class="head">Views: React over stored outputs</div></div>
+      </section>
+
+      <section class="scene canvas" id="history">
+        <div class="window" id="history-shot"><img src="../../site/src/assets/shots/history.png" alt="" /></div>
+        <div class="scrim"></div>
+        <div class="cap"><div class="kicker">version control that knows what ran</div><div class="head">Every version, every output</div></div>
+      </section>
+
+      <section class="scene canvas" id="scale">
+        <div class="terminal" id="scale-term">
+          <div class="editor-bar"><span class="dots"><i></i><i></i><i></i></span><span class="file">terminal</span></div>
+          <pre id="scale-cmd"></pre>
+        </div>
+        <div class="window wide" id="scale-hub"><img src="../../site/src/assets/shots/hub.png" alt="" /></div>
+        <div class="chips" id="scale-chips">
+          <span>Docker Compose</span><span>Swarm</span><span>Kubernetes</span><span>Postgres</span><span>S3 outputs</span><span>remote executors</span>
+        </div>
+        <div class="cap"><div class="kicker" id="scale-kicker">from a laptop</div><div class="head">Start with one command</div></div>
+      </section>
+
+      <section class="scene" id="end">
+        <img class="animal" id="end-shell" src="../assets/exuvia-lobster-shell.svg" alt="" />
+        <img class="animal" id="end-lobster" src="../assets/exuvia-lobster.svg" alt="" />
+        <div class="lockup">
+          <span class="mark" data-mark></span>
+          <span class="wordmark">exuvia</span>
+        </div>
+        <h1 id="end-line">Every run leaves a shell you can go back to.</h1>
+        <div class="cta" id="end-cta"><span class="dollar">$</span> uvx exuvia init my-research</div>
+        <div class="links" id="end-links"><span>exuvia.lobster.mp</span><i></i><span>github.com/rlancer/exuvia</span></div>
+      </section>
+
+      <div id="black"></div>
+    </div>
+    <script type="module" src="main.js"></script>
+  </body>
+</html>
