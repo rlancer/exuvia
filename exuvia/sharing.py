@@ -12,12 +12,14 @@ A hub project is one workflow, and it is shared the way a document is:
   when they have never signed in: the grant takes effect on their first
   sign-in with that email.
 * **General access.** What everyone else signed in on the hub gets:
-  ``private`` (nothing), ``view`` or ``edit``. New projects start with
-  ``EXUVIA_DEFAULT_ACCESS`` (default ``edit``: everyone signed in can open and
-  change every project, as before projects had sharing), unless the creator
-  picks another. A project with no settings of its own (made before sharing
-  existed, or by a script with the hub's API token) follows the same default
-  and has no owner until an admin gives it one.
+  ``private`` (nothing), ``view`` or ``edit``. A new project someone owns
+  starts with ``view`` (everyone signed in can open it, and only its owner
+  and the editors they add can change it), unless the creator picks another.
+  A project with no owner (made by a script with the hub's API token) starts
+  with ``edit``, and so does one with no settings of its own (made before
+  sharing existed): with ``view``, nobody but an admin could change it.
+  ``EXUVIA_DEFAULT_ACCESS``, when set, replaces all three. A project without
+  an owner keeps none until an admin gives it one.
 * **Links.** A share link (``/s/<token>``) opens one project read-only for
   whoever holds it, signed in or not. Links are only ever ``viewer``: an
   editing link would let anyone run code on the hub. Each can expire and be
@@ -130,12 +132,27 @@ def _prepare(db: Database) -> None:
     _prepared.add(db)
 
 
-def default_general() -> str:
-    """``EXUVIA_DEFAULT_ACCESS``: what everyone signed in gets on a new project."""
-    v = os.environ.get("EXUVIA_DEFAULT_ACCESS", "edit").strip().lower() or "edit"
-    if v not in GENERAL:
+def _configured_general() -> str | None:
+    """``EXUVIA_DEFAULT_ACCESS``, when it is set."""
+    v = os.environ.get("EXUVIA_DEFAULT_ACCESS", "").strip().lower()
+    if v and v not in GENERAL:
         raise SystemExit(f"EXUVIA_DEFAULT_ACCESS must be one of {', '.join(GENERAL)}, not {v!r}")
-    return v
+    return v or None
+
+
+def default_general() -> str:
+    """What everyone signed in gets on a project with no settings of its own
+    (made before sharing existed): ``EXUVIA_DEFAULT_ACCESS``, else ``edit``,
+    as before projects had sharing."""
+    return _configured_general() or "edit"
+
+
+def new_project_general(owned: bool) -> str:
+    """What everyone signed in gets on a new project its creator leaves at the
+    default: ``EXUVIA_DEFAULT_ACCESS``, else ``view`` for a project someone
+    owns (only the owner and the editors they add change it) and ``edit`` for
+    one nobody owns, which nobody but an admin could change otherwise."""
+    return _configured_general() or ("view" if owned else "edit")
 
 
 def higher(a: str | None, b: str | None) -> str | None:
@@ -275,10 +292,10 @@ class SharingStore:
         return rules
 
     def init_project(self, project: str, owner_id: str | None, general: str | None = None, now: float | None = None) -> None:
-        """Settings for a new project: its owner and general access (the hub
-        default when not given). Replaces anything left under that id."""
+        """Settings for a new project: its owner and general access (when not
+        given: new_project_general). Replaces anything left under that id."""
         now = time.time() if now is None else now
-        general = general or default_general()
+        general = general or new_project_general(owned=owner_id is not None)
         if general not in GENERAL:
             raise ValueError(f"access must be one of {', '.join(GENERAL)}")
         with self.db.transaction():

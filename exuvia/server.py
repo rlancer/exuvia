@@ -189,8 +189,9 @@ class ProjectCreate(BaseModel):
     name: str | None = None
     template: str | None = None
     # With sharing on: what everyone else signed in gets (private | view |
-    # edit; default EXUVIA_DEFAULT_ACCESS), and who owns it (a user id;
-    # default: whoever creates it).
+    # edit; default: view for a project someone owns, edit for one nobody
+    # does, or EXUVIA_DEFAULT_ACCESS), and who owns it (a user id; default:
+    # whoever creates it).
     access: str | None = None
     owner: str | None = None
 
@@ -1738,9 +1739,11 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
             "auth": bool(os.environ.get("EXUVIA_API_TOKEN")), "sharing": None,
         }
         if hub.sharing is not None:
-            from .sharing import default_general
+            from .sharing import new_project_general
 
-            out["sharing"] = {"people": hub.sharing.people, "default_access": default_general()}
+            # What the New project dialog starts at: whoever creates it owns it.
+            owned = auth.current_uid() is not None
+            out["sharing"] = {"people": hub.sharing.people, "default_access": new_project_general(owned)}
         return out
 
     def visible_projects() -> list[dict[str, Any]]:
