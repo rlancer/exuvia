@@ -351,15 +351,8 @@ About half of a first-time check is the parse.
 
 - **Python UDF callbacks are unsupported by Quack's docs** (above).
   `self_test` runs right after `quack_serve`: if a forbidden reader statement
-  isn't denied by the hook, the server refuses to run. There are two
-  supported alternatives:
-  - the same checker compiled into a small C++ extension;
-  - a SQL macro. JSON paths such as `$..function_name` collect every
-    function or table name in the tree, so a macro can check them against
-    lists. But a macro can't record which role each connection has. It would
-    need a table of writer connection ids that the control plane fills in
-    after it connects, and attaching the served catalog file in-process as a
-    DuckLake writer fails ("Unique file handle conflict").
+  isn't denied by the hook, the server refuses to run. Both supported kinds
+  of callback have been built and tested too; see the next section.
 - **The allowlist is tied to what DuckLake 1.1 sends.** A new extension
   version that sends another function or table has its reads denied. That
   fails closed, and `workload.py` run against `serve.py` is the check to
@@ -382,6 +375,89 @@ About half of a first-time check is the parse.
   plane. Quack issue #325 points out that SQL-defined callbacks can be
   replaced by any client allowed to write; qualifying the hook names covers
   the shadowing case.
+
+### Three ways to build the hook (tested)
+
+Quack's docs support two kinds of callback that the policy could use instead
+of Python UDFs: a SQL macro, and a function from an extension. Both were
+built with the same rules ([`policy_sql.py`](quack-readonly/policy_sql.py),
+and [`native/exuvia_policy.c`](quack-readonly/native/exuvia_policy.c) on
+DuckDB's stable C extension API) and run against the same tests.
+
+| | Python UDF | SQL macro | C extension |
+|---|---|---|---|
+| Supported by Quack's docs | No (works on 2.0.0; startup self-test) | Yes | Yes |
+| 110 attempts: 104 attacks, the runaway query, 5 plain reads | As expected | As expected | As expected |
+| Logged reader statements allowed | 81 of 81 | 81 of 81 | 81 of 81 |
+| Verdicts on the other 124 logged statements, sent as a reader | (reference) | Same as the Python UDF | Same as the Python UDF |
+| Concurrency test (6 readers, 60 commits): errors; wall time | 0; 26 s | 0; 37 s | 0; 34 s |
+| CPU per reader statement (no-op hook: 0.7 ms) | 2.7 ms | 19 ms | 2.6 ms |
+| CPU per writer statement | 0.65 ms | 18 ms | 1.2 ms |
+| How a writer is recognised | Writer token, bound at authentication | A secret client id registered at startup | Writer token, bound at authentication |
+| A denied reader sees | `read-only token: <reason>` | `Authorization failed` | `read-only token: <reason>` |
+| Ships as | Python in the control plane | SQL in the control plane | A binary per platform, loaded unsigned |
+
+CPU time is this process's CPU per call, from
+[`bench_hooks.py`](quack-readonly/bench_hooks.py), which calls each hook the
+way Quack does. Wall-clock times were unusable: other processes kept the
+machine at 100% CPU during these runs. The concurrency times are wall
+clock, one run each back to back, so they are rough: earlier SQL-macro
+runs took 51 s and 131 s.
+
+**The SQL macro is secure but slow.**
+
+- A macro can't keep state, and Quack calls the authentication function
+  before the connection exists, so the macro can't bind a token to a role.
+  A writer is recognised by its client id instead. The control plane sets
+  `quack_default_client_id` to a secret on its writer clients. Quack keeps
+  only an HMAC-SHA256 of a client id, keyed with a random per-server key, so
+  the control plane connects once after `quack_serve`, reads its own hash
+  from `quack_active_connections()` and stores it. Every writer reconnect
+  then matches. The client id becomes the write credential: a reader-token
+  client that knows it is a writer, and a writer-token client without it is
+  a reader.
+- Readers can list macro definitions, because `duckdb_functions()` is on
+  the allowlist. Token hashes live in a table in the policy's own catalog,
+  not in the macro's text.
+- The rules are JSON paths over the `json_serialize_sql` tree (`$..type`,
+  `$..function_name`, `$..schema_name` …).
+- Every statement costs about 18 ms of CPU, writers' too. Quack prepares
+  `SELECT hook(?, ?)` afresh for each statement, so DuckDB binds and plans
+  the whole macro every time. Other forms were slower: one flat expression
+  took 40–90 ms and regular expressions over the JSON text 25 ms (DuckDB
+  compiled each constant pattern on every call). A 150-item list literal
+  alone cost 5–7 ms, so the reserved names moved into a table. DuckDB
+  evaluates both sides of `OR` and both arms of `CASE`, so a writer's
+  statement is swapped for a constant before the parse. Otherwise a
+  3,000-column writer statement took 0.7 s.
+
+**The C extension is supported, but no faster than Python.**
+
+- It targets the stable C extension API (v1.5.6 in DuckDB 2.0.0). The point
+  of that API is that the binary doesn't need a rebuild for each DuckDB
+  release. Running it on another DuckDB version wasn't tested.
+- It builds with `zig cc` from the `ziglang` wheel on PyPI, with no MSVC,
+  gcc or cmake ([`native/build.sh`](quack-readonly/native/build.sh)). The
+  same build cross-compiled for Linux x86_64 and aarch64 and for macOS
+  aarch64. Only the Windows build was loaded and tested.
+- A native function keeps state, so it binds roles at authentication like
+  the Python UDFs do. It adds `role()` and `forget()` functions for the
+  watchdog.
+- **The stable C API has no access to DuckDB's parser.** The extension
+  parses exactly like the Python version: `json_serialize_sql` in a private
+  in-memory instance, then a walk of the JSON. That query is most of the
+  cost, so native code only speeds up the small part. Parsing directly would
+  take a C++ extension built against DuckDB's internal headers, which must be
+  rebuilt for every DuckDB release.
+- It is unsigned. DuckDB signs only core and community extensions, so the
+  serving instance needs `allow_unsigned_extensions` at startup.
+- Its JSON reader is about 200 lines of C that read attacker-influenced
+  strings. They are bounds-checked and depth-limited, but a Rust version
+  would rule out that class of bug. Rust here has only the MSVC target and
+  no MSVC linker. zig could link it (`cargo-zigbuild`), but that wasn't
+  tried.
+- Checks go through one parser connection behind a lock, so concurrent
+  reader checks queue. The Python UDFs queue on the GIL the same way.
 
 ### How it would fit exuvia
 
@@ -484,11 +560,16 @@ release calendar.
 
 - Add DuckLake as the storage for a new kind of incremental node (append, or
   merge on a key). Keep ordinary per-run outputs as they are.
-- Readers get a read-only Quack token. The prototype policy is built and
-  tested. Before relying on it, decide between keeping the Python UDF hook
-  (works on 2.0.0, unsupported by the docs, guarded by a startup self-test)
-  and porting the checker to a C++ extension function. Revisit when the
-  DuckLake REST API ships.
+- Readers get a read-only Quack token. The policy is built and tested
+  three ways. Drop the SQL macro: every statement, a writer's included,
+  costs about 25 times a no-op hook. Keep the Python UDF hook, with its
+  startup self-test, while Quack is experimental anyway. The C extension is
+  the supported fallback, at the same speed, if a release stops calling
+  Python UDFs; shipping it means a binary per platform, built in CI with
+  zig, and `allow_unsigned_extensions` on the serving instance. A C++
+  extension would be faster only by calling DuckDB's parser directly, at
+  the price of a rebuild for every DuckDB release. Revisit all of it when
+  the DuckLake REST API ships.
 - Option A (`__runs` as a node input) doesn't need DuckLake and could ship
   first, depending on how soon the lake is wanted.
 

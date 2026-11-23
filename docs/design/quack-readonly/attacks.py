@@ -25,13 +25,18 @@ before = (w.execute("SELECT count(*) FROM lake.prices").fetchone()[0],
           w.execute("SELECT count(*) FROM lake.snapshots()").fetchone()[0])
 
 
+def denied_by_hook(msg):
+    # policy.py raises "read-only token: <reason>"; policy_sql.py's macro returns false
+    return "read-only token" in msg or "Authorization failed" in msg
+
+
 def classify(fn):
     try:
         fn()
         return "RAN", ""
     except Exception as e:
         msg = str(e).replace("\n", " ")
-        return ("POLICY" if "read-only token" in msg else "ERROR"), msg[:150]
+        return ("POLICY" if denied_by_hook(msg) else "ERROR"), msg[:150]
 
 
 results = []
@@ -177,7 +182,7 @@ try:
                        ("drop via quack attach", "DROP TABLE raw.ducklake_snapshot")]:
         attempt("Plain Quack attach", label, lambda sql=sql: p.execute(sql).fetchall())
 except Exception as e:
-    results.append(("Plain Quack attach", "attach itself", "ERROR" if "read-only token" not in str(e) else "POLICY", str(e)[:150]))
+    results.append(("Plain Quack attach", "attach itself", "POLICY" if denied_by_hook(str(e)) else "ERROR", str(e)[:150]))
 
 # ---- 4. identity ----
 def wrong_token():
