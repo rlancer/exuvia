@@ -823,6 +823,18 @@ class Packages:
     def _changed(self) -> None:
         self._publish({"type": "packages"})
 
+    def environment(self) -> dict[str, str]:
+        """Every package a node can import, ``name -> version``: exuvia's own
+        environment, then the project's install (when it is ready) on top."""
+        by_norm = {_norm(n): (n, v) for n, v in _base()}
+        try:
+            _, key = self._current()
+        except PackagesError:
+            key = None
+        folder = _found(self.store, key) if key else None
+        by_norm.update(installed_in(folder))
+        return {n: v for n, v in sorted(by_norm.values(), key=lambda nv: _norm(nv[0]))}
+
     def state(self) -> dict:
         path = self.root / PYPROJECT
         manifest = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else None

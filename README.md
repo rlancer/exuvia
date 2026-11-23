@@ -616,7 +616,10 @@ sklearn`): one click adds it, installs it and re-runs the node.
 hand. exuvia picks the change up on the next run.
 
 **The agent asks; a person approves.** The agent has `list_packages` and
-`request_packages`. On a node that fails for want of a package it asks for
+`request_packages`. `list_packages` shows the project's list and its install;
+with `environment: true` it also lists every package installed where nodes
+import from, with its version, so the agent can check before it asks. On a
+node that fails for want of a package it asks for
 it, and the request waits in the Packages panel, with the agent's reason,
 for someone to install or dismiss it. Set `EXUVIA_AGENT_PACKAGES=install` to
 let the agent add packages itself, or `off` to keep it from asking. MCP
@@ -1828,9 +1831,11 @@ The agent runs a tool loop over the live workspace: `list_nodes`, `read_node`,
 `write_node`, `delete_node`, `list_files` / `read_file` / `write_file` /
 `delete_file` (shared helpers under `lib/`), `list_views` / `read_view` /
 `write_view` / `write_view_file` / `delete_view_file` / `delete_view` (see
-"Views"), `run_node`, `define_param`,
-`query_data` (DuckDB over every node's current output), `list_packages` and
-`request_packages` (see "Packages"), `docs` and `report_issue` (see "MCP"). It looks at real column names before writing, runs
+"Views"), `run_node`, `list_runs` and `read_run` (run history: what a
+schedule or a cascade ran, with each run's error and log), `define_param` /
+`delete_param`, `query_data` (DuckDB over every node's current output),
+`list_packages` and `request_packages` (see "Packages"), `docs` and
+`report_issue` (see "MCP"). It looks at real column names before writing, runs
 what it writes, reads the traceback when something fails, and fixes it. Every
 tool call shows up in the chat, and nodes it touches flash on the canvas.
 
@@ -2186,7 +2191,7 @@ can open, each with their role, its owner and its general access. The same
 rules hold for agents: an agent token works as its person, so the hub's MCP
 endpoint lists only that person's projects, and in a project they can only
 view, the agent gets only the read-only tools (`list_*`, `read_*`,
-`query_data`, `list_packages`). Hub export and import cover every project,
+`query_data`). Hub export and import cover every project,
 so on a hub with sharing they are for admins (and the API token). The export
 carries the sharing settings beside the user list, and an import restores
 them.
