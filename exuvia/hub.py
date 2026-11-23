@@ -124,7 +124,7 @@ class Hub:
     ) -> None:
         """A new project. With sharing on, ``owner`` (a user id; default: the
         signed-in person, nobody for the operator) owns it and ``access`` is
-        what everyone else signed in gets (default EXUVIA_DEFAULT_ACCESS)."""
+        what everyone else signed in gets (default: sharing.new_project_general)."""
         from . import auth
         from .sharing import GENERAL
 

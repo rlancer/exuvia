@@ -46,8 +46,8 @@
 #   EXUVIA_ADMINS      user names or emails (comma-separated) who are always
 #                      admins: they manage everyone else under Users
 #                      (README "Schedules, auth and settings")
-#   EXUVIA_DEFAULT_ACCESS  who else can open a new project: private, view or
-#                      edit (default); its creator can pick (README "Sharing projects")
+#   EXUVIA_DEFAULT_ACCESS  who else can open a new project: private, view
+#                      (default) or edit; its creator can pick (README "Sharing projects")
 #
 # One task, one node: a hub owns its directory, and the `exuvia-data` volume
 # is local to the node it was created on. The placement constraint keeps the
