@@ -10,6 +10,9 @@ given set of run parameters** (``params_key``; empty when the node depends on
 no parameter). Staleness is derived from what that run consumed versus what is
 current now, so there is no separate "dirty" flag to drift out of sync.
 
+Environment variables (``env_vars``) are the project's own settings for its
+nodes: API keys and the like, set in the workbench (see ``envvars.py``).
+
 Code revisions record every version of the project's files (node files,
 ``exuvia.json``, ``AGENTS.md``) as it was saved. The text is kept once per
 content hash in ``code_blobs``, keyed by the same hash runs record in
@@ -106,6 +109,15 @@ TABLES = {
     author text,               -- the signed-in person who saved it, by name (see auth.py); null when nobody was
     author_user text,          -- the same person's user id (users.py)
     primary key (project, id)
+)""",
+    "env_vars": """create table if not exists env_vars (
+    project text not null default '',
+    name text not null,        -- an environment variable every node of the project gets (see envvars.py)
+    value text not null,
+    secret integer not null default 1,   -- 1: never shown again once saved, and hidden in run logs
+    updated_at double precision not null,
+    updated_by text,           -- the signed-in person who last set it, by name (see auth.py)
+    primary key (project, name)
 )""",
 }
 
@@ -515,6 +527,28 @@ class Store:
 
     def delete_agent_session(self, session_id: str) -> None:
         self._q("delete from agent_sessions where project=? and id=?", (self.scope, session_id))
+
+    # -- environment variables (envvars.py) ----------------------------------------
+    def env_vars(self) -> list[dict[str, Any]]:
+        """Every variable, by name, with its value: for runs, never for clients."""
+        rows = self._q(
+            "select name, value, secret, updated_at, updated_by from env_vars where project=? order by name",
+            (self.scope,),
+        )
+        return [{**r, "secret": bool(r["secret"])} for r in rows]
+
+    def set_env_var(self, name: str, value: str, secret: bool, updated_by: str | None = None) -> None:
+        self._q(
+            "insert into env_vars (project, name, value, secret, updated_at, updated_by) values (?,?,?,?,?,?) "
+            "on conflict (project, name) do update set value=excluded.value, secret=excluded.secret, "
+            "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+            (self.scope, name, value, int(secret), time.time(), updated_by),
+        )
+
+    def delete_env_var(self, name: str) -> bool:
+        had = bool(self._q("select 1 from env_vars where project=? and name=?", (self.scope, name)))
+        self._q("delete from env_vars where project=? and name=?", (self.scope, name))
+        return had
 
     # -- code revisions -----------------------------------------------------
     def latest_code(self) -> dict[str, str | None]:

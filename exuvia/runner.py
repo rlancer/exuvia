@@ -361,6 +361,9 @@ def execute(spec: dict[str, Any]) -> dict[str, Any]:
         import site
 
         site.addsitedir(spec["site"])
+    # The project's environment variables (envvars.py). Set before the node's
+    # module is imported, so module-level code reads them too.
+    os.environ.update(spec.get("env") or {})
     params = spec.get("params") or {}
     exuvia._runtime = {"node": spec["node"], "params": params}  # what exuvia.param() reads
     inputs = {dep: load_artifact(i.get("path"), i.get("kind")) for dep, i in spec["inputs"].items()}

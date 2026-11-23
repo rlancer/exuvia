@@ -26,7 +26,7 @@ import { SignedInAs } from "./Me";
 import { HelpMenu } from "./Help";
 import { useColorMode } from "./theme/colorMode";
 import { Brand, Mark } from "./Brand";
-import { IconClock, IconClose, IconMoon, IconPackage, IconPlay, IconPlus, IconShare, IconSun } from "./icons";
+import { IconClock, IconClose, IconKey, IconMoon, IconPackage, IconPlay, IconPlus, IconShare, IconSun } from "./icons";
 import { StateDot } from "./ui/state";
 import { failed, Toasts } from "./toast";
 import { appViewOf } from "./appMode";
@@ -37,6 +37,7 @@ const Views = lazy(() => import("./Views").then((m) => ({ default: m.Views })));
 const ShareDialog = lazy(() => import("./Share").then((m) => ({ default: m.ShareDialog })));
 const NewNodeDialog = lazy(() => import("./NewNodeDialog").then((m) => ({ default: m.NewNodeDialog })));
 const PackagesDialog = lazy(() => import("./PackagesDialog").then((m) => ({ default: m.PackagesDialog })));
+const EnvDialog = lazy(() => import("./EnvDialog").then((m) => ({ default: m.EnvDialog })));
 const AppView = lazy(() => import("./AppView"));
 
 const embed = new URLSearchParams(location.search).has("embed");
@@ -178,6 +179,7 @@ function Workbench() {
   const agent = useRef<AgentHandle>(null);
   const [pkgs, setPkgs] = useState<PackagesState | null>(null);
   const [pkgOpen, setPkgOpen] = useState(false);
+  const [envOpen, setEnvOpen] = useState(false);
   // Nodes to re-run once the packages installed for them are ready.
   const [rerun, setRerun] = useState<string[]>([]);
   const refreshPkgs = useCallback(() => api.packages().then(setPkgs).catch(() => {}), []);
@@ -373,6 +375,13 @@ function Workbench() {
                   }
                   onClick={() => setPkgOpen(true)}
                 />
+                <Button
+                  label="Environment"
+                  icon={<IconKey />}
+                  isIconOnly={compact}
+                  tooltip="API keys, tokens and settings your nodes read from os.environ"
+                  onClick={() => setEnvOpen(true)}
+                />
                 <Button label="New node" icon={<IconPlus />} isIconOnly={compact} tooltip="Add a node to the graph" onClick={() => setNewOpen(true)} />
                 <Button
                   label="Run stale"
@@ -492,6 +501,7 @@ function Workbench() {
           />
         )}
         {pkgOpen && <PackagesDialog state={pkgs} onChange={setPkgs} onClose={() => setPkgOpen(false)} />}
+        {envOpen && <EnvDialog onClose={() => setEnvOpen(false)} />}
         {newOpen && (
           <NewNodeDialog
             nodes={nodes}

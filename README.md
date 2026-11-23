@@ -758,6 +758,66 @@ in the image, listed in a `pyproject.toml` of its own and installed with
 `uv pip install` (not `uv add` or `uv sync`): see
 [Packages your nodes import](#packages-your-nodes-import) under Deploying.
 
+## Environment variables and secrets
+
+API keys, tokens and settings your nodes read go in the project's
+**Environment** (the button next to Packages in the workbench), not in the
+code. Every node gets them in `os.environ`:
+
+```python
+import os
+
+import exuvia
+
+
+@exuvia.node(schedule="0 18 * * 1-5")
+def rates():
+    import requests
+
+    key = os.environ["FRED_API_KEY"]
+    ...
+```
+
+- **Secret or plain.** A variable is secret unless you untick **Secret**.
+  Once a secret is saved its value is never shown again, to you, to anyone
+  the project is shared with or to the agent: the workbench, the API and the
+  agent's `list_env` tool give its name only. To change it, type a new value.
+  A plain variable (a region, a base URL) shows its value to anyone who can
+  open the project.
+- **Secrets stay out of run logs.** Wherever a secret's value shows up in
+  what a node prints, or in a run's error, it is replaced with `***` before
+  the log is saved, streamed or read by the agent. A multi-line secret (a PEM
+  key) is masked line by line. A value shorter than 4 characters is not
+  looked for, a secret a node transforms (encodes, slices) is not
+  recognized, and a node's output is never masked, so don't print a secret
+  or return it.
+- **Where they apply.** Every run started after a change, on the local
+  executor or a remote one (they travel with each run; a `.env` never
+  reaches a remote executor). A project's variable wins over the server's
+  variable of the same name, and over the project's `.env`. Changing one
+  doesn't make nodes stale: run the nodes that read it to use the new value.
+- **Who can change them.** Anyone who can edit the project. Viewers of a
+  shared project can read the names and the plain values (`GET /api/env`,
+  `list_env`), never a secret.
+- **What a project cannot set.** exuvia's own settings, which nodes never
+  get (`EXUVIA_*`, `PORTKEY_*`, package index credentials
+  `UV_INDEX_<NAME>_USERNAME` / `_PASSWORD`), and the variables that decide
+  how a run starts (`PATH`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSAFEPATH`,
+  `PYTHONUSERBASE`, `VIRTUAL_ENV`). A name is letters, digits and
+  underscores; a value is up to 32,768 characters; a project holds up to 200.
+- **Where they are kept.** In the project's records database (see
+  [Records](#records-sqlite-postgres-or-your-own-adapter)): `.exuvia/exuvia.db`,
+  or the shared `EXUVIA_DB` on a hub, each project with its own. They are
+  stored as they are, not encrypted, like a `.env`, so protect that
+  database, and a hub's exports (`GET /api/hub/export` carries the records
+  unless they are in a shared `EXUVIA_DB`, so a restored hub keeps them),
+  as you would the keys themselves. The code download never includes them.
+
+The agent can see which variables exist, and writes nodes that read them by
+name. When a node needs a key that isn't set, it asks you to add it in
+Environment rather than in the chat. A `.env` in the project folder still
+works for `exuvia serve`, which reads it at start.
+
 ## Execution model
 
 - **Content-addressed outputs.** Each run writes its result to
@@ -800,7 +860,9 @@ in the image, listed in a `pyproject.toml` of its own and installed with
   their `_FILE` forms. So node code, which the agent may have written, never
   sees the API or executor token, the database URL or the failure webhook.
   Everything else still reaches every node (`PATH`, proxies, a project's
-  `.env`, credentials a node reads such as `AWS_*` or a model provider key).
+  `.env`, credentials a node reads such as `AWS_*` or a model provider key),
+  and the project's own variables are set on top (see
+  [Environment variables and secrets](#environment-variables-and-secrets)).
   The installer keeps the index credentials, because uv needs them.
 - **Ad-hoc SQL reads outputs only.** `query_data` and `POST /api/query` run
   DuckDB in the server's process, on a connection locked like a view's (see
@@ -1498,8 +1560,10 @@ process that runs it, with that process's environment:
   the machine running `exuvia serve`, which also reads the project's `.env`.
 - **Remote executor:** the executor container's, on the executor's network.
   The control plane's environment never reaches it, and the bundle it
-  receives leaves out hidden files such as `.env`, so `HTTPS_PROXY`,
-  `NO_PROXY` and the provider's key have to be set on the executor itself.
+  receives leaves out hidden files such as `.env`, so `HTTPS_PROXY` and
+  `NO_PROXY` have to be set on the executor itself. The provider's key can
+  be too, or go in the project's Environment, which travels with each run
+  (see [Environment variables and secrets](#environment-variables-and-secrets)).
 
 So a `curl` in a terminal on your machine, or `docker exec` into the hub,
 can succeed while the node fails. Check from the node instead: this one
@@ -1849,7 +1913,9 @@ The agent runs a tool loop over the live workspace: `list_nodes`, `read_node`,
 "Views"), `run_node`, `list_runs` and `read_run` (run history: what a
 schedule or a cascade ran, with each run's error and log), `define_param` /
 `delete_param`, `query_data` (DuckDB over every node's current output),
-`list_packages` and `request_packages` (see "Packages"), `docs` and
+`list_packages` and `request_packages` (see "Packages"), `list_env` (the
+project's environment variables by name, never a secret's value; see
+"Environment variables and secrets"), `docs` and
 `report_issue` (see "MCP"). It looks at real column names before writing, runs
 what it writes, reads the traceback when something fails, and fixes it. Every
 tool call shows up in the chat, and nodes it touches flash on the canvas.
@@ -2235,6 +2301,8 @@ headlessly or iframe the UI:
 | `GET /api/project` | graph + per-node status, and every view with its state (`?params={...}` for one parameter set) |
 | `PATCH /api/project` | rename, set the timezone |
 | `GET /api/params`, `PUT/DELETE /api/params/{name}` | run parameters and the values that have run |
+| `GET /api/env` | the project's environment variables (`{variables: [{name, secret, value, updated_at, updated_by}]}`); a secret's `value` is always `null` |
+| `PUT /api/env/{name}`, `DELETE /api/env/{name}` | set one (`{value, secret}`; secret by default) / remove one. Without `value` the saved one is kept, which makes a plain variable secret; a secret becomes plain only with a new value |
 | `GET /api/packages` | the project's packages (from its `pyproject.toml`), what is installed, the install status and log, and agent requests waiting for approval |
 | `POST /api/packages` | `{"add": [...], "remove": [...]}`: edit the list; a change that does not resolve is a 400 with uv's explanation and changes nothing. The install runs in the background (`packages` events) |
 | `PUT /api/packages/manifest` | replace `pyproject.toml` (`{"text"}`) and install from it |
@@ -2552,7 +2620,7 @@ the package to public once (package settings → Change visibility).
 
 Prototype. Not yet: SSO in exuvia itself (people are identified only by a sign-in
 proxy's headers, or share a token), sharing a project with groups
-rather than one person at a time, notifications when someone asks for access, executor autoscaling, incremental nodes (run parameters cover date partitions), non-Python runtimes, secrets management beyond env vars.
+rather than one person at a time, notifications when someone asks for access, executor autoscaling, incremental nodes (run parameters cover date partitions), non-Python runtimes, encrypting stored secrets or reading them from an external secret manager (Vault, a cloud's).
 
 Found a bug, or something missing? Open an issue at
 [github.com/rlancer/exuvia/issues](https://github.com/rlancer/exuvia/issues). Your agent can draft one

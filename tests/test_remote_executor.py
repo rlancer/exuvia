@@ -169,3 +169,29 @@ def test_remote_multi_output(remote_ws, tmp_path):
     art = remote_ws.store.last_success("fit")
     assert art["kind"] == "multi" and art["artifact_path"].endswith(f"{art['artifact_id']}.zip")
     assert remote_ws.preview("fit", part="stats")["value"] == {"n": 3}
+
+
+def test_a_remote_run_gets_the_projects_variables(remote_ws):
+    """A .env never reaches the executor; the project's variables travel with each run."""
+    import json
+
+    write(remote_ws.project.root, "nodes/env.py", '''
+        import os
+
+        import exuvia
+
+        @exuvia.node()
+        def env():
+            print("key is", os.environ.get("REMOTE_KEY"))
+            return {"key": os.environ.get("REMOTE_KEY")}
+    ''')
+    remote_ws.reload()
+    remote_ws.set_env_var("REMOTE_KEY", "remote-secret-42", secret=True)
+    run(remote_ws, ["env"])
+    last = remote_ws.store.last_success("env", "")
+    assert last is not None, remote_ws.store.last_run("env", "")
+    out = json.loads((remote_ws.project.root / last["artifact_path"]).read_text(encoding="utf-8"))
+    assert out == {"key": "remote-secret-42"}
+    log = remote_ws.store.run(last["id"])["log"]
+    assert "key is ***" in log and "remote-secret-42" not in log
+

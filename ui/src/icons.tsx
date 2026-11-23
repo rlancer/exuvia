@@ -39,6 +39,7 @@ export const IconSun = icon(<path d="M8 5.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-
 export const IconMoon = icon(<path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1z" />);
 export const IconChevronRight = icon(<path d="M6 3.5L10.5 8 6 12.5" />);
 export const IconChevronLeft = icon(<path d="M10 3.5L5.5 8l4.5 4.5" />);
+export const IconKey = icon(<path d="M10.5 2.5a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM8.4 7.6 2.5 13.5M4.5 11.5l1.5 1.5M6 10l1.3 1.3" />);
 export const IconPackage = icon(<path d="M2.5 5L8 2l5.5 3v6L8 14l-5.5-3zM2.5 5L8 8l5.5-3M8 8v6" />);
 export const IconCode = icon(<path d="m5 4-3.5 4L5 12m6-8 3.5 4-3.5 4M9.5 3l-3 10" />);
 export const IconHelp = icon(<path d="M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM6.3 6.2a1.8 1.8 0 0 1 3.5.5c0 1.2-1.8 1.5-1.8 2.6M8 11.3v.1" />);

@@ -48,6 +48,9 @@ class ExecRequest:
     out_dir: Path  # where the artifact must end up (control-plane side)
     inputs: dict[str, dict[str, Any]] = field(default_factory=dict)  # dep -> {path, kind, artifact_id}
     params: dict[str, Any] = field(default_factory=dict)  # the run parameters this node declared
+    # The project's environment variables (envvars.py), set in the node's
+    # process on top of the environment it starts with.
+    env: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -129,6 +132,7 @@ class LocalExecutor:
                 "path": req.path,
                 "inputs": {d: {"path": i["path"], "kind": i["kind"]} for d, i in req.inputs.items()},
                 "params": req.params,
+                "env": req.env,
                 "out_dir": str(req.out_dir),
                 "result_path": str(result_path),
             }
@@ -292,6 +296,7 @@ class RemoteExecutor:
                 "path": req.path,
                 "inputs": {d: {"kind": i["kind"], "has_file": bool(i.get("path"))} for d, i in req.inputs.items()},
                 "params": req.params,
+                "env": req.env,
             }
             result: dict[str, Any] | None = None
             with self.http.stream("POST", f"/v1/runs/{req.run_id}", json=spec) as resp:

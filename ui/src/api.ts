@@ -86,6 +86,16 @@ export interface PackagesState {
   manifest: string | null;
 }
 
+/** One of the project's environment variables (`GET /api/env`; exuvia/envvars.py).
+ * A secret's `value` is always null: it is never sent back once saved. */
+export type EnvVar = {
+  name: string;
+  secret: boolean;
+  value: string | null;
+  updated_at: number | null;
+  updated_by: string | null;
+};
+
 /** A view's state for one parameter set, derived from the nodes it reads. */
 export type ViewState = "ready" | "missing" | "stale" | "error";
 
@@ -343,6 +353,11 @@ export const api = {
   packagesRetry: () => req<PackagesState>("POST", "/api/packages/retry"),
   packagesApprove: (id: number) => req<PackagesState>("POST", `/api/packages/requests/${id}/approve`),
   packagesDismiss: (id: number) => req<PackagesState>("DELETE", `/api/packages/requests/${id}`),
+  env: () => req<{ variables: EnvVar[] }>("GET", "/api/env").then((r) => r.variables),
+  /** Add or change a variable; without `value` the saved one is kept (to make a plain variable secret). */
+  setEnv: (name: string, b: { value?: string; secret: boolean }) =>
+    req<{ variables: EnvVar[] }>("PUT", `/api/env/${encodeURIComponent(name)}`, b).then((r) => r.variables),
+  removeEnv: (name: string) => req<{ variables: EnvVar[] }>("DELETE", `/api/env/${encodeURIComponent(name)}`).then((r) => r.variables),
 };
 
 /** Who this page is signed in as (`GET /api/me`, on the server itself, not under a project). */

@@ -63,6 +63,13 @@ const PAGES: PageSpec[] = [
     summary: "The packages nodes import, listed in the project's pyproject.toml, private package indexes included.",
   },
   {
+    slug: "environment",
+    group: "Build",
+    source: { heading: "Environment variables and secrets" },
+    title: "Environment and secrets",
+    summary: "API keys, tokens and settings for your nodes: set in the workbench, kept out of code and masked in run logs.",
+  },
+  {
     slug: "run-parameters",
     group: "Build",
     source: { heading: "Run parameters and replays" },

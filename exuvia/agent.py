@@ -363,6 +363,16 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "list_env",
+        "description": (
+            "The project's environment variables, which every node gets in os.environ: each one's name, whether "
+            "it is secret, and a plain variable's value. A secret's value is never shown, and it appears as *** "
+            "in run logs. People set them in the workbench's Environment panel; you cannot set them. Check here "
+            "for the name of an API key or setting before writing a node that reads one."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
         "name": "request_packages",
         "description": (
             "Ask for packages to be added to the project's pyproject.toml and installed, for nodes that import "
@@ -438,7 +448,8 @@ VIEW_TOOLS = {
 # project may call (sharing.py). Every other tool needs an editor.
 READ_TOOLS = frozenset({
     "list_nodes", "read_node", "list_files", "read_file", "list_revisions", "read_revision",
-    "list_views", "read_view", "query_data", "list_runs", "read_run", "list_packages", "report_issue",
+    "list_views", "read_view", "query_data", "list_runs", "read_run", "list_packages", "list_env",
+    "report_issue",
 })
 
 RUNS_LIMIT = 100
@@ -510,7 +521,7 @@ SYSTEM = """You are the agent inside exuvia, a DAG workbench for analysts and da
 - Run parameters make results reproducible over time. A project declares them (see "Run parameters" below; add one with define_param). A node that reads one must declare it: `@exuvia.node(params=["as_of"])` then `exuvia.param("as_of")` (dates arrive as "YYYY-MM-DD" strings); in SQL, `-- params: as_of` then `$as_of`. A node's output is stored per value of the parameters it or its upstream nodes declare, so each date has its own output and history, and nodes without parameters are computed once and shared. A node that reads `as_of` must compute "as of that date": filter source data to rows known on or before it, and never call "now"/"today" yourself.
 - Outputs are content-hashed. Unchanged output stops a cascade. Each node runs in its own subprocess with the project root as the working directory and on sys.path.
 - Shared helpers: code several nodes need (a formula, an interpolation, a cleaning step) goes in a helper module under `lib/` instead of being copied into each node. Write it with write_file (e.g. `lib/stats.py`; packages like `lib/vol/surface.py` work too, no `__init__.py` needed) and import it in the node with a plain import statement: `from lib.stats import weighted_corr`. Helpers are Python only and are not nodes: no `@exuvia.node`, no outputs. A node's code hash covers every helper it imports (directly or through other helpers), so editing a helper makes those nodes stale; write_file returns them in `used_by` — re-run them. Imports built at runtime (importlib, `__import__`) are not tracked.
-- Secrets come from environment variables (os.environ); never hardcode credentials.
+- Secrets and settings come from environment variables: read them with `os.environ["NAME"]` (or `.get`), never hardcode credentials or copy a key into a file. `list_env` shows which variables the project has. When a node needs one that is missing, write the node to read it by a clear name (e.g. `FRED_API_KEY`) and ask the user to add it in the workbench's Environment panel, marked secret; never ask them to paste a secret into the chat.
 
 ## Example Python node
 ```python
@@ -791,6 +802,10 @@ class Agent:
                         "from the executor's"
                     )
             return True, json.dumps(st, default=str), {}
+        if name == "list_env":
+            return True, json.dumps({"variables": [
+                {k: v for k, v in r.items() if k in ("name", "secret", "value")} for r in ws.env_vars()
+            ]}), {}
         if name == "request_packages":
             try:
                 res = await asyncio.to_thread(

@@ -34,7 +34,8 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
-from . import __version__
+from . import __version__, envvars
+from .envvars import EnvError
 from .executor import ExecRequest, LocalExecutor, bundle_hash_of_zip
 from .project import NODE_NAME
 
@@ -152,6 +153,13 @@ def create_executor_app() -> FastAPI:
         params = spec.get("params") or {}
         if not isinstance(params, dict) or not all(NODE_NAME.match(str(k)) for k in params):
             raise HTTPException(400, "bad params")
+        env = spec.get("env") or {}
+        try:
+            if not isinstance(env, dict):
+                raise EnvError("not an object")
+            env = {envvars.check_name(str(k)): envvars.check_value(v) for k, v in env.items()}
+        except EnvError as e:
+            raise HTTPException(400, f"bad env: {e}") from e
         rd.mkdir(parents=True, exist_ok=True)
         req = ExecRequest(
             run_id=run_id,
@@ -162,6 +170,7 @@ def create_executor_app() -> FastAPI:
             out_dir=rd / "out",
             inputs=inputs,
             params=params,
+            env=env,
         )
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[str | None] = asyncio.Queue()

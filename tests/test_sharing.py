@@ -224,6 +224,8 @@ def test_a_viewer_reads_but_changes_nothing(hub):
         ("POST", "/p/a/api/tools/write_node", {"name": "x", "kind": "python", "source": NODE}),
         ("POST", "/p/a/api/agent", {"message": "hi"}),
         ("DELETE", "/p/a/api/nodes/nums", None),
+        ("PUT", "/p/a/api/env/API_KEY", {"value": "k", "secret": True}),
+        ("DELETE", "/p/a/api/env/API_KEY", None),
     ]:
         r = hub.request(method, path, json=body, headers=BOB)
         assert r.status_code == 403 and "not change it" in r.json()["detail"], (method, path)
