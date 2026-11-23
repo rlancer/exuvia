@@ -53,13 +53,27 @@ GUIDE_TOOL = {
 REMOTE_TIMEOUT = 900.0  # a run_node call waits for the run to finish
 
 # A hub's own tools (HubBackend), besides every project tool with a `project` argument.
-PROJECT_ARG = {"type": "string", "description": "The project's id, as list_projects shows it."}
+PROJECT_ARG = {
+    "type": "string",
+    "description": (
+        "The project's id, as list_projects shows it: the project the user named, or the one this "
+        "conversation already works in. If the user has not said which and the hub has more than one, "
+        "ask them first; never pick one yourself."
+    ),
+}
+# A project tool called without `project`, on a hub.
+NO_PROJECT = (
+    "INVALID_INPUT: name the project as `project` (its id; list_projects shows them). "
+    "If the user has not said which project, ask them; don't pick one yourself."
+)
 HUB_TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_projects",
         "description": (
             "The projects on this exuvia hub (id, name, number of nodes) and the templates a new one can "
-            "start from. Every other tool works in one project, named by its `project` argument."
+            "start from. Every other tool works in one project, named by its `project` argument. The list "
+            "is not a choice: its order means nothing, so when the user has not said which project to "
+            "work in, show them the projects and ask."
         ),
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
@@ -128,8 +142,11 @@ def hub_instructions(url: str, projects: list[dict[str, Any]] | str) -> str:
         "Every project tool takes the project's id as `project`; `docs` (exuvia's documentation) needs none. "
         "Before you write or change anything in a project, call `guide` with that `project`: it says how "
         "exuvia works and holds the project's own "
-        "parameters and notes. Use the project the user names; when it is unclear which one, ask, or call "
-        f"list_projects. {listing}"
+        "parameters and notes. Work in the project the user names, or the one this conversation already "
+        "works in. When neither says which project and the hub has more than one, ask the user which one "
+        "(list its projects for them) before you call any project tool: never pick one yourself, and "
+        "never the first one listed just because it is first. With exactly one project, use it. "
+        f"{listing}"
     )
 
 
@@ -366,7 +383,7 @@ class HubBackend:
             args = dict(args)
             project = args.pop("project", None)
             if not isinstance(project, str) or not PROJECT_ID.match(project):
-                return False, "INVALID_INPUT: name the project as `project` (its id; list_projects shows them)"
+                return False, NO_PROJECT
             r = await self.http.post(f"{self.url}/p/{project}/api/tools/{name}", json=args)
         except httpx.HTTPError as e:
             return False, f"could not reach the exuvia hub at {self.url} ({type(e).__name__}): ask the user whether it is running"

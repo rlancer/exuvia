@@ -28,7 +28,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-from .mcp_server import HUB_GUIDE_TOOL, ORIGIN, PROJECT_FREE, build_server, hub_instructions, hub_tool_list
+from .mcp_server import HUB_GUIDE_TOOL, NO_PROJECT, ORIGIN, PROJECT_FREE, build_server, hub_instructions, hub_tool_list
 
 # What the request being served is about. Set by McpEndpoint before the MCP
 # server sees the request; the server's tasks start from the request's task
@@ -102,7 +102,7 @@ class HubLocalBackend:
         from .hub import PROJECT_ID
 
         if not isinstance(project, str) or not project:
-            return None, "INVALID_INPUT: name the project as `project` (its id; list_projects shows them)"
+            return None, NO_PROJECT
         if not PROJECT_ID.match(project) or not self.hub.exists(project):
             return None, f"no project {project} on this hub: list_projects shows them"
         if self.role_of(project) is None:
