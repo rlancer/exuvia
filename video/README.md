@@ -1,6 +1,6 @@
 # The overview video
 
-The source of exuvia's overview film: about 85 seconds, 1920x1080, made for
+The source of exuvia's overview film: about 90 seconds, 1920x1080, made for
 YouTube. Nothing here is part of the package or the website.
 
 The picture is a web page, `src/index.html`, that is a pure function of time:

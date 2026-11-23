@@ -226,7 +226,7 @@ const MARKS_SQL = [
 const CODE_CRON = `@exuvia.node(schedule="0 17 * * 1-5")
 def prices(universe):
     ...`;
-const TITLE_WORDS = ["A ", "data ", "workbench ", "where ", "<em>the </em>", "<em>graph </em>", "<em>is </em>", "<em>the </em>", "<em>interface.</em>"];
+const TITLE_WORDS = ["Notebooks ", "for ", "<em>the </em>", "<em>AI </em>", "<em>era.</em>"];
 $("#title-line").innerHTML = TITLE_WORDS.map((word) => `<span>${word}</span>`).join("");
 
 const ARTIFACTS = [
@@ -281,18 +281,17 @@ $("#mcp-wires").append(trunk);
 
 const SCENES = {
   hook(lt, d) {
-    const away = prog(lt, 1.3, 3.6);
-    const drift = Math.max(0, lt - 3.6) * 10;
+    // The lobster slips out of its shell, tail first, and is bigger for it.
+    const away = prog(lt, 1.6, 4.2);
+    const drift = Math.max(0, lt - 4.2) * 10;
     const bob = Math.sin(lt * 1.7) * 6;
-    $("#hook-shell").style.transform = `translate(150px, 150px) rotate(${away * 3}deg)`;
-    $("#hook-shell").style.opacity = prog(lt, 1.2, 2.2) * 0.95;
+    $("#hook-shell").style.transform = `translate(110px, 130px) rotate(${away * 3}deg) scale(0.84)`;
+    $("#hook-shell").style.opacity = prog(lt, 1.5, 2.5) * 0.95;
     $("#hook-lobster").style.transform =
-      `translate(${150 + away * 820 + drift}px, ${150 - away * 80 + bob}px) rotate(${-away * 5}deg) scale(${1 - away * 0.12})`;
+      `translate(${110 + away * 800 + drift}px, ${130 - away * 40 + bob}px) rotate(${-away * 5}deg) scale(${0.84 + away * 0.26})`;
     $("#hook-lobster").style.opacity = prog(lt, 0.1, 0.9);
-    const word = LEAD + T.hook.voice * 0.5;
-    show($("#entry .word"), prog(lt, word, word + 0.6, out));
-    show($("#entry .pron"), prog(lt, word + 0.35, word + 0.95, out));
-    show($("#entry .meaning"), prog(lt, word + 0.7, word + 1.3, out));
+    const line = LEAD + T.hook.voice * 0.55;
+    show($("#outgrow"), prog(lt, line, line + 0.7, out));
   },
 
   title(lt) {

@@ -1,35 +1,35 @@
 {
  "hook": {
-  "duration": 5.535
+  "duration": 6.713
  },
  "title": {
-  "duration": 4.433
+  "duration": 6.859
  },
  "nodes": {
-  "duration": 8.924
+  "duration": 9.976
  },
  "run": {
-  "duration": 9.074
+  "duration": 9.032
  },
  "schedule": {
-  "duration": 6.193
+  "duration": 7.596
  },
  "agent": {
-  "duration": 9.124
+  "duration": 9.23
  },
  "mcp": {
-  "duration": 5.706
+  "duration": 5.653
  },
  "views": {
-  "duration": 7.028
+  "duration": 9.696
  },
  "history": {
-  "duration": 5.708
+  "duration": 5.885
  },
  "scale": {
-  "duration": 4.814
+  "duration": 4.864
  },
  "end": {
-  "duration": 3.987
+  "duration": 3.828
  }
 }

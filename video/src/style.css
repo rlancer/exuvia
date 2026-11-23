@@ -125,24 +125,17 @@ body {
 #hook-lobster {
   width: 900px;
 }
-#entry {
+#outgrow {
   position: absolute;
   left: 150px;
-  top: 690px;
-}
-#entry .word {
-  font: 650 108px/1 var(--mono);
+  top: 770px;
+  font: 600 84px/1.1 var(--sans);
   letter-spacing: -2px;
 }
-#entry .pron {
-  margin-top: 18px;
-  font: 400 34px/1.2 var(--sans);
+#outgrow em,
+#end-line em {
+  font-style: normal;
   color: var(--accent-hover);
-}
-#entry .meaning {
-  margin-top: 14px;
-  font: 400 44px/1.25 var(--sans);
-  color: var(--text);
 }
 
 /* ---- the lockup and the big lines --------------------------------------- */
