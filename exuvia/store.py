@@ -77,6 +77,10 @@ TABLES = {
     history text not null,     -- json: provider message history
     events text not null,      -- json: UI transcript
     updated_at double precision not null,
+    title text,                -- the first thing the person asked, shortened, for the list of conversations
+    created_at double precision,
+    started_by text,           -- the signed-in person who started it, by name (see auth.py); null when nobody was
+    started_by_user text,      -- the same person's user id (users.py)
     primary key (project, id)
 )""",
     "stored_artifacts": """create table if not exists stored_artifacts (
@@ -124,6 +128,17 @@ LEGACY_COLUMNS = {
     "agent_sessions": "id,history,events,updated_at",
     "stored_artifacts": "path",
 }
+
+# Columns agent_sessions gained after it first shipped (all may be null).
+AGENT_SESSION_ADDED = (
+    ("title", "text"),
+    ("created_at", "double precision"),
+    ("started_by", "text"),
+    ("started_by_user", "text"),
+)
+
+# How long a conversation's title is in the list of conversations.
+TITLE_CHARS = 80
 
 RUN_COLS = (
     "id,node,batch_id,trigger,status,queued_at,started_at,finished_at,"
@@ -212,6 +227,10 @@ def _upgrade_legacy(db: Database) -> None:
         db.query("alter table code_revisions add column author text")
     if cols and "author_user" not in cols:  # from before the user list
         db.query("alter table code_revisions add column author_user text")
+    cols = db.columns("agent_sessions")
+    for col, kind in AGENT_SESSION_ADDED:  # from before the list of conversations
+        if cols and col not in cols:
+            db.query(f"alter table agent_sessions add column {col} {kind}")
     for table, legacy in LEGACY_COLUMNS.items():
         have = db.columns(table)
         if not have or "project" in have:
@@ -436,19 +455,63 @@ class Store:
         r = rows[0]
         return {"history": json.loads(r["history"]), "events": json.loads(r["events"]), "updated_at": r["updated_at"]}
 
-    def save_agent_session(self, session_id: str, history: list[Any], events: list[Any]) -> None:
+    def save_agent_session(
+        self,
+        session_id: str,
+        history: list[Any],
+        events: list[Any],
+        started_by: str | None = None,
+        started_by_user: str | None = None,
+    ) -> None:
+        """Save a conversation. Its title (the first thing asked), when it was
+        started and who started it are set by the first save and kept."""
+        now = time.time()
         self._q(
-            "insert into agent_sessions(project, id, history, events, updated_at) values(?,?,?,?,?) "
+            "insert into agent_sessions(project, id, history, events, updated_at, title, created_at, started_by, "
+            "started_by_user) values(?,?,?,?,?,?,?,?,?) "
             "on conflict(project, id) do update set history=excluded.history, events=excluded.events, "
-            "updated_at=excluded.updated_at",
+            "updated_at=excluded.updated_at, title=coalesce(agent_sessions.title, excluded.title)",
             (
                 self.scope,
                 session_id,
                 json.dumps(history, default=_dump),
                 json.dumps(events, default=str),
-                time.time(),
+                now,
+                _session_title(events),
+                now,
+                started_by,
+                started_by_user,
             ),
         )
+
+    def agent_sessions(
+        self, *, started_by_user: str | None = None, started_by: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Saved conversations, the latest first, without their transcripts:
+        every one, or only those one person started (by user id, or by name
+        where there is no user list)."""
+        sql = (
+            "select id, title, created_at, updated_at, started_by from agent_sessions where project=?"
+        )
+        args: list[Any] = [self.scope]
+        if started_by_user is not None:
+            sql += " and started_by_user=?"
+            args.append(started_by_user)
+        if started_by is not None:
+            sql += " and started_by=?"
+            args.append(started_by)
+        sql += " order by updated_at desc limit ?"
+        args.append(int(limit))
+        return [
+            {
+                "id": r["id"],
+                "title": r["title"] or "",
+                "created_at": r["created_at"] if r["created_at"] is not None else r["updated_at"],
+                "updated_at": r["updated_at"],
+                "started_by": r["started_by"],
+            }
+            for r in self._q(sql, tuple(args))
+        ]
 
     def delete_agent_session(self, session_id: str) -> None:
         self._q("delete from agent_sessions where project=? and id=?", (self.scope, session_id))
@@ -546,3 +609,12 @@ def stored_paths_at(db: Path) -> set[str]:
         return set()  # created before the remote store existed
     finally:
         con.close()
+
+
+def _session_title(events: list[Any]) -> str | None:
+    """A conversation's title: the first thing the person asked, on one line."""
+    for ev in events:
+        if isinstance(ev, dict) and ev.get("type") == "user":
+            text = " ".join(str(ev.get("text", "")).split())
+            return text if len(text) <= TITLE_CHARS else text[: TITLE_CHARS - 1].rstrip() + "…"
+    return None

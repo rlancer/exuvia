@@ -274,6 +274,7 @@ def test_a_database_from_before_scopes_is_upgraded_in_place(tmp_path, monkeypatc
     assert ws.store.paused() == {"nums"}
     assert ws.store.stored_paths() == {".exuvia/artifacts/nums/x.parquet"}
     assert ws.store.agent_session("s1")["updated_at"] == 3
+    assert ws.store.agent_sessions() == [{"id": "s1", "title": "", "created_at": 3, "updated_at": 3, "started_by": None}]
     assert ws.store.run("r1")["params_key"] == ""
     ws.store.close()
 
@@ -386,3 +387,26 @@ def test_a_slow_api_edit_is_not_recorded_as_a_hand_edit(tmp_path, monkeypatch):
         assert r.status_code == 200
         time.sleep(0.5)  # let the watcher catch up
         assert [r["origin"] for r in ws.code_revisions(node="nums")] == ["ui"]
+
+
+def test_agent_sessions_are_listed_latest_first_per_project(backend, tmp_path):
+    """The list of past chats: titled by the first question, kept on later
+    saves, filtered by who started each one, and scoped to its project."""
+    import time
+
+    a, b = Workspace(tmp_path / "a"), Workspace(tmp_path / "b")
+    a.store.save_agent_session("s1", [], [{"type": "user", "text": "first\nquestion"}], "alice", "u1")
+    time.sleep(0.01)
+    a.store.save_agent_session("s2", [], [{"type": "user", "text": "second"}], "bob", "u2")
+    time.sleep(0.01)
+    a.store.save_agent_session("s1", [], [{"type": "user", "text": "first\nquestion"}, {"type": "user", "text": "more"}])
+    rows = a.store.agent_sessions()
+    assert [(r["id"], r["title"], r["started_by"]) for r in rows] == [("s1", "first question", "alice"), ("s2", "second", "bob")]
+    assert rows[0]["created_at"] < rows[0]["updated_at"]
+    assert [r["id"] for r in a.store.agent_sessions(started_by_user="u2")] == ["s2"]
+    assert [r["id"] for r in a.store.agent_sessions(started_by="alice")] == ["s1"]
+    assert [r["id"] for r in a.store.agent_sessions(limit=1)] == ["s1"]
+    if backend != "sqlite-project":  # one database for both projects: each lists its own
+        assert b.store.agent_sessions() == []
+    a.store.close()
+    b.store.close()

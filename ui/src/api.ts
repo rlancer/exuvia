@@ -1,4 +1,5 @@
 import { ARROW_STREAM, arrowMeta, isArrow, readArrow, toGrid } from "./arrow";
+import type { SavedEvent } from "./chat";
 
 export type State = "fresh" | "stale" | "new" | "failed" | "error" | "queued" | "running";
 
@@ -312,6 +313,13 @@ export const api = {
   cancel: (id: string) => req("POST", `/api/runs/${id}/cancel`),
   query: (sql: string) => queryRows(sql),
   resetAgent: (id: string) => req("DELETE", `/api/agent/${id}`),
+  /** The saved conversations, the latest first (a signed-in person's own). */
+  agentChats: (limit = 50) => req<{ sessions: AgentChat[] }>("GET", `/api/agent?limit=${limit}`).then((r) => r.sessions),
+  /** One saved conversation's transcript, and whether a turn is running in it. */
+  agentChat: (id: string) =>
+    req<{ session_id: string; running: boolean; events: SavedEvent[] }>("GET", `/api/agent/${encodeURIComponent(id)}`),
+  /** Stop the turn running in a conversation. */
+  cancelAgent: (id: string) => req<{ ok: boolean }>("POST", `/api/agent/${encodeURIComponent(id)}/cancel`),
   /** Saved versions newest first: one node's, one view's files (deleted ones too), or every file's. */
   codeRevisions: (f: { node?: string; view?: string; limit?: number } = {}) => {
     const q = new URLSearchParams();
@@ -560,6 +568,17 @@ export const hubApi = {
     await sendTo("DELETE", `/api/projects/${encodeURIComponent(id)}`);
   },
 };
+
+/** A saved conversation, as the list of past chats shows it. */
+export interface AgentChat {
+  id: string;
+  /** The first thing asked, shortened. */
+  title: string;
+  created_at: number;
+  updated_at: number;
+  started_by: string | null;
+  running: boolean;
+}
 
 export type AgentEvent =
   | { type: "session"; session_id: string }

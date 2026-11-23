@@ -14,7 +14,7 @@ import uuid
 from importlib import metadata
 from typing import Any, AsyncIterator
 
-from . import docs, feedback
+from . import auth, docs, feedback
 from .llm import Provider, resolve_provider
 from .packages import PackagesError, agent_mode
 from .project import NODE_NAME, coerce_param
@@ -722,6 +722,8 @@ class Agent:
         provider = self.provider
         session_id = session_id or uuid.uuid4().hex[:12]
         history, transcript = self._load(session_id)
+        # Who asked: the request's sign-in, which the background turn inherits.
+        by, by_user = auth.current_id(), auth.current_uid()
         yield {"type": "session", "session_id": session_id}
         transcript.append({"type": "user", "text": message, "at": time.time()})
         self.active += 1
@@ -732,7 +734,7 @@ class Agent:
         finally:
             self.active -= 1
             # Conversations are part of the project: they survive restarts.
-            self.ws.store.save_agent_session(session_id, history, transcript)
+            self.ws.store.save_agent_session(session_id, history, transcript, by, by_user)
             self.ws.bus.publish({"type": "agent", "session_id": session_id})
         yield {"type": "done"}
 
@@ -783,6 +785,12 @@ class Agent:
             self.sessions[session_id] = saved["history"] if saved else []
             self.transcripts[session_id] = saved["events"] if saved else []
         return self.sessions[session_id], self.transcripts[session_id]
+
+    def conversations(self, *, user: str | None = None, name: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        """The saved conversations, the latest first (all, or one person's:
+        by user id or by name), each with whether a turn is running in it now."""
+        rows = self.ws.store.agent_sessions(started_by_user=user, started_by=name, limit=limit)
+        return [{**r, "running": r["id"] in self.running} for r in rows]
 
     def transcript(self, session_id: str) -> list[dict[str, Any]]:
         """What the UI showed for this conversation, for replay after a reload."""
