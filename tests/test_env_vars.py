@@ -144,7 +144,7 @@ def test_redactor():
 
 def test_the_api_never_sends_a_secret_back(tmp_path):
     with TestClient(create_app(tmp_path)) as c:
-        assert c.get("/api/env").json() == {"variables": []}
+        assert c.get("/api/env").json() == {"variables": [], "requests": []}
         r = c.put("/api/env/FRED_API_KEY", json={"value": "fred-secret-123", "secret": True})
         assert r.status_code == 200 and "fred-secret-123" not in r.text
         c.put("/api/env/REGION", json={"value": "eu", "secret": False})
@@ -354,3 +354,44 @@ def test_normalize():
     assert envvars.normalize("\n\na\nb\n\n\n") == "a\nb\n"
     assert envvars.normalize('{"k": "-----BEGIN-----\\nabc"}') == '{"k": "-----BEGIN-----\\nabc"}'  # escapes stay
     assert envvars.normalize("") == ""
+
+
+# -- request_secret: the agent asks, the person enters the value ------------------------
+
+def test_the_agent_asks_for_a_secret_by_name_only(tmp_path):
+    ws = Workspace(tmp_path)
+    agent = Agent(ws)
+
+    def call(name, args):
+        async def go():
+            ws.bus.bind(asyncio.get_running_loop())
+            return await agent.call_tool(name, args)
+
+        return asyncio.run(go())
+
+    ok, text, _ = call("request_secret", {"name": "FRED_API_KEY", "reason": "the rates node"})
+    res = json.loads(text)
+    assert ok and res["status"] == "requested" and "exuvia env set FRED_API_KEY" in res["message"]
+    assert "value" not in json.loads(json.dumps(res))  # there is nowhere to put one
+    [req] = ws.env_state()["requests"]
+    assert (req["name"], req["reason"], req["origin"]) == ("FRED_API_KEY", "the rates node", "agent")
+    # Asking again replaces the request; an invalid name is refused.
+    call("request_secret", {"name": "FRED_API_KEY", "reason": "still needed"})
+    assert [r["reason"] for r in ws.env_state()["requests"]] == ["still needed"]
+    ok, text, _ = call("request_secret", {"name": "EXUVIA_API_TOKEN", "reason": "x"})
+    assert not ok and "exuvia's own" in text
+    ok, text, _ = call("request_secret", {"name": "K", "reason": "x", "value": "sneaky"})
+    assert not ok and "INVALID_INPUT" in text  # the tool takes no value
+    # Setting it answers the request; asking for a set one says so.
+    ws.set_env_var("FRED_API_KEY", "fred-secret-123", secret=True)
+    assert ws.env_state()["requests"] == []
+    ok, text, _ = call("request_secret", {"name": "FRED_API_KEY", "reason": "x"})
+    assert ok and json.loads(text)["status"] == "set" and "fred-secret" not in text
+    # A request is dismissed by the person, or answered from another process.
+    call("request_secret", {"name": "OTHER", "reason": "x"})
+    ws.dismiss_env_request("OTHER")
+    assert ws.env_state()["requests"] == []
+    call("request_secret", {"name": "THIRD", "reason": "x"})
+    ws.env.set("THIRD", "set-elsewhere-1", True)  # as `exuvia env set <dir>` does
+    assert ws.env_state()["requests"] == []
+    assert "request_secret" not in READ_TOOLS  # a viewer cannot ask
