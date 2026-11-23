@@ -92,6 +92,8 @@ export type EnvVar = {
   name: string;
   secret: boolean;
   value: string | null;
+  /** False for a secret this server cannot decrypt (its key is gone): it has to be entered again. */
+  readable: boolean;
   updated_at: number | null;
   updated_by: string | null;
 };

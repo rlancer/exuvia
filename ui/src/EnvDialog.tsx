@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
+import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
+import { FileInput } from "@astryxdesign/core/FileInput";
 import { HStack } from "@astryxdesign/core/HStack";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
@@ -18,6 +20,8 @@ import { ago } from "./util";
 
 /** What the server accepts as a name (exuvia/envvars.py NAME). */
 const NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+/** The longest value the server keeps (exuvia/envvars.py MAX_VALUE_CHARS). */
+const MAX_VALUE = 32_768;
 
 const styles = stylex.create({
   grow: { flexGrow: 1, flexBasis: 0, minWidth: 0 },
@@ -38,6 +42,27 @@ export function EnvDialog(props: { onClose: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [removing, setRemoving] = useState<EnvVar | null>(null);
+  // A key file read into the value (a .pem), shown in the file picker.
+  const [file, setFile] = useState<File | null>(null);
+  const reset = () => {
+    setErr(null);
+    setFile(null);
+    setDraft(EMPTY);
+  };
+
+  const loadFile = async (picked: File | File[] | null) => {
+    const f = Array.isArray(picked) ? (picked[0] ?? null) : picked;
+    setFile(f);
+    if (!f) return;
+    const text = await f.text();
+    if (text.includes("\u0000") || text.includes("\uFFFD")) {
+      setErr(`${f.name} is not a text file. A binary key goes in as base64 text.`);
+      setFile(null);
+      return;
+    }
+    setErr(null);
+    setDraft((d) => ({ ...d, value: text }));
+  };
 
   useEffect(() => {
     api.env().then(setVars).catch((e: Error) => setErr(e.message));
@@ -57,6 +82,7 @@ export function EnvDialog(props: { onClose: () => void }) {
     }
   };
 
+  const lost = vars?.filter((v) => !v.readable) ?? [];
   const name = draft.editing?.name ?? draft.name.trim();
   const exists = !draft.editing && !!vars?.some((v) => v.name === name);
   const nameProblem = !draft.editing && draft.name.trim() && !NAME.test(draft.name.trim())
@@ -69,7 +95,7 @@ export function EnvDialog(props: { onClose: () => void }) {
 
   const save = async () => {
     if (!canSave) return;
-    if (await act("save", () => api.setEnv(name, { value: draft.value, secret: draft.secret }))) setDraft(EMPTY);
+    if (await act("save", () => api.setEnv(name, { value: draft.value, secret: draft.secret }))) reset();
   };
 
   const columns: TableColumn<EnvVar>[] = [
@@ -88,7 +114,9 @@ export function EnvDialog(props: { onClose: () => void }) {
       header: "Value",
       width: proportional(2, { minWidth: 120 }),
       renderCell: (v) =>
-        v.secret ? (
+        v.secret && !v.readable ? (
+          <Badge variant="error" label="Can't be decrypted" />
+        ) : v.secret ? (
           <Text type="supporting" color="secondary">
             Secret, hidden
           </Text>
@@ -123,6 +151,7 @@ export function EnvDialog(props: { onClose: () => void }) {
             isDisabled={!!busy}
             onClick={() => {
               setErr(null);
+              setFile(null);
               setDraft({ name: v.name, value: v.secret ? "" : (v.value ?? ""), secret: v.secret, editing: v });
             }}
           />
@@ -158,6 +187,17 @@ export function EnvDialog(props: { onClose: () => void }) {
       footer={<Button label="Done" onClick={onClose} />}
     >
       <VStack gap={4}>
+        {!!lost.length && (
+          <Banner
+            status="warning"
+            title={`${lost.map((v) => v.name).join(", ")} can't be decrypted`}
+            description={
+              lost.length === 1
+                ? "This server doesn't have the key it was saved with, so runs don't get it. Set EXUVIA_SECRETS_KEY on the server to that key, or enter it again."
+                : "This server doesn't have the key they were saved with, so runs don't get them. Set EXUVIA_SECRETS_KEY on the server to that key, or enter them again."
+            }
+          />
+        )}
         {vars && vars.length > 0 && <Table<EnvVar> data={vars} columns={columns} idKey="name" density="compact" />}
         {vars && vars.length === 0 && (
           <Text type="supporting" color="secondary">
@@ -184,13 +224,22 @@ export function EnvDialog(props: { onClose: () => void }) {
             label="Value"
             description={
               editing?.secret
-                ? "The saved value stays hidden. Type a new one to replace it."
-                : undefined
+                ? "The saved value stays hidden. Paste or load a new one to replace it."
+                : "Several lines, such as a PEM key, are kept as they are."
             }
             value={draft.value}
-            rows={2}
+            rows={3}
             hasSpellCheck={false}
+            htmlMaxLength={MAX_VALUE}
             onChange={(value) => setDraft((d) => ({ ...d, value }))}
+          />
+          <FileInput
+            label="Or load it from a file"
+            description="A key or certificate file (.pem, .key, .json): its text becomes the value."
+            placeholder="Choose a file"
+            value={file}
+            maxSize={MAX_VALUE}
+            onChange={(f) => void loadFile(f)}
           />
           <CheckboxInput
             label="Secret"
@@ -202,7 +251,7 @@ export function EnvDialog(props: { onClose: () => void }) {
             <Banner status="error" title={err} />
           )}
           <HStack gap={2} hAlign="end">
-            {editing && <Button variant="ghost" label="Cancel" isDisabled={!!busy} onClick={() => { setErr(null); setDraft(EMPTY); }} />}
+            {editing && <Button variant="ghost" label="Cancel" isDisabled={!!busy} onClick={reset} />}
             <Button type="submit" variant="primary" label={editing ? "Save" : "Add"} isDisabled={!canSave} isLoading={busy === "save"} />
           </HStack>
         </VStack>
@@ -221,7 +270,7 @@ export function EnvDialog(props: { onClose: () => void }) {
           setRemoving(null);
           if (v) {
             await act(`rm${v.name}`, () => api.removeEnv(v.name));
-            if (draft.editing?.name === v.name) setDraft(EMPTY);
+            if (draft.editing?.name === v.name) reset();
           }
         }}
       />

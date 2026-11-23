@@ -29,6 +29,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from . import envvars
 from .artifacts import artifact_store
 from .db import database_url, shared_database
 from .project import VIEW_DIR, Project
@@ -38,6 +39,8 @@ PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 SKIP_DIRS = {"__pycache__", "node_modules"}
 DB_REL = ".exuvia/exuvia.db"
 PACKAGES_REL = ".exuvia/packages/"
+# A project's own secrets key (envvars.Keyring), when the server has none.
+SECRETS_KEY_REL = f".exuvia/{envvars.KEY_FILE}"
 # Parts extracted from multi-output artifacts (workspace.part_file): a cache.
 PARTS_REL = ".exuvia/parts/"
 # The hub's user list (users.py), under the hub's directory beside the
@@ -271,6 +274,9 @@ class Hub:
         os.close(fd)
         out = Path(name)
         remote = artifact_store() is not None
+        # With EXUVIA_SECRETS_KEY the export carries encrypted secrets only;
+        # without it, each project's own key goes along so a restore keeps them.
+        own_key_stays = bool(envvars.server_keys())
         with tempfile.TemporaryDirectory(prefix="exuvia-export-") as scratch, tarfile.open(out, "w:gz") as tar:
             for pid in self.ids():
                 base = self.root / pid
@@ -306,6 +312,8 @@ class Hub:
                         continue  # installed packages: rebuilt from pyproject.toml when the project loads
                     if posix.startswith(PARTS_REL):
                         continue  # extracted from the artifacts on the next read
+                    if posix == SECRETS_KEY_REL and own_key_stays:
+                        continue  # the server's EXUVIA_SECRETS_KEY encrypts: the archive holds no key
                     if rel.name.endswith((".tmp", ".part")):
                         continue  # half-written artifacts
                     if posix in stored:

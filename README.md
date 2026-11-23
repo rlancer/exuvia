@@ -805,13 +805,61 @@ def rates():
   how a run starts (`PATH`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSAFEPATH`,
   `PYTHONUSERBASE`, `VIRTUAL_ENV`). A name is letters, digits and
   underscores; a value is up to 32,768 characters; a project holds up to 200.
+- **Several lines are fine.** A PEM key, a certificate chain or a service
+  account's JSON goes in as it is: paste it, or load the file with **Or
+  load it from a file**. When a value is saved its line endings become
+  `\n` (a key pasted or loaded from Windows works) and surrounding
+  whitespace and blank lines are dropped; a value of several lines then
+  ends with exactly one newline, as PEM parsers and OpenSSH expect. JSON
+  escapes such as `\n` inside a string are left as they are.
 - **Where they are kept.** In the project's records database (see
   [Records](#records-sqlite-postgres-or-your-own-adapter)): `.exuvia/exuvia.db`,
-  or the shared `EXUVIA_DB` on a hub, each project with its own. They are
-  stored as they are, not encrypted, like a `.env`, so protect that
-  database, and a hub's exports (`GET /api/hub/export` carries the records
-  unless they are in a shared `EXUVIA_DB`, so a restored hub keeps them),
-  as you would the keys themselves. The code download never includes them.
+  or the shared `EXUVIA_DB` on a hub, each project with its own. The code
+  download never includes them.
+
+### Encryption
+
+Secrets are encrypted before they are saved, and decrypted only to start a
+run: the database, its backups and a Postgres dump hold
+`enc:v1:<key id>:<token>`, never a value. Plain variables are stored as
+they are. The encryption is Fernet (AES-128 in CBC mode with an
+HMAC-SHA256, from the `cryptography` package).
+
+**The key.** With nothing set up, exuvia makes a key for each project the
+first time it saves a secret, in `.exuvia/secrets.key` (readable only by
+its owner), apart from the database. That keeps secrets out of a shared
+`EXUVIA_DB` and out of database dumps, but anyone who has the project's
+folder has its key too, and a hub's exports carry each project's key so
+that a restore keeps its secrets.
+
+For real protection, give the server its own key, kept outside the data
+(a Docker or Kubernetes secret, a secret manager):
+
+```bash
+exuvia secrets-key              # prints a new key
+EXUVIA_SECRETS_KEY=<that key>   # or EXUVIA_SECRETS_KEY_FILE=/run/secrets/exuvia_secrets_key
+```
+
+With `EXUVIA_SECRETS_KEY` set, every project's secrets are encrypted with
+it, no key file is made, and a hub's export holds only encrypted values:
+it needs the same key to be read. A malformed key stops exuvia at start.
+Remote executors never need the key, since a run arrives with its values
+decrypted (over the executor's authenticated connection).
+
+**Changing keys.** List several keys, comma-separated, newest first:
+`EXUVIA_SECRETS_KEY=<new>,<old>`. The first encrypts and all of them
+decrypt; when a project loads, its secrets are encrypted again with the
+first, after which the old key can go. Setting `EXUVIA_SECRETS_KEY` on a
+server whose projects have their own key files works the same way: the
+files still decrypt, and each project's secrets move to the server's key
+when it loads. Secrets saved before encryption existed are encrypted the
+same way, on load.
+
+**A lost key.** A secret no key on the server can decrypt is never
+guessed at: the workbench marks it *Can't be decrypted*, the API and
+`list_env` give it `readable: false`, and runs go without it, with a line
+at the top of their log saying so. Put the key back (`EXUVIA_SECRETS_KEY`,
+or the project's `.exuvia/secrets.key`), or enter the value again.
 
 The agent can see which variables exist, and writes nodes that read them by
 name. When a node needs a key that isn't set, it asks you to add it in
@@ -1819,7 +1867,7 @@ instead: set `<NAME>_FILE` to its path, such as
 `EXUVIA_API_TOKEN_FILE=/run/secrets/exuvia_api_token` for a Docker or Swarm
 secret, or a file in a Kubernetes secret volume. Surrounding whitespace is
 dropped. This works for `EXUVIA_API_TOKEN`, `EXUVIA_EXECUTOR_TOKEN`,
-`EXUVIA_DB`, `EXUVIA_FAILURE_WEBHOOK`, `ANTHROPIC_API_KEY`,
+`EXUVIA_DB`, `EXUVIA_FAILURE_WEBHOOK`, `EXUVIA_SECRETS_KEY`, `ANTHROPIC_API_KEY`,
 `ANTHROPIC_AUTH_TOKEN`, `OPENROUTER_API_KEY`, `PORTKEY_API_KEY`, `OPENAI_API_KEY`, the
 `AWS_*` keys, and the package index credentials `UV_INDEX_<NAME>_USERNAME`
 and `UV_INDEX_<NAME>_PASSWORD` (see "Packages"). Setting both forms to different values, or naming a missing or
@@ -1837,6 +1885,7 @@ empty file, stops exuvia with an error.
 | `EXUVIA_DEFAULT_ACCESS` | `view` | on a hub: what everyone signed in gets on a new project unless its creator picks otherwise (`private`, `view` or `edit`). Unset, a project nobody owns, or with no settings of its own, gets `edit`; set, it applies to those too (see "Sharing projects" under [Hub](#hub-many-projects-from-one-process)) |
 | `EXUVIA_BROWSER_AUTH` | `token` | `open` = every page load gives the browser the auth cookie, so people never enter the token (private networks only; see "Auth" above) |
 | `<NAME>_FILE` | — | read a secret setting from a file, e.g. `EXUVIA_API_TOKEN_FILE=/run/secrets/exuvia_api_token` (see "Secrets from files" above) |
+| `EXUVIA_SECRETS_KEY` | a key per project | the key (or `new,old` keys) that encrypts the projects' secrets; make one with `exuvia secrets-key` (see "Environment variables and secrets") |
 | `EXUVIA_FAILURE_WEBHOOK` | off | URL that failed runs are POSTed to, for projects without their own `failure_webhook` |
 | `EXUVIA_FAILURE_TRIGGERS` | `schedule,cascade` | which failed runs the env webhook reports (`all`, or any of `schedule`, `cascade`, `manual`, `backfill`) |
 | `EXUVIA_PUBLIC_URL` | — | where this server is reachable (e.g. `https://exuvia.example.com`), for run links in failure webhooks |
@@ -2301,8 +2350,8 @@ headlessly or iframe the UI:
 | `GET /api/project` | graph + per-node status, and every view with its state (`?params={...}` for one parameter set) |
 | `PATCH /api/project` | rename, set the timezone |
 | `GET /api/params`, `PUT/DELETE /api/params/{name}` | run parameters and the values that have run |
-| `GET /api/env` | the project's environment variables (`{variables: [{name, secret, value, updated_at, updated_by}]}`); a secret's `value` is always `null` |
-| `PUT /api/env/{name}`, `DELETE /api/env/{name}` | set one (`{value, secret}`; secret by default) / remove one. Without `value` the saved one is kept, which makes a plain variable secret; a secret becomes plain only with a new value |
+| `GET /api/env` | the project's environment variables (`{variables: [{name, secret, value, readable, updated_at, updated_by}]}`); a secret's `value` is always `null`, and `readable` is false for one the server cannot decrypt |
+| `PUT /api/env/{name}`, `DELETE /api/env/{name}` | set one (`{value, secret}`; secret by default) / remove one. The value is saved with `\n` line endings and no surrounding whitespace (one final newline when it has several lines), and a secret encrypted. Without `value` the saved one is kept, which makes a plain variable secret; a secret becomes plain only with a new value |
 | `GET /api/packages` | the project's packages (from its `pyproject.toml`), what is installed, the install status and log, and agent requests waiting for approval |
 | `POST /api/packages` | `{"add": [...], "remove": [...]}`: edit the list; a change that does not resolve is a 400 with uv's explanation and changes nothing. The install runs in the background (`packages` events) |
 | `PUT /api/packages/manifest` | replace `pyproject.toml` (`{"text"}`) and install from it |
@@ -2620,7 +2669,7 @@ the package to public once (package settings → Change visibility).
 
 Prototype. Not yet: SSO in exuvia itself (people are identified only by a sign-in
 proxy's headers, or share a token), sharing a project with groups
-rather than one person at a time, notifications when someone asks for access, executor autoscaling, incremental nodes (run parameters cover date partitions), non-Python runtimes, encrypting stored secrets or reading them from an external secret manager (Vault, a cloud's).
+rather than one person at a time, notifications when someone asks for access, executor autoscaling, incremental nodes (run parameters cover date partitions), non-Python runtimes, reading secrets from an external secret manager (Vault, a cloud's).
 
 Found a bug, or something missing? Open an issue at
 [github.com/rlancer/exuvia/issues](https://github.com/rlancer/exuvia/issues). Your agent can draft one

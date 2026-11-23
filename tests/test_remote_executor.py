@@ -186,12 +186,12 @@ def test_a_remote_run_gets_the_projects_variables(remote_ws):
             return {"key": os.environ.get("REMOTE_KEY")}
     ''')
     remote_ws.reload()
-    remote_ws.set_env_var("REMOTE_KEY", "remote-secret-42", secret=True)
+    remote_ws.set_env_var("REMOTE_KEY", "remote-secret-42\r\nsecond-line-77", secret=True)  # multi-line, CRLF
     run(remote_ws, ["env"])
     last = remote_ws.store.last_success("env", "")
     assert last is not None, remote_ws.store.last_run("env", "")
     out = json.loads((remote_ws.project.root / last["artifact_path"]).read_text(encoding="utf-8"))
-    assert out == {"key": "remote-secret-42"}
+    assert out == {"key": "remote-secret-42\nsecond-line-77\n"}
     log = remote_ws.store.run(last["id"])["log"]
-    assert "key is ***" in log and "remote-secret-42" not in log
+    assert "key is ***" in log and "remote-secret-42" not in log and "second-line-77" not in log
 

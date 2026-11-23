@@ -3,6 +3,7 @@ workbench, given to every node's process, secrets never shown again and
 masked in run logs."""
 
 import asyncio
+import sys
 import json
 import textwrap
 
@@ -98,7 +99,7 @@ def test_setting_and_listing_variables(tmp_path):
     assert listed["MODE"]["value"] == "fast" and not listed["MODE"]["secret"]
     # Making a plain variable secret keeps its value; the reverse needs a new one.
     ws.set_env_var("MODE", None, secret=True)
-    mode = ws.store.env_vars()[0]
+    mode = ws._env_rows()[0]
     assert (mode["name"], mode["value"], mode["secret"]) == ("MODE", "fast", True)
     with pytest.raises(EnvError, match="new value"):
         ws.set_env_var("TOKEN", None, secret=False)
@@ -189,3 +190,167 @@ def test_variables_are_per_project_in_a_shared_database(tmp_path, monkeypatch):
         assert a.env_vars() == []
     finally:
         close_shared()
+
+
+# -- encryption at rest ------------------------------------------------------------
+
+def raw(ws, name):
+    return next(r["value"] for r in ws.store.env_vars() if r["name"] == name)
+
+
+@pytest.fixture
+def no_server_key(monkeypatch):
+    monkeypatch.delenv(envvars.KEY_ENV, raising=False)
+
+
+def test_secrets_are_stored_encrypted_with_the_projects_own_key(tmp_path, no_server_key):
+    ws = Workspace(tmp_path)
+    key_file = tmp_path / ".exuvia" / envvars.KEY_FILE
+    assert not key_file.exists()  # made only when a secret is saved
+    ws.set_env_var("TOKEN", "abc-secret-123", secret=True)
+    ws.set_env_var("MODE", "fast", secret=False)
+    assert raw(ws, "TOKEN").startswith("enc:v1:") and "abc-secret-123" not in raw(ws, "TOKEN")
+    assert raw(ws, "MODE") == "fast"  # plain variables stay readable in the database
+    assert key_file.is_file()
+    if sys.platform != "win32":
+        assert key_file.stat().st_mode & 0o777 == 0o600
+    db = (tmp_path / ".exuvia" / "exuvia.db").read_bytes()
+    assert b"abc-secret-123" not in db
+    # A new process with the same key file reads it.
+    assert Workspace(tmp_path)._env_rows()[1]["value"] == "abc-secret-123"
+
+
+def test_secrets_saved_before_encryption_are_encrypted_on_load(tmp_path, no_server_key):
+    ws = Workspace(tmp_path)
+    ws.store.set_env_var("OLD", "legacy-secret", True)  # as the first release stored it
+    ws.store.set_env_var("PLAIN", "p", False)
+    ws.store.close()
+    ws = Workspace(tmp_path)
+    assert raw(ws, "OLD").startswith("enc:v1:") and raw(ws, "PLAIN") == "p"
+    assert {r["name"]: r["value"] for r in ws._env_rows()} == {"OLD": "legacy-secret", "PLAIN": "p"}
+
+
+def test_a_server_key_encrypts_and_rotates(tmp_path, monkeypatch):
+    a, b = envvars.new_key(), envvars.new_key()
+    monkeypatch.setenv(envvars.KEY_ENV, a)
+    ws = Workspace(tmp_path)
+    ws.set_env_var("TOKEN", "rotate-me-123", secret=True)
+    assert not (tmp_path / ".exuvia" / envvars.KEY_FILE).exists()  # the server's key, no file
+    assert raw(ws, "TOKEN").startswith(f"enc:v1:{envvars.key_id(a)}:")
+    ws.store.close()
+    # New key first, old one still listed: re-encrypted with the new one on load.
+    monkeypatch.setenv(envvars.KEY_ENV, f"{b},{a}")
+    ws = Workspace(tmp_path)
+    assert raw(ws, "TOKEN").startswith(f"enc:v1:{envvars.key_id(b)}:")
+    ws.store.close()
+    monkeypatch.setenv(envvars.KEY_ENV, b)  # the old key retired
+    ws = Workspace(tmp_path)
+    assert ws._env_rows()[0]["value"] == "rotate-me-123"
+
+
+def test_moving_from_the_projects_key_to_a_server_key(tmp_path, monkeypatch, no_server_key):
+    ws = Workspace(tmp_path)
+    ws.set_env_var("TOKEN", "move-me-123", secret=True)
+    ws.store.close()
+    key = envvars.new_key()
+    monkeypatch.setenv(envvars.KEY_ENV, key)
+    ws = Workspace(tmp_path)  # the file's key still decrypts; the server's encrypts
+    assert raw(ws, "TOKEN").startswith(f"enc:v1:{envvars.key_id(key)}:")
+    assert ws._env_rows()[0]["value"] == "move-me-123"
+
+
+def test_a_secret_without_its_key_is_reported_not_guessed(tmp_path, no_server_key):
+    write(tmp_path, "nodes/env.py", ENV_NODE)
+    ws = Workspace(tmp_path)
+    ws.set_env_var("FRED_API_KEY", "fred-secret-123", secret=True)
+    ws.store.close()
+    (tmp_path / ".exuvia" / envvars.KEY_FILE).unlink()  # the key is lost
+    ws = Workspace(tmp_path)
+    [listed] = ws.env_vars()
+    assert listed["readable"] is False and listed["value"] is None
+    run(ws, ["env"])
+    assert output(ws, "env")["key"] is None  # left out, never a wrong value
+    log = ws.store.run(ws.store.last_run("env", "")["id"])["log"]
+    assert "FRED_API_KEY is not set for this run" in log and "enter the value again" in log
+    with pytest.raises(EnvError, match="new value"):
+        ws.set_env_var("FRED_API_KEY", None, secret=True)
+    ws.set_env_var("FRED_API_KEY", "entered-again-1", secret=True)
+    assert ws.env_vars()[0]["readable"] is True
+
+
+def test_a_malformed_server_key_stops_the_project_loading(tmp_path, monkeypatch):
+    monkeypatch.setenv(envvars.KEY_ENV, "change-me")
+    with pytest.raises(envvars.SecretsKeyError, match="exuvia secrets-key"):
+        Workspace(tmp_path)
+
+
+def test_hub_exports_carry_the_projects_key_only_without_a_server_key(tmp_path, monkeypatch, no_server_key):
+    import tarfile
+
+    from exuvia.hub import Hub
+
+    ws = Workspace(tmp_path / "hub" / "a")
+    ws.set_env_var("TOKEN", "abc-secret-123", secret=True)
+    ws.store.close()
+    hub = Hub(tmp_path / "hub")
+    with tarfile.open(hub.export()) as tar:
+        assert "a/.exuvia/secrets.key" in tar.getnames()
+    monkeypatch.setenv(envvars.KEY_ENV, envvars.new_key())
+    with tarfile.open(hub.export()) as tar:
+        assert "a/.exuvia/secrets.key" not in tar.getnames()
+
+
+# -- multi-line values: PEM keys ----------------------------------------------------
+
+PEM_NODE = '''
+import os
+
+import exuvia
+
+
+@exuvia.node()
+def signer():
+    """Loads the PEM key and signs with it."""
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    pem = os.environ["SIGNING_KEY"]
+    print(pem)
+    key = serialization.load_pem_private_key(pem.encode(), password=None)
+    sig = key.sign(b"hello", padding.PKCS1v15(), hashes.SHA256())
+    key.public_key().verify(sig, b"hello", padding.PKCS1v15(), hashes.SHA256())
+    return {"ok": True, "ends_with_newline": pem.endswith("\\n"), "has_cr": "\\r" in pem}
+'''
+
+
+def rsa_pem() -> str:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    ).decode()
+
+
+def test_a_pem_key_pasted_from_windows_works_in_a_node(tmp_path, no_server_key):
+    pem = rsa_pem()
+    pasted = "\r\n  " + pem.replace("\n", "\r\n") + "\r\n\r\n"  # CRLF, stray blank lines
+    write(tmp_path, "nodes/signer.py", PEM_NODE)
+    ws = Workspace(tmp_path)
+    ws.set_env_var("SIGNING_KEY", pasted, secret=True)
+    assert ws._env_rows()[0]["value"] == pem  # exactly the PEM, one final newline
+    run(ws, ["signer"])
+    assert output(ws, "signer") == {"ok": True, "ends_with_newline": True, "has_cr": False}
+    log = ws.store.run(ws.store.last_run("signer", "")["id"])["log"]
+    body = [ln for ln in pem.splitlines() if not ln.startswith("-----")]
+    assert not any(ln in log for ln in body)  # every line of the key is masked
+    assert "-----BEGIN PRIVATE KEY-----" in log and "***" in log  # its armour is not
+
+
+def test_normalize():
+    assert envvars.normalize("  abc \n") == "abc"
+    assert envvars.normalize("a\r\nb") == "a\nb\n"
+    assert envvars.normalize("\n\na\nb\n\n\n") == "a\nb\n"
+    assert envvars.normalize('{"k": "-----BEGIN-----\\nabc"}') == '{"k": "-----BEGIN-----\\nabc"}'  # escapes stay
+    assert envvars.normalize("") == ""
