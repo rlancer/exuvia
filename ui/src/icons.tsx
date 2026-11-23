@@ -43,6 +43,8 @@ export const IconPackage = icon(<path d="M2.5 5L8 2l5.5 3v6L8 14l-5.5-3zM2.5 5L8
 export const IconCode = icon(<path d="m5 4-3.5 4L5 12m6-8 3.5 4-3.5 4M9.5 3l-3 10" />);
 export const IconHelp = icon(<path d="M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM6.3 6.2a1.8 1.8 0 0 1 3.5.5c0 1.2-1.8 1.5-1.8 2.6M8 11.3v.1" />);
 export const IconAlert = icon(<path d="M8 2.2l6.2 10.9H1.8zM8 6.5v3M8 11.4v.1" />);
+/** A plug: outside tools plugged into the agent (its MCP servers). */
+export const IconPlug = icon(<path d="M6 1.8v3M10 1.8v3M4.5 4.8h7v2.7a3.5 3.5 0 0 1-7 0zM8 11v3.2" />);
 /** The agent's sign: a four-pointed spark. */
 export const IconSpark = icon(<path d="M8 1.5l1.5 4.2a1.3 1.3 0 0 0 .8.8L14.5 8l-4.2 1.5a1.3 1.3 0 0 0-.8.8L8 14.5l-1.5-4.2a1.3 1.3 0 0 0-.8-.8L1.5 8l4.2-1.5a1.3 1.3 0 0 0 .8-.8z" />, true);
 
