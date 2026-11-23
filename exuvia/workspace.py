@@ -114,6 +114,10 @@ class Workspace:
         self._edit_lock = threading.RLock()
         self.store = open_store(self.project)
         self.store.fail_interrupted()
+        # Encrypts the project's secrets (envvars.py). A malformed
+        # EXUVIA_SECRETS_KEY stops the project from loading.
+        self.keyring = envvars.Keyring(self.project.state_dir)
+        self._seal_env_vars()
         self.bus = EventBus()
         self.graph: Graph = self.project.load()
         self.record_code(origin)
@@ -368,27 +372,59 @@ class Workspace:
             self.reload()
 
     # -- environment variables (envvars.py) ----------------------------------------
+    def _env_rows(self) -> list[dict[str, Any]]:
+        """Every variable with its value decrypted, for runs and nothing else.
+        A secret no key here can decrypt has ``readable`` false, its value
+        None and ``problem`` saying why."""
+        rows = self.store.env_vars()
+        for r in rows:
+            r["readable"] = True
+            if r["secret"]:
+                try:
+                    r["value"] = self.keyring.open(r["value"])
+                except envvars.SecretsKeyError as e:
+                    r.update(value=None, readable=False, problem=str(e))
+        return rows
+
+    def _seal_env_vars(self) -> None:
+        """Encrypt, with the current key, each secret saved before encryption
+        or with another key (rotation). One that cannot be decrypted stays as
+        it is, for the key it needs to come back."""
+        for r in self.store.env_vars():
+            if not r["secret"] or self.keyring.is_current(r["value"]):
+                continue
+            try:
+                value = self.keyring.open(r["value"])
+            except envvars.SecretsKeyError as e:
+                print(f"exuvia: the secret {r['name']} cannot be decrypted: {e}", file=sys.stderr)
+                continue
+            self.store.reseal_env_var(r["name"], r["value"], self.keyring.seal(value))
+
     def env_vars(self) -> list[dict[str, Any]]:
         """The project's variables as a client may see them: no secret's value."""
-        return envvars.public(self.store.env_vars())
+        return envvars.public(self._env_rows())
 
     def set_env_var(self, name: str, value: str | None, secret: bool) -> list[dict[str, Any]]:
         """Add or change a variable. ``value=None`` keeps the saved value, to
         make a plain variable secret; a secret never becomes plain without a
-        new value, which would show the old one."""
+        new value, which would show the old one. Values are normalized
+        (``envvars.normalize``) and secrets encrypted before they are saved."""
         envvars.check_name(name)
-        rows = {r["name"]: r for r in self.store.env_vars()}
+        rows = {r["name"]: r for r in self._env_rows()}
         old = rows.get(name)
         if value is None:
             if old is None:
                 raise envvars.EnvError(f"{name} is not set yet: give it a value.")
             if old["secret"] and not secret:
                 raise envvars.EnvError(f"{name} is secret: give it a new value to make it plain.")
+            if not old["readable"]:
+                raise envvars.EnvError(f"{name} cannot be decrypted: give it a new value.")
             value = old["value"]
-        envvars.check_value(value)
+        value = envvars.normalize(envvars.check_value(value))
         if old is None and len(rows) >= envvars.MAX_VARIABLES:
             raise envvars.EnvError(f"A project has at most {envvars.MAX_VARIABLES} variables.")
-        self.store.set_env_var(name, value, secret, auth.current_id())
+        stored = self.keyring.seal(value) if secret else value
+        self.store.set_env_var(name, stored, secret, auth.current_id())
         self.bus.publish({"type": "env"})
         return self.env_vars()
 
@@ -930,13 +966,17 @@ class Workspace:
 
         # The project's variables, read for each attempt so a key fixed
         # between retries is used. A secret's value never reaches the log.
-        env_rows = self.store.env_vars()
+        env_rows = self._env_rows()
         redact = envvars.Redactor(env_rows)
 
         def on_log(text: str) -> None:
             text = redact(text) or ""
             self.store.append_log(run_id, text)
             self.bus.publish({"type": "log", "run_id": run_id, "node": name, "text": text})
+
+        for r in env_rows:
+            if not r["readable"]:
+                on_log(f"exuvia: the secret {r['name']} is not set for this run: {r['problem']}.\n")
 
         req = ExecRequest(
             run_id=run_id,

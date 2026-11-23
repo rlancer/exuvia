@@ -315,6 +315,7 @@ source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "croniter" },
+    { name = "cryptography" },
     { name = "duckdb" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -341,6 +342,7 @@ postgres = [
 requires-dist = [
     { name = "anthropic", specifier = ">=1.0" },
     { name = "croniter", specifier = ">=3.0" },
+    { name = "cryptography", specifier = ">=42" },
     { name = "duckdb", specifier = ">=2.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },

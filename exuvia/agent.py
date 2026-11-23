@@ -367,7 +367,8 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "The project's environment variables, which every node gets in os.environ: each one's name, whether "
             "it is secret, and a plain variable's value. A secret's value is never shown, and it appears as *** "
-            "in run logs. People set them in the workbench's Environment panel; you cannot set them. Check here "
+            "in run logs. `readable: false` marks a secret this server cannot decrypt, which nodes do not get "
+            "until a person enters it again. People set them in the workbench's Environment panel; you cannot set them. Check here "
             "for the name of an API key or setting before writing a node that reads one."
         ),
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -804,7 +805,8 @@ class Agent:
             return True, json.dumps(st, default=str), {}
         if name == "list_env":
             return True, json.dumps({"variables": [
-                {k: v for k, v in r.items() if k in ("name", "secret", "value")} for r in ws.env_vars()
+                {k: v for k, v in r.items() if k in ("name", "secret", "value") or (k == "readable" and not v)}
+                for r in ws.env_vars()
             ]}), {}
         if name == "request_packages":
             try:

@@ -8,6 +8,7 @@
     exuvia status [dir]          print node freshness
     exuvia mcp [dir | --url URL] the agent's tools for MCP clients (Claude Code, Cursor, ...)
     exuvia executor              run nodes for a remote control plane (HTTP service)
+    exuvia secrets-key           print a new key for EXUVIA_SECRETS_KEY
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ SECRET_ENV = (
     "EXUVIA_EXECUTOR_TOKEN",
     "EXUVIA_DB",
     "EXUVIA_FAILURE_WEBHOOK",
+    "EXUVIA_SECRETS_KEY",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "OPENROUTER_API_KEY",
@@ -83,6 +85,23 @@ def _load_dotenv(root: Path) -> None:
                 key, _, value = line.partition("=")
                 os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
     load_secret_files()  # a .env may name secret files too
+    check_secrets_key()  # or set the secrets key
+
+
+def check_secrets_key() -> None:
+    """Stop at start with a clear message when EXUVIA_SECRETS_KEY is malformed."""
+    from .envvars import SecretsKeyError, server_keys
+
+    try:
+        server_keys()
+    except SecretsKeyError as e:
+        raise SystemExit(str(e)) from e
+
+
+def cmd_secrets_key(args: argparse.Namespace) -> None:
+    from .envvars import new_key
+
+    print(new_key())
 
 
 def _cli_params(pairs: list[str] | None) -> dict[str, str]:
@@ -282,8 +301,13 @@ def main() -> None:
     p.add_argument("--port", type=int, default=8080)
     p.set_defaults(fn=cmd_executor)
 
+    p = sub.add_parser("secrets-key", help="print a new key for EXUVIA_SECRETS_KEY (encrypts the projects' secrets)")
+    p.set_defaults(fn=cmd_secrets_key)
+
     args = ap.parse_args()
     load_secret_files()
+    if args.cmd != "secrets-key":
+        check_secrets_key()
     args.fn(args)
 
 

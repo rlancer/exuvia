@@ -113,7 +113,7 @@ TABLES = {
     "env_vars": """create table if not exists env_vars (
     project text not null default '',
     name text not null,        -- an environment variable every node of the project gets (see envvars.py)
-    value text not null,
+    value text not null,       -- a secret's is encrypted: enc:v1:<key id>:<token> (envvars.Keyring)
     secret integer not null default 1,   -- 1: never shown again once saved, and hidden in run logs
     updated_at double precision not null,
     updated_by text,           -- the signed-in person who last set it, by name (see auth.py)
@@ -544,6 +544,11 @@ class Store:
             "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
             (self.scope, name, value, int(secret), time.time(), updated_by),
         )
+
+    def reseal_env_var(self, name: str, old: str, new: str) -> None:
+        """Replace a secret's stored form (encrypted again, same value),
+        unless someone changed it in between."""
+        self._q("update env_vars set value=? where project=? and name=? and value=?", (new, self.scope, name, old))
 
     def delete_env_var(self, name: str) -> bool:
         had = bool(self._q("select 1 from env_vars where project=? and name=?", (self.scope, name)))
