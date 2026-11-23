@@ -53,7 +53,7 @@ from typing import Any, Coroutine, Iterator
 
 from croniter import croniter
 
-from . import auth
+from . import auth, envvars
 from .arrowstream import ArrowStream
 from .artifacts import artifact_key, artifact_store
 from .events import EventBus
@@ -366,6 +366,36 @@ class Workspace:
         with self.editing():
             self.project.update_config(mutate)
             self.reload()
+
+    # -- environment variables (envvars.py) ----------------------------------------
+    def env_vars(self) -> list[dict[str, Any]]:
+        """The project's variables as a client may see them: no secret's value."""
+        return envvars.public(self.store.env_vars())
+
+    def set_env_var(self, name: str, value: str | None, secret: bool) -> list[dict[str, Any]]:
+        """Add or change a variable. ``value=None`` keeps the saved value, to
+        make a plain variable secret; a secret never becomes plain without a
+        new value, which would show the old one."""
+        envvars.check_name(name)
+        rows = {r["name"]: r for r in self.store.env_vars()}
+        old = rows.get(name)
+        if value is None:
+            if old is None:
+                raise envvars.EnvError(f"{name} is not set yet: give it a value.")
+            if old["secret"] and not secret:
+                raise envvars.EnvError(f"{name} is secret: give it a new value to make it plain.")
+            value = old["value"]
+        envvars.check_value(value)
+        if old is None and len(rows) >= envvars.MAX_VARIABLES:
+            raise envvars.EnvError(f"A project has at most {envvars.MAX_VARIABLES} variables.")
+        self.store.set_env_var(name, value, secret, auth.current_id())
+        self.bus.publish({"type": "env"})
+        return self.env_vars()
+
+    def delete_env_var(self, name: str) -> list[dict[str, Any]]:
+        if self.store.delete_env_var(name):
+            self.bus.publish({"type": "env"})
+        return self.env_vars()
 
     def set_settings(self, *, name: str | None = None, timezone: str | None = None) -> None:
         if timezone:
@@ -898,7 +928,13 @@ class Workspace:
         self.store.update_run(run_id, status="running", code_hash=node.code_hash, inputs=input_ids, **started)
         self._emit_run(run_id)
 
+        # The project's variables, read for each attempt so a key fixed
+        # between retries is used. A secret's value never reaches the log.
+        env_rows = self.store.env_vars()
+        redact = envvars.Redactor(env_rows)
+
         def on_log(text: str) -> None:
+            text = redact(text) or ""
             self.store.append_log(run_id, text)
             self.bus.publish({"type": "log", "run_id": run_id, "node": name, "text": text})
 
@@ -913,9 +949,11 @@ class Workspace:
             # Only what the node declared: reading anything else is an error,
             # because the output would not be keyed by it.
             params={p: params.get(p) for p in node.params},
+            env=envvars.run_env(env_rows),
         )
         # Executors block (subprocess pipes / HTTP streams); keep them off the loop.
         res = await asyncio.to_thread(self.executor.execute, req, on_log)
+        res.error = redact(res.error)
         if not res.ok:
             if attempt < attempts and run_id not in self._cancelled and res.error != "cancelled":
                 delay = node.retry_delay * 2 ** (attempt - 1)

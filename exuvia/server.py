@@ -35,6 +35,7 @@ from pydantic import BaseModel
 from . import _STARTED, __version__, about as about_mod, auth, mcp_http
 from .agent import READ_TOOLS, TOOLS, Agent
 from .arrowstream import MEDIA_TYPE as ARROW_STREAM, ArrowStream, wants_arrow
+from .envvars import EnvError
 from .exports import ExportError, check_format, code_archive, file_response, file_stem, json_response, slug, table_response, zip_response
 from .packages import PackagesError
 from .project import NODE_NAME, PARAM_TYPES, coerce_param
@@ -149,6 +150,12 @@ class ParamReq(BaseModel):
     type: str = "string"
     default: Any = None
     description: str = ""
+
+
+class EnvVarReq(BaseModel):
+    # None keeps the saved value (making a plain variable secret).
+    value: str | None = None
+    secret: bool = True
 
 
 class SettingsReq(BaseModel):
@@ -436,6 +443,24 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
     def param_delete(name: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         ctx.ws.set_param(name, None)
         return params_list(ctx)
+
+    # -- environment variables (envvars.py) -------------------------------------
+    @r.get("/env")
+    def env_list(ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """The project's variables: names, and plain values. A secret's value
+        is never sent back."""
+        return {"variables": ctx.ws.env_vars()}
+
+    @r.put("/env/{name}")
+    def env_put(name: str, body: EnvVarReq, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        try:
+            return {"variables": ctx.ws.set_env_var(name, body.value, body.secret)}
+        except EnvError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @r.delete("/env/{name}")
+    def env_delete(name: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        return {"variables": ctx.ws.delete_env_var(name)}
 
     # -- packages (the project's pyproject.toml; see packages.py) -------------------
     def _packages_error(e: Exception) -> HTTPException:
