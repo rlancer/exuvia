@@ -18,7 +18,9 @@ import { Typeahead, TypeaheadItem } from "@astryxdesign/core/Typeahead";
 import type { SearchableItem, SearchSource } from "@astryxdesign/core/Typeahead";
 import { VStack } from "@astryxdesign/core/VStack";
 import { sharingApi, type GeneralAccess, type Member, type Person, type Role, type Sharing } from "./api";
+import { appUrl, linkToApp } from "./appMode";
 import { AppDialog } from "./ui/AppDialog";
+import { useCopy } from "./ui/useCopy";
 import { ago } from "./util";
 
 export const GENERAL_LABEL: Record<GeneralAccess, string> = {
@@ -46,6 +48,9 @@ const EXPIRY: { label: string; days: number | null }[] = [
   { label: "Expires in 30 days", days: 30 },
 ];
 
+/** A view, as Share offers it to open as an app. */
+type ViewRef = { name: string; title?: string | null };
+
 const looksLikeEmail = (s: string) => /^[^\s@]+@[^\s@]+$/.test(s.trim());
 
 const styles = stylex.create({
@@ -62,9 +67,19 @@ const styles = stylex.create({
  * the project sees who has access and can take themselves off it.
  *
  * From the top: the one thing most people came to do (add someone), then who
- * is asking, who has access, what everyone else gets, and links last.
+ * is asking, who has access, what everyone else gets, the address of a view
+ * as an app, and links last.
  */
-export function ShareDialog(props: { project: string; name?: string; self: string | null; onClose: () => void; onChanged?: () => void }) {
+export function ShareDialog(props: {
+  project: string;
+  name?: string;
+  self: string | null;
+  /** The project's views, each of which opens as an app; the one shown now comes first. */
+  views?: ViewRef[];
+  view?: string;
+  onClose: () => void;
+  onChanged?: () => void;
+}) {
   const { project, onChanged } = props;
   const [s, setS] = useState<Sharing | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -267,9 +282,12 @@ export function ShareDialog(props: { project: string; name?: string; self: strin
                 </VStack>
               )}
 
+              {!!props.views?.length && <AppLink project={project} views={props.views} initial={props.view} />}
+
               {manage && (
                 <Links
                   links={s.links ?? []}
+                  views={props.views ?? []}
                   busy={busy}
                   made={made}
                   onCreate={async (name, days) => {
@@ -411,8 +429,38 @@ function RequestRow(props: {
   );
 }
 
+/** Options for what a link or address opens: the workbench, or one view as an app. */
+const viewOptions = (views: ViewRef[]) => views.map((v) => ({ value: v.name, label: v.title || v.name, description: "As an app, full screen" }));
+
+/**
+ * The address of one view as an app: the view full screen, without the
+ * workbench. It opens for whoever can already open the project; someone
+ * without access gets it through a share link, below.
+ */
+function AppLink(props: { project: string; views: ViewRef[]; initial?: string }) {
+  const [view, setView] = useState(props.views.some((v) => v.name === props.initial) ? props.initial! : props.views[0].name);
+  const [copied, copy] = useCopy();
+  const url = appUrl(location.origin, props.project, view);
+  return (
+    <VStack gap={2}>
+      <VStack gap={0.5}>
+        <Heading level={3}>Open a view as an app</Heading>
+        <Text type="supporting" color="secondary">
+          The view full screen, without the workbench, for anyone who can open the project. Parameters and the other views are under its Tools button.
+        </Text>
+      </VStack>
+      <HStack gap={2} vAlign="end" wrap="wrap">
+        <Selector label="View" isLabelHidden options={viewOptions(props.views)} value={view} onChange={(v) => v && setView(v)} containerXstyle={styles.role} />
+        <TextInput label="The view's address as an app" isLabelHidden isReadOnly value={url} containerXstyle={styles.grow} />
+        <Button label={copied ? "Copied" : "Copy"} onClick={() => copy(url)} />
+      </HStack>
+    </VStack>
+  );
+}
+
 function Links(props: {
   links: NonNullable<Sharing["links"]>;
+  views: ViewRef[];
   busy: boolean;
   made: { url: string; name: string } | null;
   onCreate: (name: string, days: number | null) => void;
@@ -420,16 +468,10 @@ function Links(props: {
 }) {
   const [name, setName] = useState("");
   const [expiry, setExpiry] = useState("0");
-  const [copied, setCopied] = useState(false);
-  const copy = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* the field is selectable: copy by hand */
-    }
-  };
+  const [copied, copy] = useCopy();
+  // What the new link opens: the workbench (""), or a view as an app.
+  const [opens, setOpens] = useState("");
+  const made = props.made ? linkToApp(props.made.url, opens || null) : "";
   const create = () => {
     props.onCreate(name.trim(), EXPIRY[Number(expiry)].days);
     setName("");
@@ -444,9 +486,19 @@ function Links(props: {
       </VStack>
       {props.made && (
         <Banner status="success" title="Link created. It is shown once: copy it now." collapsible={false}>
-          <HStack gap={2} vAlign="end">
-            <TextInput label="The new link" isLabelHidden isReadOnly value={props.made.url} containerXstyle={styles.grow} />
-            <Button label={copied ? "Copied" : "Copy"} onClick={() => copy(props.made!.url)} />
+          <HStack gap={2} vAlign="end" wrap="wrap">
+            {props.views.length > 0 && (
+              <Selector
+                label="What the link opens"
+                isLabelHidden
+                options={[{ value: "", label: "The workbench", description: "The graph, the code and every view" }, ...viewOptions(props.views)]}
+                value={opens}
+                onChange={(v) => setOpens(v ?? "")}
+                containerXstyle={styles.role}
+              />
+            )}
+            <TextInput label="The new link" isLabelHidden isReadOnly value={made} containerXstyle={styles.grow} />
+            <Button label={copied ? "Copied" : "Copy"} onClick={() => copy(made)} />
           </HStack>
         </Banner>
       )}

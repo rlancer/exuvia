@@ -23,11 +23,12 @@ import { Token } from "@astryxdesign/core/Token";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
-import { api, type GraphNode, type Project, type ProjectParam, type ProjectView } from "./api";
+import { api, HUB_PROJECT, type GraphNode, type Project, type ProjectParam, type ProjectView } from "./api";
+import { appUrl } from "./appMode";
 import { fileOrder } from "./views/files";
 import { ViewBridge, frameDocument, type FrameStatus } from "./views/host";
 import type { Params, ParamsState } from "./views/protocol";
-import { IconChevronRight, IconClose, IconPlay, MOD } from "./icons";
+import { IconChevronRight, IconClose, IconExpand, IconPlay, MOD } from "./icons";
 import { language } from "./lang";
 import { HistoryBrowser } from "./History";
 import { useAccess } from "./Access";
@@ -55,7 +56,7 @@ export interface OpenView {
 }
 
 /** Overrides → the parameter set a view sees (resolved values + declarations). */
-function paramsState(params: ProjectParam[]): ParamsState {
+export function paramsState(params: ProjectParam[]): ParamsState {
   return { params: Object.fromEntries(params.map((p) => [p.name, p.value])), specs: params };
 }
 
@@ -78,8 +79,10 @@ export function Views(props: {
   onOpenNode: (name: string) => void;
   /** A view (and file) picked elsewhere, in the side panel's Files tab. */
   open?: OpenView | null;
+  /** Told which view is shown. */
+  onShown?: (view: string | null) => void;
 }) {
-  const { project, dark, onOpenNode, open } = props;
+  const { project, dark, onOpenNode, open, onShown } = props;
   const [overrides, setOverrides] = useState<Params>({});
   const [at, setAt] = useState<Project | null>(null);
   const [paramErr, setParamErr] = useState<string | null>(null);
@@ -134,6 +137,7 @@ export function Views(props: {
   const views = at?.views ?? [];
   const view = views.find((v) => v.name === selected) ?? views[0] ?? null;
   const state = useMemo(() => paramsState(at?.params ?? []), [at]);
+  useEffect(() => onShown?.(view?.name ?? null), [onShown, view?.name]);
 
   /** Change parameters (from the bar or from a view); throws on a bad value. */
   const changeParams = useCallback(
@@ -329,6 +333,16 @@ function ViewPane(props: {
             </Text>
           )}
           <span {...stylex.props(styles.grow)} />
+          {view.state !== "error" && (
+            <IconButton
+              size="sm"
+              variant="ghost"
+              label="Open as an app"
+              tooltip="Open this view full screen, without the workbench, in a new tab"
+              icon={<IconExpand />}
+              onClick={() => window.open(appUrl(location.origin, HUB_PROJECT, view.name, props.overrides), "_blank", "noopener")}
+            />
+          )}
           <DownloadMenu
             small
             title={`Download what ${title} reads, or its code`}
@@ -485,7 +499,7 @@ function ViewPane(props: {
   );
 }
 
-type FrameError = Extract<FrameStatus, { error: string }>;
+export type FrameError = Extract<FrameStatus, { error: string }>;
 // An error keeps its row (and whether its stack is open) as newer ones arrive above it.
 const errorIds = new WeakMap<FrameError, number>();
 let lastErrorId = 0;
@@ -709,7 +723,7 @@ function ViewCode(props: {
 }
 
 /** The run parameters, one control each. A value other than the default is marked, and has a way back to it. */
-function ParamBar(props: { specs: ProjectParam[]; overrides: Params; onChange: (p: Params) => Promise<ParamsState> }) {
+export function ParamBar(props: { specs: ProjectParam[]; overrides: Params; onChange: (p: Params) => Promise<ParamsState> }) {
   return (
     <div {...stylex.props(styles.params)}>
       {props.specs.map((p) => (
@@ -771,7 +785,7 @@ function TextParam(props: { field: Pick<TextInputProps, "label" | "isLabelHidden
 }
 
 /** The sandboxed iframe and its bridge. Remounted when the view's files change. */
-function ViewFrame(props: {
+export function ViewFrame(props: {
   view: ProjectView;
   params: ParamsState;
   dark: boolean;
