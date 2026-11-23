@@ -447,20 +447,28 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
     # -- environment variables (envvars.py) -------------------------------------
     @r.get("/env")
     def env_list(ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
-        """The project's variables: names, and plain values. A secret's value
-        is never sent back."""
-        return {"variables": ctx.ws.env_vars()}
+        """The project's variables (names, and plain values: a secret's value
+        is never sent back), and the requests to set one that wait."""
+        return ctx.ws.env_state()
 
     @r.put("/env/{name}")
     def env_put(name: str, body: EnvVarReq, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         try:
-            return {"variables": ctx.ws.set_env_var(name, body.value, body.secret)}
+            ctx.ws.set_env_var(name, body.value, body.secret)
         except EnvError as e:
             raise HTTPException(400, str(e)) from e
+        return ctx.ws.env_state()
 
     @r.delete("/env/{name}")
     def env_delete(name: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
-        return {"variables": ctx.ws.delete_env_var(name)}
+        ctx.ws.delete_env_var(name)
+        return ctx.ws.env_state()
+
+    @r.delete("/env/requests/{name}")
+    def env_dismiss(name: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """Turn down a request to set ``name`` (request_secret)."""
+        ctx.ws.dismiss_env_request(name)
+        return ctx.ws.env_state()
 
     # -- packages (the project's pyproject.toml; see packages.py) -------------------
     def _packages_error(e: Exception) -> HTTPException:

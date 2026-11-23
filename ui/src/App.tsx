@@ -72,6 +72,13 @@ function fromHash(): { mode: Mode; node?: string; view?: OpenView; helper?: stri
   return { mode: "graph" };
 }
 const start = fromHash();
+
+/** `#env` opens the Environment dialog; `#env=<NAME>` on that variable (the
+ * link request_secret gives, so a person sets a secret the agent asked for). */
+function envFromHash(): { name?: string } | null {
+  const m = /^#env(?:=([A-Za-z_][A-Za-z0-9_]{0,127}))?$/.exec(location.hash);
+  return m ? { name: m[1] } : null;
+}
 const hashFor = (m: Mode, helper: string | null) =>
   m === "views" ? "#views" : m === "history" ? "#history" : m === "helper" && helper ? `#files/${encodeURI(helper)}` : location.pathname + location.search;
 
@@ -179,7 +186,22 @@ function Workbench() {
   const agent = useRef<AgentHandle>(null);
   const [pkgs, setPkgs] = useState<PackagesState | null>(null);
   const [pkgOpen, setPkgOpen] = useState(false);
-  const [envOpen, setEnvOpen] = useState(false);
+  // The Environment dialog: closed (null), or open, on a variable when a link named one.
+  const [envOpen, setEnvOpen] = useState<{ name?: string } | null>(() => envFromHash());
+  // Requests to set a secret (the agent's request_secret), for the button's count.
+  const [envRequests, setEnvRequests] = useState(0);
+  const refreshEnv = useCallback(() => api.env().then((s) => setEnvRequests(s.requests.length)).catch(() => {}), []);
+  useEffect(() => {
+    if (envFromHash()) history.replaceState(null, "", location.pathname + location.search);
+    const onHash = () => {
+      const e = envFromHash();
+      if (!e) return;
+      setEnvOpen(e);
+      history.replaceState(null, "", location.pathname + location.search);
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
   // Nodes to re-run once the packages installed for them are ready.
   const [rerun, setRerun] = useState<string[]>([]);
   const refreshPkgs = useCallback(() => api.packages().then(setPkgs).catch(() => {}), []);
@@ -205,13 +227,14 @@ function Workbench() {
       if (e.type === "graph" || e.type === "run" || e.type === "hello") refreshSoon();
       if (e.type === "log") setLogs((l) => ({ ...l, [e.run_id]: (l[e.run_id] ?? "") + e.text }));
       if (e.type === "packages" || e.type === "hello") refreshPkgs();
+      if (e.type === "env" || e.type === "hello") refreshEnv();
     };
     const tick = setInterval(refreshSoon, 30_000); // keeps "next run in…" honest
     return () => {
       es.close();
       clearInterval(tick);
     };
-  }, [refresh, refreshSoon, refreshPkgs]);
+  }, [refresh, refreshSoon, refreshPkgs, refreshEnv]);
 
   useEffect(() => {
     if (!rerun.length || !pkgs) return;
@@ -379,8 +402,9 @@ function Workbench() {
                   label="Environment"
                   icon={<IconKey />}
                   isIconOnly={compact}
-                  tooltip="API keys, tokens and settings your nodes read from os.environ"
-                  onClick={() => setEnvOpen(true)}
+                  tooltip={envRequests ? "The agent is waiting for you to set a secret" : "API keys, tokens and settings your nodes read from os.environ"}
+                  endContent={envRequests ? <Badge variant="info" label={envRequests} /> : undefined}
+                  onClick={() => setEnvOpen({})}
                 />
                 <Button label="New node" icon={<IconPlus />} isIconOnly={compact} tooltip="Add a node to the graph" onClick={() => setNewOpen(true)} />
                 <Button
@@ -501,7 +525,14 @@ function Workbench() {
           />
         )}
         {pkgOpen && <PackagesDialog state={pkgs} onChange={setPkgs} onClose={() => setPkgOpen(false)} />}
-        {envOpen && <EnvDialog onClose={() => setEnvOpen(false)} />}
+        {envOpen && (
+          <EnvDialog
+            key={envOpen.name ?? ""}
+            initialName={envOpen.name}
+            onChange={(s) => setEnvRequests(s.requests.length)}
+            onClose={() => setEnvOpen(null)}
+          />
+        )}
         {newOpen && (
           <NewNodeDialog
             nodes={nodes}

@@ -98,6 +98,12 @@ export type EnvVar = {
   updated_by: string | null;
 };
 
+/** A request to set a secret, from the agent or an MCP client (`request_secret`): its name and why, never a value. */
+export type EnvRequest = { name: string; reason: string; origin: string; at: number };
+
+/** `GET /api/env`: the variables, and the requests to set one that wait. */
+export type EnvState = { variables: EnvVar[]; requests: EnvRequest[] };
+
 /** A view's state for one parameter set, derived from the nodes it reads. */
 export type ViewState = "ready" | "missing" | "stale" | "error";
 
@@ -355,11 +361,13 @@ export const api = {
   packagesRetry: () => req<PackagesState>("POST", "/api/packages/retry"),
   packagesApprove: (id: number) => req<PackagesState>("POST", `/api/packages/requests/${id}/approve`),
   packagesDismiss: (id: number) => req<PackagesState>("DELETE", `/api/packages/requests/${id}`),
-  env: () => req<{ variables: EnvVar[] }>("GET", "/api/env").then((r) => r.variables),
+  env: () => req<EnvState>("GET", "/api/env"),
   /** Add or change a variable; without `value` the saved one is kept (to make a plain variable secret). */
   setEnv: (name: string, b: { value?: string; secret: boolean }) =>
-    req<{ variables: EnvVar[] }>("PUT", `/api/env/${encodeURIComponent(name)}`, b).then((r) => r.variables),
-  removeEnv: (name: string) => req<{ variables: EnvVar[] }>("DELETE", `/api/env/${encodeURIComponent(name)}`).then((r) => r.variables),
+    req<EnvState>("PUT", `/api/env/${encodeURIComponent(name)}`, b),
+  removeEnv: (name: string) => req<EnvState>("DELETE", `/api/env/${encodeURIComponent(name)}`),
+  /** Turn down a request to set a secret (the agent's request_secret). */
+  dismissEnvRequest: (name: string) => req<EnvState>("DELETE", `/api/env/requests/${encodeURIComponent(name)}`),
 };
 
 /** Who this page is signed in as (`GET /api/me`, on the server itself, not under a project). */

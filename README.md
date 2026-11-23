@@ -861,10 +861,61 @@ guessed at: the workbench marks it *Can't be decrypted*, the API and
 at the top of their log saying so. Put the key back (`EXUVIA_SECRETS_KEY`,
 or the project's `.exuvia/secrets.key`), or enter the value again.
 
-The agent can see which variables exist, and writes nodes that read them by
-name. When a node needs a key that isn't set, it asks you to add it in
-Environment rather than in the chat. A `.env` in the project folder still
-works for `exuvia serve`, which reads it at start.
+### When the agent needs a key
+
+The agent (the built-in one, or yours over MCP) can see which variables
+exist, and writes nodes that read them by name. It never sees or sends a
+secret's value, and it has no tool to set one. When a node needs a key that
+isn't set, it calls `request_secret` with the name and why, and you enter
+the value yourself:
+
+- **In the workbench.** The request waits in **Environment** (a count on
+  the button, and a banner with **Set it** and **Dismiss**), and the agent
+  passes on a link that opens the dialog on it: `<project>/#env=FRED_API_KEY`.
+- **Through your MCP client.** Over `exuvia mcp --url`, a client that
+  supports MCP's URL elicitation asks you directly whether to open that
+  link. The value is typed in the workbench, never in the client, which is
+  what URL elicitation is for. Both the 2025-11-25 protocol
+  (`elicitation/create`) and the 2026-07-28 one (an `input_required`
+  result) work. Clients without it, and the built-in `/mcp` endpoint
+  (stateless, so it can't ask the client anything), get the link and the
+  terminal command in the tool's answer instead.
+- **From your own terminal,** with `exuvia env set` (below).
+
+Setting the variable, from anywhere, answers the request. A request lives
+in the server's memory: a restart drops it, and the agent asks again.
+
+### From a terminal: `exuvia env`
+
+```bash
+exuvia env set FRED_API_KEY --url https://exuvia.example.com/p/research   # asks for it, not shown
+exuvia env set SIGNING_KEY --from-file signing.pem                         # the project in this folder
+exuvia env set REGION --plain --stdin <<< eu-west-1
+exuvia env list --url https://exuvia.example.com/p/research
+exuvia env rm OLD_KEY
+```
+
+- **The value is never an argument,** where your shell's history and `ps`
+  would keep it: `exuvia env set NAME=value` is refused. It is asked for
+  without being shown, or read from `--from-file` (a PEM key, which a
+  one-line prompt can't take) or `--stdin`. With no terminal to ask on and
+  neither of those, it refuses, so a script or an agent driving the
+  command can't send one by accident.
+- **`--url`** is a running exuvia: an `exuvia serve`, or a hub project at
+  `<hub>/p/<project>`. The request carries `EXUVIA_API_TOKEN` (or
+  `_FILE`): the server's token, or your own agent token, which acts as you.
+  Only HTTPS is used for another machine; plain `http` is for this one
+  (`localhost`), unless you pass `--allow-http` for a private network.
+- **Without `--url`** it opens the project folder (default `.`) the way
+  the server does, reading `EXUVIA_SECRETS_KEY` from the environment or the
+  project's `.env`. It is safe while a server runs the same project: it
+  changes the variables and nothing else, and the server uses them on the
+  next run.
+- `list` shows names and plain values, never a secret, and the requests
+  waiting to be set.
+
+A `.env` in the project folder still works for `exuvia serve`, which reads
+it at start.
 
 ## Execution model
 
@@ -1962,9 +2013,10 @@ The agent runs a tool loop over the live workspace: `list_nodes`, `read_node`,
 "Views"), `run_node`, `list_runs` and `read_run` (run history: what a
 schedule or a cascade ran, with each run's error and log), `define_param` /
 `delete_param`, `query_data` (DuckDB over every node's current output),
-`list_packages` and `request_packages` (see "Packages"), `list_env` (the
-project's environment variables by name, never a secret's value; see
-"Environment variables and secrets"), `docs` and
+`list_packages` and `request_packages` (see "Packages"), `list_env` and
+`request_secret` (the project's environment variables by name, and asking
+you to set one: the agent never sees a secret's value; see "Environment
+variables and secrets"), `docs` and
 `report_issue` (see "MCP"). It looks at real column names before writing, runs
 what it writes, reads the traceback when something fails, and fixes it. Every
 tool call shows up in the chat, and nodes it touches flash on the canvas.
@@ -2154,7 +2206,10 @@ Codex reads the token from an environment variable, so set
 `setx` on Windows). Behind a sign-in proxy, the proxy has to let `/mcp` and
 `/p/<project>/mcp` through without signing in (see "Agent tokens" under
 [auth](#schedules-auth-and-settings)). The endpoint is stateless: every
-request stands alone, so any replica can answer it. `exuvia mcp --url` (the
+request stands alone, so any replica can answer it. It can't ask the client
+anything back, so when the agent asks for a secret (`request_secret`), the
+link to set it comes in the tool's answer rather than as a prompt in the
+client (see [When the agent needs a key](#when-the-agent-needs-a-key)). `exuvia mcp --url` (the
 local relay, below) still works, and is how a client reads the shared API
 token from a file (`EXUVIA_API_TOKEN_FILE`).
 
@@ -2350,7 +2405,8 @@ headlessly or iframe the UI:
 | `GET /api/project` | graph + per-node status, and every view with its state (`?params={...}` for one parameter set) |
 | `PATCH /api/project` | rename, set the timezone |
 | `GET /api/params`, `PUT/DELETE /api/params/{name}` | run parameters and the values that have run |
-| `GET /api/env` | the project's environment variables (`{variables: [{name, secret, value, readable, updated_at, updated_by}]}`); a secret's `value` is always `null`, and `readable` is false for one the server cannot decrypt |
+| `GET /api/env` | the project's environment variables and the requests to set one (`{variables: [{name, secret, value, readable, updated_at, updated_by}], requests: [{name, reason, origin, at}]}`); a secret's `value` is always `null`, and `readable` is false for one the server cannot decrypt |
+| `DELETE /api/env/requests/{name}` | dismiss a request to set `name` (the agent's `request_secret`); `GET /api/env` lists them under `requests` |
 | `PUT /api/env/{name}`, `DELETE /api/env/{name}` | set one (`{value, secret}`; secret by default) / remove one. The value is saved with `\n` line endings and no surrounding whitespace (one final newline when it has several lines), and a secret encrypted. Without `value` the saved one is kept, which makes a plain variable secret; a secret becomes plain only with a new value |
 | `GET /api/packages` | the project's packages (from its `pyproject.toml`), what is installed, the install status and log, and agent requests waiting for approval |
 | `POST /api/packages` | `{"add": [...], "remove": [...]}`: edit the list; a change that does not resolve is a 400 with uv's explanation and changes nothing. The install runs in the background (`packages` events) |

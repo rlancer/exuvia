@@ -117,6 +117,9 @@ class Workspace:
         # Encrypts the project's secrets (envvars.py). A malformed
         # EXUVIA_SECRETS_KEY stops the project from loading.
         self.keyring = envvars.Keyring(self.project.state_dir)
+        self.env = envvars.Env(self.store, self.keyring)
+        # Variables someone asked a person to set (request_secret), by name.
+        self._env_requests: dict[str, dict[str, Any]] = {}
         self._seal_env_vars()
         self.bus = EventBus()
         self.graph: Graph = self.project.load()
@@ -373,65 +376,58 @@ class Workspace:
 
     # -- environment variables (envvars.py) ----------------------------------------
     def _env_rows(self) -> list[dict[str, Any]]:
-        """Every variable with its value decrypted, for runs and nothing else.
-        A secret no key here can decrypt has ``readable`` false, its value
-        None and ``problem`` saying why."""
-        rows = self.store.env_vars()
-        for r in rows:
-            r["readable"] = True
-            if r["secret"]:
-                try:
-                    r["value"] = self.keyring.open(r["value"])
-                except envvars.SecretsKeyError as e:
-                    r.update(value=None, readable=False, problem=str(e))
-        return rows
+        """Every variable with its value decrypted, for runs and nothing else."""
+        return self.env.rows()
 
     def _seal_env_vars(self) -> None:
-        """Encrypt, with the current key, each secret saved before encryption
-        or with another key (rotation). One that cannot be decrypted stays as
-        it is, for the key it needs to come back."""
-        for r in self.store.env_vars():
-            if not r["secret"] or self.keyring.is_current(r["value"]):
-                continue
-            try:
-                value = self.keyring.open(r["value"])
-            except envvars.SecretsKeyError as e:
-                print(f"exuvia: the secret {r['name']} cannot be decrypted: {e}", file=sys.stderr)
-                continue
-            self.store.reseal_env_var(r["name"], r["value"], self.keyring.seal(value))
+        for name in self.env.seal_all():
+            print(f"exuvia: the secret {name} cannot be decrypted with this server's key", file=sys.stderr)
 
     def env_vars(self) -> list[dict[str, Any]]:
         """The project's variables as a client may see them: no secret's value."""
         return envvars.public(self._env_rows())
 
+    def env_state(self) -> dict[str, Any]:
+        """``GET /api/env``: the variables, and the requests for ones that are
+        not set yet (a request is answered by setting its variable, from the
+        workbench, the API or ``exuvia env set``)."""
+        variables = self.env_vars()
+        ready = {v["name"] for v in variables if v["readable"]}
+        for name in [n for n in self._env_requests if n in ready]:
+            self._env_requests.pop(name, None)
+        return {"variables": variables, "requests": list(self._env_requests.values())}
+
     def set_env_var(self, name: str, value: str | None, secret: bool) -> list[dict[str, Any]]:
-        """Add or change a variable. ``value=None`` keeps the saved value, to
-        make a plain variable secret; a secret never becomes plain without a
-        new value, which would show the old one. Values are normalized
-        (``envvars.normalize``) and secrets encrypted before they are saved."""
-        envvars.check_name(name)
-        rows = {r["name"]: r for r in self._env_rows()}
-        old = rows.get(name)
-        if value is None:
-            if old is None:
-                raise envvars.EnvError(f"{name} is not set yet: give it a value.")
-            if old["secret"] and not secret:
-                raise envvars.EnvError(f"{name} is secret: give it a new value to make it plain.")
-            if not old["readable"]:
-                raise envvars.EnvError(f"{name} cannot be decrypted: give it a new value.")
-            value = old["value"]
-        value = envvars.normalize(envvars.check_value(value))
-        if old is None and len(rows) >= envvars.MAX_VARIABLES:
-            raise envvars.EnvError(f"A project has at most {envvars.MAX_VARIABLES} variables.")
-        stored = self.keyring.seal(value) if secret else value
-        self.store.set_env_var(name, stored, secret, auth.current_id())
+        """Add or change a variable (``envvars.Env.set``)."""
+        self.env.set(name, value, secret, auth.current_id())
+        self._env_requests.pop(name, None)
         self.bus.publish({"type": "env"})
         return self.env_vars()
 
     def delete_env_var(self, name: str) -> list[dict[str, Any]]:
-        if self.store.delete_env_var(name):
+        if self.env.delete(name):
             self.bus.publish({"type": "env"})
         return self.env_vars()
+
+    def request_env_var(self, name: str, reason: str, origin: str) -> dict[str, Any]:
+        """Someone (the agent, an MCP client) asks a person to set a secret.
+        Only the name and why travel: the value is entered by the person, in
+        the workbench or with ``exuvia env set``. Waits in memory until the
+        variable is set or the request dismissed."""
+        envvars.check_name(name)
+        reason = " ".join((reason or "").split())[:300]
+        have = next((v for v in self.env_vars() if v["name"] == name), None)
+        if have is not None and have["readable"]:
+            return {"status": "set", "name": name, "secret": have["secret"]}
+        if name not in self._env_requests and len(self._env_requests) >= envvars.MAX_VARIABLES:
+            raise envvars.EnvError("Too many variables are already waiting to be set.")
+        self._env_requests[name] = {"name": name, "reason": reason, "origin": origin, "at": time.time()}
+        self.bus.publish({"type": "env"})
+        return {"status": "requested", "name": name, "reason": reason}
+
+    def dismiss_env_request(self, name: str) -> None:
+        if self._env_requests.pop(name, None) is not None:
+            self.bus.publish({"type": "env"})
 
     def set_settings(self, *, name: str | None = None, timezone: str | None = None) -> None:
         if timezone:

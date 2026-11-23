@@ -13,7 +13,7 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { VStack } from "@astryxdesign/core/VStack";
-import { api, type EnvVar } from "./api";
+import { api, type EnvRequest, type EnvState, type EnvVar } from "./api";
 import { IconTrash } from "./icons";
 import { AppDialog } from "./ui/AppDialog";
 import { ago } from "./util";
@@ -29,15 +29,31 @@ const styles = stylex.create({
   code: { fontVariantLigatures: "none", fontFeatureSettings: '"liga" 0, "calt" 0' },
 });
 
+/** Who asked for a secret: the built-in agent, an MCP client, the API. */
+const asker = (origin: string) =>
+  origin === "agent" ? "The agent" : origin === "mcp" ? "Your coding agent" : origin === "api" ? "An API client" : origin;
+
 /** The form: a new variable (`editing` null) or a change to `editing`. */
 type Draft = { name: string; value: string; secret: boolean; editing: EnvVar | null };
 const EMPTY: Draft = { name: "", value: "", secret: true, editing: null };
 
 /** The project's environment variables: the API keys, tokens and settings
  * every node gets in `os.environ`. A secret is never shown again once saved. */
-export function EnvDialog(props: { onClose: () => void }) {
-  const { onClose } = props;
-  const [vars, setVars] = useState<EnvVar[] | null>(null);
+export function EnvDialog(props: {
+  onClose: () => void;
+  /** A variable to start on (a link to `#env=<name>`): changed if it exists, otherwise added. */
+  initialName?: string;
+  /** Called with each new state, so the bar's count of requests follows. */
+  onChange?: (s: EnvState) => void;
+}) {
+  const { onClose, initialName, onChange } = props;
+  const [vars, setVarsOnly] = useState<EnvVar[] | null>(null);
+  const [requests, setRequests] = useState<EnvRequest[]>([]);
+  const setState = (s: EnvState) => {
+    setVarsOnly(s.variables);
+    setRequests(s.requests);
+    onChange?.(s);
+  };
   const [draft, setDraft] = useState<Draft>(EMPTY);
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -65,14 +81,22 @@ export function EnvDialog(props: { onClose: () => void }) {
   };
 
   useEffect(() => {
-    api.env().then(setVars).catch((e: Error) => setErr(e.message));
+    api
+      .env()
+      .then((s) => {
+        setState(s);
+        const v = initialName ? s.variables.find((x) => x.name === initialName) : undefined;
+        if (v) setDraft({ name: v.name, value: v.secret ? "" : (v.value ?? ""), secret: v.secret, editing: v });
+        else if (initialName) setDraft({ ...EMPTY, name: initialName });
+      })
+      .catch((e: Error) => setErr(e.message));
   }, []);
 
-  const act = async (label: string, fn: () => Promise<EnvVar[]>) => {
+  const act = async (label: string, fn: () => Promise<EnvState>) => {
     setBusy(label);
     setErr(null);
     try {
-      setVars(await fn());
+      setState(await fn());
       return true;
     } catch (e) {
       setErr((e as Error).message);
@@ -187,6 +211,20 @@ export function EnvDialog(props: { onClose: () => void }) {
       footer={<Button label="Done" onClick={onClose} />}
     >
       <VStack gap={4}>
+        {requests.map((r) => (
+          <Banner
+            key={r.name}
+            status="info"
+            title={`${asker(r.origin)} asks you to set ${r.name}`}
+            description={r.reason ? `${r.reason}. You enter the value here; it never passes through the agent.` : "You enter the value here; it never passes through the agent."}
+            endContent={
+              <HStack gap={1}>
+                <Button size="sm" label="Set it" isDisabled={!!busy} onClick={() => { setErr(null); setFile(null); setDraft({ ...EMPTY, name: r.name }); }} />
+                <Button variant="ghost" size="sm" label="Dismiss" isDisabled={!!busy} onClick={() => act(`dismiss${r.name}`, () => api.dismissEnvRequest(r.name))} />
+              </HStack>
+            }
+          />
+        ))}
         {!!lost.length && (
           <Banner
             status="warning"

@@ -8,6 +8,7 @@
     exuvia status [dir]          print node freshness
     exuvia mcp [dir | --url URL] the agent's tools for MCP clients (Claude Code, Cursor, ...)
     exuvia executor              run nodes for a remote control plane (HTTP service)
+    exuvia env list|set|rm       a project's environment variables (a secret is asked for, never an argument)
     exuvia secrets-key           print a new key for EXUVIA_SECRETS_KEY
 """
 
@@ -300,6 +301,10 @@ def main() -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8080)
     p.set_defaults(fn=cmd_executor)
+
+    from .envcli import add_parser as add_env_parser
+
+    add_env_parser(sub)
 
     p = sub.add_parser("secrets-key", help="print a new key for EXUVIA_SECRETS_KEY (encrypts the projects' secrets)")
     p.set_defaults(fn=cmd_secrets_key)

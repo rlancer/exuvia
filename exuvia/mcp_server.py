@@ -150,6 +150,48 @@ def hub_instructions(url: str, projects: list[dict[str, Any]] | str) -> str:
     )
 
 
+def secret_request_links(text: str, workbench: str | None, terminal: str) -> str:
+    """A ``request_secret`` answer with where the user sets the value: the
+    workbench's Environment panel opened on it (``workbench``: the project's
+    address, when known) and the command for their own terminal
+    (``terminal``: ``exuvia env set``'s arguments after the name). Only the
+    name travels; the value never passes through the client or the model."""
+    import json
+
+    try:
+        res = json.loads(text)
+    except ValueError:
+        return text
+    if not isinstance(res, dict) or res.get("status") != "requested":
+        return text
+    name = res["name"]
+    res["terminal"] = f"exuvia env set {name}{(' ' + terminal) if terminal else ''}"
+    where = f"in their own terminal: `{res['terminal']}` (it asks for the value without showing it)"
+    if workbench:
+        res["workbench"] = f"{workbench.rstrip('/')}/#env={name}"
+        where = f"at {res['workbench']} (the workbench's Environment panel), or {where}"
+    res["message"] = (
+        f"Asked the user to set {name}. Tell them they enter the value {where}. Never ask for the value, never "
+        "run that command yourself, and call list_env to see when it is set."
+    )
+    return json.dumps(res)
+
+
+def url_elicitation(text: str) -> tuple[str, str] | None:
+    """(message, url) for a ``request_secret`` answer that has a workbench
+    link, to ask the user through the client (MCP URL-mode elicitation)."""
+    import json
+
+    try:
+        res = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(res, dict) or res.get("status") != "requested" or not res.get("workbench"):
+        return None
+    why = f": {res['reason']}" if res.get("reason") else ""
+    return f"Set the secret {res['name']} in exuvia{why}. You enter it in exuvia, not here.", res["workbench"]
+
+
 class Backend(Protocol):
     async def instructions(self) -> str: ...
     async def tools(self) -> list[dict[str, Any]]: ...
@@ -182,6 +224,10 @@ class LocalBackend:
 
     async def call(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
         ok, text, _ = await self.agent.call_tool(name, args, ORIGIN)
+        if ok and name == "request_secret":
+            import shlex
+
+            text = secret_request_links(text, None, shlex.quote(str(self.ws.project.root)))
         return ok, text
 
 
@@ -275,7 +321,11 @@ class RemoteBackend:
         if r.status_code != 200:
             return False, f"HTTP {r.status_code}: {r.text[:2000]}"
         body = r.json()
-        return bool(body.get("ok")), str(body.get("text", ""))
+        ok, text = bool(body.get("ok")), str(body.get("text", ""))
+        if ok and name == "request_secret":
+            base = self.api.removesuffix("/api")
+            text = secret_request_links(text, base, f"--url {base}")
+        return ok, text
 
 
 class HubBackend:
@@ -392,7 +442,11 @@ class HubBackend:
         if r.status_code != 200:
             return False, f"HTTP {r.status_code}: {r.text[:2000]}"
         body = r.json()
-        return bool(body.get("ok")), str(body.get("text", ""))
+        ok, text = bool(body.get("ok")), str(body.get("text", ""))
+        if ok and name == "request_secret":
+            base = f"{self.url}/p/{project}"
+            text = secret_request_links(text, base, f"--url {base}")
+        return ok, text
 
 
 async def remote_backend(url: str, token: str | None) -> RemoteBackend | HubBackend:
@@ -413,11 +467,61 @@ async def remote_backend(url: str, token: str | None) -> RemoteBackend | HubBack
     return RemoteBackend(url, token)
 
 
-def build_server(backend: Backend, instructions: str | Callable[[], str]) -> Any:
+ELICIT_KEY = "open_workbench"
+USER_ANSWER = {"accept": "opened the link to set it", "decline": "declined to open the link"}
+
+
+def _with_answer(text: str, action: str) -> str:
+    import json
+
+    res = json.loads(text)
+    res["user"] = USER_ANSWER.get(action, "dismissed the prompt")
+    return json.dumps(res)
+
+
+async def _elicit_secret(ctx: Any, params: Any, text: str) -> Any:
+    """Ask the user, through a client that supports it, to open the
+    workbench where they set a requested secret (MCP URL-mode elicitation:
+    the value is typed there, never in the client). Returns the tool's
+    text, with the user's answer when there is one, or (2026-07-28
+    protocol, which has no server-to-client requests) an
+    ``InputRequiredResult`` the client answers by calling the tool again.
+    A client without URL elicitation gets the text as it was."""
+    import uuid
+
+    import mcp_types as types
+
+    answered = (params.input_responses or {}).get(ELICIT_KEY) if params.input_responses else None
+    if answered is not None:  # the retry, with the user's answer
+        return _with_answer(text, getattr(answered, "action", ""))
+    ask = url_elicitation(text)
+    session = getattr(ctx, "session", None)
+    caps = getattr(session, "client_capabilities", None)
+    if ask is None or caps is None or caps.elicitation is None or caps.elicitation.url is None:
+        return text
+    message, url = ask
+    if not session.can_send_request:
+        return types.InputRequiredResult(
+            input_requests={ELICIT_KEY: types.ElicitRequest(params=types.ElicitRequestURLParams(message=message, url=url))},
+            request_state="request_secret",
+        )
+    try:
+        answer = await session.elicit_url(
+            message=message, url=url, elicitation_id=str(uuid.uuid4()), related_request_id=ctx.request_id
+        )
+    except Exception as e:  # noqa: BLE001 — a client that fails to ask still gets the link
+        print(f"exuvia mcp: could not ask the client to open {url}: {e}", file=sys.stderr)
+        return text
+    return _with_answer(text, answer.action)
+
+
+def build_server(backend: Backend, instructions: str | Callable[[], str], *, elicit: bool = True) -> Any:
     """The MCP server for ``backend``: its tools plus ``guide``. Given a
     function, the instructions are worked out again at each ``initialize``
     (the HTTP endpoint, exuvia/mcp_http.py, serves many clients from one
-    server, and a hub's projects come and go)."""
+    server, and a hub's projects come and go). ``elicit``: ask the client
+    to open the workbench for a requested secret (``request_secret``), which
+    needs a connection that can send the client a request (stdio)."""
     from importlib.metadata import version
 
     import mcp.types as types
@@ -448,12 +552,17 @@ def build_server(backend: Backend, instructions: str | Callable[[], str]) -> Any
             tools=[types.Tool(name=t["name"], description=t["description"], input_schema=t["input_schema"]) for t in defs]
         )
 
-    async def call_tool(_ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
+    async def call_tool(ctx: Any, params: types.CallToolRequestParams) -> Any:
         if params.name == guide_tool["name"]:
             guide = getattr(backend, "guide", None)
             ok, text = await guide(params.arguments or {}) if guide else (True, await backend.instructions())
         else:
             ok, text = await backend.call(params.name, params.arguments or {})
+            if ok and params.name == "request_secret" and elicit:
+                asked = await _elicit_secret(ctx, params, text)
+                if not isinstance(asked, str):
+                    return asked  # the client asks the user, then calls again
+                text = asked
         return types.CallToolResult(content=[types.TextContent(text=text)], is_error=not ok)
 
     return server_cls(

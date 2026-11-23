@@ -20,6 +20,7 @@ from . import auth, docs, feedback
 from .agent_mcp import McpServers, Toolbox
 from .agent_mcp import enabled as mcp_enabled
 from .llm import Provider, resolve_provider
+from .envvars import EnvError
 from .packages import PackagesError, agent_mode, missing_package
 from .project import NODE_NAME, coerce_param
 from .report import node_report
@@ -374,6 +375,27 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
+        "name": "request_secret",
+        "description": (
+            "Ask the user to set an API key, token or other secret a node needs, without it ever passing "
+            "through you: give only the variable's name and why it is needed. The user enters the value "
+            "themselves, in the workbench's Environment panel or with `exuvia env set` in their own terminal, "
+            "and it is stored encrypted. The result says whether it is already set, and otherwise how the user "
+            "sets it (a link, a terminal command): pass that on. Never ask for the value in the chat, never "
+            "write one into a file, a node or a command, and never run `exuvia env set` yourself. Call "
+            "list_env to see when it is set, then run the node."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "the variable's name, e.g. FRED_API_KEY"},
+                "reason": {"type": "string", "description": "one line for the user: what needs it"},
+            },
+            "required": ["name", "reason"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "request_packages",
         "description": (
             "Ask for packages to be added to the project's pyproject.toml and installed, for nodes that import "
@@ -522,7 +544,7 @@ SYSTEM = """You are the agent inside exuvia, a DAG workbench for analysts and da
 - Run parameters make results reproducible over time. A project declares them (see "Run parameters" below; add one with define_param). A node that reads one must declare it: `@exuvia.node(params=["as_of"])` then `exuvia.param("as_of")` (dates arrive as "YYYY-MM-DD" strings); in SQL, `-- params: as_of` then `$as_of`. A node's output is stored per value of the parameters it or its upstream nodes declare, so each date has its own output and history, and nodes without parameters are computed once and shared. A node that reads `as_of` must compute "as of that date": filter source data to rows known on or before it, and never call "now"/"today" yourself.
 - Outputs are content-hashed. Unchanged output stops a cascade. Each node runs in its own subprocess with the project root as the working directory and on sys.path.
 - Shared helpers: code several nodes need (a formula, an interpolation, a cleaning step) goes in a helper module under `lib/` instead of being copied into each node. Write it with write_file (e.g. `lib/stats.py`; packages like `lib/vol/surface.py` work too, no `__init__.py` needed) and import it in the node with a plain import statement: `from lib.stats import weighted_corr`. Helpers are Python only and are not nodes: no `@exuvia.node`, no outputs. A node's code hash covers every helper it imports (directly or through other helpers), so editing a helper makes those nodes stale; write_file returns them in `used_by` — re-run them. Imports built at runtime (importlib, `__import__`) are not tracked.
-- Secrets and settings come from environment variables: read them with `os.environ["NAME"]` (or `.get`), never hardcode credentials or copy a key into a file. `list_env` shows which variables the project has. When a node needs one that is missing, write the node to read it by a clear name (e.g. `FRED_API_KEY`) and ask the user to add it in the workbench's Environment panel, marked secret; never ask them to paste a secret into the chat.
+- Secrets and settings come from environment variables: read them with `os.environ["NAME"]` (or `.get`), never hardcode credentials or copy a key into a file. `list_env` shows which variables the project has. When a node needs one that is missing, write the node to read it by a clear name (e.g. `FRED_API_KEY`) and call `request_secret` with that name and why: the user enters the value themselves and it never passes through you. Never ask them to paste a secret into the chat.
 
 ## Example Python node
 ```python
@@ -808,6 +830,21 @@ class Agent:
                 {k: v for k, v in r.items() if k in ("name", "secret", "value") or (k == "readable" and not v)}
                 for r in ws.env_vars()
             ]}), {}
+        if name == "request_secret":
+            try:
+                res = ws.request_env_var(args["name"], args.get("reason") or "", origin)
+            except EnvError as e:
+                return False, str(e), {}
+            if res["status"] == "set":
+                res["message"] = f"{res['name']} is already set: nodes read it with os.environ[{res['name']!r}]."
+            else:
+                res["message"] = (
+                    f"Asked the user to set {res['name']}. It waits for them in the workbench's Environment panel, "
+                    f"where they enter the value (it is stored encrypted and never shown to you). From a terminal "
+                    f"they can run `exuvia env set {res['name']}` instead. Tell them, without asking for the value; "
+                    "call list_env to see when it is set, then run the node."
+                )
+            return True, json.dumps(res), {}
         if name == "request_packages":
             try:
                 res = await asyncio.to_thread(

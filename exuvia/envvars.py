@@ -270,3 +270,68 @@ class Redactor:
         if not text or self._pattern is None:
             return text
         return self._pattern.sub(MASK, text)
+
+
+# -- a project's variables -----------------------------------------------------------
+class Env:
+    """A project's variables in its store, secrets through its keyring: what
+    the workspace and ``exuvia env`` (on a project folder) both use. It opens
+    no workspace, so it is safe next to a server running the same project."""
+
+    def __init__(self, store: Any, keyring: Keyring):
+        self.store = store
+        self.keyring = keyring
+
+    def rows(self) -> list[dict[str, Any]]:
+        """Every variable with its value decrypted, for runs and nothing else.
+        A secret no key here can decrypt has ``readable`` false, its value
+        None and ``problem`` saying why."""
+        rows = self.store.env_vars()
+        for r in rows:
+            r["readable"] = True
+            if r["secret"]:
+                try:
+                    r["value"] = self.keyring.open(r["value"])
+                except SecretsKeyError as e:
+                    r.update(value=None, readable=False, problem=str(e))
+        return rows
+
+    def seal_all(self) -> list[str]:
+        """Encrypt, with the current key, each secret saved before encryption
+        or with another key (rotation). One that cannot be decrypted stays as
+        it is, for the key it needs to come back; its name is returned."""
+        stuck = []
+        for r in self.store.env_vars():
+            if not r["secret"] or self.keyring.is_current(r["value"]):
+                continue
+            try:
+                value = self.keyring.open(r["value"])
+            except SecretsKeyError:
+                stuck.append(r["name"])
+                continue
+            self.store.reseal_env_var(r["name"], r["value"], self.keyring.seal(value))
+        return stuck
+
+    def set(self, name: str, value: str | None, secret: bool, by: str | None = None) -> None:
+        """Add or change a variable. ``value=None`` keeps the saved value, to
+        make a plain variable secret; a secret never becomes plain without a
+        new value, which would show the old one. Values are normalized and
+        secrets encrypted before they are saved."""
+        check_name(name)
+        rows = {r["name"]: r for r in self.rows()}
+        old = rows.get(name)
+        if value is None:
+            if old is None:
+                raise EnvError(f"{name} is not set yet: give it a value.")
+            if old["secret"] and not secret:
+                raise EnvError(f"{name} is secret: give it a new value to make it plain.")
+            if not old["readable"]:
+                raise EnvError(f"{name} cannot be decrypted: give it a new value.")
+            value = old["value"]
+        value = normalize(check_value(value))
+        if old is None and len(rows) >= MAX_VARIABLES:
+            raise EnvError(f"A project has at most {MAX_VARIABLES} variables.")
+        self.store.set_env_var(name, self.keyring.seal(value) if secret else value, secret, by)
+
+    def delete(self, name: str) -> bool:
+        return self.store.delete_env_var(name)

@@ -419,11 +419,20 @@ def test_a_hub_answers_mcp_over_http(hub_served):
         async with http_client(f"{hub_served}/p/books/mcp", "s3cret") as client:
             tools = {t.name for t in (await client.list_tools()).tools}
             nodes = json.loads(text(await client.call_tool("list_nodes", {})))
-            return tools, nodes, client.instructions
+            asked = json.loads(text(await client.call_tool("request_secret", {"name": "API_KEY", "reason": "x"})))
+            instructions = client.instructions
+        async with http_client(f"{hub_served}/mcp", "s3cret") as client:
+            hub_asked = json.loads(text(await client.call_tool(
+                "request_secret", {"project": "books", "name": "HUB_KEY", "reason": "x"})))
+        return tools, nodes, instructions, asked, hub_asked
 
-    tools, nodes, instructions = asyncio.run(one_project())
+    tools, nodes, instructions, asked, hub_asked = asyncio.run(one_project())
     assert tools == TOOL_NAMES and [n["name"] for n in nodes] == ["nums"]
     assert "How exuvia works" in instructions
+    # No back-channel over the stateless endpoint: the link is in the answer.
+    assert asked["workbench"] == f"{hub_served}/p/books/#env=API_KEY"
+    assert asked["terminal"] == f"exuvia env set API_KEY --url {hub_served}/p/books"
+    assert hub_asked["workbench"] == f"{hub_served}/p/books/#env=HUB_KEY"
 
     import httpx
 
@@ -471,3 +480,63 @@ def test_mcp_over_http_works_as_the_agent_tokens_owner(tmp_path, monkeypatch):
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+
+
+# -- request_secret: the value never passes through the client ----------------------
+
+@pytest.mark.parametrize("mode", ["auto", "legacy"])  # 2026-07-28 input_required / 2025-11-25 elicitation/create
+def test_request_secret_asks_the_client_to_open_the_workbench(served, mode):
+    import httpx
+    import mcp_types as types
+
+    url, _root = served
+    asked = []
+
+    async def on_elicit(_ctx, params):
+        asked.append(params)
+        return types.ElicitResult(action="accept")
+
+    # The real command over stdio: the server asks the client back on it.
+    params = StdioServerParameters(command=sys.executable, args=["-m", "exuvia.cli", "mcp", "--url", url])
+
+    async def go():
+        async with Client(params, elicitation_callback=on_elicit, mode=mode) as client:
+            eliciting = await client.call_tool("request_secret", {"name": "FRED_API_KEY", "reason": "the rates node"})
+        async with Client(params, mode=mode) as plain:  # a client without elicitation
+            linked = await plain.call_tool("request_secret", {"name": "OTHER_KEY", "reason": "x"})
+        return eliciting, linked
+
+    eliciting, linked = asyncio.run(go())
+    [params] = asked
+    assert params.mode == "url" and params.url == f"{url}/#env=FRED_API_KEY"
+    assert "FRED_API_KEY" in params.message and "the rates node" in params.message
+    res = json.loads(text(eliciting))
+    assert res["status"] == "requested" and res["user"] == "opened the link to set it"
+    assert res["terminal"] == f"exuvia env set FRED_API_KEY --url {url}"
+    res = json.loads(text(linked))
+    assert "user" not in res and res["workbench"] == f"{url}/#env=OTHER_KEY" and "Never ask for the value" in res["message"]
+    # The server holds both requests for the workbench to show.
+    waiting = httpx.get(f"{url}/api/env").json()["requests"]
+    assert {r["name"] for r in waiting} >= {"FRED_API_KEY", "OTHER_KEY"} and waiting[0]["origin"] == "mcp"
+    # Setting it answers the request.
+    httpx.put(f"{url}/api/env/FRED_API_KEY", json={"value": "k-123456"})
+    assert "FRED_API_KEY" not in {r["name"] for r in httpx.get(f"{url}/api/env").json()["requests"]}
+    httpx.delete(f"{url}/api/env/FRED_API_KEY")
+
+
+def test_request_secret_on_a_local_project_points_at_the_terminal(tmp_path):
+    from exuvia.mcp_server import LocalBackend
+
+    root = project(tmp_path)
+
+    async def go():
+        backend = LocalBackend(root)
+        await backend.start()
+        try:
+            return await backend.call("request_secret", {"name": "FRED_API_KEY", "reason": "rates"})
+        finally:
+            await backend.stop()
+
+    ok, out = asyncio.run(go())
+    res = json.loads(out)
+    assert ok and "workbench" not in res and res["terminal"] == f"exuvia env set FRED_API_KEY {root}"
