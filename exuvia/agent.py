@@ -11,14 +11,16 @@ import asyncio
 import json
 import time
 import uuid
+from datetime import UTC, datetime
 from importlib import metadata
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 from . import auth, docs, feedback
 from .agent_mcp import McpServers, Toolbox
 from .agent_mcp import enabled as mcp_enabled
 from .llm import Provider, resolve_provider
-from .packages import PackagesError, agent_mode
+from .packages import PackagesError, agent_mode, missing_package
 from .project import NODE_NAME, coerce_param
 from .report import node_report
 from .workspace import Workspace, acting_as
@@ -297,13 +299,68 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "delete_param",
+        "description": (
+            "Remove a project run parameter from exuvia.json. Only when the user asked for it: nodes that still "
+            "read it fail until they stop declaring it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_runs",
+        "description": (
+            "Recent runs, newest first: of one node (`name`) or of every node. Each has its id, node, status "
+            "(queued, running, success, cached, failed, skipped), trigger (schedule, cascade, agent, mcp, api, "
+            "...), who started it, when it was queued, started and finished (UTC), its parameter values, rows and "
+            "error. Use it to see whether scheduled runs succeeded and to find a failed one; read_run gives its log."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "a node name; omit for every node"},
+                "limit": {"type": "integer", "description": "how many runs, default 20, at most 100"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "read_run",
+        "description": (
+            "One run, by the id list_runs or run_node gave: status, trigger, timing, parameter values, the "
+            "output ids of the inputs it read, rows and schema, the error, and the end of its log (`log_lines`, "
+            "default 200). When the node's code has changed since, `source` is the code that run executed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "log_lines": {"type": "integer", "description": "how many lines from the end of the log, default 200"},
+            },
+            "required": ["run_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "list_packages",
         "description": (
             "The packages this project lists in its pyproject.toml, each with the version installed and whether "
             "it comes from the project or from exuvia itself, plus the install status (installing, ready, failed "
-            "with uv's error) and any requests still waiting for approval."
+            "with uv's error) and any requests still waiting for approval. With `environment: true`, also "
+            "`environment`: every package installed where nodes import from (exuvia's own environment and the "
+            "project's install), name to version. Check it before asking for a package."
         ),
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "environment": {"type": "boolean", "description": "also list every installed package"},
+            },
+            "additionalProperties": False,
+        },
     },
     {
         "name": "request_packages",
@@ -381,8 +438,28 @@ VIEW_TOOLS = {
 # project may call (sharing.py). Every other tool needs an editor.
 READ_TOOLS = frozenset({
     "list_nodes", "read_node", "list_files", "read_file", "list_revisions", "read_revision",
-    "list_views", "read_view", "query_data", "list_packages", "report_issue",
+    "list_views", "read_view", "query_data", "list_runs", "read_run", "list_packages", "report_issue",
 })
+
+RUNS_LIMIT = 100
+RUN_LOG_LINES = 200
+RUN_TEXT_MAX = 20000  # characters of a read_run answer
+RUN_SOURCE_MAX = 8000
+
+
+def _utc(ts: Any) -> str | None:
+    """A stored epoch time as ISO 8601 UTC, for a model to read."""
+    if not isinstance(ts, (int, float)):
+        return None
+    return datetime.fromtimestamp(ts, UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
+    out = {k: v for k, v in run.items() if k not in ("queued_at", "started_at", "finished_at") and v not in (None, "", {}, [])}
+    for k in ("queued_at", "started_at", "finished_at"):
+        if run.get(k) is not None:
+            out[k.removesuffix("_at")] = _utc(run[k])
+    return out
 
 
 def _available_packages(root: Path | None = None) -> str:
@@ -452,8 +529,9 @@ def rolling_vol(returns):
 - Look before you write: list_nodes, read the nodes you depend on, and query_data to learn real column names and types.
 - Prefer small, single-purpose nodes with clear names over one big node. Reuse existing nodes as inputs instead of recomputing.
 - After writing a node, run it. If it fails, read the error, fix it, and re-run. Do not hand back a node you have not seen succeed unless the user asked you not to run it.
+- Runs you did not start (a schedule, a cascade, someone else): list_runs shows them, newest first, and read_run gives one run's error and log.
 - Add a `chart` when a node's output is naturally visual (time series, distributions, rankings).
-- Imports go inside the function or at module top; available packages: {packages}. Do not pip install. A package that is not listed goes in the project's `pyproject.toml` under `[project] dependencies`, which exuvia installs from: {packages_how}
+- Imports go inside the function or at module top; available packages: {packages}; `list_packages` with `environment: true` lists every installed package and its version. Do not pip install. A package that is not listed goes in the project's `pyproject.toml` under `[project] dependencies`, which exuvia installs from: {packages_how}
 - Only delete or rename nodes when asked. Keep edits minimal when changing an existing node.
 - For anything about exuvia this guide does not cover (deploying it, hubs, auth and tokens, executors, package indexes, the HTTP API, MCP setup), read `docs` before you answer or act: it is the documentation of the installed version. Do not answer those from memory.
 - Finish with a short summary of what you changed and what the data shows — a few sentences, not a report. Describe findings factually; you are a research tool and do not give investment advice.
@@ -496,6 +574,12 @@ def _validate(name: str, args: Any) -> str | None:
             return f"`{key}` must be an object"
         if prop.get("type") == "string" and key in args and not isinstance(args[key], str):
             return f"`{key}` must be a string"
+        if prop.get("type") == "boolean" and args.get(key) is not None and not isinstance(args[key], bool):
+            return f"`{key}` must be true or false"
+        if prop.get("type") == "integer" and args.get(key) is not None and (
+            isinstance(args[key], bool) or not isinstance(args[key], int) or args[key] < 1
+        ):
+            return f"`{key}` must be a positive whole number"
         if prop.get("type") == "array" and key in args and not (
             isinstance(args[key], list) and all(isinstance(v, str) for v in args[key])
         ):
@@ -658,10 +742,54 @@ class Agent:
                 return False, str(e), {}
             ws.set_param(args["name"], spec)
             return True, json.dumps({"defined": args["name"], **spec, "value_now": ws.resolve_params()[args["name"]]}), {}
+        if name == "delete_param":
+            if args["name"] not in ws.project.params:
+                return False, f"no parameter named {args['name']}", {}
+            readers = sorted(n.name for n in ws.graph.nodes.values() if args["name"] in (n.params or []))
+            ws.set_param(args["name"], None)
+            out: dict[str, Any] = {"deleted": args["name"]}
+            if readers:
+                out["still_declared_by"] = readers
+            return True, json.dumps(out), {}
+        if name == "list_runs":
+            node, limit = args.get("name"), min(args.get("limit") or 20, RUNS_LIMIT)
+            if node and node not in ws.graph.nodes and ws.project.path_for(node) is None:
+                return False, f"no node named {node}", {}
+            rows = ws.store.runs_for(node, limit=limit) if node else ws.store.recent_runs(limit=limit)
+            return True, json.dumps([_run_summary(r) for r in rows], default=str), {"node": node} if node else {}
+        if name == "read_run":
+            run = ws.store.run(args["run_id"])
+            if run is None:
+                return False, f"no run {args['run_id']}: list_runs shows them", {}
+            log = (run.pop("log", None) or "").splitlines()
+            lines = args.get("log_lines") or RUN_LOG_LINES
+            out = _run_summary(run)
+            out["log_tail"] = "\n".join(log[-lines:])
+            if len(log) > lines:
+                out["log_lines_omitted"] = len(log) - lines
+            src = ws.run_source(args["run_id"]) or {}
+            out["code_current"] = src.get("code_current", False)
+            if not out["code_current"] and src.get("source"):
+                out["source"] = src["source"][:RUN_SOURCE_MAX]
+            missing = missing_package(run.get("error"))
+            if missing:
+                out["missing_package"] = missing
+            text = json.dumps(out, default=str)
+            if len(text) > RUN_TEXT_MAX:  # a huge log: keep its end
+                out["log_tail"] = out["log_tail"][-(RUN_TEXT_MAX // 2):]
+                text = json.dumps(out, default=str)
+            return True, text, {"node": run["node"]}
         if name == "list_packages":
             st = ws.packages.state()
             st.pop("manifest", None)
             st["log"] = "\n".join(st["log"].splitlines()[-20:])
+            if args.get("environment"):
+                st["environment"] = ws.packages.environment()
+                if not ws.packages.local:
+                    st["environment_note"] = (
+                        "nodes run on a remote executor: this is the server's environment, which may differ "
+                        "from the executor's"
+                    )
             return True, json.dumps(st, default=str), {}
         if name == "request_packages":
             try:
