@@ -291,9 +291,13 @@ def test_a_hub_url_relays_to_every_project(hub_served):
     assert not seen["ran"].is_error and json.loads(text(seen["ran"]))["rows"] == 3
     assert json.loads(text(seen["other"])) == []  # each project is its own
     assert seen["no_project"].is_error and "name the project" in text(seen["no_project"])
+    assert "ask them" in text(seen["no_project"])
     assert seen["missing"].is_error and "no project nope" in text(seen["missing"])
 
     assert "Every project tool takes the project's id" in seen["hub_guide"] and "- books: Books" in seen["hub_guide"]
+    # With several projects and no word on which, the agent asks instead of taking the first.
+    assert "ask the user which one" in seen["hub_guide"] and "never the first one listed" in seen["hub_guide"]
+    assert "ask them first" in run_schema["properties"]["project"]["description"]
     assert not seen["book_guide"].is_error and "How exuvia works" in text(seen["book_guide"])
     assert {p["id"]: p["nodes"] for p in seen["listing"]["projects"]} == {"books": 1, "other": 0}
 
