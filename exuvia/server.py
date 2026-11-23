@@ -995,6 +995,22 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
 
         return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
+    @r.get("/agent")
+    def agent_sessions(limit: int = 50, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """The saved conversations, the latest first, for the chat's list of
+        past conversations. A signed-in person sees the ones they started;
+        with nobody signed in (a local server, the API token) every one is
+        listed, and a share link alone lists none."""
+        ident = auth.current()
+        limit = max(1, min(limit, 200))
+        if ident is None:
+            return {"sessions": ctx.agent.conversations(limit=limit)}
+        if ident.uid:
+            return {"sessions": ctx.agent.conversations(user=ident.uid, limit=limit)}
+        if ident.method != "link" and ident.id:
+            return {"sessions": ctx.agent.conversations(name=ident.id, limit=limit)}
+        return {"sessions": []}
+
     @r.get("/agent/{session_id}")
     def agent_transcript(session_id: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         """The saved conversation, to redraw the chat after a reload."""

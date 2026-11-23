@@ -269,8 +269,13 @@ def test_agent_notes_and_saved_conversation(tmp_path, hub):
     agent.sessions.clear()
     agent.transcripts.clear()
     assert hub.get("/p/wf/api/agent/abc").json()["events"] == [{"type": "user", "text": "hi"}]
+    agent.ws.store.save_agent_session("xyz", [], [{"type": "user", "text": "later"}])
+    listed = hub.get("/p/wf/api/agent").json()["sessions"]
+    assert [(s["id"], s["title"], s["running"]) for s in listed] == [("xyz", "later", False), ("abc", "hi", False)]
+    assert [s["id"] for s in hub.get("/p/wf/api/agent", params={"limit": 1}).json()["sessions"]] == ["xyz"]
     assert hub.delete("/p/wf/api/agent/abc").json() == {"ok": True}
     assert hub.get("/p/wf/api/agent/abc").json()["events"] == []
+    assert [s["id"] for s in hub.get("/p/wf/api/agent").json()["sessions"]] == ["xyz"]
 
 
 def test_single_project_app_keeps_its_routes(tmp_path):

@@ -14,14 +14,33 @@ import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Text } from "@astryxdesign/core/Text";
 import { Token } from "@astryxdesign/core/Token";
 import { VStack } from "@astryxdesign/core/VStack";
-import { api, streamAgent, type AgentEvent, type GraphNode } from "./api";
+import { API_BASE, api, apiUrl, streamAgent, type AgentChat, type AgentEvent, type GraphNode } from "./api";
+import { chatKey, itemsOf, type Item } from "./chat";
 import { IconChevronRight, IconClock, IconFolder, IconPlus, IconSpark } from "./icons";
+import { ago } from "./util";
 
-type Item =
-  | { kind: "user"; text: string }
-  | { kind: "ai"; text: string }
-  | { kind: "tool"; id: string; name: string; input?: Record<string, unknown>; ok?: boolean; summary?: string; node?: string }
-  | { kind: "error"; text: string };
+// How many saved chats a new chat lists.
+const RECENT = 8;
+
+// The chat this browser had open in this project, so a reload brings it back.
+const CHAT_KEY = chatKey(API_BASE);
+
+function keptChat(): string | null {
+  try {
+    return localStorage.getItem(CHAT_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function keepChat(id: string | null) {
+  try {
+    if (id) localStorage.setItem(CHAT_KEY, id);
+    else localStorage.removeItem(CHAT_KEY);
+  } catch {
+    /* storage may be blocked: the chat just isn't brought back */
+  }
+}
 
 export interface AgentHandle {
   send: (text: string) => void;
@@ -124,12 +143,53 @@ export const SidePanel = forwardRef<
   const [useCtx, setUseCtx] = useState(true);
   const session = useRef<string | null>(null);
   const abort = useRef<AbortController | null>(null);
+  // The latest saved chats, listed under the suggestions of a new chat.
+  const [recent, setRecent] = useState<AgentChat[]>([]);
 
   useEffect(() => setUseCtx(true), [selected?.name]);
   // How much of the chat was on screen when another tab took over: more since then shows a dot on the Agent tab.
   const seen = useRef(0);
   if (tab === "agent") seen.current = items.length;
   const news = tab !== "agent" && (busy || items.length > seen.current);
+
+  const onEvent = (e: AgentEvent) => {
+    switch (e.type) {
+      case "session":
+        session.current = e.session_id;
+        keepChat(e.session_id);
+        break;
+      case "thinking":
+        setThinking(true);
+        break;
+      case "text":
+        setThinking(false);
+        setItems((xs) => {
+          const last = xs[xs.length - 1];
+          if (last?.kind === "ai") return [...xs.slice(0, -1), { ...last, text: last.text + e.text }];
+          return [...xs, { kind: "ai", text: e.text }];
+        });
+        break;
+      case "tool_start":
+        setThinking(false);
+        setItems((xs) => [...xs, { kind: "tool", id: e.id, name: e.name }]);
+        break;
+      case "tool":
+        setItems((xs) => xs.map((x) => (x.kind === "tool" && x.id === e.id ? { ...x, input: e.input } : x)));
+        setThinking(true);
+        break;
+      case "tool_result":
+        if (e.node) onTouch(e.node);
+        setItems((xs) =>
+          xs.map((x) => (x.kind === "tool" && x.id === e.id ? { ...x, ok: e.ok, summary: e.summary, node: e.node } : x)),
+        );
+        break;
+      case "error":
+        setItems((xs) => [...xs, { kind: "error", text: e.error }]);
+        break;
+      case "done":
+        break;
+    }
+  };
 
   const send = async (text: string) => {
     const msg = text.trim();
@@ -140,43 +200,6 @@ export const SidePanel = forwardRef<
     setItems((xs) => [...xs, { kind: "user", text: msg }]);
     const ctrl = new AbortController();
     abort.current = ctrl;
-    const onEvent = (e: AgentEvent) => {
-      switch (e.type) {
-        case "session":
-          session.current = e.session_id;
-          break;
-        case "thinking":
-          setThinking(true);
-          break;
-        case "text":
-          setThinking(false);
-          setItems((xs) => {
-            const last = xs[xs.length - 1];
-            if (last?.kind === "ai") return [...xs.slice(0, -1), { ...last, text: last.text + e.text }];
-            return [...xs, { kind: "ai", text: e.text }];
-          });
-          break;
-        case "tool_start":
-          setThinking(false);
-          setItems((xs) => [...xs, { kind: "tool", id: e.id, name: e.name }]);
-          break;
-        case "tool":
-          setItems((xs) => xs.map((x) => (x.kind === "tool" && x.id === e.id ? { ...x, input: e.input } : x)));
-          setThinking(true);
-          break;
-        case "tool_result":
-          if (e.node) onTouch(e.node);
-          setItems((xs) =>
-            xs.map((x) => (x.kind === "tool" && x.id === e.id ? { ...x, ok: e.ok, summary: e.summary, node: e.node } : x)),
-          );
-          break;
-        case "error":
-          setItems((xs) => [...xs, { kind: "error", text: e.error }]);
-          break;
-        case "done":
-          break;
-      }
-    };
     try {
       await streamAgent(
         { message: msg, session_id: session.current, selected: useCtx && selected ? selected.name : null },
@@ -186,20 +209,106 @@ export const SidePanel = forwardRef<
     } catch (e) {
       if ((e as Error).name !== "AbortError") onEvent({ type: "error", error: (e as Error).message });
     } finally {
-      setBusy(false);
-      setThinking(false);
-      abort.current = null;
+      // Unless another chat has been opened since, and is being followed.
+      if (abort.current === ctrl) {
+        setBusy(false);
+        setThinking(false);
+        abort.current = null;
+      }
     }
   };
 
   useImperativeHandle(ref, () => ({ send }));
 
+  /**
+   * Follow a turn that is already running in conversation `id` (started
+   * before a reload, or in another tab) through the project's event stream,
+   * then redraw the conversation from what was saved once it ends.
+   */
+  const follow = (id: string) => {
+    const ctrl = new AbortController();
+    abort.current = ctrl;
+    setBusy(true);
+    setThinking(true);
+    const es = new EventSource(apiUrl("/api/events"));
+    const end = () => {
+      es.close();
+      if (abort.current === ctrl) abort.current = null;
+      setBusy(false);
+      setThinking(false);
+    };
+    ctrl.signal.addEventListener("abort", end);
+    es.onmessage = (m) => {
+      const e = JSON.parse(m.data);
+      if (e.type !== "agent_event" || e.session_id !== id || ctrl.signal.aborted) return;
+      if (e.event.type === "done") {
+        end();
+        api
+          .agentChat(id)
+          .then((t) => session.current === id && setItems(itemsOf(t.events)))
+          .catch(() => {});
+      } else onEvent(e.event as AgentEvent);
+    };
+  };
+
+  /** Open a saved conversation: its transcript, and its turn if one is running. */
+  const open = async (id: string) => {
+    abort.current?.abort();
+    session.current = id;
+    keepChat(id);
+    try {
+      const t = await api.agentChat(id);
+      if (session.current !== id) return;
+      if (!t.events.length && !t.running) {
+        // Deleted, or never saved: start afresh.
+        session.current = null;
+        keepChat(null);
+        setItems([]);
+        return;
+      }
+      const drawn = itemsOf(t.events);
+      seen.current = drawn.length; // what was said before is not news on the Agent tab
+      setItems(drawn);
+      if (t.running) follow(id);
+    } catch {
+      if (session.current === id) setItems([]);
+    }
+  };
+
+  // Bring back the chat this browser had open, once the agent is known to be on.
+  const restored = useRef(false);
+  useEffect(() => {
+    if (!enabled || !agent || restored.current) return;
+    restored.current = true;
+    const id = keptChat();
+    if (id) open(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, agent]);
+
+  /** Stop the turn: on the server too, not only this tab's stream of it. */
+  const stop = () => {
+    if (session.current) api.cancelAgent(session.current).catch(() => {});
+    abort.current?.abort();
+  };
+
+  /** A new chat. The one before stays saved, under Recent chats. */
   const reset = () => {
     abort.current?.abort();
-    if (session.current) api.resetAgent(session.current).catch(() => {});
     session.current = null;
+    keepChat(null);
     setItems([]);
   };
+
+  // A new chat lists the ones before it, read again each time it is shown.
+  const empty = items.length === 0;
+  useEffect(() => {
+    if (!enabled || !agent || tab !== "agent" || !empty) return;
+    let live = true;
+    api.agentChats(RECENT).then((xs) => live && setRecent(xs), () => {});
+    return () => {
+      live = false;
+    };
+  }, [enabled, agent, tab, empty]);
 
   const suggestions = !hasNodes
     ? [
@@ -289,7 +398,7 @@ export const SidePanel = forwardRef<
                 value={input}
                 onChange={setInput}
                 onSubmit={send}
-                onStop={() => abort.current?.abort()}
+                onStop={stop}
                 isStopShown={busy}
                 placeholder={hasNodes ? "Ask for a node, a fix, a chart, an analysis…" : "Describe the pipeline you want…"}
                 drawer={
@@ -314,15 +423,36 @@ export const SidePanel = forwardRef<
               />
             }
             emptyState={
-              <VStack gap={1} padding={3}>
-                <Text type="supporting" color="secondary">
-                  Try asking
-                </Text>
-                <List density="compact" hasDividers>
-                  {suggestions.map((s) => (
-                    <ListItem key={s} label={<Text color="secondary">{s}</Text>} onClick={() => send(s)} />
-                  ))}
-                </List>
+              <VStack gap={4} padding={3}>
+                <VStack gap={1}>
+                  <Text type="supporting" color="secondary">
+                    Try asking
+                  </Text>
+                  <List density="compact" hasDividers>
+                    {suggestions.map((s) => (
+                      <ListItem key={s} label={<Text color="secondary">{s}</Text>} onClick={() => send(s)} />
+                    ))}
+                  </List>
+                </VStack>
+                {recent.length > 0 && (
+                  <VStack gap={1}>
+                    <Text type="supporting" color="secondary">
+                      Recent chats
+                    </Text>
+                    <List density="compact" hasDividers>
+                      {recent.map((c) => (
+                        <ListItem
+                          key={c.id}
+                          itemKey={c.id}
+                          label={c.title || "Untitled chat"}
+                          description={ago(c.updated_at)}
+                          endContent={c.running ? <StatusDot variant="accent" isPulsing label="The agent is working" /> : undefined}
+                          onClick={() => open(c.id)}
+                        />
+                      ))}
+                    </List>
+                  </VStack>
+                )}
               </VStack>
             }
           >

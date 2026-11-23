@@ -1897,7 +1897,12 @@ how a host app teaches the agent its own data without changing exuvia.
 **Sessions.** A conversation is stored with the project
 (`GET /api/agent/{session_id}` returns its transcript and whether a turn is
 running). A turn keeps running if the client disconnects, and its events are
-also published on `/api/events`, so a UI can reload and re-attach.
+also published on `/api/events`, so a UI can reload and re-attach. The chat
+does: a reload brings back the conversation that was open, and follows its
+turn if one is still running. **New chat** keeps the one before, and a new
+chat lists the latest under **Recent chats**, titled by what was first asked,
+to pick up again. `GET /api/agent` lists them; a signed-in person sees the
+conversations they started.
 
 Things to ask it:
 
@@ -2209,6 +2214,7 @@ headlessly or iframe the UI:
 | `GET /api/me` | who the request is from: `{auth, user}`, `user` being `{id, user, email, method, uid, role}` (`id` the name records show, `uid` the user id) or null (in a hub, at `<url>/api/me`) |
 | `GET /api/users`, `PATCH /api/users/{id}` | the server's user list, for admins (`{role}` `admin`/`member`, `{disabled}`); in a hub, at `<url>/api/users` (see "Users and admins") |
 | `POST /api/agent` | SSE: agent turn |
+| `GET /api/agent` | saved conversations, latest first (`?limit=`): id, title, when, who started it, whether a turn is running |
 | `GET/DELETE /api/agent/{session_id}`, `POST .../cancel` | saved transcript, clear it, stop a turn |
 
 Requests that change code may send `X-Exuvia-Origin` (letters, digits, `-`,

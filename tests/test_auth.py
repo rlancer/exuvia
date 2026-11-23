@@ -76,6 +76,19 @@ def test_runs_and_revisions_record_who(headers_mode, tmp_path):
         assert recent[0]["started_by"] == "bob@example.com"
 
 
+def test_each_person_lists_their_own_conversations(headers_mode, tmp_path):
+    with TestClient(create_app(tmp_path / "p")) as client:
+        bob = {"X-Forwarded-Email": "bob@example.com"}
+        alice_uid = client.get("/api/me", headers=ALICE).json()["user"]["uid"]
+        bob_uid = client.get("/api/me", headers=bob).json()["user"]["uid"]
+        store = client.app.state.ws.store
+        store.save_agent_session("a1", [], [{"type": "user", "text": "alice asks"}], "alice", alice_uid)
+        store.save_agent_session("b1", [], [{"type": "user", "text": "bob asks"}], "bob@example.com", bob_uid)
+        mine = client.get("/api/agent", headers=ALICE).json()["sessions"]
+        assert [(s["id"], s["title"], s["started_by"]) for s in mine] == [("a1", "alice asks", "alice")]
+        assert [s["id"] for s in client.get("/api/agent", headers=bob).json()["sessions"]] == ["b1"]
+
+
 def test_a_hand_edit_names_nobody(headers_mode, tmp_path):
     root = tmp_path / "p"
     (root / "nodes").mkdir(parents=True)

@@ -83,6 +83,32 @@ def test_fatal_turn_stops_the_loop(tmp_path):
     assert [e["type"] for e in collect(agent, "hi")] == ["session", "done"]
 
 
+def test_a_conversation_is_saved_with_its_title_and_who_started_it(tmp_path):
+    from exuvia import auth
+
+    agent = Agent(Workspace(tmp_path))
+    agent.provider = ScriptedProvider([("Hello.", Turn("end")), ("Again.", Turn("end"))])
+
+    async def go():
+        agent.ws.bus.bind(asyncio.get_running_loop())
+        with auth.signed_in(auth.Identity("alice", None, "headers", uid="u-alice")):
+            first = [ev async for ev in agent.chat(None, "  what   does\nthis graph do? " + "x" * 100, None)]
+        sid = first[0]["session_id"]
+        [ev async for ev in agent.chat(sid, "and now?", None)]  # a later turn, by nobody, keeps both
+        return sid
+
+    sid = asyncio.run(go())
+    [row] = agent.conversations()
+    assert row["id"] == sid and not row["running"]
+    assert row["title"].startswith("what does this graph do? xxx") and len(row["title"]) == 80
+    assert row["title"].endswith("…") and row["started_by"] == "alice"
+    assert row["created_at"] <= row["updated_at"]
+    assert agent.conversations(user="u-alice") == [row]
+    assert agent.conversations(user="u-bob") == []
+    assert agent.conversations(name="alice") == [row]
+    assert [e["type"] for e in agent.transcript(sid)] == ["user", "text", "user", "text"]
+
+
 # -- OpenAI-compatible stream assembly ------------------------------------------
 def chunk(content=None, tool_calls=None, finish=None, reasoning=None):
     delta = NS(content=content, tool_calls=tool_calls, model_extra={"reasoning": reasoning} if reasoning else {})
