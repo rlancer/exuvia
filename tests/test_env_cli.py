@@ -78,23 +78,29 @@ def test_the_value_is_asked_for_without_echo(tmp_path):
     import pty
 
     root = project(tmp_path)
-    pid, fd = pty.fork()
-    if pid == 0:  # the child: the real command, on a terminal
-        os.execv(sys.executable, [sys.executable, "-m", "exuvia.cli", "env", "set", "TYPED_KEY", str(root)])
+    # The real command on a pseudo-terminal, started without forking this
+    # (threaded) test process.
+    leader, follower = pty.openpty()
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "exuvia.cli", "env", "set", "TYPED_KEY", str(root)],
+        stdin=follower, stdout=follower, stderr=follower, start_new_session=True,
+    )
+    os.close(follower)
     seen = b""
     deadline = time.monotonic() + 30
     while b"not shown" not in seen and time.monotonic() < deadline:
-        seen += os.read(fd, 1024)
-    os.write(fd, b"typed-secret-42\n")
+        seen += os.read(leader, 1024)
+    os.write(leader, b"typed-secret-42\n")
     while True:
         try:
-            chunk = os.read(fd, 1024)
-        except OSError:
+            chunk = os.read(leader, 1024)
+        except OSError:  # the command exited and closed the terminal
             break
         if not chunk:
             break
         seen += chunk
-    os.waitpid(pid, 0)
+    proc.wait(timeout=30)
+    os.close(leader)
     assert b"Set TYPED_KEY" in seen and b"typed-secret-42" not in seen  # not echoed
     assert Workspace(root)._env_rows()[0]["value"] == "typed-secret-42"
 
