@@ -1770,7 +1770,7 @@ empty file, stops exuvia with an error.
 | `EXUVIA_AUTH_USER_HEADER` / `EXUVIA_AUTH_EMAIL_HEADER` | `X-Forwarded-User` / `X-Forwarded-Email` | the headers that carry the user name and email with `EXUVIA_AUTH=headers` |
 | `EXUVIA_AUTH_TRUSTED_PROXIES` | any peer | IPs or CIDRs (comma-separated) whose identity headers are trusted; others are ignored |
 | `EXUVIA_ADMINS` | — | user names or emails (comma-separated) who are always admins of the user list (see "Users and admins" above) |
-| `EXUVIA_DEFAULT_ACCESS` | `edit` | on a hub: what everyone signed in gets on a new project unless its creator picks otherwise (`private`, `view` or `edit`; see "Sharing projects" under [Hub](#hub-many-projects-from-one-process)) |
+| `EXUVIA_DEFAULT_ACCESS` | `view` | on a hub: what everyone signed in gets on a new project unless its creator picks otherwise (`private`, `view` or `edit`). Unset, a project nobody owns, or with no settings of its own, gets `edit`; set, it applies to those too (see "Sharing projects" under [Hub](#hub-many-projects-from-one-process)) |
 | `EXUVIA_BROWSER_AUTH` | `token` | `open` = every page load gives the browser the auth cookie, so people never enter the token (private networks only; see "Auth" above) |
 | `<NAME>_FILE` | — | read a secret setting from a file, e.g. `EXUVIA_API_TOKEN_FILE=/run/secrets/exuvia_api_token` (see "Secrets from files" above) |
 | `EXUVIA_FAILURE_WEBHOOK` | off | URL that failed runs are POSTed to, for projects without their own `failure_webhook` |
@@ -2174,12 +2174,17 @@ to has no sharing: everyone can do everything.
   **editor**, by name, or by email for someone who has never signed in: the
   invite takes effect on their first sign-in with that email.
 - **General access.** What everyone else signed in gets: nothing ("only
-  people added here"), view, or edit. A new project starts with
-  `EXUVIA_DEFAULT_ACCESS` (default `edit`, which keeps a hub working as it
-  did before sharing) unless its creator picks otherwise in the New project
-  dialog. Projects that have no setting of their own, because they were made
-  before sharing existed or by a script with the hub token, follow the same
-  default and have no owner until an admin hands them to someone.
+  people added here"), view, or edit. A new project starts at **view**
+  unless its creator picks otherwise in the New project dialog: everyone
+  signed in can open it, and only its owner and the editors they add can
+  change it, run it or use its agent there. Two kinds of project start at
+  edit instead, as hubs did before this default, since nobody but an admin
+  could change them otherwise: one made by a script with the hub token,
+  which has no owner, and one made before sharing existed, which has no
+  settings of its own. Both have no owner until an admin hands them to
+  someone. `EXUVIA_DEFAULT_ACCESS` (`private`, `view` or `edit`) replaces
+  all of these defaults; set it to `edit` for every new project to start
+  open to editing, as it did before.
 - **Share links.** A link (`/s/<token>`) opens one project read-only for
   whoever holds it, signed in or not: the graph, code, outputs, runs and
   views, but nothing that changes them. Links are never more than view-only,

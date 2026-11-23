@@ -163,6 +163,24 @@ def test_a_project_without_settings_follows_the_hub_default(stores, monkeypatch)
     assert sh.role("old", bob) == "viewer"
 
 
+def test_a_new_project_someone_owns_is_view_only_for_everyone_else(stores, monkeypatch):
+    users, sh = stores
+    alice, bob = person(users, "alice"), person(users, "bob")
+    sh.init_project("mine", alice.uid)
+    assert sh.describe("mine")["general"] == "view"
+    assert (sh.role("mine", alice), sh.role("mine", bob)) == ("owner", "viewer")
+    # Nobody owns one made with the hub token: at view, only an admin could change it.
+    sh.init_project("scripted", None)
+    assert sh.role("scripted", bob) == "editor"
+    # EXUVIA_DEFAULT_ACCESS replaces both defaults.
+    monkeypatch.setenv("EXUVIA_DEFAULT_ACCESS", "edit")
+    sh.init_project("open", alice.uid)
+    assert sh.role("open", bob) == "editor"
+    monkeypatch.setenv("EXUVIA_DEFAULT_ACCESS", "private")
+    sh.init_project("closed", None)
+    assert sh.role("closed", bob) is None
+
+
 # -- the API ----------------------------------------------------------------------
 
 
@@ -179,11 +197,16 @@ def test_a_private_project_is_hidden_and_closed_to_others(hub):
     assert hub.put("/api/projects/a/sharing/people", json={"user": uid(hub, BOB), "role": "editor"}, headers=BOB).status_code == 403
 
 
-def test_new_projects_default_to_everyone_editing(hub):
+def test_new_projects_default_to_everyone_viewing_and_the_owner_editing(hub):
+    assert hub.get("/api/projects", headers=ALICE).json()["sharing"]["default_access"] == "view"
     hub.post("/api/projects", json={"id": "a"}, headers=ALICE)
     assert ids(hub, BOB) == ["a"]
-    assert hub.put("/p/a/api/nodes/nums", json={"source": NODE}, headers=BOB).status_code == 200
-    assert hub.get("/api/projects/a/sharing", headers=BOB).json()["you"] == "editor"
+    assert hub.put("/p/a/api/nodes/nums", json={"source": NODE}, headers=BOB).status_code == 403
+    assert hub.put("/p/a/api/nodes/nums", json={"source": NODE}, headers=ALICE).status_code == 200
+    assert hub.get("/api/projects/a/sharing", headers=BOB).json()["you"] == "viewer"
+    # Its creator can still open it to everyone editing.
+    hub.post("/api/projects", json={"id": "b", "access": "edit"}, headers=ALICE)
+    assert hub.put("/p/b/api/nodes/nums", json={"source": NODE}, headers=BOB).status_code == 200
 
 
 def test_a_viewer_reads_but_changes_nothing(hub):
