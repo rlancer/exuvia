@@ -264,7 +264,7 @@ def self_test(client_con, uri, reader_token):
     try:
         client_con.execute(q, [uri, "SELECT * FROM read_text('self-test')", reader_token]).fetchall()
     except Exception as e:
-        if "read-only token" not in str(e):
+        if "read-only token" not in str(e) and "Authorization failed" not in str(e):  # policy_sql: no reason
             raise RuntimeError(f"read-only policy is not enforcing: {e}") from None
     else:
         raise RuntimeError("read-only policy is not enforcing: a forbidden reader statement ran")

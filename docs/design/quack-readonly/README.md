@@ -7,14 +7,18 @@ doesn't run it.
 
 | File | What it is |
 |---|---|
-| `policy.py` | The policy: token roles, the reader allowlist, `lock_down`, `self_test` |
-| `serve.py` | A Quack server with the policy, the lockdown and a watchdog that cancels long reader statements |
+| `policy.py` | The policy as Python UDFs: token roles, the reader allowlist, `lock_down`, `self_test` |
+| `policy_sql.py` | The same policy as SQL macros (writer = a registered client id) |
+| `policy_native.py` | Loads the same policy as a C extension, `native/exuvia_policy.c` |
+| `native/` | The extension's source, `build.sh` (zig, no MSVC or cmake) and the metadata footer script |
+| `serve.py` | A Quack server with a policy (`--sql-policy`, `--native-policy EXT`, default Python), the lockdown and a watchdog that cancels long reader statements |
 | `serve_log.py` | A Quack server that logs every statement with its token's role |
 | `workload.py` | A DuckLake writer and two readers doing everything a reader normally does |
 | `attacks.py` | 110 attempts to write, read files, escape or stop the server with the reader token |
 | `concurrency.py` | Six readers in a loop while a writer commits |
 | `shadow_test.py` | Shows why the hook names are qualified with `system.main.` |
-| `bench.py` | Cost of the hook per statement, over a log from `serve_log.py` |
+| `bench.py` | Cost of the Python hook per statement, over a log from `serve_log.py` |
+| `bench_hooks.py` | CPU cost per statement of all three hooks and a no-op floor, in one process |
 | `analyze.py` | Summarises what a log's reader and writer statements touch |
 | `run.sh` | Starts a server on a fresh catalog, runs one client against it, stops the server |
 
@@ -35,6 +39,20 @@ sh run.sh /tmp/qro-lockdown 9604 serve.py /tmp/qro-lockdown.json --timeout 3 --n
 
 ```bash
 sh run.sh /tmp/qro-log 9606 serve_log.py /tmp/qro-sql.jsonl -- workload.py
+```
+
+The other two policies, against the same clients:
+
+```bash
+sh run.sh /tmp/qro-sql 9607 serve.py /tmp/qro-sql.json --sql-policy --timeout 3 -- attacks.py --expect-policy
+```
+
+```bash
+sh native/build.sh /tmp/qro-native-build
+```
+
+```bash
+sh run.sh /tmp/qro-native 9608 serve.py /tmp/qro-native.json --native-policy /tmp/qro-native-build/exuvia_policy.duckdb_extension --timeout 3 -- attacks.py --expect-policy
 ```
 
 `serve.py` takes `--no-policy` or `--no-lockdown` to test either layer alone.
