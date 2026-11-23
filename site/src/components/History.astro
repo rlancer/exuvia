@@ -1,0 +1,549 @@
+---
+// Version control for analysis: the code, the runs and the outputs kept in one
+// system and linked. The drawing follows one node through a week: the version
+// of its code in force, a scheduled run each evening, and the output each run
+// kept, with one output traced up to the code that made it. What the records
+// hold is exuvia/store.py (runs: code_hash, inputs, params, started_by;
+// code_revisions keyed by the same hash).
+import Compare from "./Compare.astro";
+import { url } from "../lib/paths";
+
+// The time axis: one scheduled run a day at 18:00.
+const days = ["11-16", "11-17", "11-18", "11-19", "11-20"];
+const dayX = (i: number) => 250 + i * 160;
+// The run traced in the drawing and in the card beside it.
+const traced = 2;
+
+// Versions of nodes/rolling_vol.py, each in force from x0 until the next save.
+const versions = [
+  { name: "v1", by: "you", when: "11-12", x0: 140, x1: 490 },
+  { name: "v2", by: "agent", when: "11-17 15:42", x0: 490, x1: 810 },
+  { name: "v3", by: "you", when: "11-19", x0: 810, x1: 940 },
+];
+const versionAt = (x: number) => versions.findIndex((v) => x >= v.x0 && x < v.x1);
+
+const CODE_Y = 58;
+const CODE_H = 46;
+const RUN_Y = 176;
+const OUT_Y = 232;
+const OUT_W = 76;
+const OUT_H = 38;
+const AXIS_Y = 304;
+
+const points = [
+  {
+    title: "Nothing to commit",
+    body: "Every save is kept, whether it came from the workbench, the agent, your editor or the API. There is no staging, no commit message and no push.",
+  },
+  {
+    title: "Who changed what",
+    body: "Each version says who saved it: you, a teammate signed in through your SSO, or the agent. The agent's edits never blur into yours.",
+  },
+  {
+    title: "Diff and restore",
+    body: "Compare a version with the one before it or with the file now, and restore it, deleted nodes and views included. A restore is a version too, so it can be undone.",
+  },
+  {
+    title: "Every output knows its code",
+    body: "A run records the exact code it ran and the exact upstream outputs it read. Ask which code made last Tuesday's numbers and you get the file.",
+  },
+  {
+    title: "Stale means the code moved on",
+    body: "When the code changes after an output was made, the node turns stale and says why, so an old number is never taken for a new one.",
+  },
+  {
+    title: "Old outputs stay readable",
+    body: "A new run does not overwrite last week's result. Each run date keeps its own output, and an earlier run's data can still be opened.",
+  },
+];
+
+const receipt = [
+  { label: "Code", html: "v2 of <code>rolling_vol.py</code>, saved by the agent on 11-17 at 15:42" },
+  { label: "Read", html: "<code>returns</code> output <code>7c1e09</code>, made by that evening's run upstream" },
+  { label: "Parameters", html: "<code>date=2026-11-18</code>" },
+  { label: "Started by", html: "its schedule, at 18:00" },
+  { label: "Kept", html: "2,080 rows of Parquet, still readable after later runs" },
+];
+
+const gitComparison = [
+  ["Saving a version", "A commit, when someone remembers to make one", "Every save, by anyone, kept as it happens"],
+  [
+    "The data it produced",
+    "Left out of the repo, or overwritten in a bucket",
+    "Kept for every run, next to the code that made it",
+  ],
+  [
+    "Which code made this number",
+    "Guesswork: line up timestamps with commits",
+    "Recorded on the run, with the inputs it read",
+  ],
+  ["Edits by an AI agent", "Mixed into your working tree", "Saved as the agent's, and restorable"],
+  ["What you have to learn", "Staging, commits, branches, merges and remotes", "Nothing: open the History tab"],
+];
+---
+
+<section class="history reverse" id="history">
+  <div class="wrap">
+    <header>
+      <h2>Version control that knows what ran</h2>
+      <p>
+        Analysis is hard to keep under version control. Git keeps the code but not the data it produced, so the
+        question that matters, which code made this number, has no answer. exuvia keeps the code, the runs and the
+        outputs in one system and links them. You get the parts of git an analysis needs without learning git.
+      </p>
+    </header>
+
+    <figure class="timeline">
+      <div
+        class="scroll"
+        tabindex="0"
+        role="region"
+        aria-label="One node's code, runs and outputs over a week"
+        data-focus={dayX(traced) / 960}
+      >
+        <svg viewBox="0 0 960 336" role="img" aria-labelledby="history-title">
+          <title id="history-title">
+            One node, rolling_vol, over a week. Top: three versions of its code, saved by you, then by the agent,
+            then by you. Middle: a scheduled run each evening, each linked to the version in force when it ran.
+            Bottom: the output each run kept, one per run date. The output for 11-18 is traced up through its run
+            to version 2, which the agent saved.
+          </title>
+          <defs>
+            <marker id="history-tip" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+              <path d="M0 0.5 7.5 4 0 7.5z"></path>
+            </marker>
+          </defs>
+
+          <g class="tab">
+            <rect x="20" y="12" width="182" height="24"></rect>
+            <text x="28" y="29">nodes/rolling_vol.py</text>
+          </g>
+
+          <text class="lane" x="20" y={CODE_Y + 28}>code</text>
+          <text class="lane" x="20" y={RUN_Y + 5}>runs</text>
+          <text class="lane" x="20" y={OUT_Y + 24}>outputs</text>
+
+          {
+            versions.map((v, i) => (
+              <g class={i === versionAt(dayX(traced)) ? "version traced" : "version"}>
+                <rect class="span" x={v.x0} y={CODE_Y} width={v.x1 - v.x0 - 6} height={CODE_H} />
+                <rect class="save" x={v.x0} y={CODE_Y} width="5" height={CODE_H} />
+                <text class="name" x={v.x0 + 16} y={CODE_Y + 20}>
+                  {v.name}
+                </text>
+                {v.by === "agent" ? (
+                  <g class="who agent">
+                    <rect x={v.x0 + 44} y={CODE_Y + 7} width="50" height="18" />
+                    <text x={v.x0 + 69} y={CODE_Y + 20} text-anchor="middle">
+                      agent
+                    </text>
+                  </g>
+                ) : (
+                  <g class="who">
+                    <rect x={v.x0 + 44} y={CODE_Y + 7} width="36" height="18" />
+                    <text x={v.x0 + 62} y={CODE_Y + 20} text-anchor="middle">
+                      you
+                    </text>
+                  </g>
+                )}
+                <text class="when" x={v.x0 + 16} y={CODE_Y + 38}>
+                  saved {v.when}
+                </text>
+                {v.x1 - v.x0 > 200 && (
+                  <g class="diff">
+                    <rect class="add" x={v.x1 - 52} y={CODE_Y + 12} width="30" height="4" />
+                    <rect class="add" x={v.x1 - 52} y={CODE_Y + 21} width="22" height="4" />
+                    <rect class="del" x={v.x1 - 52} y={CODE_Y + 30} width="26" height="4" />
+                  </g>
+                )}
+              </g>
+            ))
+          }
+
+          {
+            days.map((day, i) => {
+              const x = dayX(i);
+              const cls = i === traced ? "traced" : undefined;
+              return (
+                <g class={cls}>
+                  <path class="link" d={`M${x},${RUN_Y - 9} V${CODE_Y + CODE_H + 2}`} marker-end="url(#history-tip)" />
+                  <path class="link" d={`M${x},${RUN_Y + 9} V${OUT_Y - 3}`} marker-end="url(#history-tip)" />
+                  <circle class="run" cx={x} cy={RUN_Y} r="8" />
+                  <g class="output">
+                    <rect class="shed" x={x - OUT_W / 2 + 6} y={OUT_Y + 6} width={OUT_W} height={OUT_H} />
+                    <rect class="file" x={x - OUT_W / 2} y={OUT_Y} width={OUT_W} height={OUT_H} />
+                    <text x={x} y={OUT_Y + 24} text-anchor="middle">
+                      {day}
+                    </text>
+                  </g>
+                  <path class="tick" d={`M${x},${AXIS_Y - 4} V${AXIS_Y + 4}`} />
+                  <text class="day" x={x} y={AXIS_Y + 22} text-anchor="middle">
+                    {day} 18:00
+                  </text>
+                </g>
+              );
+            })
+          }
+
+          <g class="note">
+            <text x={dayX(traced) + 16} y={RUN_Y - 6}>ran v2</text>
+            <text x={dayX(traced) + 16} y={RUN_Y + 12}>read returns 7c1e09</text>
+          </g>
+          <text class="note-start" x={dayX(0) + 16} y={RUN_Y + 4}>schedule</text>
+
+          <path class="axis" d={`M140,${AXIS_Y} H940`} />
+        </svg>
+      </div>
+      <figcaption>
+        Each run points up to the version of the code it ran and down to the output it kept. The output for 11-18
+        came from v2, the agent's version, even though you have saved v3 since.
+      </figcaption>
+    </figure>
+
+    <div class="split">
+      <div class="card">
+        <h3>What one output knows about itself</h3>
+        <div class="receipt">
+          <p class="receipt-head">
+            <span class="mono">rolling_vol</span>
+            <span>output for 11-18</span>
+          </p>
+          <dl>
+            {
+              receipt.map((row) => (
+                <div>
+                  <dt>{row.label}</dt>
+                  <dd set:html={row.html} />
+                </div>
+              ))
+            }
+          </dl>
+        </div>
+      </div>
+
+      <ul class="points">
+        {
+          points.map((point) => (
+            <li>
+              <h3>{point.title}</h3>
+              <p>{point.body}</p>
+            </li>
+          ))
+        }
+      </ul>
+    </div>
+
+    <Compare
+      label="Keeping analysis code in git beside exuvia's history"
+      columns={["Analysis code in git", "exuvia"]}
+      rows={gitComparison}
+    />
+
+    <p class="aside">
+      History is one line per file, with no branches. The files are still plain text, so a team that wants branches
+      and pull requests can keep the project in git as well. <a href={url("/docs/execution-model/")}>How versions and
+      runs are recorded</a>
+    </p>
+  </div>
+</section>
+
+<script>
+  // Where the drawing is wider than the screen, open it on the traced run
+  // rather than on its left edge.
+  for (const box of document.querySelectorAll<HTMLElement>("#history [data-focus]")) {
+    const overflow = box.scrollWidth - box.clientWidth;
+    if (overflow > 0) {
+      const at = box.scrollWidth * Number(box.dataset.focus) - box.clientWidth / 2;
+      box.scrollLeft = Math.max(0, Math.min(overflow, at));
+    }
+  }
+</script>
+
+<style>
+  .history {
+    padding: clamp(4rem, 9vw, 7rem) 0;
+    border-top: var(--border);
+  }
+  header {
+    max-width: 46rem;
+  }
+  h2 {
+    font-size: var(--step-3);
+  }
+  header p {
+    max-width: 44rem;
+    margin-top: 1.1rem;
+    color: var(--muted);
+    font-size: var(--step-1);
+    line-height: 1.4;
+  }
+
+  /* ---- the timeline ------------------------------------------------------- */
+  .timeline {
+    margin: 2.5rem 0 0;
+  }
+  .scroll {
+    overflow-x: auto;
+    border: var(--border-strong);
+    border-radius: 0.6rem;
+    background: var(--panel);
+  }
+  .scroll:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  svg {
+    display: block;
+    width: 100%;
+    min-width: 46rem;
+    height: auto;
+  }
+  text {
+    font-family: var(--mono);
+    font-size: 12px;
+    fill: var(--text);
+  }
+  .tab rect {
+    fill: var(--text);
+  }
+  .tab text {
+    fill: var(--panel);
+    font-weight: 700;
+  }
+  .lane {
+    fill: var(--faint);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .version .span {
+    fill: var(--bg);
+    stroke: var(--line-strong);
+    stroke-width: 1.5;
+  }
+  .version .save {
+    fill: var(--muted);
+  }
+  .version .name {
+    font-weight: 700;
+  }
+  .version .when {
+    fill: var(--muted);
+    font-size: 11px;
+  }
+  .who rect {
+    fill: none;
+    stroke: var(--line-strong);
+    stroke-width: 1.2;
+  }
+  .who text {
+    fill: var(--muted);
+    font-size: 11px;
+  }
+  .who.agent rect {
+    fill: var(--accent);
+    stroke: var(--accent);
+  }
+  .who.agent text {
+    fill: var(--accent-ink);
+    font-weight: 700;
+  }
+  .diff .add {
+    fill: var(--fresh);
+    opacity: 0.7;
+  }
+  .diff .del {
+    fill: #e5736b;
+    opacity: 0.7;
+  }
+
+  .link {
+    fill: none;
+    stroke: var(--line-strong);
+    stroke-width: 1.5;
+  }
+  marker path {
+    fill: var(--line-strong);
+  }
+  .run {
+    fill: var(--panel);
+    stroke: var(--muted);
+    stroke-width: 1.5;
+  }
+  .output .shed {
+    fill: none;
+    stroke: var(--line);
+    stroke-width: 1.2;
+  }
+  .output .file {
+    fill: var(--bg);
+    stroke: var(--line-strong);
+    stroke-width: 1.5;
+  }
+  .output text {
+    fill: var(--muted);
+  }
+  .axis,
+  .tick {
+    fill: none;
+    stroke: var(--line-strong);
+    stroke-width: 1.2;
+  }
+  .day {
+    fill: var(--faint);
+    font-size: 11px;
+  }
+  .note text {
+    fill: var(--accent);
+    font-size: 11px;
+  }
+  .note-start {
+    fill: var(--faint);
+    font-size: 11px;
+  }
+
+  /* The traced chain, in the accent: version, links, run and output. */
+  .version.traced .span {
+    stroke: var(--accent);
+  }
+  .version.traced .save {
+    fill: var(--accent);
+  }
+  .traced .link {
+    stroke: var(--accent);
+    stroke-width: 2;
+  }
+  .traced .run {
+    fill: var(--accent);
+    stroke: var(--accent);
+  }
+  .traced .output .file {
+    stroke: var(--accent);
+    stroke-width: 2;
+  }
+  .traced .output text {
+    fill: var(--text);
+    font-weight: 700;
+  }
+  .traced .day {
+    fill: var(--text);
+  }
+
+  .timeline figcaption {
+    max-width: 46rem;
+    margin-top: 0.9rem;
+    color: var(--muted);
+  }
+
+  /* ---- the card and the points ------------------------------------------- */
+  .split {
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.3fr);
+    gap: 2rem clamp(2rem, 5vw, 4.5rem);
+    align-items: start;
+    margin-top: clamp(3rem, 6vw, 4.5rem);
+  }
+  .card h3 {
+    font-size: 1.5rem;
+  }
+  .receipt {
+    margin-top: 1rem;
+    border: 1px solid var(--accent);
+    border-radius: 0.6rem;
+    background: var(--bg-deep);
+    overflow: hidden;
+  }
+  .receipt-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.25rem 1rem;
+    padding: 0.8rem 1.1rem;
+    border-bottom: var(--border);
+    color: var(--muted);
+  }
+  .receipt-head .mono {
+    color: var(--text);
+    font-weight: 700;
+  }
+  .receipt dl {
+    margin: 0;
+    padding: 0.4rem 1.1rem 0.8rem;
+  }
+  .receipt dl div {
+    display: grid;
+    grid-template-columns: 7.5rem minmax(0, 1fr);
+    gap: 0.25rem 1rem;
+    padding: 0.55rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .receipt dl div:last-child {
+    border-bottom: 0;
+  }
+  .receipt dt {
+    color: var(--faint);
+    font-size: 1rem;
+    line-height: 1.75;
+  }
+  .receipt dd {
+    margin: 0;
+  }
+  .receipt code {
+    color: var(--accent-hover);
+  }
+
+  .points {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 2.5rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .points li {
+    padding: 0.9rem 0 1.2rem;
+    border-top: var(--border);
+  }
+  .points h3 {
+    font-size: 1.15rem;
+    font-weight: 600;
+  }
+  .points p {
+    margin-top: 0.25rem;
+    color: var(--muted);
+  }
+
+  .aside {
+    max-width: 46rem;
+    margin-top: 1.75rem;
+    color: var(--muted);
+  }
+  .aside a {
+    text-decoration-color: var(--accent);
+    text-decoration-thickness: 2px;
+  }
+
+  @media (max-width: 1100px) {
+    .split {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .card {
+      max-width: 34rem;
+    }
+  }
+  @media (max-width: 640px) {
+    /* Larger than the screen, so the labels stay readable; it scrolls. */
+    svg {
+      min-width: 54rem;
+    }
+    .points {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .receipt dl div {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0;
+    }
+  }
+</style>

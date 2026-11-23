@@ -9,6 +9,7 @@ import NodeAnatomy from "../components/NodeAnatomy.astro";
 import Workbench from "../components/Workbench.astro";
 import ViewAnatomy from "../components/ViewAnatomy.astro";
 import Compare from "../components/Compare.astro";
+import History from "../components/History.astro";
 import Workflows from "../components/Workflows.astro";
 import agentPanel from "../assets/shots/agent-panel.png";
 import { DEPLOY_TARGETS, EXAMPLE_HOSTNAME, agentDeployPrompt, agentSetupPrompt } from "../lib/docs";
@@ -210,6 +211,7 @@ const steps = [
   <NodeAnatomy />
   <Workbench />
   <ViewAnatomy />
+  <History />
 
   <section class="agent" id="agent">
     <div class="wrap agent-grid">
