@@ -752,8 +752,9 @@ export const hubApi = {
   /** Every project and template; `token` checks a token before the browser keeps it. */
   projects: async (token?: string) =>
     (await sendTo("GET", "/api/projects", undefined, undefined, token)).json() as Promise<HubListing>,
-  create: async (b: { id: string; name?: string; template?: string; access?: GeneralAccess }) =>
-    (await sendTo("POST", "/api/projects", b)).json() as Promise<{ id: string; name: string }>,
+  /** `group`: a group the caller edits, to create the project in. */
+  create: async (b: { id: string; name?: string; template?: string; access?: GeneralAccess; group?: string }) =>
+    (await sendTo("POST", "/api/projects", b)).json() as Promise<{ id: string; name: string; group?: GroupRef | null }>,
   remove: async (id: string) => {
     await sendTo("DELETE", `/api/projects/${encodeURIComponent(id)}`);
   },
