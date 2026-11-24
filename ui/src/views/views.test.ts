@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { ViewError, compile, createLoader, resolveImport } from "./loader";
-import { CHANNEL, isToFrame, isToHost } from "./protocol";
+import { ViewError, compile, createLoader, packageOf, resolveImport, resolvePackageImport } from "./loader";
+import { CHANNEL, NO_PACKAGES, isToFrame, isToHost } from "./protocol";
 import { frameDocument, refusal, resolveOutput, splitOutput } from "./host";
-import { fileOrder } from "./files";
+import { fileOrder, missingNpmPackage } from "./files";
 
 const files = {
   "App.tsx": 'import { label } from "./lib/format";\nexport default function App() { return <b>{label(1)}</b>; }\n',
@@ -205,5 +205,100 @@ describe("outputs of a node with several", () => {
     expect(() => resolveOutput(outputs, "fit.nope", "table")).toThrow(/no output nope/);
     expect(() => resolveOutput(outputs, "fit.metrics", "table")).toThrow(/is json, not a table: use json\(\)/);
     expect(() => resolveOutput(outputs, "prices.x", "table")).toThrow(/single output/);
+  });
+});
+
+describe("npm packages", () => {
+  const react = { __esModule: true, default: { version: "19" }, useState: (v: unknown) => [v] };
+  const builtins = { react };
+  // What esm.sh serves: a stub that re-exports the bundle by its absolute path,
+  // a bundle that imports react bare and a helper by a relative path.
+  const STUB = "/chartlib@1.2.3?bundle&external=react&target=es2022";
+  const BUNDLE = "/chartlib@1.2.3/X-ZXh0/es2022/chartlib.bundle.mjs";
+  const HELPER = "/chartlib@1.2.3/X-ZXh0/es2022/helper.mjs";
+  const packages = {
+    declared: ["chartlib", "broken"],
+    entries: { chartlib: STUB, "chartlib/style.css": "/chartlib@1.2.3/style.css" },
+    modules: {
+      [STUB]: `/* esm.sh - chartlib@1.2.3 */\nexport * from "${BUNDLE}";\nexport { default } from "${BUNDLE}";\n`,
+      [BUNDLE]:
+        'import{useState as u}from"react";import{twice}from"./helper.mjs";' +
+        "export function Chart(){return u(twice(2))[0]}export const where=import.meta.url;export default 7;",
+      [HELPER]: "export const twice=(n)=>n*2;",
+      "/chartlib@1.2.3/style.css": ".chart{color:red}",
+    },
+    errors: { broken: "broken could not be loaded from https://esm.sh: 404 Not Found" },
+  };
+
+  it("loads a package's modules, sharing the runtime's react", () => {
+    const css = vi.fn();
+    const require = createLoader({
+      files: {
+        "App.tsx":
+          'import "chartlib/style.css";\nimport seven, { Chart, where } from "chartlib";\nexport const out = [seven, Chart(), where];\n',
+      },
+      builtins,
+      packages,
+      onCss: css,
+    });
+    const mod = require("App.tsx") as { out: [number, number, string] };
+    expect(mod.out).toEqual([7, 4, `https://cdn.invalid${BUNDLE}`]);
+    expect(css).toHaveBeenCalledWith("/chartlib@1.2.3/style.css", ".chart{color:red}");
+  });
+
+  it("says why a declared package is missing and points at the view's file", () => {
+    const require = createLoader({ files: { "App.tsx": 'import "broken";' }, builtins, packages, onCss: () => {} });
+    try {
+      require("App.tsx");
+      throw new Error("no error");
+    } catch (e) {
+      expect((e as ViewError).message).toContain("404 Not Found");
+      expect((e as ViewError).file).toBe("App.tsx");
+    }
+    const failed = createLoader({
+      files: { "App.tsx": 'import "chartlib";' },
+      builtins,
+      packages: { ...NO_PACKAGES, declared: ["chartlib"], error: "the server could not be reached" },
+      onCss: () => {},
+    });
+    expect(() => failed("App.tsx")).toThrow(/Cannot import "chartlib": the server could not be reached/);
+  });
+
+  it("names a package that is not in package.json, so the page can offer to add it", () => {
+    // (TypeScript drops an import nothing uses: this one is used.)
+    const files = { "App.tsx": 'import { x } from "@scope/thing/sub";\nexport const y = x;' };
+    const require = createLoader({ files, builtins, packages, onCss: () => {} });
+    try {
+      require("App.tsx");
+      throw new Error("no error");
+    } catch (e) {
+      expect(missingNpmPackage((e as ViewError).message)).toBe("@scope/thing");
+    }
+    expect(missingNpmPackage("Cannot find ./x from App.tsx.")).toBeNull();
+  });
+
+  it("an error inside a package names its module, not a file of the view", () => {
+    const id = "/bad@1.0.0/es2022/bad.mjs";
+    const require = createLoader({
+      files: { "App.tsx": 'import "bad";' },
+      builtins,
+      packages: { ...NO_PACKAGES, declared: ["bad"], entries: { bad: id }, modules: { [id]: 'throw new Error("kaput")' } },
+      onCss: () => {},
+    });
+    try {
+      require("App.tsx");
+      throw new Error("no error");
+    } catch (e) {
+      expect((e as ViewError).message).toBe("kaput");
+      expect((e as ViewError).file).toBeUndefined();
+    }
+  });
+
+  it("resolves package names and module paths", () => {
+    expect(packageOf("lodash-es/debounce")).toBe("lodash-es");
+    expect(packageOf("@tanstack/react-table")).toBe("@tanstack/react-table");
+    expect(resolvePackageImport("/a@1.0.0/es2022/x.mjs", "./y.mjs")).toBe("/a@1.0.0/es2022/y.mjs");
+    expect(resolvePackageImport("/a@1.0.0/es2022/x.mjs", "/b@2.0.0?target=es2022")).toBe("/b@2.0.0?target=es2022");
+    expect(compile(BUNDLE, "export const m = import.meta.url;")).toContain("__importMeta.url");
   });
 });

@@ -63,6 +63,7 @@ from .artifacts import artifact_key, artifact_store
 from .events import EventBus
 from .executor import ExecRequest, LocalExecutor, make_executor
 from .notify import failure_webhook, payload, send
+from .npm import Npm, bare_imports
 from .packages import Packages, missing_package
 from .pushing import save_pushed
 from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Project, View, _hash, _validate_cron
@@ -82,7 +83,7 @@ QUEUED_RECHECK_S = 30
 # What _execute returns for a failed attempt that will be tried again.
 RETRY = "retry"
 # Project files besides nodes/ whose versions are kept as code revisions.
-VERSIONED_FILES = ("exuvia.json", "AGENTS.md", "pyproject.toml")
+VERSIONED_FILES = ("exuvia.json", "AGENTS.md", "pyproject.toml", "package.json")
 
 # Who is changing the code right now (the agent, an API caller, ...). Code
 # revisions record it; a change nobody claimed came from editing the files.
@@ -108,12 +109,15 @@ def params_key(params: dict[str, Any]) -> str:
 
 
 class Workspace:
-    def __init__(self, root: str | Path, origin: str = "load", packages_store: Path | None = None):
+    def __init__(
+        self, root: str | Path, origin: str = "load", packages_store: Path | None = None, npm_store: Path | None = None
+    ):
         """``origin`` labels code found changed since the last recorded
         revision when the project loads (a template applied, an import, edits
         made while nothing was watching). ``packages_store`` is where a
         server shared by many projects (a hub) keeps their package installs
-        (see packages.py); without one the project keeps its own."""
+        (see packages.py), and ``npm_store`` the modules its views' npm
+        packages are made of (npm.py); without them the project keeps its own."""
         self.project = Project(root)
         # Held while project files are written and reloaded (see editing()).
         self._edit_lock = threading.RLock()
@@ -149,6 +153,9 @@ class Workspace:
         if local:
             self.executor.packages = self.packages
         self.packages.on_edit = self.reload  # records pyproject.toml as a revision
+        # The npm packages the project's views import, from its package.json (npm.py).
+        self.npm = Npm(self.project.root, store=npm_store)
+        self.npm.on_edit = self.reload  # records package.json; view hashes change
         # Where this project's API is mounted: "/api" alone, "/p/<id>/api" in a
         # hub (set by Hub.get). Used for the run link in failure webhooks.
         self.api_prefix = "/api"
@@ -630,7 +637,11 @@ class Workspace:
             state, reason = "stale", f"out of date: {', '.join(stale)}"
         else:
             state, reason = "ready", None
-        return {**view.to_dict(), "state": state, "reason": reason, "outputs": outputs}
+        out = {**view.to_dict(), "state": state, "reason": reason, "outputs": outputs}
+        sig = self.npm.signature()
+        if sig:  # the npm packages a view may import are part of what it runs
+            out["hash"] = hashlib.sha256(f"{out['hash']}\0{sig}".encode()).hexdigest()[: len(out["hash"]) or 16]
+        return out
 
     def views(self, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         st = self.status(params)
@@ -660,6 +671,22 @@ class Workspace:
         except json.JSONDecodeError:
             manifest = None
         return {**info, "manifest": manifest, "sources": sources}
+
+    def view_packages(self, name: str) -> dict[str, Any]:
+        """The npm modules a view needs: for each bare import of its code of
+        a package in the project's package.json, the modules it is made of,
+        fetched through the cache (npm.Npm.modules). Raises KeyError / ValueError."""
+        self.project.view_dir(name)
+        view = self.graph.views.get(name)
+        if view is None:
+            raise KeyError(name)
+        sources: dict[str, str] = {}
+        for rel in view.files:
+            try:
+                sources[rel] = self.project.read_view_file(name, rel)
+            except (KeyError, OSError, UnicodeDecodeError):
+                continue
+        return self.npm.modules(bare_imports(sources))
 
     def write_view_manifest(self, name: str, manifest: dict[str, Any]) -> dict[str, Any]:
         """Create or replace a view's manifest (creates the view)."""

@@ -25,7 +25,7 @@ import { VStack } from "@astryxdesign/core/VStack";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
 import { api, HUB_PROJECT, type GraphNode, type Project, type ProjectParam, type ProjectView } from "./api";
 import { appUrl } from "./appMode";
-import { fileOrder } from "./views/files";
+import { fileOrder, missingNpmPackage } from "./views/files";
 import { ViewBridge, frameDocument, type FrameStatus } from "./views/host";
 import type { Params, ParamsState } from "./views/protocol";
 import { IconChevronRight, IconClose, IconExpand, IconPlay, MOD } from "./icons";
@@ -293,6 +293,11 @@ function ViewPane(props: {
     setStatus({ phase: "loading" });
   }, [view.hash]);
 
+  /** Add an npm package the view imports to package.json; the new list rebuilds the view. */
+  const addPackage = async (name: string) => {
+    await api.npmEdit({ add: [name] });
+  };
+
   /** Show one of the view's files in the Code pane. */
   const openFile = (path: string) => {
     props.onFile(path);
@@ -490,7 +495,7 @@ function ViewPane(props: {
               .slice()
               .reverse()
               .map((e) => (
-                <ViewError key={errorId(e)} error={e} onOpenFile={openFile} />
+                <ViewError key={errorId(e)} error={e} onOpenFile={openFile} onAddPackage={canEdit ? addPackage : undefined} />
               ))}
           </div>
         </Banner>
@@ -509,9 +514,22 @@ function errorId(e: FrameError): number {
 }
 
 /** One error from the view: where it happened, the file to open, the message, and its stack behind the arrow. */
-function ViewError(props: { error: FrameError; onOpenFile: (path: string) => void }) {
+function ViewError(props: { error: FrameError; onOpenFile: (path: string) => void; onAddPackage?: (name: string) => Promise<void> }) {
   const e = props.error;
   const [open, setOpen] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [addErr, setAddErr] = useState<string | null>(null);
+  const missing = props.onAddPackage ? missingNpmPackage(e.error) : null;
+  const add = async () => {
+    setAdding(true);
+    setAddErr(null);
+    try {
+      await props.onAddPackage!(missing!);
+    } catch (err) {
+      setAddErr((err as Error).message);
+      setAdding(false);
+    }
+  };
   return (
     <div {...stylex.props(styles.error)}>
       <div {...stylex.props(styles.errorLine)}>
@@ -542,7 +560,19 @@ function ViewError(props: { error: FrameError; onOpenFile: (path: string) => voi
         )}
         <Text type="code" xstyle={styles.errorText}>
           {e.error}
+          {addErr && `
+${addErr}`}
         </Text>
+        {missing && (
+          <Button
+            size="sm"
+            label={adding ? "Adding…" : `Add ${missing}`}
+            isDisabled={adding}
+            xstyle={styles.fixed}
+            tooltip={`Add ${missing} to the project's package.json; the view reloads with it`}
+            onClick={add}
+          />
+        )}
       </div>
       {open && e.stack && (
         <Text type="code" color="secondary" display="block" xstyle={styles.stack}>

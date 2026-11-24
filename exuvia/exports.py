@@ -45,7 +45,7 @@ TABLE_FORMATS: dict[str, tuple[str, str]] = {
 EXCEL_MAX_ROWS = 1_048_575
 EXCEL_MAX_CHARS = 32_767  # per cell
 # The project's root files that belong in a copy of its code (when present).
-ROOT_FILES = ("exuvia.json", "pyproject.toml", "uv.lock", "AGENTS.md", "README.md", ".gitignore", ".python-version")
+ROOT_FILES = ("exuvia.json", "pyproject.toml", "uv.lock", "package.json", "AGENTS.md", "README.md", ".gitignore", ".python-version")
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 

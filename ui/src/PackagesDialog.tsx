@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { EditorView } from "@uiw/react-codemirror";
 import * as stylex from "@stylexjs/stylex";
 import { borderVars, colorVars, radiusVars, spacingVars, typeScaleVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
@@ -9,10 +9,11 @@ import { Collapsible } from "@astryxdesign/core/Collapsible";
 import { HStack } from "@astryxdesign/core/HStack";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
+import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { VStack } from "@astryxdesign/core/VStack";
-import { api, type PackagesState } from "./api";
+import { api, type NpmState, type PackagesState } from "./api";
 import { IconTrash } from "./icons";
 import { AppDialog } from "./ui/AppDialog";
 import { CodeEditor } from "./ui/CodeEditor";
@@ -45,6 +46,8 @@ const parseSpecs = (text: string) =>
 
 /** A row of the table: Astryx's Table reads plain records. */
 type Row = { requirement: string; name: string; version: string | null; source: "project" | "exuvia" | null };
+/** A row of the npm table (a type, not an interface, so the Table reads it as a record). */
+type NpmRow = { name: string; version: string; exact: boolean };
 
 const styles = stylex.create({
   grow: { flexGrow: 1, flexBasis: 0, minWidth: 0 },
@@ -86,10 +89,60 @@ const styles = stylex.create({
   wrong: { borderColor: colorVars["--color-border-error"] },
 });
 
-/** The project's packages: what pyproject.toml lists, adding and removing,
+type Kind = "python" | "npm";
+
+/** The project's packages, in two tabs: Python packages for nodes (pyproject.toml)
+ * and npm packages for views (package.json). */
+export function PackagesDialog(props: {
+  state: PackagesState | null;
+  onChange: (s: PackagesState) => void;
+  onClose: () => void;
+  initial?: Kind;
+}) {
+  const { state, onClose } = props;
+  const [kind, setKind] = useState<Kind>(props.initial ?? "python");
+  const [npm, setNpm] = useState<NpmState | null>(null);
+  const [npmErr, setNpmErr] = useState<string | null>(null);
+  const panel = useId();
+  useEffect(() => {
+    api.npm().then(setNpm, (e: Error) => setNpmErr(e.message));
+  }, []);
+  const python = kind === "python";
+  const agent = state?.agent === "install" ? "The agent installs packages itself" : state?.agent === "off" ? "The agent cannot ask for packages" : "Agent requests wait for your approval";
+  return (
+    <AppDialog
+      title="Packages"
+      subtitle={
+        python
+          ? "The packages your nodes import beyond those exuvia comes with, from the project's pyproject.toml."
+          : "The npm packages your views import beyond those every view has, from the project's package.json."
+      }
+      width={640}
+      onClose={onClose}
+      footerNote={
+        (python || npm) && (
+          <Text type="supporting" color="secondary">
+            {python ? agent : `Every view has ${npm!.builtins.join(", ")}`}
+          </Text>
+        )
+      }
+      footer={<Button label="Done" onClick={onClose} />}
+    >
+      <TabList role="tablist" size="sm" hasDivider value={kind} onChange={(k) => setKind(k as Kind)}>
+        <Tab value="python" label="Python, for nodes" panelId={panel} />
+        <Tab value="npm" label="npm, for views" panelId={panel} />
+      </TabList>
+      <VStack gap={4} id={panel} role="tabpanel" aria-label={python ? "Python, for nodes" : "npm, for views"} paddingBlock={3}>
+        {python ? <PythonPackages state={state} onChange={props.onChange} /> : <NpmPackages state={npm} onChange={setNpm} loadError={npmErr} />}
+      </VStack>
+    </AppDialog>
+  );
+}
+
+/** Python packages: what pyproject.toml lists, adding and removing,
  * the install status and log, and the agent's requests to approve. */
-export function PackagesDialog(props: { state: PackagesState | null; onChange: (s: PackagesState) => void; onClose: () => void }) {
-  const { state, onChange, onClose } = props;
+function PythonPackages(props: { state: PackagesState | null; onChange: (s: PackagesState) => void }) {
+  const { state, onChange } = props;
   const [adding, setAdding] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   // What went wrong, and which action it was (its message shows next to that action).
@@ -177,19 +230,7 @@ export function PackagesDialog(props: { state: PackagesState | null; onChange: (
   ];
 
   return (
-    <AppDialog
-      title="Packages"
-      subtitle="The packages your nodes import beyond those exuvia comes with, from the project's pyproject.toml."
-      width={640}
-      onClose={onClose}
-      footerNote={
-        <Text type="supporting" color="secondary">
-          {state?.agent === "install" ? "The agent installs packages itself" : state?.agent === "off" ? "The agent cannot ask for packages" : "Agent requests wait for your approval"}
-        </Text>
-      }
-      footer={<Button label="Done" onClick={onClose} />}
-    >
-      <VStack gap={4}>
+    <>
         {/* What the environment is doing, and what went wrong if it failed. */}
         <VStack gap={2}>
           <HStack gap={2} vAlign="center">
@@ -297,7 +338,115 @@ export function PackagesDialog(props: { state: PackagesState | null; onChange: (
             </Collapsible>
           )}
         </VStack>
-      </VStack>
-    </AppDialog>
+    </>
+  );
+}
+
+/** npm packages for views: what package.json lists, adding and removing. Nothing
+ * installs: the server fetches a package's modules when a view imports it. */
+function NpmPackages(props: { state: NpmState | null; onChange: (s: NpmState) => void; loadError: string | null }) {
+  const { state, onChange: setState } = props;
+  const [adding, setAdding] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(props.loadError);
+
+  const act = async (label: string, fn: () => Promise<NpmState>) => {
+    setBusy(label);
+    setErr(null);
+    try {
+      setState(await fn());
+      return true;
+    } catch (e) {
+      setErr((e as Error).message);
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const add = async () => {
+    const specs = parseSpecs(adding);
+    if (specs.length && !busy && (await act("add", () => api.npmEdit({ add: specs })))) setAdding("");
+  };
+
+  const columns: TableColumn<NpmRow>[] = [
+    {
+      key: "name",
+      header: "Package",
+      width: proportional(2, { minWidth: 140 }),
+      renderCell: (p) => (
+        <Text type="code" xstyle={styles.spec}>
+          {p.name}
+        </Text>
+      ),
+    },
+    {
+      key: "version",
+      header: "Version",
+      width: proportional(1, { minWidth: 72 }),
+      renderCell: (p) => (
+        <Text type="code" color="secondary" xstyle={styles.spec}>
+          {p.version}
+        </Text>
+      ),
+    },
+    {
+      key: "remove",
+      header: "",
+      width: pixel(56),
+      align: "end",
+      renderCell: (p) => (
+        <IconButton
+          variant="ghost"
+          size="sm"
+          label={`Remove ${p.name}`}
+          tooltip={`Remove ${p.name}`}
+          icon={<IconTrash />}
+          isDisabled={!!busy && busy !== `rm${p.name}`}
+          isLoading={busy === `rm${p.name}`}
+          onClick={() => act(`rm${p.name}`, () => api.npmEdit({ remove: [p.name] }))}
+        />
+      ),
+    },
+  ];
+
+  return (
+    <>
+        {state?.error && (
+          <pre role="alert" {...stylex.props(styles.output, styles.wrong)}>
+            {state.error}
+          </pre>
+        )}
+        <VStack gap={2}>
+          <HStack gap={2} vAlign="end">
+            <TextInput
+              label="Packages to add"
+              description="A package added without a version is pinned to its newest release."
+              hasAutoFocus
+              hasSpellCheck={false}
+              autoCapitalize="none"
+              autoComplete="off"
+              value={adding}
+              placeholder="recharts, date-fns@^4"
+              onChange={setAdding}
+              onEnter={add}
+              containerXstyle={styles.grow}
+              controlXstyle={styles.spec}
+            />
+            <Button variant="primary" label={busy === "add" ? "Checking…" : "Add"} isDisabled={!parseSpecs(adding).length || !!busy} onClick={add} />
+          </HStack>
+          {err && (
+            <pre role="alert" {...stylex.props(styles.output, styles.wrong)}>
+              {err}
+            </pre>
+          )}
+        </VStack>
+        {state && state.packages.length > 0 && <Table<NpmRow> data={state.packages.map((p) => ({ ...p }))} columns={columns} idKey="name" density="compact" />}
+        <Text type="supporting" color="secondary">
+          A view imports these by name. exuvia fetches them from {state?.cdn ?? "the CDN"} when a view needs them and hands them
+          to the view, which still has no network: a package that loads map tiles, fonts or data from the internet will not work
+          there.
+        </Text>
+    </>
   );
 }

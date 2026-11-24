@@ -39,6 +39,7 @@ from .agent import READ_TOOLS, TOOLS, Agent
 from .arrowstream import MEDIA_TYPE as ARROW_STREAM, ArrowStream, wants_arrow
 from .envvars import EnvError, public as envvars_public
 from .exports import ExportError, check_format, code_archive, file_response, file_stem, json_response, slug, table_response, zip_response
+from .npm import NpmError
 from .packages import PackagesError
 from .project import NODE_NAME, PARAM_TYPES, coerce_param
 from .pushing import format_of, max_bytes
@@ -557,6 +558,28 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         except KeyError:
             raise HTTPException(404, f"no package request {request_id}") from None
 
+    # -- npm packages for views (the project's package.json; see npm.py) -------------
+    @r.get("/npm")
+    def npm_state(ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """The npm packages the project's views may import, from its package.json."""
+        return ctx.ws.npm.state()
+
+    @r.post("/npm")
+    async def npm_edit(body: PackagesEdit, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """Add packages (``recharts``, ``recharts@^2``; one without a version
+        is pinned to the exact version the CDN resolves it to) and/or remove
+        packages by name. Each one added is checked on the CDN first: a
+        package it cannot serve is a 400 and leaves package.json as it was."""
+        npm = ctx.ws.npm
+        try:
+            if body.remove:
+                await asyncio.to_thread(npm.remove, body.remove)
+            if body.add:
+                await asyncio.to_thread(npm.add, body.add)
+        except NpmError as e:
+            raise HTTPException(400, str(e)) from e
+        return npm.state()
+
     # -- nodes -----------------------------------------------------------------
     @r.get("/nodes/{name}")
     def get_node(name: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
@@ -674,6 +697,17 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         """Make a saved version (``{path, hash}``) of one of the view's files
         current again; brings back a deleted file or view."""
         return _view_call(ctx.ws.restore_view_file, name, body.path, body.hash)
+
+    @r.get("/views/{name}/packages")
+    async def view_packages(name: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """The npm modules a view imports (from the project's package.json),
+        for the page to post into the view's frame with its files:
+        ``entries`` (import -> module id), ``modules`` (module id -> source),
+        ``errors`` (import -> why it could not be fetched) and ``declared``."""
+        try:
+            return await asyncio.to_thread(_view_call, ctx.ws.view_packages, name)
+        except NpmError as e:
+            raise HTTPException(400, str(e)) from e
 
     @r.get("/view-runtime/runtime.js", response_model=None)
     def view_runtime(ctx: Ctx = Depends(get_ctx)) -> FileResponse:

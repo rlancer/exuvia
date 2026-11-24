@@ -21,6 +21,8 @@ from .agent_mcp import McpServers, Toolbox
 from .agent_mcp import enabled as mcp_enabled
 from .llm import Provider, resolve_provider
 from .envvars import EnvError
+from .npm import NpmError
+from .npm import declared as npm_declared
 from .packages import PackagesError, agent_mode, missing_package
 from .project import NODE_NAME, coerce_param
 from .report import node_report
@@ -353,7 +355,8 @@ TOOLS: list[dict[str, Any]] = [
             "it comes from the project or from exuvia itself, plus the install status (installing, ready, failed "
             "with uv's error) and any requests still waiting for approval. With `environment: true`, also "
             "`environment`: every package installed where nodes import from (exuvia's own environment and the "
-            "project's install), name to version. Check it before asking for a package."
+            "project's install), name to version. Check it before asking for a package. `view_packages` lists "
+            "the npm packages the project's views may import (its package.json)."
         ),
         "input_schema": {
             "type": "object",
@@ -414,6 +417,26 @@ TOOLS: list[dict[str, Any]] = [
                 "reason": {"type": "string", "description": "one line for the person approving: what needs it"},
             },
             "required": ["packages", "reason"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "add_view_packages",
+        "description": (
+            "Add npm packages for views to import (charting, tables, dates, markdown...) to the project's "
+            "package.json: `recharts`, `date-fns@^4`, `@tanstack/react-table`. One without a version is pinned to "
+            "the newest release. Each one is checked on the CDN exuvia serves them from and added right away; a view "
+            "then imports it by name (`import { LineChart } from \"recharts\"`), and a subpath "
+            "(`lodash-es/debounce`, `leaflet/dist/leaflet.css`) works too. Views run with no network, so a package "
+            "that fetches anything (map tiles, web fonts, an API) will not work there. Never add react, react-dom, "
+            "apache-arrow or vega-embed: views have them already."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "packages": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+            },
+            "required": ["packages"],
             "additionalProperties": False,
         },
     },
@@ -524,6 +547,15 @@ def _available_packages(root: Path | None = None) -> str:
     return out
 
 
+def _view_packages(root: Path) -> str:
+    """The npm packages the project's views may import, for the prompt."""
+    try:
+        deps = npm_declared(root)
+    except NpmError as e:
+        return f"which does not parse ({e})"
+    return "now: " + ", ".join(f"`{n}` {v}" for n, v in sorted(deps.items())) if deps else "none yet"
+
+
 def _packages_how() -> str:
     mode = agent_mode()
     if mode == "off":
@@ -577,7 +609,7 @@ def rolling_vol(returns):
 - A view is custom UI over node outputs, kept apart from the pipeline: a folder `views/<name>/` holding a `view.json` manifest (`title`, `description`, `runtime` (only "react"), `entry` (default `App.tsx`), `reads`) and its source files (.tsx .ts .jsx .js .css .json .html .md .svg). Create one with write_view, then write its files with write_view_file.
 - A view only reads. It sees the outputs of the nodes listed in `reads` and nothing else, and it never runs anything. Computation belongs in nodes: when a view needs data no node produces, add or change a node and list it in `reads`.
 - A view's state follows the nodes it reads, for a parameter set: ready, missing (a read node has no output yet), stale (one is out of date), or error (broken manifest, missing entry file, unknown node).
-- The user sees views in the Views mode of the exuvia UI, rendered in a sandboxed iframe with no network access. The entry file's `export default` is a React component. Imports: the view's own files by relative path (`./Chart`, `./styles.css`, `./data.json`), and only these packages: `react`, `react-dom`, `apache-arrow`, `vega-embed`, `exuvia`. Nothing else is installed and nothing can be fetched.
+- The user sees views in the Views mode of the exuvia UI, rendered in a sandboxed iframe with no network access. The entry file's `export default` is a React component. Imports: the view's own files by relative path (`./Chart`, `./styles.css`, `./data.json`); the packages every view has: `react` (19), `react-dom`, `apache-arrow`, `vega-embed`, `exuvia`; and the npm packages in the project's `package.json`, {view_packages}. Add an npm package with add_view_packages rather than writing a chart or table library by hand. The frame fetches nothing at run time, so a package that loads tiles, fonts or data from the network will not work.
 - Data comes from `exuvia`: `useTable(node)` / `useJson(node)` (a read node's current output; `useTable("fit.coefs")` for one output of a node with several), `useQuery(sql)` (DuckDB over the read nodes only, `<node>__runs` for history), each `{data, error, loading}` and reloading when an output changes; `rows(table)` turns an Arrow table into plain objects; `useParams()` gives `[values, setParams, declared]` (setting parameters changes what is shown, it never runs nodes); `useDark()`; `download(node | {sql}, format)` saves a read node's output or a query's whole result as csv, xlsx, parquet or json (for a download button). Style with the page's CSS variables (`var(--text)`, `--muted`, `--line`, `--panel`, `--accent`, `--mono`), which follow light and dark mode.
 - Only write views when the user asks for one.
 
@@ -832,7 +864,17 @@ class Agent:
                         "nodes run on a remote executor: this is the server's environment, which may differ "
                         "from the executor's"
                     )
+            st["view_packages"] = ws.npm.state()["packages"]
             return True, json.dumps(st, default=str), {}
+        if name == "add_view_packages":
+            if agent_mode() == "off":
+                return False, "changing packages from the agent is turned off on this server (EXUVIA_AGENT_PACKAGES=off)", {}
+            try:
+                st = await asyncio.to_thread(ws.npm.add, args.get("packages") or [])
+            except NpmError as e:
+                return False, str(e)[-3000:], {}
+            listed = ", ".join(f"{p['name']}@{p['version']}" for p in st["packages"])
+            return True, f"package.json now lists {listed}. Views import them by name.", {}
         if name == "list_env":
             def shown(r: dict[str, Any]) -> dict[str, Any]:
                 out = {k: v for k, v in r.items() if k in ("name", "secret", "value", "source") or (k == "readable" and not v)}
@@ -1035,6 +1077,7 @@ class Agent:
         return (
             SYSTEM.replace("{packages}", _available_packages(ws.project.root))
             .replace("{packages_how}", _packages_how())
+            .replace("{view_packages}", _view_packages(ws.project.root))
             .replace("{params}", params)
             .replace("{notes}", f"\n\n## Project notes\n{notes}" if notes else "")
         )

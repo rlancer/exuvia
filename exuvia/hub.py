@@ -53,6 +53,10 @@ HUB_SECRETS_KEY = f".exuvia/{envvars.KEY_FILE}"
 # Projects that resolve to the same packages share an install, and it outlives
 # restarts and exuvia upgrades that leave the packages as they were.
 HUB_PACKAGES = ".exuvia/packages"
+# The modules of the npm packages the hub's projects' views import (npm.py): a
+# cache shared by them, beside them.
+HUB_NPM = ".exuvia/npm"
+NPM_REL = ".exuvia/npm/"
 # Pauses between attempts to remove a folder (see _remove_tree).
 REMOVE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8)
 
@@ -124,6 +128,7 @@ class Hub:
                     self.root / project_id,
                     origin=self._load_origin.pop(project_id, "load"),
                     packages_store=self.root / HUB_PACKAGES,
+                    npm_store=self.root / HUB_NPM,
                 )
                 ws.api_prefix = f"/p/{project_id}/api"
                 if self.groups is not None:
@@ -365,6 +370,8 @@ class Hub:
                         continue  # the live database (and its -wal/-shm) is copied above
                     if posix.startswith(PACKAGES_REL):
                         continue  # installed packages: rebuilt from pyproject.toml when the project loads
+                    if posix.startswith(NPM_REL):
+                        continue  # fetched npm modules: fetched again from package.json when a view needs them
                     if posix.startswith(PARTS_REL):
                         continue  # extracted from the artifacts on the next read
                     if posix == SECRETS_KEY_REL and own_key_stays:

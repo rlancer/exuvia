@@ -497,7 +497,8 @@ Each view also carries `outputs`: per read node, its state, `kind` and the
 content, so a client can fetch `/api/artifacts/{node}/{artifact_id}.parquet`
 once and cache it for good. For a node with several outputs, `kind` is
 `multi` and `parts` lists them (`name`, `kind`, `rows`). `hash` covers
-every file of the view, so a client can tell when its code changed.
+every file of the view and the project's npm packages, so a client can tell
+when what the view runs changed.
 
 ### Rendering a view
 
@@ -559,10 +560,14 @@ entry file's `export default` with React 19. A view can import:
   `../lib/format.ts`; `./dir` finds `dir/index.tsx`), never outside its folder;
 - `.css` files (added to the page), `.json` (the parsed value), `.svg` (a
   `data:` URL);
-- by bare name, only what the runtime ships: `react` (+ `react/jsx-runtime`),
+- by bare name, what the runtime ships: `react` (+ `react/jsx-runtime`),
   `react-dom` (+ `/client`), `apache-arrow`, `vega-embed` (Vega-Lite charts)
-  and `exuvia`. Anything else is a compile error naming the file: there is no
-  package install and no network.
+  and `exuvia`;
+- by bare name, the npm packages in the project's `package.json`
+  (`recharts`, `date-fns`, `lodash-es/debounce`, `leaflet/dist/leaflet.css`;
+  see [npm packages for views](#npm-packages-for-views)). Anything else is a
+  compile error naming the file and the package, which the error offers to
+  add (**Add recharts**).
 
 `exuvia` is the view's API:
 
@@ -649,7 +654,7 @@ array of rows). A JSON output downloads as `.json`.
   or the one beside the Files tab's filter), one node with the `lib/`
   helpers it imports (the node's header), or one view (the view's header).
   The archive holds the nodes, helpers and views with `exuvia.json`,
-  `pyproject.toml`, `uv.lock`, `AGENTS.md` and `README.md` when present;
+  `pyproject.toml`, `uv.lock`, `package.json`, `AGENTS.md` and `README.md` when present;
   never `.env`, run history or outputs.
 
 The same routes serve scripts:
@@ -826,6 +831,55 @@ libraries, a standard stack, packages that need system libraries) belongs
 in the image, listed in a `pyproject.toml` of its own and installed with
 `uv pip install` (not `uv add` or `uv sync`): see
 [Packages your nodes import](#packages-your-nodes-import) under Deploying.
+
+### npm packages for views
+
+Views import npm packages the same way nodes import Python ones: the project
+lists them in the standard place, `dependencies` in a `package.json` at its
+root, and a view imports them by name.
+
+```json
+{
+  "private": true,
+  "dependencies": { "recharts": "3.11.1", "date-fns": "^4.1.0" }
+}
+```
+
+```tsx
+import { LineChart, Line, XAxis, YAxis } from "recharts";
+import { format } from "date-fns";
+```
+
+Nothing is installed and no build step runs. When a view loads, the server
+fetches the modules each package it imports is made of from an
+[esm.sh](https://esm.sh) CDN, already built for the browser: one bundle per
+package with its own dependencies inside, and with the packages every view
+has (`react`, `react-dom`, `apache-arrow`, `vega-embed`) left out, so a
+package and the view share one React. The page posts those modules into the
+view's frame with its files, so the frame still fetches nothing and has no
+network (see "Rendering a view"). A package therefore runs only inside that
+sandbox, never on the server. One that fetches anything itself (map tiles,
+web fonts, an API) will not work there.
+
+- **Adding one.** The **Packages** button's **npm, for views** tab lists the
+  packages, adds them (`recharts`, `date-fns@^4`, `@tanstack/react-table`)
+  and removes them. Each is checked on the CDN first; one added without a
+  version is pinned to its newest release, so the view shows the same thing
+  tomorrow. A view that imports a package the list does not have fails with
+  an error that offers to add it. Editing `package.json` by hand works too.
+  The packages every view has can't be added: views always get the
+  runtime's copy.
+- **The agent** adds them itself with `add_view_packages`: they run only in
+  the sandbox, so they need no approval. `EXUVIA_AGENT_PACKAGES=off` turns
+  that off as well. `list_packages` lists them under `view_packages`.
+- **Fetched once.** Fetched modules are kept in the project's `.exuvia/npm/`
+  (on a hub, one `.exuvia/npm/` beside the projects, shared by them). A
+  module whose address names an exact version never changes and is never
+  fetched again; one named by a range (`^4.1.0`) is fetched again after an
+  hour, and the copy kept is used while the CDN can't be reached. Exports,
+  backups and code archives carry `package.json`, not the cache.
+- **Your own CDN.** `EXUVIA_NPM_CDN` points at another esm.sh, such as one you
+  host yourself. Every change to `package.json` is kept as a code revision.
 
 ## Environment variables and secrets
 
@@ -2031,6 +2085,7 @@ empty file, stops exuvia with an error.
 | `EXUVIA_AGENT_PACKAGES` | `ask` | what the agent may do with packages: `ask` (requests wait for a person to approve them), `install`, or `off` (see "Packages") |
 | `EXUVIA_PACKAGES_CONCURRENCY` | 2 | package installs that run at once (a hub starting with many projects to install) |
 | `EXUVIA_PACKAGES_TIMEOUT` | 900 | seconds before a package install is stopped |
+| `EXUVIA_NPM_CDN` | `https://esm.sh` | where the npm packages views import are fetched from: an esm.sh, such as one you host (see "npm packages for views") |
 | `UV_INDEX`, `UV_INDEX_<NAME>_USERNAME` / `_PASSWORD` | PyPI only | a package index for every project, and its credentials (see "Packages") |
 | `HTTPS_PROXY` / `NO_PROXY` | direct | the proxy that package installs, exuvia's other outbound HTTPS and nodes' own requests go through, and the hosts reached without it (see "Package installs on an isolated network" and "Nodes that can't reach their data" above) |
 | `EXUVIA_EXECUTOR_DIR` | temp | executor scratch space |
@@ -2098,7 +2153,7 @@ The agent runs a tool loop over the live workspace: `list_nodes`, `read_node`,
 "Views"), `run_node`, `list_runs` and `read_run` (run history: what a
 schedule or a cascade ran, with each run's error and log), `define_param` /
 `delete_param`, `query_data` (DuckDB over every node's current output),
-`list_packages` and `request_packages` (see "Packages"), `list_env` and
+`list_packages`, `request_packages` and `add_view_packages` (see "Packages"), `list_env` and
 `request_secret` (the project's environment variables by name, and asking
 you to set one: the agent never sees a secret's value; see "Environment
 variables and secrets"), `docs` and
@@ -2572,6 +2627,9 @@ headlessly or iframe the UI:
 | `PUT /api/packages/manifest` | replace `pyproject.toml` (`{"text"}`) and install from it |
 | `POST /api/packages/retry` | install the current list again after a failure |
 | `POST /api/packages/requests/{id}/approve`, `DELETE /api/packages/requests/{id}` | install or dismiss what the agent asked for |
+| `GET /api/npm` | the npm packages views may import (from the project's `package.json`) and the ones every view has |
+| `POST /api/npm` | `{"add": [...], "remove": [...]}`: edit the list; each package added is checked on the CDN first, and one without a version is pinned. A package the CDN can't serve is a 400 and changes nothing |
+| `GET /api/views/{name}/packages` | the npm modules a view imports, for the page to post into its frame: `entries` (import to module id), `modules` (module id to source), `errors` (import to why it could not be fetched) and `declared` |
 | `GET/PUT/DELETE /api/nodes/{name}` | read / write / delete a node file |
 | `GET /api/files`, `GET/PUT/DELETE /api/files/lib/{path}.py` | list / read / write (`{"source"}`) / delete shared helper modules; each answer names the nodes that import the file (`used_by`). Paths outside `lib/`, other extensions and `..` are rejected (400) |
 | `GET /api/views` | every view with its state (`?params=`), as in `/api/project` |
@@ -2596,7 +2654,7 @@ headlessly or iframe the UI:
 | `GET /api/nodes/{name}/history` | the node's stored output per parameter set (with the `code_hash` each was computed with) |
 | `GET /api/code/revisions` | saved versions of the code, newest first (`?node=` for one node, `?view=` for one view's files, deleted ones included); each says how it was saved (`origin`), by whom (`author`, with `EXUVIA_AUTH=headers`) and whether it is current |
 | `GET /api/code/blobs/{hash}` | the text of one saved version |
-| `GET /api/code/archive` | the project's code as a .zip (nodes, `lib/` helpers, views, `exuvia.json`, `pyproject.toml`, `uv.lock`; never `.env` or outputs); `?node=` for one node and the helpers it imports, `?view=` for one view |
+| `GET /api/code/archive` | the project's code as a .zip (nodes, `lib/` helpers, views, `exuvia.json`, `pyproject.toml`, `uv.lock`, `package.json`; never `.env` or outputs); `?node=` for one node and the helpers it imports, `?view=` for one view |
 | `POST /api/nodes/{name}/restore` | make a saved version (`{hash}`) current again; brings back a deleted node |
 | `GET /api/runs/{run_id}/source` | the exact code a run executed |
 | `POST /api/query` | DuckDB SQL over all outputs (`{sql, limit, params}`): JSON rows, or an Arrow stream (see "Binary data"). It cannot open other files or the network (see "Execution model") |
