@@ -21,7 +21,9 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
-import { ApiError, hubApi, PROJECT_ID, type GeneralAccess, type HubListing, type HubProject } from "./api";
+import { ApiError, groupApi, hubApi, PROJECT_ID, type GeneralAccess, type HubGroup, type HubListing, type HubProject } from "./api";
+import { GroupDialog, GroupNameDialog, ProjectGroupDialog } from "./GroupDialog";
+import { notifyError } from "./toast";
 import { GENERAL_LABEL, ShareDialog } from "./Share";
 import { ConnectDialog } from "./Connect";
 import { SignedInAs } from "./Me";
@@ -30,7 +32,7 @@ import { useMe } from "./useMe";
 import { useColorMode } from "./theme/colorMode";
 import { Brand, Mark } from "./Brand";
 import { AppDialog } from "./ui/AppDialog";
-import { IconMoon, IconPlus, IconShare, IconSpark, IconSun, IconTrash } from "./icons";
+import { IconFolder, IconMoon, IconPlus, IconShare, IconSpark, IconSun, IconTrash } from "./icons";
 import { Toasts } from "./toast";
 
 const workbench = (id: string) => `/p/${encodeURIComponent(id)}/`;
@@ -70,6 +72,10 @@ export default function Hub() {
   const [sharing, setSharing] = useState<HubProject | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [connecting, setConnecting] = useState(false);
+  // The group open on its page: from a row, or `/?group=<id>` (the Environment dialog's link).
+  const [openGroup, setOpenGroup] = useState<string | null>(() => new URLSearchParams(location.search).get("group"));
+  const [newGroup, setNewGroup] = useState(false);
+  const [grouping, setGrouping] = useState<HubProject | null>(null);
   const [dark, toggleTheme] = useColorMode();
   // Someone signed in reaches Connect agent from their account menu.
   const who = useMe();
@@ -102,6 +108,20 @@ export default function Hub() {
   }, [load]);
 
   const all = listing?.projects ?? [];
+  const groups: HubGroup[] = listing?.groups ?? [];
+  /** Whether the Group button shows on a project's row: its owner can add it to a group they edit, a group's editor can take it out. */
+  const canGroup = (p: HubProject) => {
+    const owner = !listing?.sharing || p.access === "owner";
+    if (owner) return !!p.group || groups.some((g) => g.access !== "viewer");
+    return !!p.group && groups.some((g) => g.id === p.group!.id && g.access !== "viewer");
+  };
+  const showGroup = (gid: string | null) => {
+    setOpenGroup(gid);
+    const url = new URL(location.href);
+    if (gid) url.searchParams.set("group", gid);
+    else url.searchParams.delete("group");
+    history.replaceState(null, "", url);
+  };
   const uid = who?.user?.uid ?? null;
   // People and roles exist where people sign in; a token hub shares by link only.
   const people = !!listing?.sharing?.people && !!uid;
@@ -133,6 +153,7 @@ export default function Hub() {
         );
     }
     if (!people && listing?.sharing && p.shared) parts.push("shared by link");
+    if (p.group) parts.push(`in ${p.group.name}`);
     return parts.flatMap((part, i) => (i ? [" · ", part] : [part]));
   };
 
@@ -181,7 +202,7 @@ export default function Hub() {
           <Center padding={8}>
             <Spinner label="Loading…" />
           </Center>
-        ) : all.length === 0 ? (
+        ) : all.length === 0 && groups.length === 0 ? (
           <EmptyState
             icon={<Mark size={40} />}
             title="No projects yet"
@@ -189,6 +210,17 @@ export default function Hub() {
             description="A project is one graph of Python and SQL nodes, with its own runs, outputs and views."
             actions={<Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewOpen(true)} />}
           />
+        ) : all.length === 0 ? (
+          <VStack gap={8}>
+            <EmptyState
+              icon={<Mark size={40} />}
+              title="No projects yet"
+              headingLevel={1}
+              description="A project is one graph of Python and SQL nodes, with its own runs, outputs and views."
+              actions={<Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewOpen(true)} />}
+            />
+            <Groups groups={groups} onOpen={showGroup} onNew={() => setNewGroup(true)} people={people} />
+          </VStack>
         ) : (
           <VStack gap={4}>
             <HStack gap={3} vAlign="center">
@@ -237,6 +269,16 @@ export default function Hub() {
                       endContent={
                         listing.sharing || canDelete(p) ? (
                           <HStack gap={0.5} vAlign="center">
+                            {canGroup(p) && (
+                              <IconButton
+                                variant="ghost"
+                                size="sm"
+                                label={p.group ? `${p.id}'s group: ${p.group.name}` : `Put ${p.id} in a group`}
+                                tooltip={p.group ? `In ${p.group.name}: move or take out` : "Put in a group: share its variables and access"}
+                                icon={<IconFolder />}
+                                onClick={() => setGrouping(p)}
+                              />
+                            )}
                             {listing.sharing && (
                               <Button
                                 variant="ghost"
@@ -269,6 +311,7 @@ export default function Hub() {
                 </List>
               </div>
             )}
+            <Groups groups={groups} onOpen={showGroup} onNew={() => setNewGroup(true)} people={people} />
           </VStack>
         )}
       </main>
@@ -286,6 +329,41 @@ export default function Hub() {
       {sharing && (
         <ShareDialog project={sharing.id} name={sharing.name} self={uid} onClose={() => setSharing(null)} onChanged={load} />
       )}
+      {openGroup && (
+        <GroupDialog gid={openGroup} self={uid} onClose={() => showGroup(null)} onChanged={load} />
+      )}
+      {newGroup && (
+        <GroupNameDialog
+          title="New group"
+          subtitle={people ? "You own it. Its projects share its variables and secrets, and the people you add." : "Its projects share its variables and secrets."}
+          action="Create"
+          onClose={() => setNewGroup(false)}
+          onSubmit={async (name) => {
+            try {
+              const g = await groupApi.create(name);
+              setNewGroup(false);
+              await load();
+              showGroup(g.id);
+              return true;
+            } catch (e) {
+              notifyError("Couldn't create the group", e);
+              return false;
+            }
+          }}
+        />
+      )}
+      {grouping && listing && (
+        <ProjectGroupDialog
+          project={grouping}
+          groups={groups}
+          people={people}
+          onClose={() => setGrouping(null)}
+          onDone={() => {
+            setGrouping(null);
+            load();
+          }}
+        />
+      )}
       {deleting && (
         <DeleteDialog
           project={deleting}
@@ -298,6 +376,62 @@ export default function Hub() {
       )}
       <Toasts />
     </div>
+  );
+}
+
+const GROUP_ROLE_WORD = { viewer: "you can view", editor: "you can edit", owner: "yours" } as const;
+
+/**
+ * The hub's groups the person has a role on, under the projects: each opens
+ * its page (projects, variables, people). Anyone signed in can create one.
+ */
+function Groups(props: { groups: HubGroup[]; people: boolean; onOpen: (gid: string) => void; onNew: () => void }) {
+  const { groups } = props;
+  return (
+    <VStack gap={3}>
+      <HStack gap={3} vAlign="center">
+        <div {...stylex.props(styles.title)}>
+          <Heading level={2}>Groups</Heading>
+          <Text color="secondary" hasTabularNumbers>
+            {groups.length}
+          </Text>
+        </div>
+        <span {...stylex.props(styles.grow)} />
+        <Button label="New group" icon={<IconPlus />} onClick={props.onNew} />
+      </HStack>
+      <Text type="supporting" color="secondary">
+        {props.people
+          ? "A group is a folder of projects: they share its environment variables and secrets, and its people get their group role on each of them."
+          : "A group is a folder of projects that share its environment variables and secrets."}
+      </Text>
+      {groups.length > 0 && (
+        <div {...stylex.props(styles.list)}>
+          <List hasDividers density="spacious">
+            {groups.map((g) => (
+              <ListItem
+                key={g.id}
+                onClick={() => props.onOpen(g.id)}
+                startContent={<IconFolder />}
+                label={
+                  <Text weight="semibold" maxLines={1}>
+                    {g.name}
+                  </Text>
+                }
+                description={
+                  <Text type="supporting" color="secondary" maxLines={1} hasTruncateTooltip={false}>
+                    {[
+                      `${g.projects} project${g.projects === 1 ? "" : "s"}`,
+                      `${g.variables} variable${g.variables === 1 ? "" : "s"}`,
+                      ...(props.people ? [g.access === "owner" ? GROUP_ROLE_WORD.owner : GROUP_ROLE_WORD[g.access]] : []),
+                    ].join(" · ")}
+                  </Text>
+                }
+              />
+            ))}
+          </List>
+        </div>
+      )}
+    </VStack>
   );
 }
 

@@ -67,7 +67,7 @@ const PAGES: PageSpec[] = [
     group: "Build",
     source: { heading: "Environment variables and secrets" },
     title: "Environment and secrets",
-    summary: "API keys, tokens and settings for your nodes: set in the workbench, kept out of code and masked in run logs.",
+    summary: "API keys, tokens and settings for your nodes: set in the workbench, kept out of code and masked in run logs, and shared by a hub group with its projects.",
   },
   {
     slug: "run-parameters",
@@ -131,7 +131,7 @@ const PAGES: PageSpec[] = [
     group: "Run",
     source: { heading: "Hub: many projects from one process" },
     title: "Hub",
-    summary: "Serve every project under one directory from a single process.",
+    summary: "Serve every project under one directory from a single process, shared with people and grouped into folders that share access and secrets.",
   },
   {
     slug: "http-api",

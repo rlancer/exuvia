@@ -3,6 +3,11 @@
     exuvia env list [dir | --url URL]
     exuvia env set NAME [dir | --url URL] [--plain] [--from-file PATH | --stdin]
     exuvia env rm NAME [dir | --url URL]
+    exuvia env ... --url HUB --group GROUP
+
+``--group`` works on a hub group's variables instead (groups.py), which
+every project in the group inherits: ``--url`` is then the hub's address and
+GROUP the group's id (on its page in the hub, and in ``/api/groups``).
 
 ``set`` never takes the value on the command line, where shell history and
 ``ps`` would keep it: it asks for it without echoing it, or reads it from a
@@ -44,6 +49,7 @@ def add_parser(sub: Any) -> None:
         q.add_argument("dir", nargs="?", default=".", help="the project folder (default: .), when there is no --url")
         q.add_argument("--url", metavar="URL", help="a running exuvia: its address, or <hub>/p/<project>; sends EXUVIA_API_TOKEN")
         q.add_argument("--allow-http", action="store_true", help="send to a plain-http address on another machine anyway")
+        q.add_argument("--group", metavar="ID", help="a hub group's variables (with --url HUB): every project in it gets them")
 
     q = env.add_parser("list", help="the variables: names, plain values, never a secret's value")
     target(q)
@@ -109,14 +115,15 @@ def _loopback(host: str) -> bool:
 
 
 class Remote:
-    def __init__(self, url: str, token: str | None):
+    def __init__(self, url: str, token: str | None, group: str | None = None):
         import httpx
 
         headers = {"X-Exuvia-Origin": ORIGIN}
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        self.url = url
-        self.http = httpx.Client(base_url=f"{url}/api", headers=headers, timeout=30.0)
+        self.url = f"{url} (group {group})" if group else url
+        base = f"{url}/api/groups/{quote(group, safe='')}" if group else f"{url}/api"
+        self.http = httpx.Client(base_url=base, headers=headers, timeout=30.0)
 
     def _call(self, method: str, path: str, body: Any = None) -> dict[str, Any]:
         import httpx
@@ -130,14 +137,12 @@ class Remote:
                 f"{self.url} needs a token: set EXUVIA_API_TOKEN (or EXUVIA_API_TOKEN_FILE) to the server's token "
                 "or to your own agent token from the workbench's account menu"
             )
+        if r.status_code == 404 and "/api/groups/" in str(r.request.url):
+            raise SystemExit(f"{self.url}: {_detail(r)} (is --url the hub's address, and the group's id right?)")
         if r.status_code == 404:
             raise SystemExit(f"no exuvia project at {self.url} (or an exuvia without environment variables: upgrade it)")
         if r.status_code >= 400:
-            try:
-                detail = r.json().get("detail", r.text)
-            except ValueError:
-                detail = r.text
-            raise SystemExit(f"{self.url}: {detail}")
+            raise SystemExit(f"{self.url}: {_detail(r)}")
         return r.json()
 
     def state(self) -> dict[str, Any]:
@@ -150,6 +155,13 @@ class Remote:
         before = {v["name"] for v in self.state()["variables"]}
         self._call("DELETE", f"/env/{quote(name)}")
         return name in before
+
+
+def _detail(r: Any) -> str:
+    try:
+        return str(r.json().get("detail", r.text))
+    except ValueError:
+        return r.text
 
 
 # -- a project folder ---------------------------------------------------------------
@@ -201,8 +213,10 @@ def main(args: argparse.Namespace) -> None:
             envvars.check_name(args.name)
         except envvars.EnvError as e:
             raise SystemExit(str(e)) from e
+    if args.group and not args.url:
+        raise SystemExit("--group is a hub group's variables: give the hub's address with --url")
     if args.url:
-        target: Remote | Local = Remote(check_url(args.url, args.allow_http), os.environ.get("EXUVIA_API_TOKEN"))
+        target: Remote | Local = Remote(check_url(args.url, args.allow_http), os.environ.get("EXUVIA_API_TOKEN"), args.group)
         where = target.url
     else:
         from .cli import _load_dotenv
@@ -220,6 +234,8 @@ def main(args: argparse.Namespace) -> None:
             target.set(args.name, value, not args.plain)
             kind = "plain" if args.plain else "secret, encrypted"
             print(f"Set {args.name} ({kind}) in {where}. Runs started from now on get it.")
+            if args.group:
+                print("Every project in the group gets it, unless the project sets the same name itself.")
         else:
             print(f"Removed {args.name} from {where}." if target.rm(args.name) else f"{args.name} was not set in {where}.")
     except envvars.EnvError as e:
@@ -227,7 +243,7 @@ def main(args: argparse.Namespace) -> None:
 
 
 def print_state(state: dict[str, Any], where: str) -> None:
-    variables = state.get("variables", [])
+    variables = [*state.get("variables", []), *state.get("inherited", [])]
     if not variables:
         print(f"No variables in {where}.")
     width = max((len(v["name"]) for v in variables), default=0)
@@ -237,6 +253,8 @@ def print_state(state: dict[str, Any], where: str) -> None:
         else:
             first = (v["value"] or "").splitlines()[0] if v["value"] else ""
             shown = first + (" …" if v["value"] and "\n" in v["value"].rstrip("\n") else "")
+        if v.get("source") == "group":
+            shown += f"  (from group {v['group']['name']}{', overridden here' if v.get('overridden') else ''})"
         print(f"{v['name']:<{width}}  {shown}")
     for r in state.get("requests", []):
         why = f": {r['reason']}" if r.get("reason") else ""

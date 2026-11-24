@@ -369,7 +369,10 @@ TOOLS: list[dict[str, Any]] = [
             "The project's environment variables, which every node gets in os.environ: each one's name, whether "
             "it is secret, and a plain variable's value. A secret's value is never shown, and it appears as *** "
             "in run logs. `readable: false` marks a secret this server cannot decrypt, which nodes do not get "
-            "until a person enters it again. People set them in the workbench's Environment panel; you cannot set them. Check here "
+            "until a person enters it again. `source` says where each comes from: `project` (the project's own) or "
+            "`group` (inherited from the hub group the project is in, named in `group`); a project variable wins "
+            "over its group's of the same name (`overrides_group`). People set them in the workbench's Environment "
+            "panel or on the group's page; you cannot set them. Check here "
             "for the name of an API key or setting before writing a node that reads one."
         ),
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -826,10 +829,15 @@ class Agent:
                     )
             return True, json.dumps(st, default=str), {}
         if name == "list_env":
-            return True, json.dumps({"variables": [
-                {k: v for k, v in r.items() if k in ("name", "secret", "value") or (k == "readable" and not v)}
-                for r in ws.env_vars()
-            ]}), {}
+            def shown(r: dict[str, Any]) -> dict[str, Any]:
+                out = {k: v for k, v in r.items() if k in ("name", "secret", "value", "source") or (k == "readable" and not v)}
+                if r["source"] == "group":
+                    out["group"] = r["group"]["name"]
+                if r.get("overrides"):
+                    out["overrides_group"] = r["overrides"]["name"]
+                return out
+
+            return True, json.dumps({"variables": [shown(r) for r in ws.effective_env()]}), {}
         if name == "request_secret":
             try:
                 res = ws.request_env_var(args["name"], args.get("reason") or "", origin)

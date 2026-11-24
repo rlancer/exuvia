@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import * as stylex from "@stylexjs/stylex";
+import { colorVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
@@ -13,7 +14,9 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { VStack } from "@astryxdesign/core/VStack";
-import { api, type EnvRequest, type EnvState, type EnvVar } from "./api";
+import { Heading } from "@astryxdesign/core/Heading";
+import { Link } from "@astryxdesign/core/Link";
+import { api, type EnvRequest, type EnvState, type EnvVar, type GroupRef, type InheritedVar } from "./api";
 import { IconTrash } from "./icons";
 import { AppDialog } from "./ui/AppDialog";
 import { ago } from "./util";
@@ -27,6 +30,8 @@ const styles = stylex.create({
   grow: { flexGrow: 1, flexBasis: 0, minWidth: 0 },
   // A key or a name is read character by character.
   code: { fontVariantLigatures: "none", fontFeatureSettings: '"liga" 0, "calt" 0' },
+  // A group's variable the project's own replaces.
+  overridden: { textDecorationLine: "line-through", color: colorVars["--color-text-secondary"] },
 });
 
 /** Who asked for a secret: the built-in agent, an MCP client, the API. */
@@ -37,8 +42,24 @@ const asker = (origin: string) =>
 type Draft = { name: string; value: string; secret: boolean; editing: EnvVar | null };
 const EMPTY: Draft = { name: "", value: "", secret: true, editing: null };
 
+/** Where an editor's variables live: a project's (`api`) or a hub group's. */
+export type EnvClient = {
+  load: () => Promise<EnvState>;
+  set: (name: string, b: { value?: string; secret: boolean }) => Promise<EnvState>;
+  remove: (name: string) => Promise<EnvState>;
+  dismiss?: (name: string) => Promise<EnvState>;
+};
+
+const projectEnv: EnvClient = {
+  load: api.env,
+  set: api.setEnv,
+  remove: api.removeEnv,
+  dismiss: api.dismissEnvRequest,
+};
+
 /** The project's environment variables: the API keys, tokens and settings
- * every node gets in `os.environ`. A secret is never shown again once saved. */
+ * every node gets in `os.environ`. A secret is never shown again once saved.
+ * On a hub, what the project's group gives it is listed too, read-only. */
 export function EnvDialog(props: {
   onClose: () => void;
   /** A variable to start on (a link to `#env=<name>`): changed if it exists, otherwise added. */
@@ -46,7 +67,118 @@ export function EnvDialog(props: {
   /** Called with each new state, so the bar's count of requests follows. */
   onChange?: (s: EnvState) => void;
 }) {
-  const { onClose, initialName, onChange } = props;
+  const [state, setState] = useState<EnvState | null>(null);
+  return (
+    <AppDialog
+      title="Environment"
+      subtitle="Variables every node gets in os.environ: API keys, tokens and settings."
+      width={680}
+      onClose={props.onClose}
+      purpose="form"
+      footerNote={
+        <Text type="supporting" color="secondary">
+          Runs started from now on use them
+        </Text>
+      }
+      footer={<Button label="Done" onClick={props.onClose} />}
+    >
+      <EnvEditor
+        client={projectEnv}
+        initialName={props.initialName}
+        onChange={(s) => {
+          setState(s);
+          props.onChange?.(s);
+        }}
+        below={state?.group ? <Inherited group={state.group} vars={state.inherited ?? []} /> : undefined}
+      />
+    </AppDialog>
+  );
+}
+
+/** What the project's group gives it: names, plain values, and which of them the project overrides. */
+function Inherited(props: { group: GroupRef; vars: InheritedVar[] }) {
+  const { group, vars } = props;
+  const columns: TableColumn<InheritedVar>[] = [
+    {
+      key: "name",
+      header: "Name",
+      width: proportional(2, { minWidth: 140 }),
+      renderCell: (v) => (
+        <Text type="code" xstyle={[styles.code, v.overridden && styles.overridden]}>
+          {v.name}
+        </Text>
+      ),
+    },
+    { key: "value", header: "Value", width: proportional(2, { minWidth: 120 }), renderCell: (v) => <ValueCell v={v} /> },
+    {
+      key: "overridden",
+      header: "",
+      width: proportional(1.5, { minWidth: 100 }),
+      renderCell: (v) =>
+        v.overridden ? (
+          <Text type="supporting" color="secondary" maxLines={1}>
+            Overridden here
+          </Text>
+        ) : null,
+    },
+  ];
+  return (
+    <VStack gap={2}>
+      <HStack gap={2} vAlign="center" wrap="wrap">
+        <Heading level={3}>From group {group.name}</Heading>
+        <Link href={`/?group=${encodeURIComponent(group.id)}`} type="supporting">
+          Open the group
+        </Link>
+      </HStack>
+      <Text type="supporting" color="secondary">
+        Every run gets these too, unless the project sets the same name itself. They are changed on the group's page, by its editors.
+      </Text>
+      {vars.length ? (
+        <Table<InheritedVar> data={vars} columns={columns} idKey="name" density="compact" />
+      ) : (
+        <Text type="supporting" color="secondary">
+          The group has no variables yet.
+        </Text>
+      )}
+    </VStack>
+  );
+}
+
+/** A variable's value cell: a plain value, or what is known of a secret. */
+function ValueCell(props: { v: EnvVar }) {
+  const { v } = props;
+  return v.secret && !v.readable ? (
+    <Badge variant="error" label="Can't be decrypted" />
+  ) : v.secret ? (
+    <Text type="supporting" color="secondary">
+      Secret, hidden
+    </Text>
+  ) : (
+    <Text type="code" maxLines={1} xstyle={styles.code}>
+      {v.value}
+    </Text>
+  );
+}
+
+/**
+ * A list of variables and the form that adds or changes one: a project's, in
+ * the Environment dialog, or a hub group's, on its page. Read-only (`canEdit`
+ * false) it lists them only.
+ */
+export function EnvEditor(props: {
+  client: EnvClient;
+  /** A variable to start on (a link to `#env=<name>`): changed if it exists, otherwise added. */
+  initialName?: string;
+  /** Called with each new state, so the bar's count of requests follows. */
+  onChange?: (s: EnvState) => void;
+  canEdit?: boolean;
+  /** What the list says when there is nothing in it. */
+  empty?: string;
+  /** Shown under the list, above the form (a project's inherited variables). */
+  below?: ReactNode;
+}) {
+  const { client, initialName, onChange } = props;
+  const canEdit = props.canEdit ?? true;
   const [vars, setVarsOnly] = useState<EnvVar[] | null>(null);
   const [requests, setRequests] = useState<EnvRequest[]>([]);
   const setState = (s: EnvState) => {
@@ -81,8 +213,8 @@ export function EnvDialog(props: {
   };
 
   useEffect(() => {
-    api
-      .env()
+    client
+      .load()
       .then((s) => {
         setState(s);
         const v = initialName ? s.variables.find((x) => x.name === initialName) : undefined;
@@ -119,7 +251,7 @@ export function EnvDialog(props: {
 
   const save = async () => {
     if (!canSave) return;
-    if (await act("save", () => api.setEnv(name, { value: draft.value, secret: draft.secret }))) reset();
+    if (await act("save", () => client.set(name, { value: draft.value, secret: draft.secret }))) reset();
   };
 
   const columns: TableColumn<EnvVar>[] = [
@@ -137,18 +269,7 @@ export function EnvDialog(props: {
       key: "value",
       header: "Value",
       width: proportional(2, { minWidth: 120 }),
-      renderCell: (v) =>
-        v.secret && !v.readable ? (
-          <Badge variant="error" label="Can't be decrypted" />
-        ) : v.secret ? (
-          <Text type="supporting" color="secondary">
-            Secret, hidden
-          </Text>
-        ) : (
-          <Text type="code" maxLines={1} xstyle={styles.code}>
-            {v.value}
-          </Text>
-        ),
+      renderCell: (v) => <ValueCell v={v} />,
     },
     {
       key: "updated_at",
@@ -160,7 +281,7 @@ export function EnvDialog(props: {
         </Text>
       ),
     },
-    {
+    ...(!canEdit ? [] : [{
       key: "actions",
       header: "",
       width: pixel(136),
@@ -191,24 +312,16 @@ export function EnvDialog(props: {
           />
         </HStack>
       ),
-    },
+    } satisfies TableColumn<EnvVar>]),
   ];
 
   const editing = draft.editing;
   return (
-    <AppDialog
-      title="Environment"
-      subtitle="Variables every node gets in os.environ: API keys, tokens and settings."
-      width={680}
-      onClose={onClose}
-      purpose="form"
-      onSubmit={save}
-      footerNote={
-        <Text type="supporting" color="secondary">
-          Runs started from now on use them
-        </Text>
-      }
-      footer={<Button label="Done" onClick={onClose} />}
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save();
+      }}
     >
       <VStack gap={4}>
         {requests.map((r) => (
@@ -220,7 +333,9 @@ export function EnvDialog(props: {
             endContent={
               <HStack gap={1}>
                 <Button size="sm" label="Set it" isDisabled={!!busy} onClick={() => { setErr(null); setFile(null); setDraft({ ...EMPTY, name: r.name }); }} />
-                <Button variant="ghost" size="sm" label="Dismiss" isDisabled={!!busy} onClick={() => act(`dismiss${r.name}`, () => api.dismissEnvRequest(r.name))} />
+                {client.dismiss && (
+                  <Button variant="ghost" size="sm" label="Dismiss" isDisabled={!!busy} onClick={() => act(`dismiss${r.name}`, () => client.dismiss!(r.name))} />
+                )}
               </HStack>
             }
           />
@@ -239,11 +354,17 @@ export function EnvDialog(props: {
         {vars && vars.length > 0 && <Table<EnvVar> data={vars} columns={columns} idKey="name" density="compact" />}
         {vars && vars.length === 0 && (
           <Text type="supporting" color="secondary">
-            No variables yet. A node reads one with <Text type="code">os.environ["NAME"]</Text>.
+            {props.empty ?? (
+              <>
+                No variables yet. A node reads one with <Text type="code">os.environ["NAME"]</Text>.
+              </>
+            )}
           </Text>
         )}
+        {!canEdit && err && <Banner status="error" title={err} />}
+        {props.below}
 
-        <VStack gap={3}>
+        {canEdit && <VStack gap={3}>
           <Text weight="medium">{editing ? `Change ${editing.name}` : "Add a variable"}</Text>
           {!editing && (
             <TextInput
@@ -292,7 +413,7 @@ export function EnvDialog(props: {
             {editing && <Button variant="ghost" label="Cancel" isDisabled={!!busy} onClick={reset} />}
             <Button type="submit" variant="primary" label={editing ? "Save" : "Add"} isDisabled={!canSave} isLoading={busy === "save"} />
           </HStack>
-        </VStack>
+        </VStack>}
       </VStack>
       <AlertDialog
         isOpen={!!removing}
@@ -307,11 +428,11 @@ export function EnvDialog(props: {
           const v = removing;
           setRemoving(null);
           if (v) {
-            await act(`rm${v.name}`, () => api.removeEnv(v.name));
+            await act(`rm${v.name}`, () => client.remove(v.name));
             if (draft.editing?.name === v.name) reset();
           }
         }}
       />
-    </AppDialog>
+    </form>
   );
 }

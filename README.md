@@ -796,6 +796,13 @@ def rates():
   reaches a remote executor). A project's variable wins over the server's
   variable of the same name, and over the project's `.env`. Changing one
   doesn't make nodes stale: run the nodes that read it to use the new value.
+- **Shared by a group.** On a hub, a project in a group also gets the
+  group's variables (see [Groups](#groups-shared-access-and-secrets)). When a
+  name is set in more than one place, the project's own variable wins, then
+  the group's, then the server's environment. The Environment dialog lists
+  what the group gives, read-only and marked with the group's name (and
+  *overridden* where the project sets the same name), and `GET /api/env`
+  returns them as `inherited`, beside the project's own `variables`.
 - **Who can change them.** Anyone who can edit the project. Viewers of a
   shared project can read the names and the plain values (`GET /api/env`,
   `list_env`), never a secret.
@@ -912,7 +919,11 @@ exuvia env rm OLD_KEY
   changes the variables and nothing else, and the server uses them on the
   next run.
 - `list` shows names and plain values, never a secret, and the requests
-  waiting to be set.
+  waiting to be set. For a hub project it also lists what its group gives.
+- **`--group <id>`** works on a hub group's variables instead: `--url` is
+  then the hub's address (`exuvia env set SHARED_TOKEN --url
+  https://exuvia.example.com --group g1a2b3c4d5e6`). The group's id is on
+  its page in the hub and in `/api/groups`.
 
 A `.env` in the project folder still works for `exuvia serve`, which reads
 it at start.
@@ -2394,6 +2405,67 @@ or put links behind the proxy and share them with people who can sign in
 plus `/p/` if links should work without signing in). That is safe in the
 same way as the MCP routes: exuvia turns away a request to a project without
 a valid sign-in, token or link for that project.
+
+### Groups: shared access and secrets
+
+A group is a folder of projects on a hub. The projects in it share the
+group's people and the group's environment variables and secrets, so an API
+key many projects need is set once, and a team gets access to all of its
+projects at once.
+
+- **Anyone signed in can create one** (**Groups** on the hub's home page)
+  and owns it. The owner adds people as a **viewer** or an **editor**, by
+  name or by email, as in a project's Share dialog, and can hand the group
+  over (the old owner stays on as an editor), rename it or delete it.
+  Deleting a group deletes its variables; its projects stay, outside any
+  group.
+- **A project is in at most one group.** A group role is also a role on
+  every project in the group: a group viewer can open each of them, a group
+  editor can change and run each of them. The group's owner gets editor on
+  them too, not owner: deleting a project and its own sharing stay with the
+  project's owner. A person's role on a project is the highest that the
+  project's own sharing and its group give them.
+- **Variables.** A group's variables work like a project's (same names,
+  values, encryption, masking in logs; a secret's value is never shown
+  again), and every project in the group gets them. The project's own
+  variable of the same name wins, then the group's, then the server's
+  environment. Secrets are encrypted with `EXUVIA_SECRETS_KEY`, or else with
+  a key the hub makes in `<hub>/.exuvia/secrets.key`. A request from the
+  agent (`request_secret`) stays with the project; setting the variable on
+  the group answers it too.
+
+| | group viewer | group editor | group owner |
+|---|---|---|---|
+| See the group, its people, its projects and its variables' names (and plain values) | yes | yes | yes |
+| Open the group's projects | view | edit | edit |
+| Set, rotate and remove the group's variables | | yes | yes |
+| Add one of your own projects to it; take a project out | | yes | yes |
+| Add people, hand it over, rename it, delete it | | | yes |
+
+**Adding a project needs its owner and an editor of the group** (one person
+who is both). Both sides give something away: the group's people get their
+role on the project, and **anyone who can edit the project can read every
+secret the group gives it**, because whoever can change a node can run code
+that reads `os.environ`. Masking a secret in logs only stops accidents. So
+before adding a project, look at who can edit it (its editors, and everyone
+signed in when its general access is *edit*): they will be able to read the
+group's secrets. The dialog that adds a project says so. Taking a project
+out of its group needs its owner or an editor of the group. A group's page
+lists its projects, so its people can see where its secrets go.
+
+Hub admins and the hub's API token own every group. The groups are kept
+beside the sharing settings (the hub's `.exuvia/hub.db`, or the shared
+`EXUVIA_DB`), and a hub export carries them, with the hub's key file when
+there is no `EXUVIA_SECRETS_KEY` (as with each project's key). On a hub
+nobody signs in to, groups still share variables; they just have no people.
+
+The API: `GET /api/groups` (the groups you have a role on), `POST
+/api/groups` `{name}`, `GET`, `PATCH` `{name, owner}` and `DELETE
+/api/groups/{id}`, `PUT /api/groups/{id}/people` `{user | email, role}`,
+`DELETE /api/groups/{id}/people/{principal}`, `GET /api/groups/{id}/env`,
+`PUT` / `DELETE /api/groups/{id}/env/{name}` `{value, secret}`, and `PUT
+/api/projects/{project}/group` `{group}` (`null` takes it out). The agent's
+`list_env` tool gives each variable's `source` (`project` or `group`).
 
 ## Embedding / using it inside another app
 

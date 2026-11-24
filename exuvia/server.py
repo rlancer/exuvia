@@ -35,11 +35,12 @@ from pydantic import BaseModel
 from . import _STARTED, __version__, about as about_mod, auth, mcp_http
 from .agent import READ_TOOLS, TOOLS, Agent
 from .arrowstream import MEDIA_TYPE as ARROW_STREAM, ArrowStream, wants_arrow
-from .envvars import EnvError
+from .envvars import EnvError, public as envvars_public
 from .exports import ExportError, check_format, code_archive, file_response, file_stem, json_response, slug, table_response, zip_response
 from .packages import PackagesError
 from .project import NODE_NAME, PARAM_TYPES, coerce_param
 from .report import graph_report, node_report
+from .groups import open_groups
 from .sharing import GENERAL, GRANT_ROLES, LINK_COOKIE, MAX_LINK_DAYS, at_least, looks_like_link, open_sharing
 from .store import clean_origin
 from .agent_mcp import McpServers, open_mcp_servers, private_allowed, probe
@@ -212,6 +213,19 @@ class ShareReq(BaseModel):
     user: str | None = None  # a user id, or
     email: str | None = None  # an email, for someone who may not have signed in yet
     role: str = "viewer"  # viewer | editor
+
+
+class GroupCreate(BaseModel):
+    name: str
+
+
+class GroupPatch(BaseModel):
+    name: str | None = None
+    owner: str | None = None  # a user id: hand the group over
+
+
+class ProjectGroupReq(BaseModel):
+    group: str | None = None  # a group id; null: take the project out of its group
 
 
 class LinkReq(BaseModel):
@@ -1634,6 +1648,184 @@ def _sharing_routes(app: FastAPI, hub: Any, require: Callable[[str, str], str], 
         return resp
 
 
+def _group_routes(app: FastAPI, hub: Any, require: Callable[[str, str], str], role_on: Callable[[str], str | None]) -> None:
+    """The routes of a hub's groups (groups.py): anyone signed in creates
+    one; its owner manages its people; its editors set its variables and,
+    with the project's owner, put projects in it."""
+    gs = hub.groups
+
+    def by() -> str | None:
+        return auth.current_uid()
+
+    def group_role(gid: str, need: str) -> str:
+        """The request's role on a group, at least ``need`` (404: no such
+        group, or one the request has no role on; 403: not enough)."""
+        role = gs.role(gid, auth.current())
+        if role is None:
+            raise HTTPException(404, f"no group {gid}")
+        if not at_least(role, need):
+            what = "change its variables or projects" if need == "editor" else "do that"
+            raise HTTPException(403, f"only an {'editor' if need == 'editor' else 'owner'} of group "
+                                     f"{gs.describe(gid)['name']} can {what}")
+        return role
+
+    def people_on() -> None:
+        if not gs.people:
+            raise HTTPException(400, "nobody signs in on this hub (see EXUVIA_AUTH), so a group has no people to add")
+
+    def env_answer(gid: str) -> dict[str, Any]:
+        return {"variables": envvars_public(hub.group_env(gid).rows()), "requests": []}
+
+    def answer(gid: str) -> dict[str, Any]:
+        role = group_role(gid, "viewer")
+        projects = []
+        for pid in gs.projects(gid):
+            if hub.exists(pid):
+                projects.append({"id": pid, "name": hub.project_name(pid), "access": role_on(pid)})
+        return {
+            **gs.describe(gid), "you": role, "can_edit": at_least(role, "editor"), "can_manage": role == "owner",
+            "people_enabled": gs.people, "people": gs.members(gid) if gs.people else [],
+            "projects": projects, **env_answer(gid),
+        }
+
+    def env_error(e: Exception) -> HTTPException:
+        return HTTPException(400, str(e))
+
+    @app.get("/api/groups")
+    def groups_list() -> dict[str, Any]:
+        """The groups this request has a role on."""
+        ident = auth.current()
+        return {"groups": gs.visible(ident), "can_create": ident is None or bool(ident.uid), "people": gs.people}
+
+    @app.post("/api/groups", status_code=201)
+    def group_create(body: GroupCreate) -> dict[str, Any]:
+        """A new group, owned by whoever creates it."""
+        ident = auth.current()
+        if ident is not None and not ident.uid:
+            raise HTTPException(403, "sign in to create a group")
+        try:
+            gid = gs.create(body.name, by())
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return answer(gid)
+
+    @app.get("/api/groups/{gid}")
+    def group_get(gid: str) -> dict[str, Any]:
+        """The group: its owner and people, its projects and its variables
+        (names, and plain values: a secret's value is never sent back)."""
+        return answer(gid)
+
+    @app.patch("/api/groups/{gid}")
+    def group_patch(gid: str, body: GroupPatch) -> dict[str, Any]:
+        """Rename the group, or hand it to another owner (the old owner stays
+        on as an editor)."""
+        group_role(gid, "owner")
+        try:
+            if body.name is not None:
+                gs.rename(gid, body.name)
+            if body.owner is not None:
+                people_on()
+                gs.set_owner(gid, body.owner, by=by())
+        except KeyError:
+            raise HTTPException(404, f"no user {body.owner}") from None
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        hub.env_changed(gs.projects(gid))
+        return answer(gid)
+
+    @app.delete("/api/groups/{gid}")
+    def group_delete(gid: str) -> dict[str, Any]:
+        """Delete the group and its variables. Its projects stay, outside any group."""
+        group_role(gid, "owner")
+        projects = gs.delete(gid)
+        hub.env_changed(projects)
+        return {"ok": True, "projects": projects}
+
+    @app.put("/api/groups/{gid}/people")
+    def group_grant(gid: str, body: ShareReq) -> dict[str, Any]:
+        """Add someone to the group (or change their role): a ``viewer`` can
+        open its projects, an ``editor`` can change and run them and set the
+        group's variables."""
+        group_role(gid, "owner")
+        people_on()
+        try:
+            gs.grant(gid, body.role, user_id=body.user, email=body.email, by=by())
+        except KeyError:
+            raise HTTPException(404, f"no user {body.user}") from None
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return answer(gid)
+
+    @app.delete("/api/groups/{gid}/people/{principal}")
+    def group_revoke(gid: str, principal: str) -> dict[str, Any]:
+        """Take someone off the group. Anyone can leave a group they are in."""
+        from .sharing import email_principal, user_principal
+
+        ident = auth.current()
+        mine = bool(ident and ident.uid) and principal in (
+            user_principal(ident.uid or ""), email_principal(ident.email or "") if ident and ident.email else "",
+        )
+        group_role(gid, "viewer" if mine else "owner")
+        if not gs.revoke(gid, principal):
+            raise HTTPException(404, f"group {gid} has no {principal}")
+        return answer(gid) if gs.role(gid, auth.current()) else {"ok": True, "left": True}
+
+    @app.get("/api/groups/{gid}/env")
+    def group_env_list(gid: str) -> dict[str, Any]:
+        group_role(gid, "viewer")
+        return env_answer(gid)
+
+    @app.put("/api/groups/{gid}/env/{name}")
+    def group_env_put(gid: str, name: str, body: EnvVarReq) -> dict[str, Any]:
+        """Set one of the group's variables: every project in it gets it,
+        unless the project sets the same name itself."""
+        group_role(gid, "editor")
+        try:
+            hub.group_env(gid).set(name, body.value, body.secret, auth.current_id())
+        except EnvError as e:
+            raise env_error(e) from e
+        hub.env_changed(gs.projects(gid))
+        return env_answer(gid)
+
+    @app.delete("/api/groups/{gid}/env/{name}")
+    def group_env_delete(gid: str, name: str) -> dict[str, Any]:
+        group_role(gid, "editor")
+        if hub.group_env(gid).delete(name):
+            hub.env_changed(gs.projects(gid))
+        return env_answer(gid)
+
+    @app.put("/api/projects/{project}/group")
+    def project_group(project: str, body: ProjectGroupReq) -> dict[str, Any]:
+        """Put a project in a group, move it to another, or (``group``: null)
+        take it out. Adding needs editor on the group and ownership of the
+        project: the group's people get their role on the project, and
+        everyone who can edit the project can read the group's secrets.
+        Taking it out needs either."""
+        require(project, "viewer")
+        ident = auth.current()
+        mine = role_on(project) == "owner"
+        current = gs.group_of(project, fresh=True)
+        target = body.group or None
+        if current is not None and current["id"] == target:
+            return {"project": project, "group": current}
+        if current is not None and not mine and not at_least(gs.role(current["id"], ident), "editor"):
+            raise HTTPException(
+                403, f"only the owner of project {project} or an editor of group {current['name']} can take it out of the group")
+        if target is not None:
+            role = gs.role(target, ident)
+            if role is None:
+                raise HTTPException(404, f"no group {target}")
+            if not at_least(role, "editor"):
+                raise HTTPException(403, f"only an editor of group {gs.describe(target)['name']} can add projects to it")
+            if not mine:
+                raise HTTPException(
+                    403, f"only the owner of project {project} can put it in a group: the group's people get access "
+                         "to it, and its editors can read the group's secrets")
+        gs.set_project_group(project, target, by=by())
+        hub.env_changed([project])
+        return {"project": project, "group": gs.group_of(project, fresh=True)}
+
+
 def create_hub_app(root: str | Path, templates: str | Path | None = None) -> FastAPI:
     from .hub import HUB_USERS_DB, PROJECT_ID, Hub, StillInUse
 
@@ -1645,6 +1837,12 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
         hub.users = open_users(hub.root / HUB_USERS_DB)
     if hub.users is not None or os.environ.get("EXUVIA_API_TOKEN"):
         hub.sharing = open_sharing(hub.root / HUB_USERS_DB, hub.users)
+    # Groups of projects (groups.py), on every hub: their variables are worth
+    # sharing even where nobody signs in.
+    hub.groups = open_groups(hub.root / HUB_USERS_DB, hub.users, hub.sharing)
+    if hub.sharing is not None:
+        hub.sharing.groups = hub.groups
+    hub.seal_group_env()
 
     def role_on(project: str) -> str | None:
         """The request's role on a project: owner for everyone on a hub
@@ -1740,6 +1938,8 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
             signed_in = bool(ident and ident.uid)
             out["can_request"] = signed_in and hub.sharing.people and role != "owner"
             out["requested"] = hub.sharing.request_of(project, ident.uid) if signed_in else None  # type: ignore[union-attr]
+        group = hub.groups.group_of(project) if role else None
+        out["group"] = {**group, "access": hub.groups.role(group["id"], ident)} if group else None
         return out
 
     app.include_router(project_router(get_ctx), prefix="/p/{project}/api")
@@ -1775,6 +1975,7 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
         out: dict[str, Any] = {
             "projects": visible_projects(), "templates": hub.templates(),
             "auth": bool(os.environ.get("EXUVIA_API_TOKEN")), "sharing": None,
+            "groups": hub.groups.visible(auth.current()),
         }
         if hub.sharing is not None:
             from .sharing import new_project_general
@@ -1785,7 +1986,7 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
         return out
 
     def visible_projects() -> list[dict[str, Any]]:
-        listed = hub.list()
+        listed = [{**p, "group": hub.groups.group_of(p["id"])} for p in hub.list()]
         if hub.sharing is None:
             return listed
         seen = hub.sharing.overview([p["id"] for p in listed], auth.current())
@@ -1864,6 +2065,7 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
         return {"ok": True, "projects": restored}
 
     _sharing_routes(app, hub, require, sharing_store)
+    _group_routes(app, hub, require, role_on)
 
     # The UI: the hub's home page at / (list, create, delete and open
     # projects, through /api/projects) and the workbench, one per project, at
