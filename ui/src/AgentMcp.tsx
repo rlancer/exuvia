@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Banner } from "@astryxdesign/core/Banner";
@@ -14,7 +14,7 @@ import { Switch } from "@astryxdesign/core/Switch";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { VStack } from "@astryxdesign/core/VStack";
-import { agentMcpApi, type AgentMcpList, type AgentMcpServer, type AgentMcpTest } from "./api";
+import { agentMcpApi, type AgentMcpList, type AgentMcpServer, type AgentMcpSignedIn, type AgentMcpTest } from "./api";
 import { IconPlus, IconTrash } from "./icons";
 import { AppDialog } from "./ui/AppDialog";
 import { statusText } from "./ui/state";
@@ -43,8 +43,9 @@ export function AgentMcpDialog(props: { onClose: () => void }) {
   const [data, setData] = useState<AgentMcpList | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [editing, setEditing] = useState<AgentMcpServer | "new" | null>(null);
-  const [tests, setTests] = useState<Record<string, AgentMcpTest | "running">>({});
+  const [tests, setTests] = useState<Record<string, Status>>({});
   const [removing, setRemoving] = useState<AgentMcpServer | null>(null);
+  const watching = useRef<number | null>(null);
 
   const load = useCallback(
     () =>
@@ -76,6 +77,64 @@ export function AgentMcpDialog(props: { onClose: () => void }) {
       setErr((e as Error).message);
     }
   };
+
+  // The OAuth callback page tells this window how the sign-in went (exuvia/server.py).
+  useEffect(() => {
+    const onMessage = (ev: MessageEvent) => {
+      const m = ev.data as AgentMcpSignedIn | undefined;
+      if (ev.origin !== window.location.origin || m?.type !== "exuvia-mcp-oauth") return;
+      const result: AgentMcpTest = m.ok ? { ok: true, tools: m.tools } : { ok: false, error: m.error, signin: m.signin };
+      setTests((t) => ({ ...t, [m.name]: result }));
+      load();
+    };
+    window.addEventListener("message", onMessage);
+    return () => {
+      window.removeEventListener("message", onMessage);
+      if (watching.current !== null) window.clearInterval(watching.current);
+    };
+  }, [load]);
+
+  const signIn = async (name: string) => {
+    // Opened in the click, so the browser lets it open, and sent to the sign-in page once the server answers.
+    const popup = window.open("", "exuvia-mcp-oauth", "popup,width=520,height=720");
+    setTests((t) => ({ ...t, [name]: "signing-in" }));
+    const show = (r: AgentMcpTest) => setTests((t) => ({ ...t, [name]: r }));
+    try {
+      const r = await agentMcpApi.signIn(name, window.location.origin, window.location.href);
+      if (!("url" in r)) {
+        popup?.close();
+        show(r);
+        await load();
+        return;
+      }
+      // No popup (the browser blocked it): sign in in this tab, which the callback sends back here.
+      if (!popup) return window.location.assign(r.url);
+      popup.location.href = r.url;
+      // Closed without finishing: back to how it was.
+      if (watching.current !== null) window.clearInterval(watching.current);
+      watching.current = window.setInterval(() => {
+        if (!popup.closed) return;
+        if (watching.current !== null) window.clearInterval(watching.current);
+        watching.current = null;
+        setTests((t) => {
+          if (t[name] !== "signing-in") return t;
+          const { [name]: _, ...rest } = t;
+          return rest;
+        });
+      }, 1000);
+    } catch (e) {
+      popup?.close();
+      show({ ok: false, error: (e as Error).message });
+    }
+  };
+  const signOut = (name: string) =>
+    act(async () => {
+      await agentMcpApi.signOut(name);
+      setTests((t) => {
+        const { [name]: _, ...rest } = t;
+        return rest;
+      });
+    });
 
   if (editing)
     return (
@@ -118,7 +177,8 @@ export function AgentMcpDialog(props: { onClose: () => void }) {
         ) : servers.length === 0 ? (
           <Text type="supporting" color="secondary">
             No servers yet. Add one with its URL and the header that signs you in, such as{" "}
-            <Code>{PORTKEY_HEADER}</Code> for Portkey or <Code>Authorization</Code> for a bearer token.
+            <Code>{PORTKEY_HEADER}</Code> for Portkey or <Code>Authorization</Code> for a bearer token. A server that signs you in with
+            OAuth needs no header: add it, then Sign in.
           </Text>
         ) : (
           <List hasDividers edge="flush">
@@ -144,7 +204,18 @@ export function AgentMcpDialog(props: { onClose: () => void }) {
                       value={s.enabled}
                       onChange={(on) => act(() => agentMcpApi.put(s.name, { enabled: on }))}
                     />
-                    <Button size="sm" variant="ghost" label="Test" isDisabled={tests[s.name] === "running"} onClick={() => test(s.name)} />
+                    {wantsSignIn(tests[s.name]) ? (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        label={s.signed_in ? "Sign in again" : "Sign in"}
+                        isDisabled={tests[s.name] === "signing-in"}
+                        onClick={() => signIn(s.name)}
+                      />
+                    ) : (
+                      s.signed_in && <Button size="sm" variant="ghost" label="Sign out" onClick={() => signOut(s.name)} />
+                    )}
+                    <Button size="sm" variant="ghost" label="Test" isDisabled={busy(tests[s.name])} onClick={() => test(s.name)} />
                     <Button size="sm" variant="ghost" label="Edit" onClick={() => setEditing(s)} />
                     <IconButton size="sm" variant="ghost" label={`Remove ${s.name}`} tooltip={`Remove ${s.name}`} icon={<IconTrash />} onClick={() => setRemoving(s)} />
                   </HStack>
@@ -173,12 +244,21 @@ export function AgentMcpDialog(props: { onClose: () => void }) {
   );
 }
 
-/** Under a server's name: its headers, then what its last test found. */
-function ServerLine(props: { server: AgentMcpServer; test?: AgentMcpTest | "running" }) {
+/** A server's last connection: running, waiting for an OAuth sign-in in another window, or its outcome. */
+type Status = AgentMcpTest | "running" | "signing-in";
+
+const busy = (s?: Status) => s === "running" || s === "signing-in";
+/** Whether to offer Sign in: the server asked for an OAuth sign-in, or one is under way. */
+const wantsSignIn = (s?: Status) => s === "signing-in" || (typeof s === "object" && !s.ok && !!s.signin);
+
+/** Under a server's name: how it signs you in, then what its last test found. */
+function ServerLine(props: { server: AgentMcpServer; test?: Status }) {
   const { server, test } = props;
-  const headers = server.headers.length
-    ? server.headers.map((h) => (h.hint ? `${h.name} …${h.hint}` : h.name)).join(", ")
-    : "no headers";
+  const how = [
+    ...server.headers.map((h) => (h.hint ? `${h.name} …${h.hint}` : h.name)),
+    ...(server.signed_in ? ["signed in with OAuth"] : []),
+  ];
+  const headers = how.length ? how.join(", ") : "no headers";
   return (
     <VStack gap={1}>
       <Text type="supporting" color="secondary">
@@ -187,6 +267,10 @@ function ServerLine(props: { server: AgentMcpServer; test?: AgentMcpTest | "runn
       {test === "running" ? (
         <Text type="supporting" color="secondary">
           Connecting…
+        </Text>
+      ) : test === "signing-in" ? (
+        <Text type="supporting" color="secondary">
+          Waiting for you to sign in in the other window…
         </Text>
       ) : test?.ok ? (
         <Text type="supporting" xstyle={statusText.success}>
@@ -299,7 +383,7 @@ function ServerForm(props: { server: AgentMcpServer | null; taken: string[]; onC
           <Heading level={3}>Headers</Heading>
           <Text type="supporting" color="secondary">
             Sent with every request to this server, such as Authorization: Bearer … or x-portkey-api-key. Values are kept on this exuvia
-            server and never shown again.
+            server and never shown again. A server that signs you in with OAuth needs none: save it, and Sign in appears next to it.
           </Text>
           {rows.map((r) =>
             r.hint !== undefined ? (

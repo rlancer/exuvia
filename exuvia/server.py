@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,7 +44,7 @@ from .report import graph_report, node_report
 from .groups import open_groups
 from .sharing import GENERAL, GRANT_ROLES, LINK_COOKIE, MAX_LINK_DAYS, at_least, looks_like_link, open_sharing
 from .store import clean_origin
-from .agent_mcp import McpServers, open_mcp_servers, private_allowed, probe
+from .agent_mcp import CALLBACK_PATH, McpServers, finish_sign_in, open_mcp_servers, private_allowed, probe, sign_in
 from .agent_mcp import enabled as agent_mcp_enabled
 from .users import UserStore, looks_like_token, open_users
 from .workspace import SCHEDULER, Workspace, acting_as
@@ -140,6 +141,15 @@ class McpServerReq(BaseModel):
     # and headers left out keep their values (secrets need not be retyped).
     headers: dict[str, str | None] | None = None
     enabled: bool | None = None
+
+
+class McpSignInReq(BaseModel):
+    # The page's origin (https://exuvia.example.com): the OAuth callback is
+    # sent there, so it is where the person's browser reaches this server.
+    origin: str | None = None
+    # The page to come back to after the sign-in, when it runs in that page's
+    # tab (a browser that blocks the popup). Only a page on ``origin``.
+    back: str | None = None
 
 
 class ScheduleReq(BaseModel):
@@ -1183,6 +1193,60 @@ def _agent_mcp_routes(app: FastAPI, store: McpServers) -> None:
         if server is None:
             raise HTTPException(404, f"no MCP server {name}")
         return await probe(server, allow_private=store.allow_private)
+
+    @app.post("/api/me/mcp/{name}/oauth")
+    async def mcp_sign_in(name: str, request: Request, body: McpSignInReq | None = None) -> dict[str, Any]:
+        """Start an OAuth sign-in to a saved server (agent_mcp.py): ``{url}``,
+        the page to open in a popup, which comes back to
+        ``/api/me/mcp/oauth/callback``; or ``{ok, ...}`` when none was needed."""
+        who = owner(write=True)
+        server = await asyncio.to_thread(store.get, who, name)
+        if server is None:
+            raise HTTPException(404, f"no MCP server {name}")
+        origin = (body.origin if body and body.origin else str(request.base_url)).rstrip("/")
+        parts = urlsplit(origin)
+        if parts.scheme not in ("http", "https") or not parts.netloc or parts.path or parts.query:
+            raise HTTPException(400, "origin must be the page's origin, such as https://exuvia.example.com")
+        back = body.back if body and body.back and body.back.startswith(origin + "/") else None
+        return await sign_in(store, who, server, origin + CALLBACK_PATH, back)
+
+    @app.delete("/api/me/mcp/{name}/oauth")
+    def mcp_sign_out(name: str) -> dict[str, Any]:
+        """Forget a server's OAuth sign-in (its tokens stay valid at the server until they run out)."""
+        who = owner(write=True)
+        if store.get(who, name) is None:
+            raise HTTPException(404, f"no MCP server {name}")
+        store.set_oauth(who, name, None)
+        return {"ok": True}
+
+    @app.get(CALLBACK_PATH)
+    async def mcp_oauth_callback(
+        state: str = "", code: str | None = None, iss: str | None = None, error: str | None = None,
+        error_description: str | None = None,
+    ) -> HTMLResponse:
+        """Where the authorization server sends the browser back: finishes the
+        sign-in, says how it went and tells the page that opened it."""
+        who = owner()
+        why = f"{error}: {error_description}" if error and error_description else error
+        result = await finish_sign_in(who, state, code, iss, why)
+        name = html.escape(str(result.get("name", "the server")))
+        if result.get("ok"):
+            n = len(result.get("tools", []))
+            text = f"Signed in to {name}: {n} tool{'' if n == 1 else 's'}."
+        else:
+            text = f"Not signed in to {name}: {html.escape(str(result.get('error')))}"
+        if result.get("back"):
+            text += f' <a href="{html.escape(result["back"])}">Back to exuvia</a>'
+        message = json.dumps({"type": "exuvia-mcp-oauth", **result}).replace("<", "\\u003c")
+        return HTMLResponse(
+            "<!doctype html><meta charset=utf-8><title>exuvia: MCP sign-in</title>"
+            '<meta name=viewport content="width=device-width">'
+            f'<body style="font:15px system-ui,sans-serif;margin:2rem;max-width:36rem"><p>{text}</p>'
+            f"<script>const m = {message};"
+            "try { if (window.opener) window.opener.postMessage(m, location.origin); } catch (e) {}"
+            "if (window.opener) { if (m.ok) setTimeout(() => window.close(), 1200); }"
+            "else if (m.back) setTimeout(() => location.replace(m.back), m.ok ? 1200 : 6000);</script>"
+        )
 
 
 def _install_common(app: FastAPI, users: UserStore | None, command: str = "serve", sharing: Any = None) -> None:
