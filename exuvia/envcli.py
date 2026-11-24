@@ -4,10 +4,13 @@
     exuvia env set NAME [dir | --url URL] [--plain] [--from-file PATH | --stdin]
     exuvia env rm NAME [dir | --url URL]
     exuvia env ... --url HUB --group GROUP
+    exuvia env ... --url HUB --hub
 
 ``--group`` works on a hub group's variables instead (groups.py), which
 every project in the group inherits: ``--url`` is then the hub's address and
 GROUP the group's id (on its page in the hub, and in ``/api/groups``).
+``--hub`` works on the hub's own variables, which every project on the hub
+inherits; only a hub admin (or the hub's API token) can change them.
 
 ``set`` never takes the value on the command line, where shell history and
 ``ps`` would keep it: it asks for it without echoing it, or reads it from a
@@ -50,6 +53,8 @@ def add_parser(sub: Any) -> None:
         q.add_argument("--url", metavar="URL", help="a running exuvia: its address, or <hub>/p/<project>; sends EXUVIA_API_TOKEN")
         q.add_argument("--allow-http", action="store_true", help="send to a plain-http address on another machine anyway")
         q.add_argument("--group", metavar="ID", help="a hub group's variables (with --url HUB): every project in it gets them")
+        q.add_argument("--hub", action="store_true",
+                       help="the hub's own variables (with --url HUB; admins change them): every project on it gets them")
 
     q = env.add_parser("list", help="the variables: names, plain values, never a secret's value")
     target(q)
@@ -115,14 +120,18 @@ def _loopback(host: str) -> bool:
 
 
 class Remote:
-    def __init__(self, url: str, token: str | None, group: str | None = None):
+    def __init__(self, url: str, token: str | None, group: str | None = None, hub: bool = False):
         import httpx
 
         headers = {"X-Exuvia-Origin": ORIGIN}
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        self.url = f"{url} (group {group})" if group else url
-        base = f"{url}/api/groups/{quote(group, safe='')}" if group else f"{url}/api"
+        if group:
+            self.url, base = f"{url} (group {group})", f"{url}/api/groups/{quote(group, safe='')}"
+        elif hub:
+            self.url, base = f"{url} (the hub's variables)", f"{url}/api/hub"
+        else:
+            self.url, base = url, f"{url}/api"
         self.http = httpx.Client(base_url=base, headers=headers, timeout=30.0)
 
     def _call(self, method: str, path: str, body: Any = None) -> dict[str, Any]:
@@ -139,6 +148,8 @@ class Remote:
             )
         if r.status_code == 404 and "/api/groups/" in str(r.request.url):
             raise SystemExit(f"{self.url}: {_detail(r)} (is --url the hub's address, and the group's id right?)")
+        if r.status_code == 404 and "/api/hub/" in str(r.request.url):
+            raise SystemExit(f"{self.url}: no hub variables here (is --url a hub's address? An older hub has none: upgrade it)")
         if r.status_code == 404:
             raise SystemExit(f"no exuvia project at {self.url} (or an exuvia without environment variables: upgrade it)")
         if r.status_code >= 400:
@@ -213,10 +224,16 @@ def main(args: argparse.Namespace) -> None:
             envvars.check_name(args.name)
         except envvars.EnvError as e:
             raise SystemExit(str(e)) from e
+    if args.group and args.hub:
+        raise SystemExit("--group or --hub, not both")
     if args.group and not args.url:
         raise SystemExit("--group is a hub group's variables: give the hub's address with --url")
+    if args.hub and not args.url:
+        raise SystemExit("--hub is a hub's own variables: give the hub's address with --url")
     if args.url:
-        target: Remote | Local = Remote(check_url(args.url, args.allow_http), os.environ.get("EXUVIA_API_TOKEN"), args.group)
+        target: Remote | Local = Remote(
+            check_url(args.url, args.allow_http), os.environ.get("EXUVIA_API_TOKEN"), args.group, args.hub
+        )
         where = target.url
     else:
         from .cli import _load_dotenv
@@ -236,6 +253,8 @@ def main(args: argparse.Namespace) -> None:
             print(f"Set {args.name} ({kind}) in {where}. Runs started from now on get it.")
             if args.group:
                 print("Every project in the group gets it, unless the project sets the same name itself.")
+            if args.hub:
+                print("Every project on the hub gets it, unless the project or its group sets the same name.")
         else:
             print(f"Removed {args.name} from {where}." if target.rm(args.name) else f"{args.name} was not set in {where}.")
     except envvars.EnvError as e:
@@ -255,6 +274,8 @@ def print_state(state: dict[str, Any], where: str) -> None:
             shown = first + (" …" if v["value"] and "\n" in v["value"].rstrip("\n") else "")
         if v.get("source") == "group":
             shown += f"  (from group {v['group']['name']}{', overridden here' if v.get('overridden') else ''})"
+        elif v.get("source") == "hub":
+            shown += f"  (from the hub{', overridden' if v.get('overridden') else ''})"
         print(f"{v['name']:<{width}}  {shown}")
     for r in state.get("requests", []):
         why = f": {r['reason']}" if r.get("reason") else ""

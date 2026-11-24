@@ -59,7 +59,7 @@ const projectEnv: EnvClient = {
 
 /** The project's environment variables: the API keys, tokens and settings
  * every node gets in `os.environ`. A secret is never shown again once saved.
- * On a hub, what the project's group gives it is listed too, read-only. */
+ * On a hub, what the project's group and the hub give it are listed too, read-only. */
 export function EnvDialog(props: {
   onClose: () => void;
   /** A variable to start on (a link to `#env=<name>`): changed if it exists, otherwise added. */
@@ -89,15 +89,57 @@ export function EnvDialog(props: {
           setState(s);
           props.onChange?.(s);
         }}
-        below={state?.group ? <Inherited group={state.group} vars={state.inherited ?? []} /> : undefined}
+        below={
+          state && (state.group || state.inherited?.length) ? (
+            <Inherited group={state.group ?? null} vars={state.inherited ?? []} own={state.variables} />
+          ) : undefined
+        }
       />
     </AppDialog>
   );
 }
 
-/** What the project's group gives it: names, plain values, and which of them the project overrides. */
-function Inherited(props: { group: GroupRef; vars: InheritedVar[] }) {
+/** What the project's group and the hub give it, each under its own heading. */
+function Inherited(props: { group: GroupRef | null; vars: InheritedVar[]; own: EnvVar[] }) {
   const { group, vars } = props;
+  const own = new Set(props.own.map((v) => v.name));
+  const fromHub = vars.filter((v) => v.source === "hub");
+  return (
+    <VStack gap={6}>
+      {group && (
+        <Layer
+          title={`From group ${group.name}`}
+          link={{ href: `/?group=${encodeURIComponent(group.id)}`, label: "Open the group" }}
+          description="Every run gets these too, unless the project sets the same name itself. They are changed on the group's page, by its editors."
+          vars={vars.filter((v) => v.source === "group")}
+          empty="The group has no variables yet."
+          overriddenBy={() => "Overridden here"}
+        />
+      )}
+      {fromHub.length > 0 && (
+        <Layer
+          title="From the hub"
+          link={{ href: "/?env=hub", label: "Open the hub's variables" }}
+          description={`Every project on the hub gets these, unless it${group ? " or its group" : ""} sets the same name. Only hub admins change them.`}
+          vars={fromHub}
+          empty=""
+          overriddenBy={(v) => (own.has(v.name) ? "Overridden here" : "Overridden by the group")}
+        />
+      )}
+    </VStack>
+  );
+}
+
+/** One layer of inherited variables: names, plain values, and which of them a closer layer overrides. */
+function Layer(props: {
+  title: string;
+  link: { href: string; label: string };
+  description: string;
+  vars: InheritedVar[];
+  empty: string;
+  overriddenBy: (v: InheritedVar) => string;
+}) {
+  const { vars } = props;
   const columns: TableColumn<InheritedVar>[] = [
     {
       key: "name",
@@ -117,7 +159,7 @@ function Inherited(props: { group: GroupRef; vars: InheritedVar[] }) {
       renderCell: (v) =>
         v.overridden ? (
           <Text type="supporting" color="secondary" maxLines={1}>
-            Overridden here
+            {props.overriddenBy(v)}
           </Text>
         ) : null,
     },
@@ -125,19 +167,19 @@ function Inherited(props: { group: GroupRef; vars: InheritedVar[] }) {
   return (
     <VStack gap={2}>
       <HStack gap={2} vAlign="center" wrap="wrap">
-        <Heading level={3}>From group {group.name}</Heading>
-        <Link href={`/?group=${encodeURIComponent(group.id)}`} type="supporting">
-          Open the group
+        <Heading level={3}>{props.title}</Heading>
+        <Link href={props.link.href} type="supporting">
+          {props.link.label}
         </Link>
       </HStack>
       <Text type="supporting" color="secondary">
-        Every run gets these too, unless the project sets the same name itself. They are changed on the group's page, by its editors.
+        {props.description}
       </Text>
       {vars.length ? (
         <Table<InheritedVar> data={vars} columns={columns} idKey="name" density="compact" />
       ) : (
         <Text type="supporting" color="secondary">
-          The group has no variables yet.
+          {props.empty}
         </Text>
       )}
     </VStack>

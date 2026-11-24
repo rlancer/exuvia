@@ -2059,10 +2059,14 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
             raise HTTPException(403, denial(project, role, need))
         return role  # type: ignore[return-value]
 
+    def is_admin() -> bool:
+        """An admin, or the operator (the API token, or a hub nobody signs in to)."""
+        ident = auth.current()
+        return ident is None or ident.role == "admin"
+
     def require_admin() -> None:
         """Hub-wide operations (export, import): an admin, or the operator."""
-        ident = auth.current()
-        if ident is not None and ident.role != "admin":
+        if not is_admin():
             raise HTTPException(403, "admins only: this covers every project on the hub")
 
     def sharing_store() -> Any:
@@ -2167,6 +2171,7 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
             "projects": visible_projects(), "templates": hub.templates(),
             "auth": bool(os.environ.get("EXUVIA_API_TOKEN")), "sharing": None,
             "groups": hub.groups.visible(auth.current()),
+            "hub_env": {"variables": len(hub.groups.hub_env_rows()), "can_edit": is_admin()},
         }
         if hub.sharing is not None:
             from .sharing import new_project_general
@@ -2269,6 +2274,39 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
         except StillInUse as e:
             raise HTTPException(409, str(e)) from e
         return {"ok": True, "projects": restored}
+
+    # The hub's own variables (groups.py, "Hub variables"): every project
+    # gets them, under its group's and its own. Anyone on the hub sees their
+    # names and plain values; only an admin (or the operator) changes them.
+    def hub_env_answer() -> dict[str, Any]:
+        return {"variables": envvars_public(hub.hub_env().rows()), "requests": [], "can_edit": is_admin()}
+
+    def require_hub_env_admin() -> None:
+        if not is_admin():
+            raise HTTPException(403, "only a hub admin can change the hub's variables: every project on the hub gets them")
+
+    @app.get("/api/hub/env")
+    def hub_env_list() -> dict[str, Any]:
+        return hub_env_answer()
+
+    @app.put("/api/hub/env/{name}")
+    def hub_env_put(name: str, body: EnvVarReq) -> dict[str, Any]:
+        """Set one of the hub's variables: every project on the hub gets it,
+        unless the project or its group sets the same name."""
+        require_hub_env_admin()
+        try:
+            hub.hub_env().set(name, body.value, body.secret, auth.current_id())
+        except EnvError as e:
+            raise HTTPException(400, str(e)) from e
+        hub.env_changed()
+        return hub_env_answer()
+
+    @app.delete("/api/hub/env/{name}")
+    def hub_env_delete(name: str) -> dict[str, Any]:
+        require_hub_env_admin()
+        if hub.hub_env().delete(name):
+            hub.env_changed()
+        return hub_env_answer()
 
     _sharing_routes(app, hub, require, sharing_store)
     _group_routes(app, hub, require, role_on)

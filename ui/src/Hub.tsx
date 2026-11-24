@@ -21,8 +21,9 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
-import { ApiError, groupApi, hubApi, PROJECT_ID, type GeneralAccess, type HubGroup, type HubListing, type HubProject } from "./api";
+import { ApiError, groupApi, hubApi, hubEnvApi, PROJECT_ID, type GeneralAccess, type HubGroup, type HubListing, type HubProject } from "./api";
 import { GroupDialog, GroupNameDialog, ProjectGroupDialog } from "./GroupDialog";
+import { EnvEditor, type EnvClient } from "./EnvDialog";
 import { notifyError } from "./toast";
 import { GENERAL_LABEL, ShareDialog } from "./Share";
 import { ConnectDialog } from "./Connect";
@@ -32,7 +33,7 @@ import { useMe } from "./useMe";
 import { useColorMode } from "./theme/colorMode";
 import { Brand, Mark } from "./Brand";
 import { AppDialog } from "./ui/AppDialog";
-import { IconFolder, IconMoon, IconPlus, IconShare, IconSpark, IconSun, IconTrash } from "./icons";
+import { IconFolder, IconKey, IconMoon, IconPlus, IconShare, IconSpark, IconSun, IconTrash } from "./icons";
 import { Toasts } from "./toast";
 
 const workbench = (id: string) => `/p/${encodeURIComponent(id)}/`;
@@ -76,6 +77,8 @@ export default function Hub() {
   // The group open on its page: from a row, or `/?group=<id>` (the Environment dialog's link).
   const [openGroup, setOpenGroup] = useState<string | null>(() => new URLSearchParams(location.search).get("group"));
   const [newGroup, setNewGroup] = useState(false);
+  // The hub's own variables, open: from their section, or `/?env=hub` (the Environment dialog's link).
+  const [hubEnvOpen, setHubEnvOpen] = useState(() => new URLSearchParams(location.search).get("env") === "hub");
   const [grouping, setGrouping] = useState<HubProject | null>(null);
   const [dark, toggleTheme] = useColorMode();
   // Someone signed in reaches Connect agent from their account menu.
@@ -124,6 +127,14 @@ export default function Hub() {
     else url.searchParams.delete("group");
     history.replaceState(null, "", url);
   };
+  const showHubEnv = (open: boolean) => {
+    setHubEnvOpen(open);
+    const url = new URL(location.href);
+    if (open) url.searchParams.set("env", "hub");
+    else url.searchParams.delete("env");
+    history.replaceState(null, "", url);
+  };
+  const hubEnv = listing?.hub_env;
   const uid = who?.user?.uid ?? null;
   // People and roles exist where people sign in; a token hub shares by link only.
   const people = !!listing?.sharing?.people && !!uid;
@@ -221,6 +232,7 @@ export default function Hub() {
               actions={<Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewIn("")} />}
             />
             <Groups groups={groups} onOpen={showGroup} onNew={() => setNewGroup(true)} people={people} />
+            {hubEnv && <HubVariables {...hubEnv} onOpen={() => showHubEnv(true)} />}
           </VStack>
         ) : (
           <VStack gap={4}>
@@ -313,6 +325,7 @@ export default function Hub() {
               </div>
             )}
             <Groups groups={groups} onOpen={showGroup} onNew={() => setNewGroup(true)} people={people} />
+            {hubEnv && <HubVariables {...hubEnv} onOpen={() => showHubEnv(true)} />}
           </VStack>
         )}
       </main>
@@ -332,6 +345,15 @@ export default function Hub() {
       {connecting && listing && <ConnectDialog auth={listing.auth} onClose={() => setConnecting(false)} />}
       {sharing && (
         <ShareDialog project={sharing.id} name={sharing.name} self={uid} onClose={() => setSharing(null)} onChanged={load} />
+      )}
+      {hubEnvOpen && hubEnv && (
+        <HubEnvDialog
+          canEdit={hubEnv.can_edit}
+          onClose={() => {
+            showHubEnv(false);
+            load();
+          }}
+        />
       )}
       {openGroup && (
         <GroupDialog
@@ -444,6 +466,66 @@ function Groups(props: { groups: HubGroup[]; people: boolean; onOpen: (gid: stri
         </div>
       )}
     </VStack>
+  );
+}
+
+/** The hub's own variables, under the groups: every project gets them. Hidden from a non-admin while there are none. */
+function HubVariables(props: { variables: number; can_edit: boolean; onOpen: () => void }) {
+  if (!props.variables && !props.can_edit) return null;
+  return (
+    <VStack gap={3}>
+      <HStack gap={3} vAlign="center">
+        <div {...stylex.props(styles.title)}>
+          <Heading level={2}>Hub variables</Heading>
+          <Text color="secondary" hasTabularNumbers>
+            {props.variables}
+          </Text>
+        </div>
+        <span {...stylex.props(styles.grow)} />
+        <Button label={props.can_edit ? "Edit" : "View"} icon={<IconKey />} onClick={props.onOpen} />
+      </HStack>
+      <Text type="supporting" color="secondary">
+        Environment variables and secrets every project on the hub gets, unless the project or its group sets the same name.
+        Only hub admins change them.
+      </Text>
+    </VStack>
+  );
+}
+
+/** The hub's own variables: an admin sets them, everyone else sees their names and plain values. */
+function HubEnvDialog(props: { canEdit: boolean; onClose: () => void }) {
+  const client: EnvClient = { load: hubEnvApi.env, set: hubEnvApi.setEnv, remove: hubEnvApi.removeEnv };
+  return (
+    <AppDialog
+      title="Hub variables"
+      subtitle="Every project on the hub gets these in os.environ, unless the project or its group sets the same name."
+      width={680}
+      onClose={props.onClose}
+      purpose="form"
+      footerNote={
+        <Text type="supporting" color="secondary">
+          Runs started from now on use them
+        </Text>
+      }
+      footer={<Button label="Done" onClick={props.onClose} />}
+    >
+      <VStack gap={4}>
+        <Banner
+          status="warning"
+          title="Everyone who can edit any project on this hub can read these secrets"
+          description="A node can read anything in os.environ and send it anywhere. Masking secrets as *** in run logs only stops accidents. Put a key here only when everyone on the hub may use it; a key for some people belongs in a group."
+        />
+        <EnvEditor
+          client={client}
+          canEdit={props.canEdit}
+          empty={
+            props.canEdit
+              ? "No variables yet. Every project on the hub gets the ones added here, unless the project or its group sets the same name."
+              : "The hub has no variables."
+          }
+        />
+      </VStack>
+    </AppDialog>
   );
 }
 

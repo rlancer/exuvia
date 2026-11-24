@@ -407,49 +407,76 @@ class Workspace:
 
     def _run_rows(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """(what a run sets, what its logs mask). The project's own variable
-        wins over its group's of the same name (and both over the server's
-        environment, which the executor starts from). Every secret is masked,
-        a group secret a project variable overrides too."""
+        wins over its group's of the same name, the group's over the hub's
+        (and all of them over the server's environment, which the executor
+        starts from). Every secret is masked, one a closer layer overrides
+        too."""
         own = self._env_rows()
         inherited = self._inherited()
-        group_rows = inherited["rows"] if inherited else []
-        names = {r["name"] for r in own}
-        return [r for r in group_rows if r["name"] not in names] + own, own + group_rows
+        above = inherited["rows"] if inherited else []  # the group's, then the hub's
+        seen = {r["name"] for r in own}
+        run = list(own)
+        for r in above:
+            if r["name"] not in seen:
+                seen.add(r["name"])
+                run.append(r)
+        return run, own + above
 
     def env_vars(self) -> list[dict[str, Any]]:
         """The project's variables as a client may see them: no secret's value."""
         return envvars.public(self._env_rows())
 
     def inherited_vars(self) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-        """(the project's group, the variables it gives the project as a
-        client may see them), each marked ``overridden`` when the project has
-        its own variable of that name."""
+        """(the project's group, the variables its group and then the hub
+        give the project, as a client may see them). Each has ``source``
+        (``group`` or ``hub``) and is marked ``overridden`` when a closer
+        layer sets the same name: the project for a group's, the project or
+        its group for the hub's."""
         inherited = self._inherited()
         if not inherited:
             return None, []
-        own = {r["name"] for r in self.store.env_vars()}
         group = inherited["group"]
-        return group, [
-            {**v, "source": "group", "group": group, "overridden": v["name"] in own}
-            for v in envvars.public(inherited["rows"])
-        ]
+        closer = {r["name"] for r in self.store.env_vars()}
+        group_names = {r["name"] for r in inherited["rows"] if r["source"] == "group"}
+        out = []
+        for r, v in zip(inherited["rows"], envvars.public(inherited["rows"])):
+            if r["source"] == "group":
+                out.append({**v, "source": "group", "group": group, "overridden": v["name"] in closer})
+            else:
+                out.append({**v, "source": "hub", "overridden": v["name"] in closer or v["name"] in group_names})
+        return group, out
 
     def effective_env(self) -> list[dict[str, Any]]:
         """Every variable a run gets, by name, with where it comes from
-        (``source``: project or group), as a client may see them."""
+        (``source``: project, group or hub), as a client may see them. One
+        that replaces a group's says so (``overrides``: the group), one
+        that replaces a hub variable too (``overrides_hub``)."""
         group, inherited = self.inherited_vars()
-        own = []
-        for v in self.env_vars():
-            shadow = next((i for i in inherited if i["name"] == v["name"]), None)
-            own.append({**v, "source": "project", **({"overrides": group} if shadow else {})})
-        out = own + [{k: x for k, x in v.items() if k != "overridden"} for v in inherited if not v["overridden"]]
-        return sorted(out, key=lambda v: v["name"])
+        by_source: dict[str, set[str]] = {"group": set(), "hub": set()}
+        for v in inherited:
+            by_source[v["source"]].add(v["name"])
+
+        def shadows(v: dict[str, Any], *sources: str) -> dict[str, Any]:
+            out: dict[str, Any] = {}
+            if "group" in sources and v["name"] in by_source["group"]:
+                out["overrides"] = group
+            if v["name"] in by_source["hub"]:
+                out["overrides_hub"] = True
+            return out
+
+        own = [{**v, "source": "project", **shadows(v, "group", "hub")} for v in self.env_vars()]
+        above = [
+            {**{k: x for k, x in v.items() if k != "overridden"}, **(shadows(v, "hub") if v["source"] == "group" else {})}
+            for v in inherited if not v["overridden"]
+        ]
+        return sorted(own + above, key=lambda v: v["name"])
 
     def env_state(self) -> dict[str, Any]:
         """``GET /api/env``: the project's own variables, the ones its group
-        gives it (``inherited``), and the requests for ones that are not set
-        yet (a request is answered by setting its variable, from the
-        workbench, the API or ``exuvia env set``, or by the group's)."""
+        and the hub give it (``inherited``, each with its ``source``), and
+        the requests for ones that are not set yet (a request is answered by
+        setting its variable, from the workbench, the API or ``exuvia env
+        set``, or by the group's or the hub's)."""
         variables = self.env_vars()
         group, inherited = self.inherited_vars()
         ready = {v["name"] for v in (*variables, *inherited) if v["readable"]}
@@ -484,6 +511,8 @@ class Workspace:
             out = {"status": "set", "name": name, "secret": have["secret"]}
             if have["source"] == "group":
                 out["group"] = have["group"]["name"]
+            elif have["source"] == "hub":
+                out["from"] = "hub"
             return out
         if name not in self._env_requests and len(self._env_requests) >= envvars.MAX_VARIABLES:
             raise envvars.EnvError("Too many variables are already waiting to be set.")
@@ -1191,7 +1220,7 @@ class Workspace:
         self.store.update_run(run_id, status="running", code_hash=node.code_hash, inputs=input_ids, **started)
         self._emit_run(run_id)
 
-        # The project's variables and its group's, read for each attempt so a
+        # The project's variables, its group's and the hub's, read for each attempt so a
         # key fixed between retries is used. A secret's value never reaches
         # the log.
         try:

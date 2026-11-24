@@ -123,19 +123,21 @@ export type EnvVar = {
 /** A request to set a secret, from the agent or an MCP client (`request_secret`): its name and why, never a value. */
 export type EnvRequest = { name: string; reason: string; origin: string; at: number };
 
-/** A variable a hub project gets from its group (exuvia/groups.py), read-only here. */
-export type InheritedVar = EnvVar & {
-  source: "group";
-  group: GroupRef;
-  /** The project sets the same name itself, and its own wins. */
-  overridden: boolean;
-};
+/** A variable a hub project gets from its group or from the hub itself (exuvia/groups.py), read-only here. */
+export type InheritedVar = EnvVar &
+  (
+    | { source: "group"; group: GroupRef }
+    | { source: "hub" }
+  ) & {
+    /** A closer layer sets the same name and wins: the project, or for a hub variable the project's group. */
+    overridden: boolean;
+  };
 
 /** A hub group, as a project or a variable names it. */
 export type GroupRef = { id: string; name: string };
 
 /** `GET /api/env`: the project's own variables, the requests to set one that
- * wait, and on a hub the group the project is in and what it gives. */
+ * wait, and on a hub the group the project is in and what it and the hub give. */
 export type EnvState = {
   variables: EnvVar[];
   requests: EnvRequest[];
@@ -601,6 +603,8 @@ export interface HubListing {
   sharing: { people: boolean; default_access: GeneralAccess } | null;
   /** The groups the caller has a role on. */
   groups?: HubGroup[];
+  /** The hub's own variables, which every project gets: how many, and whether the caller (an admin) can change them. */
+  hub_env?: { variables: number; can_edit: boolean };
 }
 
 /** A group of hub projects (exuvia/groups.py), as `GET /api/groups` lists it. */
@@ -742,6 +746,14 @@ export const groupApi = {
   /** Put a project in a group (out of any other), or out of its group with `null`. */
   setProjectGroup: (project: string, group: string | null) =>
     json<{ project: string; group: GroupRef | null }>(sendTo("PUT", `/api/projects/${encodeURIComponent(project)}/group`, { group })),
+};
+
+/** The hub's own variables (`/api/hub/env`): everyone on the hub reads them, admins change them. */
+export const hubEnvApi = {
+  env: () => json<EnvState & { can_edit: boolean }>(sendTo("GET", "/api/hub/env")),
+  setEnv: (name: string, b: { value?: string; secret: boolean }) =>
+    json<EnvState>(sendTo("PUT", `/api/hub/env/${encodeURIComponent(name)}`, b)),
+  removeEnv: (name: string) => json<EnvState>(sendTo("DELETE", `/api/hub/env/${encodeURIComponent(name)}`)),
 };
 
 /** Project ids a hub accepts (exuvia/hub.py PROJECT_ID). */

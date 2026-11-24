@@ -1,5 +1,5 @@
 """Groups of hub projects: shared access, and environment variables the
-projects inherit.
+projects inherit. Also the hub's own variables, which every project gets.
 
 A group is a folder of projects on a hub:
 
@@ -41,6 +41,16 @@ Adding a project needs its owner because it widens who can open the project
 (the group's people get their role on it) and who can read the group's
 secrets (anyone who can edit a project can run code in it, and so can read
 every variable its runs get: masking a secret in logs only stops accidents).
+
+**Hub variables.** Below the groups there is one more layer: variables the
+hub gives every project on it (``hub_env``), with the same rules again.
+Only hub admins (and the hub's API token) set, rotate and remove them;
+anyone signed in sees their names and plain values. A run gets them unless
+its project or its group sets the same name: the project's own variable
+wins, then the group's, then the hub's, then the server's environment.
+Everyone who can edit any project on the hub can read them, so they are for
+what the whole hub shares (an LLM gateway's key, a warehouse's address), not
+for a key only some people should have: that belongs in a group.
 
 Everything is in the hub's database beside sharing (``.exuvia/hub.db``, or
 the shared ``EXUVIA_DB`` under ``EXUVIA_DB_SCOPE``). Each server answers roles
@@ -107,6 +117,15 @@ TABLES = {
     updated_at double precision not null,
     updated_by text,
     primary key (scope, group_id, name)
+)""",
+    "hub_env": """create table if not exists hub_env (
+    scope text not null default '',
+    name text not null,          -- an environment variable every project on the hub gets (envvars.py)
+    value text not null,         -- a secret's is encrypted: enc:v1:<key id>:<token> (envvars.Keyring)
+    secret integer not null default 1,
+    updated_at double precision not null,
+    updated_by text,
+    primary key (scope, name)
 )""",
 }
 INDEXES = ("create index if not exists project_group_projects_group on project_group_projects(scope, group_id)",)
@@ -448,6 +467,14 @@ class GroupStore:
     def vars(self, gid: str) -> "GroupVars":
         return GroupVars(self, gid)
 
+    def hub_env_rows(self) -> list[dict[str, Any]]:
+        rows = self._q(
+            "select name, value, secret, updated_at, updated_by from hub_env where scope=? order by name", (self.scope,))
+        return [{**r, "secret": bool(r["secret"])} for r in rows]
+
+    def hub_vars(self) -> "HubVars":
+        return HubVars(self)
+
     # -- hub export / import -------------------------------------------------------------
     def dump_to(self, target: Path) -> None:
         """This scope's groups as tables in a SQLite file (the hub export's
@@ -514,6 +541,36 @@ class GroupVars:
         s = self.store
         had = bool(s._q("select 1 from project_group_env where scope=? and group_id=? and name=?", (s.scope, self.gid, name)))
         s._q("delete from project_group_env where scope=? and group_id=? and name=?", (s.scope, self.gid, name))
+        return had
+
+
+class HubVars:
+    """The hub's own variables, shaped like GroupVars (the project Store
+    methods envvars.Env uses)."""
+
+    def __init__(self, store: GroupStore):
+        self.store = store
+
+    def env_vars(self) -> list[dict[str, Any]]:
+        return self.store.hub_env_rows()
+
+    def set_env_var(self, name: str, value: str, secret: bool, updated_by: str | None = None) -> None:
+        s = self.store
+        s._q(
+            "insert into hub_env (scope, name, value, secret, updated_at, updated_by) values (?,?,?,?,?,?) "
+            "on conflict (scope, name) do update set value=excluded.value, secret=excluded.secret, "
+            "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+            (s.scope, name, value, int(secret), time.time(), updated_by),
+        )
+
+    def reseal_env_var(self, name: str, old: str, new: str) -> None:
+        s = self.store
+        s._q("update hub_env set value=? where scope=? and name=? and value=?", (new, s.scope, name, old))
+
+    def delete_env_var(self, name: str) -> bool:
+        s = self.store
+        had = bool(s._q("select 1 from hub_env where scope=? and name=?", (s.scope, name)))
+        s._q("delete from hub_env where scope=? and name=?", (s.scope, name))
         return had
 
 
