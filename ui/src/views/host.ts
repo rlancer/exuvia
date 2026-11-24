@@ -9,7 +9,9 @@ import { api, apiUrl, type ProjectView } from "../api";
 import { saveQuery, saveUrl, viewExportUrl } from "../download";
 import {
   CHANNEL,
+  NO_PACKAGES,
   isToHost,
+  type PackageModules,
   type ErrorPhase,
   type Method,
   type Params,
@@ -199,12 +201,16 @@ export class ViewBridge {
     if (msg.type === "ready") {
       this.opts.onStatus({ phase: "loading" });
       try {
-        const got = await api.view(this.view.name);
+        // The npm modules come with the files: the frame fetches nothing itself.
+        const [got, packages] = await Promise.all([
+          api.view(this.view.name),
+          api.viewPackages(this.view.name).catch((e: Error): PackageModules => ({ ...NO_PACKAGES, error: e.message })),
+        ]);
         const files: Record<string, string> = {};
         got.sources.forEach((f) => (files[f.path] = f.source));
         this.post({
           type: "load",
-          view: { name: got.name, title: got.title, entry: got.entry, reads: got.reads, files },
+          view: { name: got.name, title: got.title, entry: got.entry, reads: got.reads, files, packages },
           params: this.params,
           dark: this.dark,
         });

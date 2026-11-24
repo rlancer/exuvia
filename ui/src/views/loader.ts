@@ -7,9 +7,15 @@
  *    extension may be left out, and `./dir` finds `./dir/index.tsx`;
  *  - `.css` files (injected as a <style>), `.json` (the parsed value) and
  *    `.svg` (a data: URL string);
- *  - the packages the runtime ships, by bare name (`BUILTINS` in runtime.tsx).
+ *  - the packages the runtime ships, by bare name (`BUILTINS` in runtime.tsx);
+ *  - the npm packages in the project's package.json, by bare name: the page
+ *    sends the modules each is made of (`PackageModules`, from
+ *    `GET /api/views/{name}/packages`), keyed by their path on the CDN
+ *    (`/recharts@2.15.0/...`). Their imports of each other are those paths;
+ *    their imports of the runtime's packages stay bare and get the same copy.
  */
 import { transform } from "sucrase";
+import { NO_PACKAGES, type PackageModules } from "./protocol";
 
 const CODE = [".tsx", ".ts", ".jsx", ".js"];
 const RESOLVE = [...CODE, ".json", ".css", ".svg"];
@@ -57,13 +63,34 @@ export function isBare(spec: string): boolean {
   return !spec.startsWith(".") && !spec.startsWith("/");
 }
 
-/** One file → CommonJS source (code files) or null (handled as an asset). */
+/** The package a bare import names: `lodash-es` for `lodash-es/debounce`, `@tanstack/react-table`. */
+export function packageOf(spec: string): string {
+  const parts = spec.split("/");
+  return spec.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+}
+
+/** An npm module's id (a path on the CDN), as opposed to a file of the view. */
+export const isPackageModule = (id: string) => id.startsWith("/");
+
+/** The module id an import inside the npm module `from` names (`/x.mjs`, `./x.mjs`). */
+export function resolvePackageImport(from: string, spec: string): string {
+  if (spec.startsWith("/")) return spec;
+  const u = new URL(spec, `https://cdn.invalid${from}`);
+  return u.pathname + u.search;
+}
+
+/** One file → CommonJS source. An npm module is JavaScript already built
+ * for the browser: only its imports are rewritten. */
 export function compile(path: string, source: string): string {
+  const pkg = isPackageModule(path);
   const ext = path.slice(path.lastIndexOf("."));
   const transforms: ("typescript" | "jsx" | "imports")[] =
-    ext === ".tsx" ? ["typescript", "jsx", "imports"]
+    pkg ? ["imports"]
+    : ext === ".tsx" ? ["typescript", "jsx", "imports"]
     : ext === ".ts" ? ["typescript", "imports"]
     : ["jsx", "imports"];
+  // A module is evaluated as a function body, where import.meta does not parse.
+  if (pkg) source = source.replace(/\bimport\.meta\b/g, "__importMeta");
   try {
     return transform(source, {
       transforms,
@@ -73,7 +100,8 @@ export function compile(path: string, source: string): string {
       disableESTransforms: true,
     }).code;
   } catch (e) {
-    throw new ViewError(e instanceof Error ? e.message : String(e), path);
+    const message = e instanceof Error ? e.message : String(e);
+    throw pkg ? new ViewError(`${path}: ${message}`) : new ViewError(message, path);
   }
 }
 
@@ -81,6 +109,8 @@ export interface LoaderOptions {
   files: Record<string, string>;
   /** Packages a view may import by bare name, as module objects. */
   builtins: Record<string, unknown>;
+  /** The project's npm packages the view imports. */
+  packages?: PackageModules;
   /** Called once per imported .css file. */
   onCss: (path: string, css: string) => void;
 }
@@ -89,14 +119,33 @@ type Module = { exports: Record<string, unknown> };
 
 /** A `require` over the view's files. Each module is compiled and evaluated
  * once; a cycle sees the partly-filled exports, as in CommonJS. */
-export function createLoader({ files, builtins, onCss }: LoaderOptions): (path: string) => Record<string, unknown> {
+export function createLoader({ files, builtins, onCss, packages = NO_PACKAGES }: LoaderOptions): (path: string) => Record<string, unknown> {
   const cache = new Map<string, Module>();
+  const has = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+
+  /** A bare import in `path`: a package the runtime ships, then one of the project's npm packages. */
+  const bare = (spec: string, path: string): unknown => {
+    if (has(builtins, spec)) return builtins[spec];
+    if (has(packages.entries, spec)) return load(packages.entries[spec]);
+    if (isPackageModule(path))
+      throw new ViewError(`The npm module ${path} imports "${spec}", which was not loaded: import "${spec}" in the view too.`);
+    if (has(packages.errors, spec)) throw new ViewError(packages.errors[spec], path);
+    const name = packageOf(spec);
+    if (packages.declared.includes(name))
+      throw new ViewError(`Cannot import "${spec}": ${packages.error ?? `the modules of ${name} were not loaded`}.`, path);
+    throw new ViewError(
+      `Cannot import "${spec}": ${name} is not in the project's package.json. Add it under Packages (npm, for views); ` +
+        `without it, a view can import its own files and: ${Object.keys(builtins).join(", ")}.`,
+      path,
+    );
+  };
 
   const load = (path: string): Record<string, unknown> => {
     const hit = cache.get(path);
     if (hit) return hit.exports;
-    const source = files[path];
-    if (source === undefined) throw new ViewError(`No file ${path} in this view.`, path);
+    const pkg = isPackageModule(path);
+    const source = pkg ? packages.modules[path] : files[path];
+    if (source === undefined) throw pkg ? new ViewError(`The npm module ${path} was not loaded.`) : new ViewError(`No file ${path} in this view.`, path);
     const mod: Module = { exports: {} };
     cache.set(path, mod);
     if (path.endsWith(".css")) {
@@ -115,33 +164,31 @@ export function createLoader({ files, builtins, onCss }: LoaderOptions): (path: 
       mod.exports = { __esModule: true, default: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(source)}` };
       return mod.exports;
     }
-    if (!CODE.some((ext) => path.endsWith(ext))) throw new ViewError(`Cannot import ${path}.`, path);
+    if (!pkg && !CODE.some((ext) => path.endsWith(ext))) throw new ViewError(`Cannot import ${path}.`, path);
     const code = compile(path, source);
     const require = (spec: string): unknown => {
-      if (isBare(spec)) {
-        if (Object.prototype.hasOwnProperty.call(builtins, spec)) return builtins[spec];
-        throw new ViewError(
-          `Cannot import "${spec}". Views run offline and can import only their own files and: ${Object.keys(builtins).join(", ")}.`,
-          path,
-        );
-      }
+      if (isBare(spec)) return bare(spec, path);
+      if (pkg) return load(resolvePackageImport(path, spec));
       const target = resolveImport(path, spec, files);
       if (target === null) throw new ViewError(`Cannot find "${spec}" from ${path}.`, path);
       return load(target);
     };
-    let fn: (require: unknown, module: Module, exports: unknown) => void;
+    // An error in an npm module points at no file of the view; its message names the module.
+    const file = pkg ? undefined : path;
+    let fn: (require: unknown, module: Module, exports: unknown, importMeta: unknown) => void;
     try {
       // The sourceURL names the file in stack traces and the browser's devtools.
-      fn = new Function("require", "module", "exports", `${code}\n//# sourceURL=view:///${path}`) as typeof fn;
+      const url = pkg ? `npm://${path}` : `view:///${path}`;
+      fn = new Function("require", "module", "exports", "__importMeta", `${code}\n//# sourceURL=${url}`) as typeof fn;
     } catch (e) {
-      throw new ViewError((e as Error).message, path);
+      throw new ViewError(pkg ? `${path}: ${(e as Error).message}` : (e as Error).message, file);
     }
     try {
-      fn(require, mod, mod.exports);
+      fn(require, mod, mod.exports, { url: `https://cdn.invalid${path}` });
     } catch (e) {
       cache.delete(path);
       if (e instanceof ViewError) throw e;
-      const err = new ViewError(e instanceof Error ? e.message : String(e), path);
+      const err = new ViewError(e instanceof Error ? e.message : String(e), file);
       if (e instanceof Error) err.stack = e.stack;
       throw err;
     }

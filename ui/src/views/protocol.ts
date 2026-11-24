@@ -24,6 +24,22 @@
 
 export const CHANNEL = "exuvia-view/1";
 
+/** The npm modules a view imports, as the page sends them (exuvia/npm.py `Npm.modules`). */
+export interface PackageModules {
+  /** The packages the project's package.json lists. */
+  declared: string[];
+  /** Bare import (`recharts`, `lodash-es/debounce`) → the id of its module. */
+  entries: Record<string, string>;
+  /** Module id (its path on the CDN) → source. */
+  modules: Record<string, string>;
+  /** Bare import → why its modules could not be fetched. */
+  errors: Record<string, string>;
+  /** Why none could be fetched (the request failed). */
+  error?: string;
+}
+
+export const NO_PACKAGES: PackageModules = { declared: [], entries: {}, modules: {}, errors: {} };
+
 /** Run-parameter values by name, as `GET /api/project` resolves them. */
 export type Params = Record<string, unknown>;
 
@@ -36,7 +52,7 @@ export interface ParamSpec {
   value: unknown;
 }
 
-/** What the iframe gets to run: the view's own files, nothing else. */
+/** What the iframe gets to run: the view's own files and the npm modules it imports, nothing else. */
 export interface ViewBundle {
   name: string;
   title: string;
@@ -44,6 +60,8 @@ export interface ViewBundle {
   reads: string[];
   /** Relative path (inside the view folder) → source text. */
   files: Record<string, string>;
+  /** The project's npm packages the view imports (loader.ts). */
+  packages?: PackageModules;
 }
 
 export type Method = "table" | "json" | "query" | "params" | "setParams" | "download";

@@ -1,5 +1,6 @@
 import { ARROW_STREAM, arrowMeta, isArrow, readArrow, toGrid } from "./arrow";
 import type { SavedEvent } from "./chat";
+import type { PackageModules } from "./views/protocol";
 
 export type State = "fresh" | "stale" | "new" | "failed" | "error" | "queued" | "running";
 
@@ -84,6 +85,25 @@ export interface PackagesState {
   requests: PackageRequest[];
   agent: "ask" | "install" | "off";
   manifest: string | null;
+}
+
+/** One npm package the project's views may import, from its package.json. */
+export interface NpmPackage {
+  name: string;
+  /** As package.json has it: an exact version, or a range such as `^4.1.0`. */
+  version: string;
+  exact: boolean;
+}
+
+/** `GET /api/npm`: the npm packages for views (exuvia/npm.py Npm.state). */
+export interface NpmState {
+  packages: NpmPackage[];
+  /** Why package.json could not be read. */
+  error: string | null;
+  /** What every view has without adding it. */
+  builtins: string[];
+  /** Where the modules are fetched from. */
+  cdn: string;
 }
 
 /** One of the project's environment variables (`GET /api/env`; exuvia/envvars.py).
@@ -321,6 +341,8 @@ export const api = {
   viewFile: async (name: string, path: string) =>
     (await req<{ source: string }>("GET", `/api/views/${name}/files/${path.split("/").map(encodeURIComponent).join("/")}`)).source,
   viewData,
+  /** The npm modules a view imports, for its frame (see views/loader.ts). */
+  viewPackages: (name: string) => req<PackageModules>("GET", `/api/views/${name}/packages`),
   /** DuckDB SQL that sees only the view's `reads`; the whole result as Arrow bytes. */
   viewQuery: async (view: string, sql: string, params?: Record<string, unknown>) =>
     (await send("POST", `/api/views/${view}/query`, { sql, params: params ?? null }, ARROW_STREAM)).arrayBuffer(),
@@ -378,6 +400,9 @@ export const api = {
   packagesRetry: () => req<PackagesState>("POST", "/api/packages/retry"),
   packagesApprove: (id: number) => req<PackagesState>("POST", `/api/packages/requests/${id}/approve`),
   packagesDismiss: (id: number) => req<PackagesState>("DELETE", `/api/packages/requests/${id}`),
+  npm: () => req<NpmState>("GET", "/api/npm"),
+  /** Add packages (each checked on the CDN; one without a version is pinned) and/or remove them. */
+  npmEdit: (b: { add?: string[]; remove?: string[] }) => req<NpmState>("POST", "/api/npm", b),
   env: () => req<EnvState>("GET", "/api/env"),
   /** Add or change a variable; without `value` the saved one is kept (to make a plain variable secret). */
   setEnv: (name: string, b: { value?: string; secret: boolean }) =>

@@ -94,6 +94,7 @@ function load(msg: Extract<ToFrame, { type: "load" }>): void {
   const require = createLoader({
     files: msg.view.files,
     builtins: BUILTINS,
+    packages: msg.view.packages,
     onCss: (path, css) => {
       const style = document.createElement("style");
       style.dataset.file = path;
