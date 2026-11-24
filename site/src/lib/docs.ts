@@ -76,6 +76,13 @@ const PAGES: PageSpec[] = [
     summary: "Declare run parameters, keep one output per value, and replay date ranges.",
   },
   {
+    slug: "push-nodes",
+    group: "Build",
+    source: { heading: "Push nodes: data from someone's desktop" },
+    title: "Push nodes",
+    summary: "Data only one desktop can read, such as a Bloomberg Terminal's: pushed to the hub from that machine, then cascaded like any output.",
+  },
+  {
     slug: "views",
     group: "Build",
     source: { heading: "Views" },
