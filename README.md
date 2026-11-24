@@ -341,6 +341,75 @@ exuvia run my-project --param as_of=2026-11-06
 exuvia status my-project --param as_of=2026-11-06
 ```
 
+## Push nodes: data from someone's desktop
+
+Some data can only be read on one person's machine. A Bloomberg
+Terminal's Desktop API answers on that machine's `localhost`, signed in as
+that person, so neither the hub nor an executor can pull from it. A **push
+node** stands for that data in the graph, and a script on the machine that
+has it uploads each new version:
+
+```python
+"""Daily closes from the Bloomberg Terminal on the trading desk."""
+import exuvia
+
+
+@exuvia.node(push=True)
+def bbg_closes():
+    ...  # never run: the output is pushed
+```
+
+On the desktop, from Python:
+
+```python
+import exuvia
+
+df = ...  # read it with blpapi, xbbg, Excel, whatever that machine has
+exuvia.push("https://exuvia.example.com/p/research", "bbg_closes", df, note="desk 4")
+```
+
+or with the CLI, from a `.parquet`, `.csv` or `.json` file:
+
+```bash
+exuvia push bbg_closes closes.csv --url https://exuvia.example.com/p/research --note "desk 4"
+```
+
+- **Each push is a run** of the node, triggered `push`, with who pushed it
+  and the note in its log. Freshness, history, views and downloads treat
+  it like a computed output, and a new output cascades to the nodes that
+  read it. Pushing the same data again makes the same output, which stops
+  the cascade.
+- **Nothing on the hub runs it.** Runs leave push nodes out, and running one
+  by name (from the workbench, the API or the agent) says it is pushed. Until
+  the first push it shows `new`, "waiting for a push", and a node reading it
+  fails with "has not been pushed yet". A push node takes no upstream nodes
+  and has no schedule: schedule the script on the desktop (Task Scheduler,
+  cron) instead. Editing the node file doesn't make the pushed output stale.
+- **Parameters.** A push node may declare run parameters
+  (`push=True, params=["as_of"]`); each push is for one set of values
+  (`params={"as_of": "2026-11-20"}`, `--param as_of=2026-11-20`), so a
+  day's snapshot can be pushed late without replacing today's.
+- **What it sends.** A DataFrame (pandas, polars or pyarrow) or a `.csv` goes
+  as Parquet, stored exactly as a node's returned DataFrame is; a JSON-able
+  value or a `.json` file as JSON. One push is one output: several tables are
+  several push nodes. The hub takes uploads up to 1 GB
+  (`EXUVIA_PUSH_MAX_MB`).
+- **Who may push.** Pushing changes the project, so it needs edit access.
+  The token is `EXUVIA_API_TOKEN` (or the file `EXUVIA_API_TOKEN_FILE`
+  names), or `token=`: your own agent token from the workbench's account
+  menu, or the server's. As with `exuvia env`, plain http is refused unless
+  the server is on the same machine (`--allow-http`, `allow_http=True`).
+  Over HTTP it is `POST /api/nodes/{name}/push` with the Parquet
+  (`Content-Type: application/vnd.apache.parquet`) or JSON as the body,
+  `?params=` a JSON object and `?note=` a line for the log.
+- **Licences.** Terminal data usually comes with limits on who else may see
+  it. A hub that others can read, or a share link, may take it past them:
+  check the terms before pushing it somewhere shared.
+
+Running the node itself on the desktop, with the hub scheduling it and the
+code managed there, is planned: see
+[rlancer/exuvia#127](https://github.com/rlancer/exuvia/issues/127).
+
 ## Views
 
 A **view** is custom UI over node outputs, kept apart from the graph. In a
@@ -999,7 +1068,7 @@ it at start.
   and a failure is reported (webhook, downstream skipped) only once the last
   attempt fails. Cancelling the run ends its wait and stops the retries.
 - **Run history** lives in a database: status, trigger (manual / schedule /
-  cascade / agent / cli), timings, logs, schema. Schedule state (last fire
+  cascade / agent / cli / push), timings, logs, schema. Schedule state (last fire
   per node) is persisted too, so restarts neither drop nor double-fire
   schedules. By default that is `.exuvia/exuvia.db` (SQLite) inside the
   project; see "Records: SQLite, Postgres, or your own adapter".
@@ -1763,6 +1832,11 @@ to `HOSTS` to check the tunnel: `dns`, `proxy refused` and `timeout` mean
 what they mean above, while an error past the tunnel may only be a gRPC
 server declining a plain GET.
 
+**Data only one desktop can read** (a Bloomberg Terminal, a licensed
+desktop app, a file share only the office reaches) is no route to fix: make
+it a [push node](#push-nodes-data-from-someones-desktop) and push it from
+that machine.
+
 ### Schedules, auth and settings
 
 **Hosts that sleep or scale to zero.** An in-process scheduler can't fire while
@@ -2509,6 +2583,7 @@ headlessly or iframe the UI:
 | `GET /api/views/{name}/data/{node}/export`, `POST /api/views/{name}/query/export` | the two routes above as downloads, like `/api/nodes/{node}/export` and `/api/query/export` |
 | `POST /api/nodes` | create from a template |
 | `POST /api/nodes/{name}/run` | run a node; `{"wait": seconds}` waits and returns the same report the agent's `run_node` gets (status, error + log tail, or schema, rows and first rows; `running: true` if still going) |
+| `POST /api/nodes/{name}/push` | upload a push node's output: Parquet or JSON as the body, `?params=` a JSON object, `?note=` a line for the log (see [Push nodes](#push-nodes-data-from-someones-desktop)); 422 when the data can't be read |
 | `POST /api/run` | bring the graph (or named nodes) up to date for a parameter set (`wait` as above: per-node status and each failure's error + log tail) |
 | `GET /api/guide` | the agent's instructions for this project (conventions, parameters, project notes) and its tools with their input schemas, for an outside agent writing nodes over HTTP |
 | `POST /api/tools/{name}` | run one of those tools with the body as its input, as the agent would: `{"ok", "text", ...}`. A failed tool or a rejected input is still a 200 with `ok: false` and `text` saying why; an unknown tool is a 404. `exuvia mcp --url` relays MCP tool calls here (see "MCP") |

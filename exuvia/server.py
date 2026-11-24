@@ -19,8 +19,9 @@ import html
 import json
 import os
 import re
+import tempfile
 import time as _time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -40,6 +41,7 @@ from .envvars import EnvError, public as envvars_public
 from .exports import ExportError, check_format, code_archive, file_response, file_stem, json_response, slug, table_response, zip_response
 from .packages import PackagesError
 from .project import NODE_NAME, PARAM_TYPES, coerce_param
+from .pushing import format_of, max_bytes
 from .report import graph_report, node_report
 from .groups import open_groups
 from .sharing import GENERAL, GRANT_ROLES, LINK_COOKIE, MAX_LINK_DAYS, at_least, looks_like_link, open_sharing
@@ -755,6 +757,9 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
     @r.post("/nodes/{name}/run")
     async def run_node(name: str, body: RunReq, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         _need(ctx.ws, name)
+        node = ctx.ws.graph.nodes.get(name)
+        if node is not None and node.push:
+            raise HTTPException(400, f"{name} is a push node: its output is uploaded with `exuvia push`, not run here")
         params = _resolve(ctx.ws, body.params)
         task = asyncio.create_task(ctx.ws.run([name], params=params, force={name} if body.force else set()))
         if body.wait is None:
@@ -764,6 +769,57 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
             return {"ok": True, "params": params, "running": True}
         ok, report = await node_report(ctx.ws, name, params, finals)
         return {"ok": ok, "params": params, "running": False, **report}
+
+    @r.post("/nodes/{name}/push")
+    async def push_node(
+        name: str,
+        request: Request,
+        format: str | None = None,  # noqa: A002 — the query parameter's name
+        params: str | None = None,
+        note: str | None = None,
+        ctx: Ctx = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        """Upload a push node's output (pushing.py): the body is a parquet
+        file or a JSON value, ``params`` a JSON object of run parameters,
+        ``note`` a line for the run's log. Recorded as a run triggered
+        ``push``; new output cascades downstream."""
+        ws = ctx.ws
+        _need(ws, name)
+        try:
+            fmt = format_of(format, request.headers.get("content-type"))
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        try:
+            values = json.loads(params) if params else None
+        except ValueError as e:
+            raise HTTPException(400, "params must be a JSON object, e.g. {\"as_of\": \"2026-11-20\"}") from e
+        if values is not None and not isinstance(values, dict):
+            raise HTTPException(400, "params must be a JSON object, e.g. {\"as_of\": \"2026-11-20\"}")
+        limit = max_bytes()
+        fd, tmp = tempfile.mkstemp(dir=ws.project.state_dir, prefix="push-", suffix=f".{fmt}")
+        try:
+            size = 0
+            with os.fdopen(fd, "wb") as f:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > limit:
+                        raise HTTPException(413, f"the upload is over {limit // (1024 * 1024)} MB (EXUVIA_PUSH_MAX_MB)")
+                    f.write(chunk)
+            if not size:
+                raise HTTPException(400, "nothing was sent: the body is the data to push")
+            try:
+                run = await ws.push(name, Path(tmp), fmt, params=values, note=(note or "")[:500] or None)
+            except KeyError as e:
+                raise HTTPException(404, str(e.args[0])) from e
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+        finally:
+            with suppress(OSError):
+                os.unlink(tmp)
+        if run.get("status") != "success":
+            raise HTTPException(422, f"the pushed data could not be read: {run.get('error')} (run {run.get('id')})")
+        run.pop("log", None)
+        return {"ok": True, "run": run}
 
     @r.post("/run")
     async def run_all(body: RunAllReq, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:

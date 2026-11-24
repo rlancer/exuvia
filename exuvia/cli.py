@@ -235,6 +235,20 @@ def cmd_mcp(args: argparse.Namespace) -> None:
     mcp_main(args.dir, args.url)
 
 
+def cmd_push(args: argparse.Namespace) -> None:
+    from .pushing import PushError, push
+
+    try:
+        run = push(
+            args.url, args.node, args.file, params=_cli_params(args.param) or None, note=args.note,
+            allow_http=args.allow_http,
+        )
+    except PushError as e:
+        raise SystemExit(str(e)) from None
+    shape = f"{run['rows']} rows" if run.get("rows") is not None else run.get("kind") or "output"
+    print(f"pushed {args.node}: {shape}, output {run.get('artifact_id')} (run {run.get('id')})")
+
+
 def cmd_executor(args: argparse.Namespace) -> None:
     import os
 
@@ -296,6 +310,17 @@ def main() -> None:
                         "sends EXUVIA_API_TOKEN when set")
     p.add_argument("--executor", metavar="URL", help="run nodes on a remote `exuvia executor` (env EXUVIA_EXECUTOR_URL)")
     p.set_defaults(fn=cmd_mcp)
+
+    p = sub.add_parser("push", help="upload a push node's output to a running exuvia (from the machine that has the data)")
+    p.add_argument("node", help="the push node (@exuvia.node(push=True))")
+    p.add_argument("file", help="a .parquet, .csv or .json file")
+    p.add_argument("--url", required=True, metavar="URL",
+                   help="the project: <hub>/p/<project>, or an `exuvia serve` address; sends EXUVIA_API_TOKEN")
+    p.add_argument("--param", action="append", metavar="NAME=VALUE",
+                   help="the run parameters this output is for, repeatable (e.g. --param as_of=2026-11-20)")
+    p.add_argument("--note", help="a line for the run's log, e.g. where the data came from")
+    p.add_argument("--allow-http", action="store_true", help="send to a plain-http address on another machine anyway")
+    p.set_defaults(fn=cmd_push)
 
     p = sub.add_parser("executor", help="serve node execution over HTTP")
     p.add_argument("--host", default="127.0.0.1")
