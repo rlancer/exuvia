@@ -19,6 +19,7 @@ import { groupApi, type Group, type GroupRef, type HubGroup, type HubProject, ty
 import { EnvEditor, type EnvClient } from "./EnvDialog";
 import { AddPeople, ROLE_LABEL } from "./Share";
 import { AppDialog } from "./ui/AppDialog";
+import { IconPlus } from "./icons";
 
 /** A group role, as the people picker offers it (exuvia/groups.py). */
 export const GROUP_ROLES = [
@@ -43,6 +44,11 @@ const styles = stylex.create({
 export function GroupDialog(props: {
   gid: string;
   self: string | null;
+  /** The hub's projects the person sees, and which they own: the ones Add project offers. */
+  projects?: HubProject[];
+  ownsProject?: (p: HubProject) => boolean;
+  /** Opens New project, starting in this group. */
+  onNewProject?: () => void;
   onClose: () => void;
   onChanged?: () => void;
   initialTab?: Tab;
@@ -56,6 +62,7 @@ export function GroupDialog(props: {
   const [deleting, setDeleting] = useState(false);
   const [handOver, setHandOver] = useState<Member | null>(null);
   const [removing, setRemoving] = useState<{ id: string; name: string } | null>(null);
+  const [adding, setAdding] = useState(false);
 
   const load = useCallback(() => groupApi.get(gid).then(setG).catch((e: Error) => setErr(e.message)), [gid]);
   useEffect(() => {
@@ -99,6 +106,8 @@ export function GroupDialog(props: {
   };
 
   const manage = !!g?.can_manage;
+  // Only a project's owner puts it in a group, and only in one they edit.
+  const addable = g?.can_edit ? (props.projects ?? []).filter((p) => p.group?.id !== gid && (props.ownsProject?.(p) ?? false)) : [];
   return (
     <>
       <AppDialog
@@ -141,9 +150,23 @@ export function GroupDialog(props: {
                   <Text type="supporting" color="secondary">
                     {g.people_enabled
                       ? "The group's people get their group role on each of these projects, and every run in them gets the group's variables."
-                      : "Every run in these projects gets the group's variables."}{" "}
-                    The owner of a project adds it from the project's row on the Projects page.
+                      : "Every run in these projects gets the group's variables."}
+                    {g.can_edit ? "" : " Its editors add projects to it."}
                   </Text>
+                  {g.can_edit && (props.onNewProject || addable.length > 0) && (
+                    <HStack gap={2}>
+                      {props.onNewProject && <Button label="New project" icon={<IconPlus />} isDisabled={busy} onClick={props.onNewProject} />}
+                      {addable.length > 0 && (
+                        <Button
+                          variant="ghost"
+                          label="Add a project"
+                          tooltip="Put a project you own in this group"
+                          isDisabled={busy}
+                          onClick={() => setAdding(true)}
+                        />
+                      )}
+                    </HStack>
+                  )}
                   {g.projects.length ? (
                     <List hasDividers edge="flush">
                       {g.projects.map((p) => (
@@ -280,6 +303,18 @@ export function GroupDialog(props: {
         </VStack>
       </AppDialog>
 
+      {adding && g && (
+        <AddProjectDialog
+          group={g}
+          candidates={addable}
+          onClose={() => setAdding(false)}
+          onAdd={async (pid) => {
+            const ok = await act(() => groupApi.setProjectGroup(pid, gid));
+            if (ok) setAdding(false);
+            return ok;
+          }}
+        />
+      )}
       {renaming && g && (
         <GroupNameDialog
           title="Rename group"
@@ -456,7 +491,7 @@ export function ProjectGroupDialog(props: {
         <Selector label="Group" width="100%" value={choice} onChange={(v) => v && setChoice(v)} options={options} />
         {owner && !targets.length && (
           <Text type="supporting" color="secondary">
-            You aren't an editor of any group yet. Create one under Groups on the Projects page.
+            You aren't an editor of any group yet. Create one under Groups on the Projects page, then add projects from there.
           </Text>
         )}
         {!owner && (
@@ -486,3 +521,73 @@ export function ProjectGroupDialog(props: {
 }
 
 const NONE = "(none)";
+
+/**
+ * Put one of your projects in this group (out of the one it is in, if any),
+ * saying what that gives away, as the project's Group dialog does.
+ */
+function AddProjectDialog(props: {
+  group: Group;
+  candidates: HubProject[];
+  onClose: () => void;
+  /** False keeps the dialog open (the group's page shows the error). */
+  onAdd: (project: string) => Promise<boolean>;
+}) {
+  const { group: g } = props;
+  const [choice, setChoice] = useState<string | null>(props.candidates.length === 1 ? props.candidates[0].id : null);
+  const [busy, setBusy] = useState(false);
+  const p = props.candidates.find((c) => c.id === choice) ?? null;
+  const whoEdits = !p
+    ? ""
+    : p.general === "edit"
+      ? `Everyone signed in can edit ${p.id}, so everyone on this hub`
+      : g.people_enabled
+        ? `${p.id}'s owner and editors`
+        : `Everyone who can open ${p.id}`;
+
+  return (
+    <AppDialog
+      title={`Add a project to ${g.name}`}
+      width={520}
+      onClose={props.onClose}
+      onSubmit={async () => {
+        if (!p || busy) return;
+        setBusy(true);
+        if (!(await props.onAdd(p.id))) setBusy(false);
+      }}
+      footer={(formId) => (
+        <>
+          <Button variant="ghost" label="Cancel" onClick={props.onClose} />
+          <Button type="submit" form={formId} variant="primary" label={p?.group ? "Move here" : "Add to group"} isDisabled={!p || busy} />
+        </>
+      )}
+    >
+      <VStack gap={4}>
+        <Selector
+          label="Project"
+          width="100%"
+          placeholder="Choose one of your projects"
+          hasSearch={props.candidates.length > 8}
+          value={choice ?? undefined}
+          onChange={(v) => setChoice(v)}
+          options={props.candidates.map((c) => ({
+            value: c.id,
+            label: c.name || c.id,
+            description: c.group ? `${c.id}, now in ${c.group.name}` : c.id,
+          }))}
+        />
+        {p && (
+          <Banner
+            status="warning"
+            title={`${whoEdits} will be able to read ${g.name}'s secrets`}
+            description={
+              (g.people_enabled ? `${g.name}'s people also get their group role on ${p.id}. ` : "") +
+              (p.group ? `It leaves ${p.group.name}. ` : "") +
+              "Anyone who can edit a project can run code that reads every variable its runs get: masking secrets in logs only stops accidents."
+            }
+          />
+        )}
+      </VStack>
+    </AppDialog>
+  );
+}

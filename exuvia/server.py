@@ -219,6 +219,8 @@ class ProjectCreate(BaseModel):
     # whoever creates it).
     access: str | None = None
     owner: str | None = None
+    # A group to put it in (groups.py): the creator needs editor on the group.
+    group: str | None = None
 
 
 class SharingPatch(BaseModel):
@@ -2195,13 +2197,28 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
             raise HTTPException(403, "sign in to create a project")
         if body.owner is not None and ident is not None and ident.role != "admin":
             raise HTTPException(403, "only an admin (or the hub's API token) can create a project for someone else")
+        group = body.group or None
+        if group is not None:
+            # Checked before the project exists, as putting one in the group
+            # later would be: the creator owns it, and must edit the group.
+            role = hub.groups.role(group, ident)
+            if role is None:
+                raise HTTPException(404, f"no group {group}")
+            if not at_least(role, "editor"):
+                raise HTTPException(
+                    403, f"only an editor of group {hub.groups.describe(group)['name']} can add projects to it")
         try:
             await hub.create(body.id, body.name, body.template, access=body.access, owner=body.owner)
         except FileExistsError as e:
             raise HTTPException(409, f"project {body.id} already exists") from e
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
-        return {"id": body.id, "name": (await hub.get(body.id)).ws.project.name}
+        out = {"id": body.id, "name": (await hub.get(body.id)).ws.project.name}
+        if group is not None:
+            hub.groups.set_project_group(body.id, group, by=auth.current_uid())
+            hub.env_changed([body.id])
+            out["group"] = hub.groups.group_of(body.id, fresh=True)
+        return out
 
     @app.put("/api/projects/{project}/template")
     async def project_apply_template(project: str, body: TemplateApply) -> dict[str, Any]:
