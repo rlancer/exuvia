@@ -228,3 +228,60 @@ def test_scheduled_runs_are_tracked_and_stopped(tmp_path):
         assert ws._tasks == []
 
     asyncio.run(go())
+
+
+# -- the schedule at a glance (GET /api/schedule) -------------------------------------
+def test_schedule_lists_scheduled_nodes_soonest_first_with_their_next_fires(tmp_path):
+    ws, _ = make(tmp_path)  # src: every 5 minutes
+    (tmp_path / "nodes" / "daily.py").write_text(
+        'import exuvia\n\n@exuvia.node(schedule="0 18 * * *")\ndef daily(src):\n    return 1\n', encoding="utf-8"
+    )
+    (tmp_path / "nodes" / "later.py").write_text(
+        'import exuvia\n\n@exuvia.node()\ndef later(daily):\n    return 1\n', encoding="utf-8"
+    )
+    ws.reload()
+    tick(ws, T0)  # starts src's clock at 09:01
+    out = ws.schedule(upcoming=3, now=T0)
+    assert [n["name"] for n in out["nodes"]] == ["src", "daily"]
+    src, daily = out["nodes"]
+    at = lambda ts: datetime.fromtimestamp(ts).strftime("%a %H:%M")  # noqa: E731
+    assert [at(t) for t in src["upcoming"]] == ["Mon 09:05", "Mon 09:10", "Mon 09:15"]
+    assert src["next"] == src["upcoming"][0]
+    assert at(daily["next"]) == "Mon 18:00"  # no clock yet: from now on
+    assert src["cascades"] == ["daily", "later"] and daily["cascades"] == ["later"]
+    assert (src["cron"], src["source"], src["paused"], src["last"]) == ("*/5 * * * *", "code", False, None)
+    assert out["live"] == [] and out["scheduler"] in ("internal", "external")
+
+
+def test_a_paused_schedule_has_no_next_fire(tmp_path):
+    ws, _ = make(tmp_path)
+    ws.set_paused("src", True)
+    (row,) = ws.schedule(now=T0)["nodes"]
+    assert (row["paused"], row["next"], row["upcoming"]) == (True, None, [])
+
+
+def test_schedule_names_the_last_scheduled_run_and_the_live_nodes(tmp_path):
+    ws, _ = make(tmp_path)
+    run_id = ws.store.create_run("src", "b1", "schedule", {}, "", None, None)
+    ws.store.create_run("src", "b2", "manual", {}, "", None, None)
+    (tmp_path / "nodes" / "quotes.py").write_text(
+        'import exuvia\n\n@exuvia.node(live=60)\ndef quotes():\n    return 1\n', encoding="utf-8"
+    )
+    (tmp_path / "views" / "board").mkdir(parents=True)
+    (tmp_path / "views" / "board" / "view.json").write_text('{"reads": ["quotes"]}', encoding="utf-8")
+    (tmp_path / "views" / "board" / "App.tsx").write_text("export default () => null;\n", encoding="utf-8")
+    ws.reload()
+    out = ws.schedule(now=T0)
+    assert out["nodes"][0]["last"]["id"] == run_id
+    assert [(n["name"], n["live"], n["views"]) for n in out["live"]] == [("quotes", 60.0, ["board"])]
+
+
+def test_schedule_route(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from exuvia.server import create_app
+
+    make(tmp_path)
+    with TestClient(create_app(tmp_path)) as client:
+        body = client.get("/api/schedule").json()
+    assert [n["name"] for n in body["nodes"]] == ["src"] and len(body["nodes"][0]["upcoming"]) == 5

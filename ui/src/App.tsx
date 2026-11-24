@@ -20,6 +20,7 @@ import { SidePanel, SideRail, type AgentHandle, type SideTab } from "./AgentPane
 import { HistoryBrowser, HistoryRail } from "./History";
 import type { OpenView } from "./Views";
 import { FileTree, HelperEditor } from "./Files";
+import { Schedule } from "./Schedule";
 import { codeGroup, DownloadMenu } from "./Export";
 import type { FileRef } from "./tree";
 import { SignedInAs } from "./Me";
@@ -44,13 +45,14 @@ const embed = new URLSearchParams(location.search).has("embed");
 /** `?app=<view>`: that one view as an app, without the workbench (AppView.tsx). */
 const appView = appViewOf(location.search);
 
-/** What the main area shows: the graph, the views, a shared helper, or the code's history. */
-type Mode = "graph" | "views" | "helper" | "history";
+/** What the main area shows: the graph, the views, the schedule, a shared helper, or the code's history. */
+type Mode = "graph" | "views" | "schedule" | "helper" | "history";
 
 /**
  * Where the address points on load. `#files/<path>` opens a file where it
  * lives: a node on the graph, a view file in its Code tab, a helper in the
- * editor; `#views/<name>` a view, rendered; `#history` the code's history.
+ * editor; `#views/<name>` a view, rendered; `#history` the code's history;
+ * `#schedule` when the graph runs by itself.
  */
 function fromHash(): { mode: Mode; node?: string; view?: OpenView; helper?: string } {
   const h = location.hash;
@@ -58,6 +60,7 @@ function fromHash(): { mode: Mode; node?: string; view?: OpenView; helper?: stri
   const shown = /^#views\/([a-z_][a-z0-9_]*)$/.exec(h);
   if (shown) return { mode: "views", view: { view: shown[1], seq: 1 } };
   if (h === "#history") return { mode: "history" };
+  if (h === "#schedule") return { mode: "schedule" };
   let path = "";
   try {
     path = decodeURI(/^#files\/(.+)$/.exec(h)?.[1] ?? "");
@@ -80,7 +83,7 @@ function envFromHash(): { name?: string } | null {
   return m ? { name: m[1] } : null;
 }
 const hashFor = (m: Mode, helper: string | null) =>
-  m === "views" ? "#views" : m === "history" ? "#history" : m === "helper" && helper ? `#files/${encodeURI(helper)}` : location.pathname + location.search;
+  m === "views" ? "#views" : m === "history" ? "#history" : m === "schedule" ? "#schedule" : m === "helper" && helper ? `#files/${encodeURI(helper)}` : location.pathname + location.search;
 
 /** A narrow window, where the side panel is a sheet over the main area. */
 const narrow = () => window.matchMedia("(max-width: 1100px)").matches;
@@ -273,6 +276,7 @@ function Workbench() {
     return c;
   }, [nodes]);
   const staleCount = (counts.stale ?? 0) + (counts.new ?? 0) + (counts.failed ?? 0);
+  const scheduled = nodes.filter((n) => n.schedule).length;
 
   const touch = useCallback((name: string) => {
     setFlash((f) => ({ ...f, [name]: Date.now() }));
@@ -360,9 +364,10 @@ function Workbench() {
         <div {...stylex.props(styles.main)}>
           {/* The project's bar: its two faces, and what the graph is doing and can be told to do. */}
           <div {...stylex.props(styles.bar, styles.workBar)}>
-            <TabList role="tablist" value={mode === "views" ? "views" : mode === "graph" ? "graph" : ""} onChange={(v) => setMode(v as Mode)} xstyle={styles.modes}>
+            <TabList role="tablist" value={mode === "views" || mode === "graph" || mode === "schedule" ? mode : ""} onChange={(v) => setMode(v as Mode)} xstyle={styles.modes}>
               <Tab value="graph" label="Graph" />
               <Tab value="views" label="Views" endContent={project?.views.length ? <Badge label={project.views.length} /> : undefined} />
+              <Tab value="schedule" label="Schedule" endContent={scheduled ? <Badge label={scheduled} /> : undefined} />
             </TabList>
             <span {...stylex.props(styles.grow)} />
             {!conn && <Badge variant="error" label="Reconnecting…" />}
@@ -439,6 +444,8 @@ function Workbench() {
               </div>
               <HistoryBrowser filter={{}} tick={codeTick} dark={dark} layout="side" path={rev?.path} rev={rev?.id} deletedFilter onRestored={() => refresh()} />
             </section>
+          ) : mode === "schedule" ? (
+            <Schedule tick={project} onOpenNode={openNode} />
           ) : mode === "views" ? (
             <Suspense fallback={<div {...stylex.props(styles.wide)} />}>
               <Views project={project} nodes={nodes} dark={dark} open={viewOpen} onOpenNode={openNode} onShown={onShown} />

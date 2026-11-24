@@ -377,6 +377,16 @@ class Store:
         )
         return _row(rows[0]) if rows else None
 
+    def last_by_trigger(self, node: str, trigger: str) -> dict[str, Any] | None:
+        """The latest run of ``node`` that ``trigger`` started (``schedule``,
+        ``live``, ...), for any parameter set."""
+        rows = self._q(
+            "select id,status,trigger,queued_at,started_at,finished_at,error,rows,params,params_key "
+            "from runs where project=? and node=? and trigger=? order by queued_at desc limit 1",
+            (self.scope, node, trigger),
+        )
+        return _row(rows[0]) if rows else None
+
     def last_attempt(self, node: str, params_key: str = "") -> dict[str, Any] | None:
         """The latest run that executed the node's code: one that succeeded or
         failed. Runs that were cached or skipped, or are still queued, didn't

@@ -948,6 +948,13 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
     def backfill_cancel(ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         return {"ok": ctx.ws.cancel_backfill()}
 
+    @r.get("/schedule")
+    def schedule_overview(ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """Every scheduled node, soonest first, with its next fire times, its
+        last scheduled run and what it cascades to; and the live nodes (see
+        ``Workspace.schedule``)."""
+        return ctx.ws.schedule()
+
     @r.post("/nodes/{name}/schedule")
     def schedule(name: str, body: ScheduleReq, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         """Pause/resume a schedule, and/or set its cron from outside the code."""
