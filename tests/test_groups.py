@@ -466,3 +466,134 @@ def test_a_new_project_is_in_no_group_whatever_was_left_under_its_id(hub):
     gs.forget_project = forget
     assert hub.post("/api/projects", json={"id": "a"}, headers=BOB).status_code == 200
     assert gs.group_of("a", fresh=True) is None
+
+
+# -- the hub's own variables -----------------------------------------------------------
+
+
+def test_hub_variables_admins_set_everyone_sees_names_and_secrets_stay_hidden(hub):
+    r = hub.put("/api/hub/env/SHARED_TOKEN", json={"value": "hub-secret-999"}, headers=ALICE)
+    assert r.status_code == 403 and "admin" in r.json()["detail"]
+    r = hub.put("/api/hub/env/SHARED_TOKEN", json={"value": "  hub-secret-999\n"}, headers=ROOT)
+    assert r.status_code == 200 and r.json()["variables"][0]["value"] is None and r.json()["can_edit"]
+    hub.put("/api/hub/env/REGION", json={"value": "hub-region", "secret": False}, headers=ROOT)
+    seen = hub.get("/api/hub/env", headers=ALICE).json()
+    assert {v["name"]: v["value"] for v in seen["variables"]} == {"REGION": "hub-region", "SHARED_TOKEN": None}
+    assert seen["can_edit"] is False and "hub-secret-999" not in json.dumps(seen)
+    assert hub.get("/api/projects", headers=ALICE).json()["hub_env"] == {"variables": 2, "can_edit": False}
+    assert hub.get("/api/projects", headers=ROOT).json()["hub_env"]["can_edit"] is True
+    # Encrypted with the hub's key, with a project's rules.
+    stored = {r["name"]: r["value"] for r in hub.app.state.hub.groups.hub_env_rows()}
+    assert stored["SHARED_TOKEN"].startswith("enc:v1:") and "hub-secret-999" not in stored["SHARED_TOKEN"]
+    assert hub.put("/api/hub/env/EXUVIA_X", json={"value": "1"}, headers=ROOT).status_code == 400
+    assert hub.delete("/api/hub/env/REGION", headers=ALICE).status_code == 403
+    assert [v["name"] for v in hub.delete("/api/hub/env/REGION", headers=ROOT).json()["variables"]] == ["SHARED_TOKEN"]
+
+
+def test_projects_inherit_hub_variables_under_their_groups_and_their_own(hub, monkeypatch):
+    monkeypatch.setenv("FROM_SERVER", "server")
+    hub.post("/api/projects", json={"id": "a"}, headers=ALICE)
+    hub.put("/api/hub/env/SHARED_TOKEN", json={"value": "hub-secret-999"}, headers=ROOT)
+    hub.put("/api/hub/env/REGION", json={"value": "hub-region", "secret": False}, headers=ROOT)
+    hub.put("/api/hub/env/FROM_SERVER", json={"value": "hub-server", "secret": False}, headers=ROOT)
+    hub.put("/api/hub/env/FRED_API_KEY", json={"value": "hub-fred-key"}, headers=ROOT)
+
+    # Outside any group: the hub's, over the server's environment.
+    out, log = run_env_node(hub, "a")
+    assert out == {"key": "hub-fred-key", "region": "hub-region", "shared": "hub-secret-999", "server": "hub-server"}
+    assert "hub-secret-999" not in log and "calling with key *** and ***" in log
+    state = hub.get("/p/a/api/env", headers=ALICE).json()
+    assert state["group"] is None
+    assert {v["name"]: (v["source"], v["overridden"]) for v in state["inherited"]} == {
+        "FRED_API_KEY": ("hub", False), "FROM_SERVER": ("hub", False), "REGION": ("hub", False),
+        "SHARED_TOKEN": ("hub", False)}
+    assert "hub-secret-999" not in json.dumps(state) and "hub-fred-key" not in json.dumps(state)
+
+    # The group's wins over the hub's, the project's over both.
+    gid = new_group(hub)
+    hub.put(f"/api/groups/{gid}/env/REGION", json={"value": "group-region", "secret": False}, headers=ALICE)
+    hub.put("/api/projects/a/group", json={"group": gid}, headers=ALICE)
+    hub.put("/p/a/api/env/FRED_API_KEY", json={"value": "project-fred-key"}, headers=ALICE)
+    out, log = run_env_node(hub, "a")
+    assert out == {"key": "project-fred-key", "region": "group-region", "shared": "hub-secret-999", "server": "hub-server"}
+    assert "hub-secret-999" not in log and "project-fred-key" not in log
+    state = hub.get("/p/a/api/env", headers=ALICE).json()
+    inherited = {(v["source"], v["name"]): v["overridden"] for v in state["inherited"]}
+    assert inherited[("group", "REGION")] is False and inherited[("hub", "REGION")] is True
+    assert inherited[("hub", "FRED_API_KEY")] is True and inherited[("hub", "SHARED_TOKEN")] is False
+
+    # The agent's list_env says where each comes from, and what it replaces.
+    listed = hub.post("/p/a/api/tools/list_env", json={}, headers=ALICE).json()
+    variables = {v["name"]: v for v in json.loads(listed["text"])["variables"]}
+    assert variables["FRED_API_KEY"] == {"name": "FRED_API_KEY", "secret": True, "value": None, "source": "project",
+                                         "overrides_hub": True}
+    assert variables["REGION"]["source"] == "group" and variables["REGION"]["overrides_hub"] is True
+    assert variables["SHARED_TOKEN"]["source"] == "hub" and variables["SHARED_TOKEN"]["value"] is None
+    asked = hub.post("/p/a/api/tools/request_secret", json={"name": "SHARED_TOKEN", "reason": "x"}, headers=ALICE).json()
+    asked = json.loads(asked["text"])
+    assert asked["status"] == "set" and asked["from"] == "hub"
+
+    # Removed, the next run goes without.
+    hub.delete("/api/hub/env/SHARED_TOKEN", headers=ROOT)
+    out, _ = run_env_node(hub, "a")
+    assert out["shared"] is None
+
+
+def test_hub_export_and_import_carry_the_hubs_variables(tmp_path):
+    with TestClient(create_hub_app(tmp_path / "hub")) as hub:
+        for who in (ALICE, ROOT):
+            hub.get("/api/me", headers=who)
+        hub.post("/api/projects", json={"id": "a"}, headers=ALICE)
+        hub.put("/api/hub/env/SHARED_TOKEN", json={"value": "hub-secret-999"}, headers=ROOT)
+        blob = hub.get("/api/hub/export", headers=ROOT).content
+    with TestClient(create_hub_app(tmp_path / "fresh")) as fresh:
+        assert fresh.post("/api/hub/import", content=blob, headers=ROOT).status_code == 200
+        out, _ = run_env_node(fresh, "a")
+        assert out["shared"] == "hub-secret-999"
+
+
+def test_a_server_key_rotates_the_hubs_secrets(tmp_path, monkeypatch):
+    old, new = envvars.new_key(), envvars.new_key()
+    monkeypatch.setenv(envvars.KEY_ENV, old)
+    with TestClient(create_hub_app(tmp_path / "hub")) as client:
+        client.get("/api/me", headers=ROOT)
+        client.put("/api/hub/env/SHARED_TOKEN", json={"value": "hub-secret-999"}, headers=ROOT)
+    monkeypatch.setenv(envvars.KEY_ENV, f"{new},{old}")
+    with TestClient(create_hub_app(tmp_path / "hub")) as client:
+        h = client.app.state.hub
+        assert h.groups.hub_env_rows()[0]["value"].startswith(f"enc:v1:{envvars.key_id(new.encode())}:")
+        assert h.hub_env().rows()[0]["value"] == "hub-secret-999"
+
+
+def test_on_a_hub_nobody_signs_in_to_the_operator_sets_the_hubs_variables(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXUVIA_AUTH", "token")
+    with TestClient(create_hub_app(tmp_path / "hub")) as hub:
+        hub.post("/api/projects", json={"id": "a"})
+        assert hub.put("/api/hub/env/SHARED_TOKEN", json={"value": "hub-secret-999"}).json()["can_edit"]
+        out, _ = run_env_node(hub, "a", {})
+        assert out["shared"] == "hub-secret-999"
+
+
+def test_exuvia_env_sets_the_hubs_variables_over_its_api(tmp_path, monkeypatch):
+    from tests.test_env_cli import cli
+    from tests.test_mcp import _serve
+
+    monkeypatch.setenv("EXUVIA_AUTH", "token")
+    monkeypatch.setenv("EXUVIA_API_TOKEN", "s3cret")
+    url, server, thread = _serve(create_hub_app(tmp_path / "hub"))
+    try:
+        import httpx
+
+        httpx.post(f"{url}/api/projects", json={"id": "a"}, headers={"Authorization": "Bearer s3cret"})
+        auth = {"EXUVIA_API_TOKEN": "s3cret"}
+        out = cli("set", "SHARED_TOKEN", "--url", url, "--hub", "--stdin", stdin="hub-secret-999", env=auth).stdout
+        assert "Every project on the hub gets it" in out
+        assert "SHARED_TOKEN  secret (hidden)" in cli("list", "--url", url, "--hub", env=auth).stdout
+        listing = cli("list", "--url", f"{url}/p/a", env=auth).stdout
+        assert "SHARED_TOKEN  secret (hidden)  (from the hub)" in listing and "hub-secret" not in listing
+        assert "--url" in cli("list", "--hub", check=False).stderr
+        assert "not both" in cli("list", "--url", url, "--hub", "--group", "x", check=False).stderr
+        assert "Removed SHARED_TOKEN" in cli("rm", "SHARED_TOKEN", "--url", url, "--hub", env=auth).stdout
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)

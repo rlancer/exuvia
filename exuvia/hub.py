@@ -213,35 +213,57 @@ class Hub:
         """A group's variables, with a project's rules (envvars.Env)."""
         return envvars.Env(self.groups.vars(gid), self.keyring)
 
+    def hub_env(self) -> envvars.Env:
+        """The hub's own variables, every project's (groups.HubVars), with a
+        project's rules."""
+        return envvars.Env(self.groups.hub_vars(), self.keyring)
+
     def inherited_env(self, project_id: str) -> dict[str, Any] | None:
-        """What a project's group gives its runs: ``{group, rows}`` with the
-        values decrypted, or None outside a group. Read from the database
-        every time, so a change on another replica reaches the next run."""
+        """What a project gets from above it: ``{group, rows}``, ``group``
+        its group (None outside one) and ``rows`` its group's variables then
+        the hub's, values decrypted, each with ``source`` (``group`` or
+        ``hub``); the group's comes first, and wins. None when there are
+        none and no group. Read from the database every time, so a change on
+        another replica reaches the next run."""
         group = self.groups.group_of(project_id, fresh=True)
-        if group is None:
-            return None
-        rows = self.group_env(group["id"]).rows()
-        for r in rows:
+        rows: list[dict[str, Any]] = []
+        if group is not None:
+            for r in self.group_env(group["id"]).rows():
+                r["source"] = "group"
+                if not r["readable"]:
+                    r["problem"] = (
+                        f"it is group {group['name']}'s, and was encrypted with a key this hub does not have: set "
+                        "EXUVIA_SECRETS_KEY to that key (or put the hub's .exuvia/secrets.key back), or enter it again"
+                    )
+                rows.append(r)
+        for r in self.hub_env().rows():
+            r["source"] = "hub"
             if not r["readable"]:
                 r["problem"] = (
-                    f"it is group {group['name']}'s, and was encrypted with a key this hub does not have: set "
-                    "EXUVIA_SECRETS_KEY to that key (or put the hub's .exuvia/secrets.key back), or enter it again"
+                    "it is the hub's, and was encrypted with a key this hub does not have: set EXUVIA_SECRETS_KEY "
+                    "to that key (or put the hub's .exuvia/secrets.key back), or have an admin enter it again"
                 )
+            rows.append(r)
+        if group is None and not rows:
+            return None
         return {"group": group, "rows": rows}
 
     def seal_group_env(self) -> None:
-        """Encrypt again, with the current key, the group secrets saved with
-        another (rotation), as projects do when they load."""
+        """Encrypt again, with the current key, the group and hub secrets
+        saved with another (rotation), as projects do when they load."""
         if self.groups is None:
             return
         for gid in self.groups.all_env_groups():
             for name in self.group_env(gid).seal_all():
                 print(f"exuvia: group {gid}'s secret {name} cannot be decrypted with this hub's key", file=sys.stderr)
+        for name in self.hub_env().seal_all():
+            print(f"exuvia: the hub's secret {name} cannot be decrypted with this hub's key", file=sys.stderr)
 
-    def env_changed(self, projects: list[str]) -> None:
-        """Tell the loaded projects among ``projects`` that their variables
-        changed (their workbench's Environment panel reloads)."""
-        for pid in projects:
+    def env_changed(self, projects: list[str] | None = None) -> None:
+        """Tell the loaded projects among ``projects`` (None: all of them)
+        that their variables changed (their workbench's Environment panel
+        reloads)."""
+        for pid in list(self._ctxs) if projects is None else projects:
             ctx = self._ctxs.get(pid)
             if ctx is not None:
                 ctx.ws.bus.publish({"type": "env"})

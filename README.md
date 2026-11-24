@@ -984,10 +984,16 @@ def rates():
 - **Shared by a group.** On a hub, a project in a group also gets the
   group's variables (see [Groups](#groups-shared-access-and-secrets)). When a
   name is set in more than one place, the project's own variable wins, then
-  the group's, then the server's environment. The Environment dialog lists
-  what the group gives, read-only and marked with the group's name (and
-  *overridden* where the project sets the same name), and `GET /api/env`
-  returns them as `inherited`, beside the project's own `variables`.
+  the group's, then the hub's, then the server's environment. The
+  Environment dialog lists what the group gives, read-only and marked with
+  the group's name (and *overridden* where the project sets the same name),
+  and `GET /api/env` returns them as `inherited`, beside the project's own
+  `variables`.
+- **Shared by the whole hub.** A hub's admins can also set variables every
+  project on the hub gets (see
+  [Variables for every project](#variables-for-every-project)). The
+  Environment dialog lists them under **From the hub**, and `inherited`
+  carries them with `source: "hub"`.
 - **Who can change them.** Anyone who can edit the project. Viewers of a
   shared project can read the names and the plain values (`GET /api/env`,
   `list_env`), never a secret.
@@ -1104,11 +1110,16 @@ exuvia env rm OLD_KEY
   changes the variables and nothing else, and the server uses them on the
   next run.
 - `list` shows names and plain values, never a secret, and the requests
-  waiting to be set. For a hub project it also lists what its group gives.
+  waiting to be set. For a hub project it also lists what its group and the
+  hub give.
 - **`--group <id>`** works on a hub group's variables instead: `--url` is
   then the hub's address (`exuvia env set SHARED_TOKEN --url
   https://exuvia.example.com --group g1a2b3c4d5e6`). The group's id is on
   its page in the hub and in `/api/groups`.
+- **`--hub`** works on the hub's own variables, which every project on it
+  gets: `--url` is the hub's address (`exuvia env set LLM_GATEWAY_KEY --url
+  https://exuvia.example.com --hub`). Only an admin's agent token or the
+  hub's API token can change them.
 
 A `.env` in the project folder still works for `exuvia serve`, which reads
 it at start.
@@ -2500,7 +2511,7 @@ section named after each one has the details.
 | `exuvia status [DIR]` | each node's freshness. `--json`, `--param NAME=VALUE` | below |
 | `exuvia mcp [DIR]` | the agent's tools over MCP on stdio: the project in `DIR`, or `--url URL` to relay to a running server or hub | MCP |
 | `exuvia push NODE FILE --url URL` | upload a push node's output (`.parquet`, `.csv`, `.json`) from the machine that has the data. `--param`, `--note`, `--allow-http` | Push nodes |
-| `exuvia env list`, `set`, `rm` | a project's (or, with `--group`, a hub group's) environment variables and secrets, in a folder or over `--url` | Environment variables and secrets |
+| `exuvia env list`, `set`, `rm` | a project's (or, with `--group`, a hub group's; with `--hub`, the hub's) environment variables and secrets, in a folder or over `--url` | Environment variables and secrets |
 | `exuvia executor` | serve node execution over HTTP for a control plane. `--host`, `--port` (8080) | Architecture |
 | `exuvia secrets-key` | print a new key for `EXUVIA_SECRETS_KEY` | Encryption |
 
@@ -2684,11 +2695,12 @@ projects at once.
 - **Variables.** A group's variables work like a project's (same names,
   values, encryption, masking in logs; a secret's value is never shown
   again), and every project in the group gets them. The project's own
-  variable of the same name wins, then the group's, then the server's
-  environment. Secrets are encrypted with `EXUVIA_SECRETS_KEY`, or else with
-  a key the hub makes in `<hub>/.exuvia/secrets.key`. A request from the
-  agent (`request_secret`) stays with the project; setting the variable on
-  the group answers it too.
+  variable of the same name wins, then the group's, then the hub's (see
+  [Variables for every project](#variables-for-every-project)), then the
+  server's environment. Secrets are encrypted with `EXUVIA_SECRETS_KEY`, or
+  else with a key the hub makes in `<hub>/.exuvia/secrets.key`. A request
+  from the agent (`request_secret`) stays with the project; setting the
+  variable on the group answers it too.
 
 | | group viewer | group editor | group owner |
 |---|---|---|---|
@@ -2721,7 +2733,42 @@ The API: `GET /api/groups` (the groups you have a role on), `POST
 `DELETE /api/groups/{id}/people/{principal}`, `GET /api/groups/{id}/env`,
 `PUT` / `DELETE /api/groups/{id}/env/{name}` `{value, secret}`, and `PUT
 /api/projects/{project}/group` `{group}` (`null` takes it out). The agent's
-`list_env` tool gives each variable's `source` (`project` or `group`).
+`list_env` tool gives each variable's `source` (`project`, `group` or
+`hub`).
+
+### Variables for every project
+
+Some keys every project on a hub needs: an LLM gateway's key, a
+warehouse's address, an error tracker's DSN. Rather than set them in every
+project or every group, a hub admin sets them once as **hub variables**
+(**Hub variables** on the hub's home page, under the groups), and every
+project on the hub gets them.
+
+- **They work like a project's variables** (same names, values,
+  encryption, masking in logs; a secret's value is never shown again). Where
+  a name is set in more than one place the project's own variable wins,
+  then its group's, then the hub's, then the server's environment.
+- **Only admins change them**: hub admins (`EXUVIA_ADMINS`, or made admin
+  in **Users**) and the hub's API token. On a hub nobody signs in to,
+  everyone who gets in is the operator and can. Anyone signed in sees their
+  names and plain values, never a secret.
+- **Everyone who can edit any project on the hub can read them.** Whoever
+  can change a node can run code that reads `os.environ` and send it
+  anywhere; masking in logs only stops accidents. So "admins only" is about
+  who sets a key, not who can use it. Put a key here only when everyone on
+  the hub may have it; one for some people belongs in a
+  [group](#groups-shared-access-and-secrets).
+- **Better than the server's environment** for this: they are set without a
+  restart, masked in run logs, reach a remote executor with each run, and
+  the Environment dialog and the agent's `list_env` show them, so the agent
+  does not ask for a key that is already set.
+
+They are encrypted with `EXUVIA_SECRETS_KEY`, or else with the hub's own
+key in `<hub>/.exuvia/secrets.key`, kept beside the groups (the hub's
+`.exuvia/hub.db`, or the shared `EXUVIA_DB`), and a hub export carries
+them. The API: `GET /api/hub/env` (anyone on the hub), `PUT` / `DELETE
+/api/hub/env/{name}` `{value, secret}` (admins). `exuvia env ... --url
+<hub> --hub` does the same from a terminal.
 
 ## Embedding / using it inside another app
 
