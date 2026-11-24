@@ -172,6 +172,8 @@ class Hub:
             project.update_config(lambda cfg: cfg.__setitem__("name", name))
         if self.sharing is not None:
             self.sharing.init_project(project_id, owner, access)
+        if self.groups is not None:  # nor a group membership left under that id
+            self.groups.forget_project(project_id)
         self._structural += 1
 
     async def apply_template(self, project_id: str, template: str) -> None:

@@ -262,6 +262,27 @@ describe("npm packages", () => {
       onCss: () => {},
     });
     expect(() => failed("App.tsx")).toThrow(/Cannot import "chartlib": the server could not be reached/);
+    // As the page sends it when GET /packages fails: nothing declared, only the error.
+    const unread = createLoader({
+      files: { "App.tsx": 'import "chartlib";' },
+      builtins,
+      packages: { ...NO_PACKAGES, error: "package.json is not valid JSON" },
+      onCss: () => {},
+    });
+    expect(() => unread("App.tsx")).toThrow(/Cannot import "chartlib": package.json is not valid JSON/);
+  });
+
+  it("offers no package to add for a runtime package's other parts or a node: import", () => {
+    for (const spec of ["react/jsx-dev-runtime", "node:fs"]) {
+      const require = createLoader({ files: { "App.tsx": `import "${spec}";` }, builtins, packages, onCss: () => {} });
+      try {
+        require("App.tsx");
+        throw new Error("no error");
+      } catch (e) {
+        expect((e as ViewError).message).toContain(`Cannot import "${spec}"`);
+        expect(missingNpmPackage((e as ViewError).message)).toBeNull();
+      }
+    }
   });
 
   it("names a package that is not in package.json, so the page can offer to add it", () => {

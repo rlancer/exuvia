@@ -122,6 +122,20 @@ def test_unreadable_data_is_a_failed_run_and_only_push_nodes_take_pushes(tmp_pat
         asyncio.run(go("nope", bad, "parquet"))
 
 
+def test_a_push_that_dies_midway_is_a_failed_run(tmp_path):
+    graph(tmp_path)
+    ws = Workspace(tmp_path)
+
+    def down(rel):
+        raise OSError("the object store is down")
+
+    ws._upload = down
+    with pytest.raises(OSError):
+        push(ws, "prices", pd.DataFrame({"x": [1]}), tmp=tmp_path)
+    assert [r["status"] for r in ws.store.runs_for("prices")] == ["failed"]
+    assert ws.status()["prices"]["state"] != "running" and not ws._inflight
+
+
 def test_json_and_run_parameters(tmp_path):
     (tmp_path / "exuvia.json").write_text(json.dumps({"params": {"as_of": {"type": "date", "default": "2026-11-20"}}}))
     py(tmp_path, "curve", kw='push=True, params=["as_of"]')
@@ -144,9 +158,16 @@ def test_the_api_takes_pushes_and_refuses_to_run_or_schedule_a_push_node(tmp_pat
         assert r.status_code == 400 and "push node" in r.json()["detail"]
         r = client.post("/api/nodes/prices/schedule", json={"cron": "0 9 * * *"})
         assert r.status_code == 400 and "push node" in r.json()["detail"]
-        r = client.post("/api/nodes/prices/push", content=body, headers={"Content-Type": "text/plain"})
+        r = client.post("/api/nodes/prices/push", content=body, headers={"Content-Type": "image/png"})
         assert r.status_code == 400 and "parquet" in r.json()["detail"]
-        r = client.post("/api/nodes/prices/push", content=b"junk", params={"format": "parquet"})
+        # What a page on another site can send without asking first: a form or
+        # text/plain, even naming the format (the server may have no auth).
+        for ct in ("text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x", None):
+            r = client.post("/api/nodes/prices/push", content=b'{"x": [1]}', params={"format": "json"},
+                            headers={"Content-Type": ct} if ct else {})
+            assert r.status_code == 415, (ct, r.text)
+        octet = {"Content-Type": "application/octet-stream"}
+        r = client.post("/api/nodes/prices/push", content=b"junk", headers=octet, params={"format": "parquet"})
         assert r.status_code == 422 and "could not be read" in r.json()["detail"]
         r = client.post("/api/nodes/doubled/push", content=body, headers=PARQUET)
         assert r.status_code == 400 and "not a push node" in r.json()["detail"]

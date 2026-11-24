@@ -257,10 +257,17 @@ class McpServers:
         return out
 
     def _server(self, owner: str, r: dict[str, Any]) -> Server:
-        name = r["name"]
+        name, url = r["name"], r["url"]
+        # Tokens a turn refreshes replace the sign-in it started from, and
+        # only that one: not a sign-out or a new sign-in made meanwhile.
+        was = [r["oauth"]]
+
+        def save(data: dict[str, Any] | None) -> None:
+            was[0] = self.set_oauth(owner, name, data, url=url, was=was[0])
+
         return Server(
-            name, r["url"], json.loads(r["headers"]), oauth=json.loads(r["oauth"]) if r["oauth"] else None,
-            save_oauth=lambda data: self.set_oauth(owner, name, data),
+            name, url, json.loads(r["headers"]), oauth=json.loads(r["oauth"]) if r["oauth"] else None,
+            save_oauth=save,
         )
 
     def active(self, owner: str) -> list[Server]:
@@ -271,12 +278,25 @@ class McpServers:
         )
         return [self._server(owner, r) for r in rows]
 
-    def set_oauth(self, owner: str, name: str, data: dict[str, Any] | None) -> None:
-        """Keep a server's OAuth sign-in (None: sign out)."""
-        self._q(
-            "update agent_mcp_servers set oauth=?, updated_at=? where scope=? and owner=? and name=?",
-            (json.dumps(data) if data else None, time.time(), self.scope, owner, name),
-        )
+    def set_oauth(
+        self, owner: str, name: str, data: dict[str, Any] | None, *, url: str | None = None, was: Any = ...,
+    ) -> str | None:
+        """Keep a server's OAuth sign-in (None: sign out). ``url``: only if
+        the server still has the URL the tokens were made for. ``was``: only
+        if its sign-in is still this stored value. Returns the value written."""
+        value = json.dumps(data) if data else None
+        sql = "update agent_mcp_servers set oauth=?, updated_at=? where scope=? and owner=? and name=?"
+        args: list[Any] = [value, time.time(), self.scope, owner, name]
+        if url is not None:
+            sql += " and url=?"
+            args.append(url)
+        if was is None:
+            sql += " and oauth is null"
+        elif was is not ...:
+            sql += " and oauth=?"
+            args.append(was)
+        self._q(sql, tuple(args))
+        return value
 
     def put(
         self, owner: str, name: str, *, url: str | None = None, headers: dict[str, Any] | None = None,
@@ -745,6 +765,7 @@ class _SavedSignIn:
     def __init__(self, data: dict[str, Any] | None, save: Callable[[dict[str, Any] | None], None] | None):
         self.data: dict[str, Any] = dict(data or {})
         self._save = save
+        self.context: Any = None  # the provider's OAuthContext, whose discovery is kept with the tokens
 
     async def get_tokens(self) -> Any:
         from mcp.shared.auth import OAuthToken
@@ -755,6 +776,16 @@ class _SavedSignIn:
     async def set_tokens(self, tokens: Any) -> None:
         self.data["tokens"] = tokens.model_dump(mode="json", exclude_none=True)
         self.data["expires_at"] = time.time() + tokens.expires_in - TOKEN_MARGIN if tokens.expires_in else None
+        # Where the authorization server is (its token endpoint above all):
+        # a later turn's provider refreshes there without discovering it again.
+        ctx = self.context
+        if ctx is not None and ctx.oauth_metadata is not None:
+            self.data["discovery"] = {
+                "oauth_metadata": ctx.oauth_metadata.model_dump(mode="json", exclude_none=True),
+                "resource_metadata": ctx.protected_resource_metadata.model_dump(mode="json", exclude_none=True)
+                if ctx.protected_resource_metadata is not None else None,
+                "auth_server_url": ctx.auth_server_url,
+            }
         if self._save is not None:
             await asyncio.to_thread(self._save, dict(self.data))
 
@@ -778,12 +809,24 @@ def _oauth(server: Server, storage: _SavedSignIn, redirect: Callable[..., Any], 
     token before a request once it has run out, which needs the expiry the
     SDK keeps only in memory: it is read back from ``storage`` here."""
     from mcp.client.auth import OAuthClientProvider
-    from mcp.shared.auth import OAuthClientMetadata
+    from mcp.shared.auth import OAuthClientMetadata, OAuthMetadata, ProtectedResourceMetadata
 
     class Provider(OAuthClientProvider):
         async def _initialize(self) -> None:
             await super()._initialize()
             self.context.token_expiry_time = storage.data.get("expires_at")
+            # The SDK keeps discovery in memory only; without it a refresh
+            # would go to `<server origin>/token`.
+            found = storage.data.get("discovery") or {}
+            try:
+                if found.get("oauth_metadata") and self.context.oauth_metadata is None:
+                    self.context.oauth_metadata = OAuthMetadata.model_validate(found["oauth_metadata"])
+                if found.get("resource_metadata") and self.context.protected_resource_metadata is None:
+                    self.context.protected_resource_metadata = ProtectedResourceMetadata.model_validate(found["resource_metadata"])
+                if found.get("auth_server_url") and self.context.auth_server_url is None:
+                    self.context.auth_server_url = found["auth_server_url"]
+            except ValueError:  # kept by another version: discover it again
+                pass
 
     metadata = OAuthClientMetadata(
         client_name="exuvia",
@@ -792,7 +835,9 @@ def _oauth(server: Server, storage: _SavedSignIn, redirect: Callable[..., Any], 
         response_types=["code"],
         application_type="web",
     )
-    return Provider(server.url, metadata, storage, redirect_handler=redirect, callback_handler=callback)
+    provider = Provider(server.url, metadata, storage, redirect_handler=redirect, callback_handler=callback)
+    storage.context = provider.context
+    return provider
 
 
 @dataclass
@@ -851,7 +896,7 @@ async def sign_in(
     client = old.get("client") if redirect_uri in ((old.get("client") or {}).get("redirect_uris") or []) else None
     storage = _SavedSignIn(
         {"redirect_uri": redirect_uri, **({"client": client} if client else {})},
-        lambda data: store.set_oauth(owner, server.name, data),
+        lambda data: store.set_oauth(owner, server.name, data, url=server.url),
     )
     bare = Server(server.name, server.url, server.headers)
 

@@ -400,8 +400,11 @@ exuvia push bbg_closes closes.csv --url https://exuvia.example.com/p/research --
   menu, or the server's. As with `exuvia env`, plain http is refused unless
   the server is on the same machine (`--allow-http`, `allow_http=True`).
   Over HTTP it is `POST /api/nodes/{name}/push` with the Parquet
-  (`Content-Type: application/vnd.apache.parquet`) or JSON as the body,
-  `?params=` a JSON object and `?note=` a line for the log.
+  (`Content-Type: application/vnd.apache.parquet`) or JSON
+  (`application/json`) as the body, `?params=` a JSON object and `?note=` a
+  line for the log. Another content type needs `?format=parquet|json`; a
+  body sent as a form or as `text/plain`, which any web page can send, is
+  refused (415).
 - **Licences.** Terminal data usually comes with limits on who else may see
   it. A hub that others can read, or a share link, may take it past them:
   check the terms before pushing it somewhere shared.

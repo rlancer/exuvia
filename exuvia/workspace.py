@@ -51,7 +51,7 @@ import uuid
 import zipfile
 from contextlib import contextmanager, suppress
 from contextvars import Context, ContextVar
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Iterator
 
@@ -893,10 +893,18 @@ class Workspace:
                 self.store.append_log(run_id, f"exuvia: could not read the pushed {fmt}: {error}\n")
                 self._finish(run_id, name, key, status="failed", error=error)
                 return self.store.run(run_id) or {}
-            if res["kind"] == "table":
-                self.store.append_log(run_id, f"exuvia: {res['rows']} rows, {len(res['schema'])} columns\n")
-            rel = self._rel(res["artifact_path"])
-            await asyncio.to_thread(self._upload, rel)
+            except BaseException:  # the request went away: the run must not stay "running"
+                self._finish(run_id, name, key, status="failed", error="the push was interrupted")
+                raise
+            try:
+                if res["kind"] == "table":
+                    self.store.append_log(run_id, f"exuvia: {res['rows']} rows, {len(res['schema'])} columns\n")
+                rel = self._rel(res["artifact_path"])
+                await asyncio.to_thread(self._upload, rel)
+            except BaseException as e:  # the object store failed, or the request went away
+                error = "the push was interrupted" if isinstance(e, asyncio.CancelledError) else f"{type(e).__name__}: {e}"
+                self._finish(run_id, name, key, status="failed", error=error)
+                raise
             self._finish(
                 run_id, name, key, status="success", artifact_id=res["artifact_id"], artifact_path=rel,
                 kind=res["kind"], rows=res["rows"], schema=res["schema"],
@@ -1111,7 +1119,11 @@ class Workspace:
         # The project's variables and its group's, read for each attempt so a
         # key fixed between retries is used. A secret's value never reaches
         # the log.
-        env_rows, secret_rows = self._run_rows()
+        try:
+            env_rows, secret_rows = self._run_rows()
+        except Exception as e:  # the hub's database, for the group's: the run must not stay "running"
+            error = f"could not read the project's variables: {type(e).__name__}: {e}"
+            return self._finish(run_id, name, key, status="failed", error=error)
         redact = envvars.Redactor(secret_rows)
 
         def on_log(text: str) -> None:
@@ -1353,9 +1365,10 @@ class Workspace:
         return min(times) if times else None
 
     def _local(self, ts: float) -> datetime:
-        """``ts`` on the project's clock (its timezone, else the host's)."""
+        """``ts`` on the project's clock (its timezone, else the host's). From UTC,
+        as a naive local time near the epoch is an OSError on Windows."""
         tz = self.project.tz
-        return datetime.fromtimestamp(ts, tz) if tz else datetime.fromtimestamp(ts).astimezone()
+        return datetime.fromtimestamp(ts, tz) if tz else datetime.fromtimestamp(ts, timezone.utc).astimezone()
 
     def _next_fire(self, cron: str, after: float) -> float:
         return croniter(cron, self._local(after)).get_next(datetime).timestamp()
