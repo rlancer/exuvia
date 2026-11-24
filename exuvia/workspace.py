@@ -20,6 +20,10 @@ Execution model
   waits for that run to end (``overlap="queue"``) or is dropped (``"skip"``).
 * A node with ``retries`` tries a failed run again, after ``retry_delay``
   seconds, doubling each time. The attempts share one run row and one log.
+* A **push** node (``push=True``) is never run here: its output is uploaded
+  from another machine (``push()``, behind ``exuvia push``), recorded as a run
+  triggered ``push``, and cascades like any other. Runs leave it out, and
+  its output stays current until the next push, whatever its code says.
 
 Run parameters
 --------------
@@ -60,6 +64,7 @@ from .events import EventBus
 from .executor import ExecRequest, LocalExecutor, make_executor
 from .notify import failure_webhook, payload, send
 from .packages import Packages, missing_package
+from .pushing import save_pushed
 from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Project, View, _hash, _validate_cron
 from .runner import PART_EXT, PART_NAME
 from .store import CodeChange, clean_origin, open_store
@@ -527,8 +532,8 @@ class Workspace:
             if node.parse_error:
                 state, reason = "error", node.parse_error
             elif ls is None:
-                state, reason = "new", "never run"
-            elif ls["code_hash"] != node.code_hash:
+                state, reason = "new", ("waiting for a push" if node.push else "never run")
+            elif ls["code_hash"] != node.code_hash and not node.push:
                 state, reason = "stale", "code changed"
             elif ls.get("kind") == "pickle":
                 # Never read (see runner.load_artifact): re-run before use.
@@ -749,7 +754,11 @@ class Workspace:
             wanted.add(t)
             if pull_upstream:
                 wanted |= {a for a in g.ancestors(t) if self._pull(status[a])}
-        plan = [n for n in g.topo_order(wanted) if n in force or status[n]["state"] != "fresh"]
+        # A push node's output only comes from a push: nothing here runs it.
+        plan = [
+            n for n in g.topo_order(wanted)
+            if (n in force or status[n]["state"] != "fresh") and not g.nodes[n].push
+        ]
         if not plan:
             return {}
 
@@ -812,6 +821,66 @@ class Workspace:
                     )
                 )
         return finals
+
+    async def push(
+        self, name: str, data: Path, fmt: str, *, params: dict[str, Any] | None = None, note: str | None = None
+    ) -> dict[str, Any]:
+        """Record ``data`` (a ``parquet`` or ``json`` file, per ``fmt``) as
+        push node ``name``'s output, for one parameter set: one run,
+        triggered ``push``, whose new output cascades like a computed one.
+        Returns the run. KeyError: no such node; ValueError: not a push node,
+        or parameters that don't resolve. Data that can't be read is a failed
+        run, as a node that raises is."""
+        self.graph = self.project.load()
+        g = self.graph
+        node = g.nodes.get(name)
+        if node is None:
+            raise KeyError(f"no node named {name}")
+        if not node.push:
+            raise ValueError(
+                f"{name} is not a push node: add push=True to its @exuvia.node(...) to upload its output"
+            )
+        if node.parse_error:
+            raise ValueError(f"{name} has an error: {node.parse_error}")
+        params = self.resolve_params(params)
+        own, key = self.node_params(name, params)
+        started_by, started_by_user = auth.current_id(), auth.current_uid()
+        run_id = self.store.create_run(name, uuid.uuid4().hex[:8], "push", own, key, started_by, started_by_user)
+        self._emit_run(run_id)
+        # Two pushes of the same output are recorded one after the other.
+        async with self._node_locks.setdefault((name, key), asyncio.Lock()):
+            prev = self.store.last_success(name, key)
+            self._inflight[(name, key)] = run_id
+            self.store.update_run(
+                run_id, status="running", code_hash=node.code_hash, inputs={}, started_at=time.time()
+            )
+            self._emit_run(run_id)
+            by = f" by {started_by}" if started_by else ""
+            said = f": {note}" if note else ""
+            self.store.append_log(run_id, f"exuvia: output pushed{by}{said}\n")
+            out_dir = self.project.state_dir / "artifacts" / name
+            try:
+                res = await asyncio.to_thread(save_pushed, data, fmt, out_dir)
+            except Exception as e:  # unreadable data fails the run, as a node that raises does
+                error = f"{type(e).__name__}: {e}"
+                self.store.append_log(run_id, f"exuvia: could not read the pushed {fmt}: {error}\n")
+                self._finish(run_id, name, key, status="failed", error=error)
+                return self.store.run(run_id) or {}
+            if res["kind"] == "table":
+                self.store.append_log(run_id, f"exuvia: {res['rows']} rows, {len(res['schema'])} columns\n")
+            rel = self._rel(res["artifact_path"])
+            await asyncio.to_thread(self._upload, rel)
+            self._finish(
+                run_id, name, key, status="success", artifact_id=res["artifact_id"], artifact_path=rel,
+                kind=res["kind"], rows=res["rows"], schema=res["schema"],
+            )
+        if prev is None or prev["artifact_id"] != res["artifact_id"]:
+            downstream = self._cascade_set([name])
+            if downstream:
+                self._spawn(
+                    self.run(sorted(downstream), params=params, trigger="cascade", pull_upstream=False, cascade=False)
+                )
+        return self.store.run(run_id) or {}
 
     async def _wait_to_retry(self, run_id: str, delay: float) -> bool:
         """Sleep before a retry. False when the run was cancelled meanwhile."""
@@ -1000,7 +1069,8 @@ class Workspace:
         for dep in g.upstream(name):
             ls = self.store.last_success(dep, self.node_params(dep, params)[1])
             if ls is None:
-                return self._finish(run_id, name, key, status="failed", error=f"upstream {dep} has no output yet")
+                why = "has not been pushed yet (exuvia push)" if g.nodes[dep].push else "has no output yet"
+                return self._finish(run_id, name, key, status="failed", error=f"upstream {dep} {why}")
             path = await asyncio.to_thread(self.artifact_path, ls)
             inputs[dep] = {"path": path, "kind": ls["kind"], "artifact_id": ls["artifact_id"]}
             input_ids[dep] = ls["artifact_id"]
@@ -1284,6 +1354,12 @@ class Workspace:
         """Set a node's schedule from outside its code (stored in
         ``exuvia.json``). ``""`` turns scheduling off for the node; ``None``
         drops the override and falls back to the schedule in the node file."""
+        node = self.graph.nodes.get(name)
+        if cron and node is not None and node.push:
+            raise ValueError(
+                f"{name} is a push node: its output arrives when it is pushed. "
+                "Schedule the script that pushes it on the machine that has the data."
+            )
         if cron:
             _validate_cron(cron)
 

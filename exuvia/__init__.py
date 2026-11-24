@@ -51,6 +51,7 @@ def node(
     retries: int = 0,
     retry_delay: float = 30,
     overlap: str = "queue",
+    push: bool = False,
 ) -> Any:
     """Mark a function as a exuvia node.
 
@@ -72,6 +73,11 @@ def node(
         overlap: what a scheduled fire does while the node is still
             running: ``"queue"`` (default) runs it once that run ends,
             ``"skip"`` drops it.
+        push: the node's output is uploaded from another machine
+            (``exuvia push``, or :func:`exuvia.push` in a script there) and
+            never computed by exuvia: for data only that machine can read,
+            such as a Bloomberg Terminal's. A push node takes no upstream
+            nodes and has no schedule; its function is not run.
 
     The decorator is a no-op at runtime; exuvia reads these keyword arguments
     from the source with ``ast`` so they must be literals.
@@ -87,10 +93,22 @@ def node(
             "retries": retries,
             "retry_delay": retry_delay,
             "overlap": overlap,
+            "push": push,
         }
         return f
 
     return wrap(fn) if fn is not None else wrap
+
+
+def push(url: str, node: str, value: Any, **kw: Any) -> dict[str, Any]:
+    """Upload ``value`` as push node ``node``'s output to the exuvia at ``url``
+    (``<hub>/p/<project>``, or an ``exuvia serve`` address). ``value`` is a
+    DataFrame (pandas, polars or pyarrow), a path to a .parquet, .csv or
+    .json file, or a JSON-able value. Returns the run it recorded; see
+    ``exuvia.pushing.push`` for the keyword arguments."""
+    from .pushing import push as _push
+
+    return _push(url, node, value, **kw)
 
 
 def param(name: str, default: Any = _MISSING) -> Any:

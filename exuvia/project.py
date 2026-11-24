@@ -76,6 +76,9 @@ class Node:
     chart: dict[str, Any] | None = None
     tags: list[str] = field(default_factory=list)
     params: list[str] = field(default_factory=list)  # run parameters this node reads
+    # Its output is uploaded (``exuvia push``), never computed here: for data
+    # only another machine can read, such as a Bloomberg Terminal's.
+    push: bool = False
     schedule_source: str | None = None  # "code" | "config" (exuvia.json `schedules`)
     helpers: list[str] = field(default_factory=list)  # lib/ files it imports, directly or not
     code_hash: str = ""  # the node file plus every helper it imports
@@ -329,7 +332,7 @@ class Project:
                 n.schedule_source = "code"
             # A schedule set from the UI lives in exuvia.json and wins over the
             # one in code; an empty string turns a code schedule off.
-            if isinstance(overrides, dict) and n.name in overrides:
+            if isinstance(overrides, dict) and n.name in overrides and not n.push:
                 n.schedule = str(overrides[n.name] or "").strip() or None
                 n.schedule_source = "config"
                 if n.schedule and n.parse_error is None:
@@ -694,8 +697,29 @@ def _parse_python(node: Node, text: str) -> None:
                 _set_run_option(node, kw.arg, value)
             elif kw.arg == "params":
                 node.params = _param_names(value)
+            elif kw.arg == "push":
+                if not isinstance(value, bool):
+                    raise ValueError(f"`push` must be True or False, not {value!r}.")
+                node.push = value
+    if node.push:
+        _check_push(node)
     if node.schedule:
         _validate_cron(node.schedule)
+
+
+def _check_push(node: Node) -> None:
+    """A push node's output comes from outside, so nothing here can make it:
+    no upstream nodes to compute it from, no schedule to compute it on."""
+    if node.deps:
+        raise ValueError(
+            "A push node takes no upstream nodes: its output is uploaded with `exuvia push`, not computed. "
+            "Read it from another node instead."
+        )
+    if node.schedule:
+        raise ValueError(
+            "A push node has no schedule: its output arrives when it is pushed. "
+            "Schedule the script that pushes it on the machine that has the data."
+        )
 
 
 def _imported_modules(tree: ast.AST, package: str | None) -> set[str]:
