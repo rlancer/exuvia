@@ -1180,6 +1180,13 @@ it at start.
   cron. If it produces *different* output, downstream nodes with
   `cascade=True` refresh automatically; identical output stops the cascade.
   Schedules can be paused from the UI without editing code.
+- **The Schedule tab** (next to Graph and Views, `#schedule`) shows when the
+  graph runs by itself: every scheduled node, soonest first, with its cron,
+  its next run (its next few in a tooltip) on the project's clock, its last
+  scheduled run, the nodes a new output from it re-runs, and Pause/Resume;
+  the next dozen fires across the project; and the live nodes with the views
+  that refresh them. `GET /api/schedule` is the same as JSON (times in Unix
+  seconds).
 - **A scheduled run is for its cron slot.** A `date` run parameter whose
   default is `today` gets the date of the slot the run was due at, in the
   project `timezone`, not the date it happened to start. A run delayed past
@@ -2805,6 +2812,7 @@ headlessly or iframe the UI:
 | `GET/PUT/DELETE /api/views/{name}/files/{path}` | read / write (`{"source"}`) / delete one file of a view (`App.tsx`, `components/Chart.tsx`). Paths outside the view folder, `..`, absolute paths and other extensions are rejected (400); writes return the view |
 | `POST /api/views/{name}/restore` | make a saved version (`{path, hash}`) of one view file current again; brings back a deleted file or view |
 | `GET /api/views/{name}/data/{node}` | `/api/nodes/{node}/data` for a view: 403 unless the view's `reads` lists `node` |
+| `POST /api/views/{name}/refresh` | re-run the live nodes a view depends on, for `{params}` (see "Live nodes"); viewers may call it |
 | `POST /api/views/{name}/query` | `/api/query` for a view: only the nodes in its `reads` exist, and the connection cannot open other files (see "Rendering a view") |
 | `GET /api/views/{name}/data/{node}/export`, `POST /api/views/{name}/query/export` | the two routes above as downloads, like `/api/nodes/{node}/export` and `/api/query/export` |
 | `POST /api/nodes` | create from a template |
@@ -2829,6 +2837,7 @@ headlessly or iframe the UI:
 | `POST /api/query/export` | the whole result of `{sql, params, format, filename}` as a file to save, in `csv`, `xlsx`, `parquet` or `json` |
 | `POST /api/nodes/{name}/schedule` | set, clear, pause or resume a schedule |
 | `POST /api/schedule/tick` | evaluate schedules now (for external schedulers) |
+| `GET /api/schedule` | when the graph runs by itself: `nodes` (each scheduled node, soonest first: `cron`, `source`, `paused`, `next`, `upcoming` fire times, `last` scheduled run, `cascades`), `live` (live nodes and the views that refresh them), `timezone` and `scheduler` |
 | `GET /api/events` | SSE: graph changes, run status, live logs |
 | `GET /api/me` | who the request is from: `{auth, user}`, `user` being `{id, user, email, method, uid, role}` (`id` the name records show, `uid` the user id) or null (in a hub, at `<url>/api/me`) |
 | `GET /api/users`, `PATCH /api/users/{id}` | the server's user list, for admins (`{role}` `admin`/`member`, `{disabled}`); in a hub, at `<url>/api/users` (see "Users and admins") |

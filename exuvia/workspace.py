@@ -1445,6 +1445,63 @@ class Workspace:
             self.bus.publish({"type": "graph"})
         return due
 
+    def schedule(self, upcoming: int = 5, now: float | None = None) -> dict[str, Any]:
+        """The project's schedule at a glance: every node with a cron, soonest
+        first, with its next ``upcoming`` fire times (none while paused or
+        broken), its last scheduled run, and the nodes a new output from it
+        cascades to; and the live nodes, which run when a view that depends
+        on them is opened rather than on a clock. Times are Unix seconds;
+        ``timezone`` is the clock the crons are read on (null: the host's)."""
+        now = time.time() if now is None else now
+        g = self.graph
+        paused = self.store.paused()
+        states = self.store.schedule_states()
+        status = self.status()
+        nodes: list[dict[str, Any]] = []
+        for node in g.nodes.values():
+            if not node.schedule:
+                continue
+            times: list[float] = []
+            if not node.parse_error and node.name not in paused:
+                st = states.get(node.name)
+                # Before a tick has started its clock, it fires from now on.
+                t = self._next_fire(node.schedule, st["last_fired"] if st and st["cron"] == node.schedule else now)
+                for _ in range(upcoming):
+                    times.append(t)
+                    t = self._next_fire(node.schedule, t)
+            nodes.append({
+                "name": node.name,
+                "cron": node.schedule,
+                "source": node.schedule_source,
+                "paused": node.name in paused,
+                "overlap": node.overlap,
+                "next": times[0] if times else None,
+                "upcoming": times,
+                "last": self.store.last_by_trigger(node.name, "schedule"),
+                "cascades": sorted(self._cascade_set([node.name])),
+                "state": status.get(node.name, {}).get("state"),
+                "parse_error": node.parse_error,
+            })
+        nodes.sort(key=lambda n: (n["next"] is None, n["next"] or 0, n["name"]))
+        live = []
+        for node in g.nodes.values():
+            if node.live is None:
+                continue
+            views = sorted(v.name for v in g.views.values() if node.name in self._view_live(v))
+            live.append({
+                "name": node.name,
+                "live": node.live,
+                "views": views,
+                "last": self.store.last_by_trigger(node.name, "live"),
+                "state": status.get(node.name, {}).get("state"),
+            })
+        return {
+            "timezone": self.project.config.get("timezone"),
+            "scheduler": SCHEDULER,
+            "nodes": nodes,
+            "live": sorted(live, key=lambda n: n["name"]),
+        }
+
     def next_fire_at(self, now: float | None = None) -> float | None:
         """When the next ``tick`` has work to do (None: nothing is scheduled).
         Lets an external scheduler sleep until then instead of polling. A

@@ -26,6 +26,44 @@ export interface RunRow {
   started_by?: string | null;
 }
 
+/** One scheduled node in `GET /api/schedule`; times are Unix seconds. */
+export type ScheduleRow = {
+  name: string;
+  cron: string;
+  /** `code` (the node's file) or `config` (exuvia.json `schedules`). */
+  source: string | null;
+  paused: boolean;
+  overlap: string;
+  /** Null while paused or while its code is broken. */
+  next: number | null;
+  upcoming: number[];
+  /** Its latest run started by the clock. */
+  last: RunRow | null;
+  /** What a new output from it re-runs. */
+  cascades: string[];
+  state: State | null;
+  parse_error: string | null;
+};
+
+/** A live node in `GET /api/schedule`: it runs when a view that depends on it opens. */
+export type LiveRow = {
+  name: string;
+  /** 0: every open; else the seconds an output stays recent enough. */
+  live: number;
+  views: string[];
+  last: RunRow | null;
+  state: State | null;
+};
+
+/** `GET /api/schedule`: when the graph runs by itself. */
+export interface ScheduleState {
+  /** The clock crons are read on; null is the server's local time. */
+  timezone: string | null;
+  scheduler: "internal" | "external";
+  nodes: ScheduleRow[];
+  live: LiveRow[];
+}
+
 export interface GraphNode {
   name: string;
   kind: "python" | "sql";
@@ -378,6 +416,7 @@ export const api = {
   runWith: (targets: string[], params: Record<string, unknown>) =>
     req("POST", "/api/run", { targets, force: false, params: Object.keys(params).length ? params : null }),
   runStale: () => req<{ targets: string[] }>("POST", "/api/run-stale"),
+  schedule: () => req<ScheduleState>("GET", "/api/schedule"),
   pause: (name: string, paused: boolean) => req("POST", `/api/nodes/${name}/schedule`, { paused }),
   data: (name: string, limit = 200, part?: string) => nodeData(name, limit, part),
   runs: (name: string) => req<RunRow[]>("GET", `/api/nodes/${name}/runs`),
