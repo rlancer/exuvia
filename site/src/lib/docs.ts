@@ -89,6 +89,13 @@ const PAGES: PageSpec[] = [
     summary: "Your own interface over node outputs, written as front-end code: React and TypeScript files, sandboxed and read-only.",
   },
   {
+    slug: "live-nodes",
+    group: "Build",
+    source: { heading: "Live nodes: current data when a view opens" },
+    title: "Live nodes",
+    summary: "Nodes that re-run whenever a view that reads them opens: the view shows what it has at once, then updates.",
+  },
+  {
     slug: "downloads",
     group: "Build",
     source: { heading: "Downloads" },

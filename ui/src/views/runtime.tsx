@@ -90,7 +90,7 @@ function setTheme(dark: boolean): void {
 function load(msg: Extract<ToFrame, { type: "load" }>): void {
   setTheme(msg.dark);
   document.title = msg.view.title || msg.view.name;
-  sdk.internal.connect(request, msg.view, msg.params, msg.dark);
+  sdk.internal.connect(request, msg.view, msg.params, msg.dark, msg.refreshing ?? []);
   const require = createLoader({
     files: msg.view.files,
     builtins: BUILTINS,
@@ -144,6 +144,9 @@ window.addEventListener("message", (e: MessageEvent) => {
     }
     case "changed":
       sdk.internal.changed(msg.nodes, msg.params);
+      break;
+    case "refreshing":
+      sdk.internal.refreshing(msg.nodes);
       break;
     case "theme":
       setTheme(msg.dark);

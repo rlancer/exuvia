@@ -140,6 +140,9 @@ class Workspace:
         self._node_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._slots = asyncio.Semaphore(MAX_PARALLEL)
         self._inflight: dict[tuple[str, str], str] = {}  # (node, params_key) -> run_id
+        # Live refreshes started but whose runs may not have registered yet
+        # (see refresh_view): (node, params_key).
+        self._live_pending: set[tuple[str, str]] = set()
         self._tasks: list[asyncio.Task[Any]] = []  # cancelled by stop()
         self._cancelled: set[str] = set()  # runs asked to stop: never retried
         # Runs waiting to retry: run_id -> (loop, event that cuts the wait short).
@@ -627,6 +630,7 @@ class Workspace:
             if st["output_kind"] == "multi":
                 out["parts"] = output_parts(st["schema"])
             outputs.append(out)
+        live = self._view_live(view)
         missing = [o["node"] for o in outputs if not o["artifact_id"]]
         stale = [f"{o['node']} ({o['state']})" for o in outputs if o["artifact_id"] and o["state"] != "fresh"]
         if view.parse_error:
@@ -637,11 +641,77 @@ class Workspace:
             state, reason = "stale", f"out of date: {', '.join(stale)}"
         else:
             state, reason = "ready", None
-        out = {**view.to_dict(), "state": state, "reason": reason, "outputs": outputs}
+        out = {**view.to_dict(), "state": state, "reason": reason, "outputs": outputs, "live": live}
         sig = self.npm.signature()
         if sig:  # the npm packages a view may import are part of what it runs
             out["hash"] = hashlib.sha256(f"{out['hash']}\0{sig}".encode()).hexdigest()[: len(out["hash"]) or 16]
         return out
+
+    def _view_live(self, view: View) -> list[str]:
+        """The live nodes a view depends on: those it reads and those
+        upstream of them (see ``Node.live``), in run order."""
+        g = self.graph
+        reads = [n for n in view.reads if n in g.nodes]
+        around = set(reads).union(*(g.ancestors(n) for n in reads)) if reads else set()
+        live = {n for n in around if g.nodes[n].live is not None and not g.nodes[n].parse_error}
+        try:
+            return g.topo_order(live) if live else []
+        except ValueError:
+            return sorted(live)
+
+    def refresh_view(self, name: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Re-run the live nodes a view depends on, for one parameter set, as
+        the view is opened: the view shows what is stored now and updates
+        when the new outputs land. A live node runs unless it is already
+        running (or about to) for these parameters, or its output is newer
+        than its ``live`` seconds; the nodes between it and what the view
+        reads are rechecked after it, so the view's reads come up to date
+        in the same batch. Never waits for the runs. Raises KeyError when
+        there is no such view.
+
+        Returns ``{"live", "started", "skipped", "params"}``: the view's live
+        nodes, the ones re-run now, and why each other one was not."""
+        self.graph = self.project.load()
+        view = self.graph.views.get(name)
+        if view is None:
+            raise KeyError(name)
+        g = self.graph
+        params = self.resolve_params(params)
+        live = self._view_live(view)
+        status = self.status(params) if live else {}
+        now = time.time()
+        started: list[str] = []
+        skipped: dict[str, str] = {}
+        keys: dict[str, str] = {}
+        for n in live:
+            st = status[n]
+            keys[n] = st["params_key"]
+            age = now - st["finished_at"] if st.get("finished_at") else None
+            if (n, keys[n]) in self._inflight or (n, keys[n]) in self._live_pending:
+                skipped[n] = "already running"
+            elif st["state"] == "fresh" and age is not None and age < (g.nodes[n].live or 0):
+                skipped[n] = f"refreshed {int(age)}s ago"
+            else:
+                started.append(n)
+        if started:
+            reads = {n for n in view.reads if n in g.nodes}
+            # What the view reads, between a live node and the view: re-run
+            # after it when its output changed, cached otherwise.
+            below = set().union(*(g.descendants(n) for n in started))
+            between = (reads.union(*(g.ancestors(r) for r in reads)) & below) - set(started)
+            pending = {(n, keys[n]) for n in started}
+            self._live_pending |= pending
+
+            async def go() -> None:
+                try:
+                    await self.run(
+                        sorted(set(started) | between), params=params, force=set(started), recheck=between, trigger="live"
+                    )
+                finally:
+                    self._live_pending -= pending
+
+            self._spawn(go())
+        return {"live": live, "started": started, "skipped": skipped, "params": params}
 
     def views(self, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         st = self.status(params)
@@ -764,12 +834,17 @@ class Workspace:
         trigger: str = "manual",
         pull_upstream: bool = True,
         cascade: bool = True,
+        recheck: set[str] | None = None,
     ) -> dict[str, Any]:
         """Run targets (and stale ancestors) for one parameter set.
+        ``recheck`` are targets to queue even while they are fresh, and to
+        check again once what they read has run: they run only if that
+        changed their inputs, and are cached otherwise.
         Returns {node: final run row}."""
         self.graph = self.project.load()
         g = self.graph
         force = set(force or ())
+        recheck = set(recheck or ())
         unknown = [t for t in targets if t not in g.nodes]
         if unknown:
             raise KeyError(f"unknown node(s): {', '.join(unknown)}")
@@ -784,7 +859,7 @@ class Workspace:
         # A push node's output only comes from a push: nothing here runs it.
         plan = [
             n for n in g.topo_order(wanted)
-            if (n in force or status[n]["state"] != "fresh") and not g.nodes[n].push
+            if (n in force or n in recheck or status[n]["state"] != "fresh") and not g.nodes[n].push
         ]
         if not plan:
             return {}

@@ -195,6 +195,7 @@ import exuvia
     schedule="0 18 * * 1-5",          # optional: re-run on this cron (local time)
     cascade=True,                      # re-run when upstream output changes (default)
     retries=2,                         # optional: try a failed run again, up to 2 more times
+    live=True,                         # optional: re-run when a view that reads it is opened
     chart={"mark": "line", "encoding": {...}},   # optional Vega-Lite spec, no `data`
 )
 def rolling_vol(returns):
@@ -209,6 +210,7 @@ def rolling_vol(returns):
 -- Latest vol by sector.
 -- schedule: */30 9-16 * * 1-5
 -- retries: 2
+-- live: 300
 -- chart: {"mark": "bar", "encoding": {...}}
 select u.sector, avg(v.vol_20d) as avg_vol
 from universe u join rolling_vol v using (ticker)
@@ -424,7 +426,8 @@ canvas, inspector and SQL box stay as they are.
 
 How a view works, in short ("Rendering a view" below has the detail):
 
-1. Nodes run and store their outputs. A view never runs anything.
+1. Nodes run and store their outputs. A view never runs anything; opening
+   one re-runs only the nodes marked live (see [Live nodes](#live-nodes-current-data-when-a-view-opens)).
 2. The view's `view.json` names the nodes it reads. Those are the only
    outputs it can reach, and they are its edges on the graph.
 3. The workbench loads the view's files into a sandboxed frame, compiles them
@@ -468,7 +471,10 @@ views/vol_board/
   nothing else. Like a node's upstreams it gives the graph edges, a state, and
   the list of outputs a view depends on.
 - **Rendering never runs compute.** A view reads outputs that exist; it does
-  not trigger runs. Work a view needs belongs in a node it reads.
+  not trigger runs. Work a view needs belongs in a node it reads. The one
+  exception is a node its author marked live: opening the view re-runs it
+  while the view shows the output it has (see
+  [Live nodes](#live-nodes-current-data-when-a-view-opens)).
 - `runtime` is `react` (the default and, for now, the only one) and `entry`
   is the component file (`App.tsx` by default; `.tsx`, `.ts`, `.jsx` or
   `.js`). `title` defaults to the folder name.
@@ -499,7 +505,8 @@ Each view also carries `outputs`: per read node, its state, `kind` and the
 `artifact_id` of the output the view would show now. Artifact ids name their
 content, so a client can fetch `/api/artifacts/{node}/{artifact_id}.parquet`
 once and cache it for good. For a node with several outputs, `kind` is
-`multi` and `parts` lists them (`name`, `kind`, `rows`). `hash` covers
+`multi` and `parts` lists them (`name`, `kind`, `rows`). `live` lists the
+live nodes it depends on, those it reads and those upstream of them. `hash` covers
 every file of the view and the project's npm packages, so a client can tell
 when what the view runs changed.
 
@@ -595,6 +602,7 @@ export default function App() {
 | `onChange(fn)` | called with the nodes whose output was replaced |
 | `rows(table)` | Arrow rows as plain objects (64-bit integers become numbers when they fit) |
 | `useView()`, `useDark()` | the view's name, title and reads; whether the page is in dark mode |
+| `useRefreshing(node?)` | true while a node the view reads (or `node`) is being re-run, such as a live node refreshing as the view opened; the hooks keep the data they have until the new output lands |
 | `download(node \| {sql}, format, filename?)` | save a read node's whole output (`download("prices", "xlsx")`) or a query's whole result (`download({sql: "select …"}, "csv")`) as a file: `csv`, `xlsx`, `parquet` or `json`, for the parameters the view shows. The frame cannot save files itself, so the page does |
 
 The hooks reload by themselves when an output they read is replaced (a run
@@ -613,10 +621,11 @@ origin is `"null"`, so the origin says nothing):
 | frame → page | `boot` | the bootstrap is listening |
 | page → frame | `runtime {source}` | the runtime script, evaluated by the bootstrap |
 | frame → page | `ready` | the runtime loaded |
-| page → frame | `load {view, params, dark}` | the view's files (`{path: source}`), entry and reads, and the parameter set |
+| page → frame | `load {view, params, dark, refreshing}` | the view's files (`{path: source}`), entry and reads, the parameter set, and the read nodes being re-run |
 | frame → page | `request {id, method, args}` | `table {node}`, `json {node}`, `query {sql}`, `params {}`, `setParams {params}`, `download {node \| sql, format, filename}` |
 | page → frame | `response {id, ok, result \| error}` | Arrow IPC bytes for `table`/`query` (transferred, not copied), the value for `json`, `{params, specs}` for the parameter calls |
 | page → frame | `changed {nodes, params}` | outputs the view reads were replaced; driven by `/api/events` |
+| page → frame | `refreshing {nodes}` | the read nodes being re-run now (empty when none) |
 | page → frame | `theme {dark}` | |
 | frame → page | `status {phase}` | `compiled`, `rendered`, or `compile`/`runtime` with `error`, `file`, `stack` |
 
@@ -635,6 +644,56 @@ changed back, so the SQL cannot `read_parquet` another node's file, `COPY`
 out, `ATTACH` a file or `INSTALL` anything. `GET
 /api/views/{name}/data/{node}/export` and `POST /api/views/{name}/query/export`
 are the same two routes as downloads (see "Downloads").
+
+## Live nodes: current data when a view opens
+
+Most outputs only change when their inputs or code do, or on a schedule.
+Some are worth fetching again whenever someone looks: quotes, a queue's
+depth, today's sign-ups. Mark such a node **live**, and opening a view that
+depends on it re-runs it:
+
+```python
+@exuvia.node(live=True)          # every time a view that reads it opens
+def quotes():
+    ...
+
+@exuvia.node(live=300)           # only when its output is over 5 minutes old
+def queue_depth():
+    ...
+```
+
+```sql
+-- Open orders, as of now.
+-- live: true
+select * from orders where status = 'open'
+```
+
+- **The view opens at once.** It renders the outputs that are stored, as
+  always, and says **Refreshing** (next to its state in the workbench, in
+  the top corner as an app) while the live nodes run. When the new outputs
+  land, its hooks reload and the indicator goes. A view's code can show its
+  own with `useRefreshing()` (`useRefreshing("quotes")` for one node).
+- **What runs.** The live nodes the view reads, and those upstream of what
+  it reads, for the parameters the view shows; then the nodes between them
+  and the view, each re-run only if the live node's output changed (cached
+  otherwise), so what the view reads is current in the same batch. Changing
+  the view's parameters refreshes again at the new values.
+- **`live=True` or seconds.** `True` re-runs on every open; a number of
+  seconds (up to a week) re-runs only when the output is older than that,
+  which bounds how often a busy view re-runs a slow or rate-limited source.
+  A live node that is already running for those parameters is not started
+  again: every viewer waits for the same run.
+- **Each refresh is a run** of the node, triggered `live`, with who opened
+  the view as who started it, so it shows in the history like any other run,
+  and a new output cascades as usual. A live node can still have a
+  schedule, and runs by hand like any node.
+- **Anyone who can open the view refreshes it,** viewers and share links
+  included: making a node live says it may run whenever its view is looked
+  at. Over HTTP it is `POST /api/views/{name}/refresh` with
+  `{"params": {...}}`; it answers at once with `live` (the view's live
+  nodes), `started` and `skipped` (node → why not: already running, or
+  refreshed within its seconds).
+- A push node can't be live: nothing on the hub runs it.
 
 ## Downloads
 

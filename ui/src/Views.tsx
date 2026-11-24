@@ -14,6 +14,7 @@ import { IconButton } from "@astryxdesign/core/IconButton";
 import { Link } from "@astryxdesign/core/Link";
 import { List, ListItem } from "@astryxdesign/core/List";
 import { NumberInput } from "@astryxdesign/core/NumberInput";
+import { Spinner } from "@astryxdesign/core/Spinner";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Switch } from "@astryxdesign/core/Switch";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
@@ -70,7 +71,8 @@ const VIEW_STATE_LABEL: Record<ProjectView["state"], string> = {
 /**
  * Views mode: the project's views (custom UI under views/) next to the
  * canvas. A view renders in a sandboxed iframe with the parameter set chosen
- * here; it only reads outputs and never runs anything.
+ * here; it only reads outputs, and opening it re-runs only the live nodes
+ * it depends on (useLiveRefresh).
  */
 export function Views(props: {
   project: Project | null;
@@ -138,6 +140,7 @@ export function Views(props: {
   const view = views.find((v) => v.name === selected) ?? views[0] ?? null;
   const state = useMemo(() => paramsState(at?.params ?? []), [at]);
   useEffect(() => onShown?.(view?.name ?? null), [onShown, view?.name]);
+  const refreshing = useLiveRefresh(at ? view : null, overrides);
 
   /** Change parameters (from the bar or from a view); throws on a bad value. */
   const changeParams = useCallback(
@@ -227,6 +230,7 @@ export function Views(props: {
             onDraft={(path, text) => setDraft(view.name, path, text)}
             file={openFiles[view.name]}
             onFile={(path) => setOpenFiles((f) => ({ ...f, [view.name]: path }))}
+            refreshing={refreshing}
           />
         ) : at ? (
           <div {...stylex.props(styles.placeholder)}>
@@ -273,6 +277,8 @@ function ViewPane(props: {
   onDraft: (path: string, text: string | null) => void;
   file: string | undefined;
   onFile: (path: string) => void;
+  /** Read nodes being re-run (useLiveRefresh). */
+  refreshing: string[];
 }) {
   const { view, params, dark, pane } = props;
   const { canEdit } = useAccess();
@@ -281,7 +287,8 @@ function ViewPane(props: {
   const [runErr, setRunErr] = useState<string | null>(null);
   const known = new Set(props.nodes.map((n) => n.name));
   const outputs = new Map(view.outputs.map((o) => [o.node, o]));
-  const toRun = view.outputs.filter((o) => o.state !== "fresh" || !o.artifact_id).map((o) => o.node);
+  // Not the ones already running (a live refresh, say).
+  const toRun = view.outputs.filter((o) => (o.state !== "fresh" || !o.artifact_id) && !busy(o.state)).map((o) => o.node);
 
   const onStatus = useCallback((s: FrameStatus) => {
     setStatus(s);
@@ -337,6 +344,7 @@ function ViewPane(props: {
               {failing ? `${status.phase} error` : status.phase}
             </Text>
           )}
+          <Refreshing view={view} nodes={props.refreshing} xstyle={styles.fixed} />
           <span {...stylex.props(styles.grow)} />
           {view.state !== "error" && (
             <IconButton
@@ -478,7 +486,16 @@ function ViewPane(props: {
         ) : (
           // Stays mounted while the code is open, so saving a file rebuilds it and
           // its compile and runtime errors show up under the editor.
-          <ViewFrame key={view.hash} view={view} params={params} dark={dark} hidden={pane !== "view"} onParams={props.onParams} onStatus={onStatus} />
+          <ViewFrame
+            key={view.hash}
+            view={view}
+            params={params}
+            dark={dark}
+            hidden={pane !== "view"}
+            refreshing={props.refreshing}
+            onParams={props.onParams}
+            onStatus={onStatus}
+          />
         )}
       </div>
       {errors.length > 0 && (
@@ -814,6 +831,72 @@ function TextParam(props: { field: Pick<TextInputProps, "label" | "isLabelHidden
   );
 }
 
+/**
+ * Live nodes (`live=True`): opening a view, or showing it at other
+ * parameters, re-runs the live nodes it depends on. The view renders what is
+ * stored at once and updates when the new outputs land. Returns the read
+ * nodes being re-run (by that or by any other run), for the indicator and
+ * the view's `useRefreshing()`; empty when nothing is on its way.
+ * `params` null: not known yet, ask nothing.
+ */
+export function useLiveRefresh(view: ProjectView | null, params: Params | null): string[] {
+  const name = view?.name ?? null;
+  const live = (view?.live?.length ?? 0) > 0;
+  const key = params === null ? null : JSON.stringify(params);
+  // "asking": the request is out. A view: the answer came while that
+  // snapshot was shown, which predates the runs; the next one shows them.
+  const [waiting, setWaiting] = useState<"asking" | ProjectView | null>(null);
+  const shown = useRef(view);
+  shown.current = view;
+  useEffect(() => {
+    if (!name || !live || key === null) return;
+    let on = true;
+    setWaiting("asking");
+    api.refreshView(name, JSON.parse(key) as Params).then(
+      (r) => on && setWaiting(r.started.length ? shown.current : null),
+      (e: Error) => {
+        if (!on) return;
+        setWaiting(null);
+        console.warn(`Could not refresh the live nodes of ${name}: ${e.message}`);
+      },
+    );
+    return () => {
+      on = false;
+      setWaiting(null);
+    };
+  }, [name, live, key]);
+  useEffect(() => {
+    if (waiting !== null && waiting !== "asking" && waiting !== view) setWaiting(null);
+  }, [view, waiting]);
+  return useMemo(() => {
+    if (!view) return [];
+    if (waiting === "asking" || waiting === view) return view.reads;
+    return view.outputs.filter((o) => busy(o.state)).map((o) => o.node);
+  }, [view, waiting]);
+}
+
+/** A read node being re-run: its output is on its way. */
+export const busy = (state: string) => state === "running" || state === "queued";
+
+/** "Refreshing", while what a view reads is being re-run and it shows the last output. */
+export function Refreshing(props: { view: ProjectView; nodes: string[]; xstyle?: stylex.StyleXStyles }) {
+  if (!props.nodes.length) return null;
+  const live = props.view.live ?? [];
+  const tip = live.length
+    ? `Showing the last output while the live data is refreshed (${live.join(", ")}); the view updates when it lands`
+    : `Showing the last output while ${props.nodes.join(", ")} re-run${props.nodes.length === 1 ? "s" : ""}; the view updates when it lands`;
+  return (
+    <Tooltip content={tip}>
+      <HStack gap={1.5} vAlign="center" xstyle={props.xstyle}>
+        <Spinner size="sm" aria-label="Refreshing" />
+        <Text type="supporting" color="secondary">
+          Refreshing
+        </Text>
+      </HStack>
+    </Tooltip>
+  );
+}
+
 /** The sandboxed iframe and its bridge. Remounted when the view's files change. */
 export function ViewFrame(props: {
   view: ProjectView;
@@ -821,6 +904,8 @@ export function ViewFrame(props: {
   dark: boolean;
   /** Kept running but not shown (while the Code pane is open). */
   hidden: boolean;
+  /** Read nodes being re-run, for the view's `useRefreshing()`. */
+  refreshing?: string[];
   onParams: (p: Params) => Promise<ParamsState>;
   onStatus: (s: FrameStatus) => void;
 }) {
@@ -836,6 +921,7 @@ export function ViewFrame(props: {
       onStatus: (s) => latest.current.onStatus(s),
     });
     bridge.current = b;
+    b.setRefreshing(p.refreshing ?? []);
     const stop = b.start();
     // Only now load the document: its bootstrap's first message must find
     // the bridge listening.
@@ -848,6 +934,8 @@ export function ViewFrame(props: {
 
   useEffect(() => bridge.current?.update(props.view, props.params), [props.view, props.params]);
   useEffect(() => bridge.current?.setTheme(props.dark), [props.dark]);
+  const refreshing = (props.refreshing ?? []).join();
+  useEffect(() => bridge.current?.setRefreshing(refreshing ? refreshing.split(",") : []), [refreshing]);
 
   return (
     <iframe

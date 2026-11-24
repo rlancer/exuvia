@@ -79,6 +79,11 @@ class Node:
     # Its output is uploaded (``exuvia push``), never computed here: for data
     # only another machine can read, such as a Bloomberg Terminal's.
     push: bool = False
+    # A live node re-runs when a view that depends on it is opened, and the
+    # view shows its last output until the new one lands. None: not live;
+    # otherwise how many seconds an output stays recent enough not to re-run
+    # (0, from ``live=True``: every time).
+    live: float | None = None
     schedule_source: str | None = None  # "code" | "config" (exuvia.json `schedules`)
     helpers: list[str] = field(default_factory=list)  # lib/ files it imports, directly or not
     code_hash: str = ""  # the node file plus every helper it imports
@@ -701,6 +706,8 @@ def _parse_python(node: Node, text: str) -> None:
                 if not isinstance(value, bool):
                     raise ValueError(f"`push` must be True or False, not {value!r}.")
                 node.push = value
+            elif kw.arg == "live":
+                node.live = _live_value(value)
     if node.push:
         _check_push(node)
     if node.schedule:
@@ -720,6 +727,40 @@ def _check_push(node: Node) -> None:
             "A push node has no schedule: its output arrives when it is pushed. "
             "Schedule the script that pushes it on the machine that has the data."
         )
+    if node.live is not None:
+        raise ValueError(
+            "A push node can't be live: nothing here runs it, so opening a view can't refresh it."
+        )
+
+
+MAX_LIVE_SECONDS = 7 * 24 * 3600
+
+
+def _live_value(value: Any) -> float | None:
+    """``live``: True (re-run every time a view that depends on the node is
+    opened), False, or a number of seconds an output stays recent enough
+    not to re-run. ``value`` is a Python literal or, from a SQL header, its text."""
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("true", "yes", "on"):
+            value = True
+        elif text in ("false", "no", "off", ""):
+            value = False
+        else:
+            try:
+                value = float(text)
+            except ValueError:
+                value = None
+    if value is True:
+        return 0.0
+    if value is False:
+        return None
+    if isinstance(value, (int, float)) and 0 <= value <= MAX_LIVE_SECONDS:
+        return float(value)
+    raise ValueError(
+        f"`live` must be True, False or a number of seconds from 0 to {MAX_LIVE_SECONDS} "
+        f"(how old an output may be before opening a view re-runs the node), not {value!r}."
+    )
 
 
 def _imported_modules(tree: ast.AST, package: str | None) -> set[str]:
@@ -772,6 +813,8 @@ def _parse_sql(node: Node, text: str) -> None:
                 node.params = _param_names([t.strip() for t in val.split(",") if t.strip()])
             elif key in RUN_OPTIONS and val:
                 _set_run_option(node, key, val)
+            elif key == "live":
+                node.live = _live_value(val)
             else:
                 desc.append(line.strip()[2:].strip())
         else:

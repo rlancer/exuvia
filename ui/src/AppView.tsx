@@ -27,7 +27,7 @@ import { StateDot, statusOf, statusText } from "./ui/state";
 import { useCopy } from "./ui/useCopy";
 import type { FrameStatus } from "./views/host";
 import type { Params, ParamsState } from "./views/protocol";
-import { ParamBar, paramsState, ViewFrame, type FrameError } from "./Views";
+import { busy, ParamBar, paramsState, Refreshing, useLiveRefresh, ViewFrame, type FrameError } from "./Views";
 
 const ShareDialog = lazy(() => import("./Share").then((m) => ({ default: m.ShareDialog })));
 
@@ -114,6 +114,7 @@ export default function AppView(props: { view: string }) {
   const views = project?.views ?? [];
   const view = views.find((v) => v.name === name) ?? null;
   const state = useMemo(() => paramsState(project?.params ?? []), [project]);
+  const refreshing = useLiveRefresh(view, overrides);
   useEffect(() => {
     if (project) document.title = `${view ? view.title || view.name : name} · ${project.name}`;
   }, [project, view, name]);
@@ -140,7 +141,7 @@ export default function AppView(props: { view: string }) {
     setStatus({ phase: "loading" });
   }, [view?.hash, name]);
 
-  const toRun = view ? view.outputs.filter((o) => o.state !== "fresh" || !o.artifact_id).map((o) => o.node) : [];
+  const toRun = view ? view.outputs.filter((o) => (o.state !== "fresh" || !o.artifact_id) && !busy(o.state)).map((o) => o.node) : [];
   const workbench = projectRoot(HUB_PROJECT) + `#views/${name}`;
   const title = view ? view.title || view.name : name;
   const problem = !!badAddress || errors.length > 0 || !conn;
@@ -275,7 +276,21 @@ export default function AppView(props: { view: string }) {
 
   return (
     <div {...stylex.props(styles.app)}>
-      <ViewFrame key={view.name + view.hash} view={view} params={state} dark={dark} hidden={false} onParams={changeParams} onStatus={onStatus} />
+      <ViewFrame
+        key={view.name + view.hash}
+        view={view}
+        params={state}
+        dark={dark}
+        hidden={false}
+        refreshing={refreshing}
+        onParams={changeParams}
+        onStatus={onStatus}
+      />
+      {status.phase !== "loading" && refreshing.length > 0 && (
+        <div {...stylex.props(styles.refreshing)}>
+          <Refreshing view={view} nodes={refreshing} />
+        </div>
+      )}
       {status.phase === "loading" && (
         <div {...stylex.props(styles.loading)}>
           <Spinner aria-label="Loading the view" />
@@ -311,6 +326,17 @@ const styles = stylex.create({
   app: { position: "fixed", inset: 0, display: "flex", flexDirection: "column", backgroundColor: colorVars["--color-background-body"] },
   center: { minHeight: "100dvh", display: "grid", placeItems: "center", padding: spacingVars["--spacing-6"] },
   loading: { position: "absolute", inset: 0, display: "grid", placeItems: "center", pointerEvents: "none" },
+  // Over the view's top corner while newer data is on its way: the view stays readable under it.
+  refreshing: {
+    position: "fixed",
+    insetBlockStart: spacingVars["--spacing-3"],
+    insetInlineEnd: spacingVars["--spacing-3"],
+    paddingBlock: spacingVars["--spacing-1"],
+    paddingInline: spacingVars["--spacing-3"],
+    borderRadius: radiusVars["--radius-full"],
+    backgroundColor: colorVars["--color-background-surface"],
+    boxShadow: shadowVars["--shadow-med"],
+  },
   // The one control on the page: in a corner, quiet until it is wanted.
   tools: {
     position: "fixed",

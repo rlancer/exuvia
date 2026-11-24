@@ -11,10 +11,11 @@
  *   iframe → host   boot                        the frame's bootstrap is listening
  *   host → iframe   runtime {source}            the runtime script; the bootstrap evaluates it
  *   iframe → host   ready                       runtime loaded, send the view
- *   host → iframe   load {view, params, dark}   compile `view.entry` and render it
+ *   host → iframe   load {view, params, dark, refreshing}   compile `view.entry` and render it
  *   iframe → host   request {id, method, args}  table | json | query | params | setParams | download
  *   host → iframe   response {id, ok, ...}      the answer (Arrow bytes are transferred)
  *   host → iframe   changed {nodes, params}     outputs the view reads were replaced
+ *   host → iframe   refreshing {nodes}          read nodes being re-run (live nodes, as the view opens)
  *   host → iframe   theme {dark}
  *   iframe → host   status {phase, ...}         compiled / rendered / an error with its file
  *
@@ -109,10 +110,11 @@ export type ToHost =
 
 export type ToFrame =
   | { channel: typeof CHANNEL; type: "runtime"; source: string }
-  | { channel: typeof CHANNEL; type: "load"; view: ViewBundle; params: ParamsState; dark: boolean }
+  | { channel: typeof CHANNEL; type: "load"; view: ViewBundle; params: ParamsState; dark: boolean; refreshing?: string[] }
   | { channel: typeof CHANNEL; type: "response"; id: number; ok: true; result: unknown }
   | { channel: typeof CHANNEL; type: "response"; id: number; ok: false; error: string }
   | { channel: typeof CHANNEL; type: "changed"; nodes: string[]; params: ParamsState }
+  | { channel: typeof CHANNEL; type: "refreshing"; nodes: string[] }
   | { channel: typeof CHANNEL; type: "theme"; dark: boolean };
 
 /** Distributes `Omit` over a union, so each member keeps its own fields. */
@@ -157,5 +159,5 @@ export function isToHost(data: unknown): data is ToHost {
 }
 
 export function isToFrame(data: unknown): data is ToFrame {
-  return tagged(data) && ["runtime", "load", "response", "changed", "theme"].includes(data.type);
+  return tagged(data) && ["runtime", "load", "response", "changed", "refreshing", "theme"].includes(data.type);
 }

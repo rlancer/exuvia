@@ -183,6 +183,10 @@ class QueryReq(BaseModel):
     params: dict[str, Any] | None = None
 
 
+class ViewRefresh(BaseModel):
+    params: dict[str, Any] | None = None
+
+
 class QueryExport(BaseModel):
     sql: str
     params: dict[str, Any] | None = None
@@ -755,6 +759,26 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
             raise HTTPException(404, f"no view {name}") from e
         except Exception as e:
             raise HTTPException(400, f"{type(e).__name__}: {e}") from e
+
+    @r.post("/views/{name}/refresh")
+    async def view_refresh(name: str, body: ViewRefresh, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """Re-run the live nodes a view depends on (``live=True`` or
+        ``-- live: true``), for one parameter set; the page calls this when
+        it opens the view. Returns at once with ``live`` (the view's live
+        nodes), ``started`` and ``skipped`` (node -> why: already running,
+        or refreshed within its ``live`` seconds). The view keeps showing
+        the stored outputs; the runs' events replace them as they land.
+        Anyone who can open the view may call it: a live node's author
+        asked for it to run when the view is looked at."""
+        params = _resolve(ctx.ws, body.params)
+        try:
+            res = ctx.ws.refresh_view(name, params)
+        except KeyError as e:
+            raise HTTPException(404, f"no view {name}") from e
+        # One turn of the loop starts the runs, which registers them, so a
+        # project read after this answer already shows them queued.
+        await asyncio.sleep(0)
+        return res
 
     @r.get("/views/{name}/data/{node}/export", response_model=None)
     def view_data_export(
@@ -1618,6 +1642,9 @@ _PROJECT_API_REST = re.compile(r"^/p/[^/]+/api(/.*)?$")
 # POSTs that read and change nothing: SQL over outputs (DuckDB, read-only),
 # and the same result as a download.
 _READ_POSTS = re.compile(r"^/(query|views/[^/]+/query)(/export)?$")
+# Opening a view re-runs its live nodes (see Workspace.refresh_view): their
+# author made them live so whoever looks at the view sees current data.
+_VIEW_REFRESH = re.compile(r"^/views/[^/]+/refresh$")
 _TOOL_POST = re.compile(r"^/tools/([^/]+)$")
 
 
@@ -1629,7 +1656,7 @@ def _needed_role(request: Request) -> str:
         return "viewer"
     m = _PROJECT_API_REST.match(request.url.path)
     rest = (m.group(1) or "/") if m else request.url.path
-    if _READ_POSTS.match(rest):
+    if _READ_POSTS.match(rest) or _VIEW_REFRESH.match(rest):
         return "viewer"
     tool = _TOOL_POST.match(rest)
     if tool and tool.group(1) in READ_TOOLS:
