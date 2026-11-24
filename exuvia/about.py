@@ -82,7 +82,7 @@ def install_kind() -> str:
 # What updates exuvia, per install kind; null where it is not a command the
 # person in front of the workbench runs.
 UPGRADE = {
-    "uvx": "uvx exuvia@latest {command} <folder>",
+    "uvx": "uvx exuvia@latest {command} {target}",
     "uv-tool": "uv tool upgrade exuvia",
     "pipx": "pipx upgrade exuvia",
     "pip": "pip install -U exuvia",
@@ -132,22 +132,23 @@ async def latest_version(refresh: bool = False) -> tuple[str | None, str | None,
         return _cache["latest"], _cache["error"], _cache["checked_at"]
 
 
-async def about(refresh: bool = False, command: str = "serve") -> dict[str, Any]:
+async def about(refresh: bool = False, command: str = "serve", target: str = "<folder>") -> dict[str, Any]:
     """What ``GET /api/about`` answers.
 
     ``update`` is ``off`` (checks turned off), ``dev`` (a development build:
     nothing to compare), ``error`` (PyPI didn't answer), ``available`` or
     ``current``. ``upgrade`` is the command that updates this install, or null
     on a deployed server, whose operator updates it by redeploying ``image``.
-    ``command`` is the one this server runs (``serve`` or ``hub``), for uvx,
-    where the update is running it again with ``@latest``.
+    ``command`` is the one this process runs (``serve``, ``hub`` or ``mcp``)
+    and ``target`` its argument (a folder, or ``--url URL`` for a relay), for
+    uvx, where the update is running it again with ``@latest``.
     """
     kind = install_kind()
     out: dict[str, Any] = {
         "version": __version__,
         "install": kind,
         "deployed": kind == "deployed",
-        "upgrade": (UPGRADE[kind] or "").format(command=command) or None,
+        "upgrade": (UPGRADE[kind] or "").format(command=command, target=target) or None,
         "image": IMAGE,
         "latest": None,
         "update": "off",

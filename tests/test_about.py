@@ -140,3 +140,9 @@ def test_the_endpoint_needs_the_token(tmp_path, monkeypatch):
     with TestClient(create_app(tmp_path / "p")) as client:
         assert client.get("/api/about").status_code == 401
         assert client.get("/api/about", headers={"Authorization": "Bearer s3cret"}).status_code == 200
+
+
+def test_the_uvx_command_runs_what_this_process_runs(monkeypatch):
+    monkeypatch.setattr(about, "install_kind", lambda: "uvx")
+    a = run(about.about(command="mcp", target="--url https://hub.example.com"))
+    assert a["upgrade"] == "uvx exuvia@latest mcp --url https://hub.example.com"

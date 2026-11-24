@@ -87,6 +87,8 @@ function toolLabel(it: Extract<Item, { kind: "tool" }>): string {
       return `deleted ${i.path ?? ""}`;
     case "docs":
       return i.topic ? `read the docs: ${i.topic}` : i.query ? `searched the docs: ${i.query}` : "looked at the docs";
+    case "version":
+      return "checked the exuvia version";
     case "report_issue":
       return `drafted an issue report: ${String(i.title ?? "").slice(0, 80)}`;
     default: {

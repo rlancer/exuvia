@@ -2156,7 +2156,7 @@ schedule or a cascade ran, with each run's error and log), `define_param` /
 `list_packages`, `request_packages` and `add_view_packages` (see "Packages"), `list_env` and
 `request_secret` (the project's environment variables by name, and asking
 you to set one: the agent never sees a secret's value; see "Environment
-variables and secrets"), `docs` and
+variables and secrets"), `docs`, `version` and
 `report_issue` (see "MCP"). It looks at real column names before writing, runs
 what it writes, reads the traceback when something fails, and fixes it. Every
 tool call shows up in the chat, and nodes it touches flash on the canvas.
@@ -2371,7 +2371,8 @@ token from a file (`EXUVIA_API_TOKEN_FILE`).
 `create_project`, and each project tool with a required `project` argument
 (the project's id); `guide` with `project` returns that project's
 instructions, and without it describes the hub and lists its projects.
-`docs` is about exuvia rather than a project, so it takes no `project`. One
+`docs` and `version` are about exuvia rather than a project, so they take no
+`project`. One
 MCP server then covers all of them, including ones created later. A hub's
 home page writes this setup out (**Connect agent**), with a person's own
 agent token already in it on a hub where people sign in. For an agent that should
@@ -2389,8 +2390,9 @@ agent. A tool that fails returns its error (a traceback's last lines, an
 invalid input) as the tool result, for the model to read and fix.
 
 **Docs.** The `guide` covers building in a project; for everything else
-(deploying a hub, auth and agent tokens, package indexes, executors, the HTTP
-API, setting up MCP itself) the agent has a `docs` tool. It reads this README
+(the `exuvia` command line, updating exuvia, deploying a hub, auth and agent
+tokens, package indexes, executors, the HTTP API, setting up MCP itself) the
+agent has a `docs` tool. It reads this README
 as the installed version ships it, so the answer matches the exuvia that is
 running and needs no network: with no input it returns the table of
 contents, with `topic` one section (`Kerberos`, `Deploying > Kerberos` or an
@@ -2400,6 +2402,13 @@ that best match some words. The agent's instructions tell it to look there
 rather than answer such questions from memory. Clients that can fetch web
 pages also have [llms.txt](https://exuvia.lobster.mp/llms.txt), which
 describes the latest release.
+
+**Version.** The `version` tool tells the agent which exuvia is running, how
+it was installed, whether a newer release is out and the command that
+updates it (see [Updating exuvia](#updating-exuvia)), so it can update
+exuvia when you ask without a separate skill. Through `exuvia mcp --url` it
+answers for both the server and the `exuvia` on your machine. The agent
+updates nothing unless you ask.
 
 **Reporting problems.** When the problem is exuvia's rather than your
 project's (a tool fails on valid input, the instructions are wrong or
@@ -2414,7 +2423,26 @@ agent's instructions ask it to offer this whenever exuvia is at fault, and to
 leave secrets and your data out. Issues from anyone are welcome, with or
 without an agent.
 
-## Headless
+## Command line
+
+Every `exuvia` command, with or without an install (`uvx exuvia …` runs the
+same commands). `exuvia <command> --help` prints a command's options; the
+section named after each one has the details.
+
+| Command | What it does | More |
+| --- | --- | --- |
+| `exuvia init DIR` | scaffold a project: `nodes/`, a first node, `pyproject.toml` | Quick start |
+| `exuvia serve [DIR]` | the workbench for one project: UI, API, MCP at `/mcp`, scheduler. `--host`, `--port` (7420), `--executor URL`, `--scheduler` | Quick start, Deploying |
+| `exuvia hub DIR` | every project under `DIR` from one process. `--templates DIR`, and the options of `serve` | Hub |
+| `exuvia run [DIR] [NODE…]` | run stale nodes (or the named ones and their stale upstream) without the UI; non-zero exit when one fails. `--force`, `--param NAME=VALUE` | below |
+| `exuvia status [DIR]` | each node's freshness. `--json`, `--param NAME=VALUE` | below |
+| `exuvia mcp [DIR]` | the agent's tools over MCP on stdio: the project in `DIR`, or `--url URL` to relay to a running server or hub | MCP |
+| `exuvia push NODE FILE --url URL` | upload a push node's output (`.parquet`, `.csv`, `.json`) from the machine that has the data. `--param`, `--note`, `--allow-http` | Push nodes |
+| `exuvia env list`, `set`, `rm` | a project's (or, with `--group`, a hub group's) environment variables and secrets, in a folder or over `--url` | Environment variables and secrets |
+| `exuvia executor` | serve node execution over HTTP for a control plane. `--host`, `--port` (8080) | Architecture |
+| `exuvia secrets-key` | print a new key for `EXUVIA_SECRETS_KEY` | Encryption |
+
+### Headless runs
 
 ```bash
 exuvia run examples/markets                 # run everything stale
@@ -2424,6 +2452,30 @@ exuvia status examples/markets
 
 `exuvia run` exits non-zero when any node fails, so it drops straight into CI
 or a system cron.
+
+### Updating exuvia
+
+How to update depends on how exuvia was installed:
+
+| Installed with | Update with |
+| --- | --- |
+| `uv tool install exuvia` | `uv tool upgrade exuvia` |
+| `pipx install exuvia` | `pipx upgrade exuvia` |
+| `pip install exuvia` | `pip install -U exuvia` (in the same environment) |
+| `uvx exuvia …` (no install) | `uvx exuvia@latest …`: a plain `uvx exuvia` keeps running the copy it cached, or the `uv tool` install when there is one |
+| a clone (`uv sync`) | `git pull && uv sync` |
+| the image (`ghcr.io/rlancer/exuvia`) | deploy the new tag; whoever runs the server does this |
+
+A running exuvia keeps its version until it restarts: restart `exuvia serve`
+or `exuvia hub` after updating, and restart the MCP client (or its exuvia
+server) for `exuvia mcp`. A project's records database written by an older
+exuvia is upgraded in place when it opens. The workbench's **?** menu says
+when a newer release is out (see "Version and updates" under
+[Schedules, auth and settings](#schedules-auth-and-settings)), and the agent's
+`version` tool answers the same for an agent: the running version, how it was
+installed, the latest release and the command that updates it. Through
+`exuvia mcp --url` it answers for both the server and the `exuvia` on the
+agent's machine, which can differ.
 
 ## Hub: many projects from one process
 

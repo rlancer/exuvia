@@ -37,6 +37,7 @@ from .mcp_server import (
     build_server,
     hub_instructions,
     hub_tool_list,
+    project_free,
     secret_request_links,
 )
 
@@ -135,9 +136,7 @@ class HubLocalBackend:
         if name == "list_projects":
             return True, json.dumps({"projects": self.hub.visible(), "templates": self.hub.templates()}, indent=1)
         if name in PROJECT_FREE:
-            from . import docs
-
-            return docs.tool(args)
+            return await project_free(name, args, "hub")
         if name == "create_project":
             pid, display, template = args.get("id"), args.get("name"), args.get("template")
             if not isinstance(pid, str) or not all(v is None or isinstance(v, str) for v in (display, template)):

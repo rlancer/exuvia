@@ -134,7 +134,7 @@ class Hub:
                 if self.groups is not None:
                     ws.inherited_env = lambda pid=project_id: self.inherited_env(pid)
                 await ws.start()
-                ctx = Ctx(ws, Agent(ws))
+                ctx = Ctx(ws, Agent(ws, command="hub"))
                 ctx.agent.mcp = self.mcp
                 self._ctxs[project_id] = ctx
             return ctx

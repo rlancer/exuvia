@@ -540,3 +540,96 @@ def test_request_secret_on_a_local_project_points_at_the_terminal(tmp_path):
     ok, out = asyncio.run(go())
     res = json.loads(out)
     assert ok and "workbench" not in res and res["terminal"] == f"exuvia env set FRED_API_KEY {root}"
+
+
+@pytest.fixture
+def released(monkeypatch):
+    """A uvx install of 0.3.5 with 0.4.0 out on PyPI (no test reaches PyPI)."""
+    from exuvia import about
+
+    for name in ("EXUVIA_DEPLOYED", "EXUVIA_UPDATE_CHECK"):
+        monkeypatch.delenv(name, raising=False)
+    about._cache.update(latest=None, error=None, checked_at=0.0)
+    about._lock = None
+
+    async def fetch() -> str:
+        return "0.4.0"
+
+    monkeypatch.setattr(about, "_fetch", fetch)
+    monkeypatch.setattr(about, "__version__", "0.3.5")
+    monkeypatch.setattr(about, "install_kind", lambda: "uvx")
+
+
+def test_the_version_tool_says_how_to_update(tmp_path, released):
+    """`version`: the running exuvia, the latest release and the command that
+    updates this install, so an agent can update exuvia without a skill."""
+    backend = LocalBackend(project(tmp_path))
+
+    async def go():
+        await backend.start()
+        try:
+            return (
+                await backend.instructions(),
+                await backend.call("version", {}),
+                await backend.call("version", {"refresh": "yes"}),
+            )
+        finally:
+            await backend.stop()
+
+    guide, (ok, out), (bad_ok, bad) = asyncio.run(go())
+    v = json.loads(out)
+    assert ok and v["version"] == "0.3.5" and v["latest"] == "0.4.0" and v["update"] == "available"
+    assert v["upgrade"] == "uvx exuvia@latest mcp <folder>"
+    assert not bad_ok and bad.startswith("INVALID_INPUT")
+    # The guide sends CLI questions to `docs` and update questions to `version`.
+    assert "the `exuvia` command line" in guide and "`version` says which exuvia is running" in guide
+
+
+def test_a_relay_answers_version_for_the_server_and_this_machine(served, released):
+    url, _ = served
+
+    async def go(where):
+        backend = RemoteBackend(where)
+        await backend.start()
+        try:
+            return await backend.call("version", {})
+        finally:
+            await backend.stop()
+
+    ok, out = asyncio.run(go(url))
+    v = json.loads(out)
+    assert ok and v["server"]["url"] == url and v["server"]["upgrade"] == "uvx exuvia@latest serve <folder>"
+    assert v["this_machine"]["upgrade"] == f"uvx exuvia@latest mcp --url {url}"
+
+    with socket.socket() as s:  # nothing answers: this machine's exuvia still does
+        s.bind(("127.0.0.1", 0))
+        down = f"http://127.0.0.1:{s.getsockname()[1]}"
+    ok, out = asyncio.run(go(down))
+    v = json.loads(out)
+    assert ok and "could not reach exuvia" in v["server"]["error"] and v["this_machine"]["version"] == "0.3.5"
+
+
+def test_a_hub_answers_version_without_a_project(hub_served, released):
+    from exuvia.mcp_server import remote_backend
+
+    async def relay():
+        backend = await remote_backend(hub_served, "s3cret")
+        await backend.start()
+        try:
+            tools = {t["name"]: t for t in await backend.tools()}
+            return tools, await backend.call("version", {})
+        finally:
+            await backend.stop()
+
+    tools, (ok, out) = asyncio.run(relay())
+    assert "project" not in tools["version"]["input_schema"]["properties"]
+    v = json.loads(out)
+    assert ok and v["server"]["upgrade"] == "uvx exuvia@latest hub <folder>"
+    assert v["this_machine"]["upgrade"] == f"uvx exuvia@latest mcp --url {hub_served}"
+
+    async def over_http():
+        async with http_client(f"{hub_served}/mcp", "s3cret") as client:
+            return await client.call_tool("version", {})
+
+    res = asyncio.run(over_http())
+    assert not res.is_error and json.loads(text(res))["upgrade"] == "uvx exuvia@latest hub <folder>"
