@@ -67,7 +67,8 @@ export default function Hub() {
   const [listing, setListing] = useState<Listing | null>(null);
   const [needToken, setNeedToken] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [newOpen, setNewOpen] = useState(false);
+  // The New project dialog, and the group it starts in ("" for none).
+  const [newIn, setNewIn] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<HubProject | null>(null);
   const [sharing, setSharing] = useState<HubProject | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
@@ -109,10 +110,11 @@ export default function Hub() {
 
   const all = listing?.projects ?? [];
   const groups: HubGroup[] = listing?.groups ?? [];
+  /** Without sharing everyone owns every project; with it, the owner does (admins are owners everywhere). */
+  const owns = (p: HubProject) => !listing?.sharing || p.access === "owner";
   /** Whether the Group button shows on a project's row: its owner can add it to a group they edit, a group's editor can take it out. */
   const canGroup = (p: HubProject) => {
-    const owner = !listing?.sharing || p.access === "owner";
-    if (owner) return !!p.group || groups.some((g) => g.access !== "viewer");
+    if (owns(p)) return !!p.group || groups.some((g) => g.access !== "viewer");
     return !!p.group && groups.some((g) => g.id === p.group!.id && g.access !== "viewer");
   };
   const showGroup = (gid: string | null) => {
@@ -127,8 +129,7 @@ export default function Hub() {
   const people = !!listing?.sharing?.people && !!uid;
   const mine = (p: HubProject) => !!uid && p.owner?.id === uid;
   const projects = !people || filter === "all" ? all : all.filter((p) => (filter === "mine" ? mine(p) : !mine(p)));
-  // Without sharing everyone can delete; with it, the owner (admins are owners everywhere).
-  const canDelete = (p: HubProject) => !listing?.sharing || p.access === "owner";
+  const canDelete = owns;
   const someDeletable = projects.some(canDelete);
   useEffect(() => {
     document.title = "Projects · exuvia";
@@ -208,7 +209,7 @@ export default function Hub() {
             title="No projects yet"
             headingLevel={1}
             description="A project is one graph of Python and SQL nodes, with its own runs, outputs and views."
-            actions={<Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewOpen(true)} />}
+            actions={<Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewIn("")} />}
           />
         ) : all.length === 0 ? (
           <VStack gap={8}>
@@ -217,7 +218,7 @@ export default function Hub() {
               title="No projects yet"
               headingLevel={1}
               description="A project is one graph of Python and SQL nodes, with its own runs, outputs and views."
-              actions={<Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewOpen(true)} />}
+              actions={<Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewIn("")} />}
             />
             <Groups groups={groups} onOpen={showGroup} onNew={() => setNewGroup(true)} people={people} />
           </VStack>
@@ -231,7 +232,7 @@ export default function Hub() {
                 </Text>
               </div>
               <span {...stylex.props(styles.grow)} />
-              <Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewOpen(true)} />
+              <Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewIn("")} />
             </HStack>
             {people && (
               <SegmentedControl label="Which projects" size="sm" value={filter} onChange={(f) => setFilter(f as Filter)} xstyle={styles.filter}>
@@ -316,12 +317,15 @@ export default function Hub() {
         )}
       </main>
 
-      {newOpen && listing && (
+      {newIn !== null && listing && (
         <NewProjectDialog
           templates={listing.templates}
           taken={all.map((p) => p.id)}
           access={people ? listing.sharing!.default_access : null}
-          onClose={() => setNewOpen(false)}
+          groups={groups.filter((g) => g.access !== "viewer")}
+          group={newIn}
+          people={people}
+          onClose={() => setNewIn(null)}
           onCreated={(id) => location.assign(workbench(id))}
         />
       )}
@@ -330,7 +334,15 @@ export default function Hub() {
         <ShareDialog project={sharing.id} name={sharing.name} self={uid} onClose={() => setSharing(null)} onChanged={load} />
       )}
       {openGroup && (
-        <GroupDialog gid={openGroup} self={uid} onClose={() => showGroup(null)} onChanged={load} />
+        <GroupDialog
+          gid={openGroup}
+          self={uid}
+          projects={all}
+          ownsProject={owns}
+          onNewProject={() => setNewIn(openGroup)}
+          onClose={() => showGroup(null)}
+          onChanged={load}
+        />
       )}
       {newGroup && (
         <GroupNameDialog
@@ -496,6 +508,12 @@ function NewProjectDialog(props: {
   taken: string[];
   /** On a hub where people sign in: the default for who else can open it. */
   access: GeneralAccess | null;
+  /** The groups the person can add projects to. */
+  groups: HubGroup[];
+  /** The group it starts in ("": none), when it is made from a group's page. */
+  group: string;
+  /** People sign in on this hub (groups have people). */
+  people: boolean;
   onClose: () => void;
   onCreated: (id: string) => void;
 }) {
@@ -504,6 +522,8 @@ function NewProjectDialog(props: {
   const [id, setId] = useState("");
   const [idEdited, setIdEdited] = useState(false);
   const [template, setTemplate] = useState("");
+  const [group, setGroup] = useState(props.group);
+  const inGroup = props.groups.find((g) => g.id === group) ?? null;
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -527,6 +547,7 @@ function NewProjectDialog(props: {
         name: name.trim() || undefined,
         template: template || undefined,
         access: props.access ? access : undefined,
+        group: inGroup?.id,
       });
       props.onCreated(finalId);
     } catch (e) {
@@ -538,6 +559,7 @@ function NewProjectDialog(props: {
   return (
     <AppDialog
       title="New project"
+      subtitle={props.group && inGroup ? `In ${inGroup.name}` : undefined}
       onClose={props.onClose}
       onSubmit={submit}
       footer={(formId) => (
@@ -581,13 +603,33 @@ function NewProjectDialog(props: {
             }))}
           />
         )}
+        {props.groups.length > 0 && (
+          <Selector
+            label="Group"
+            value={group || BLANK}
+            onChange={(g) => setGroup(!g || g === BLANK ? "" : g)}
+            description={
+              inGroup
+                ? `Its runs get ${inGroup.name}'s variables and secrets${props.people ? `, and ${inGroup.name}'s people get their group role on it` : ""}.`
+                : undefined
+            }
+            options={[
+              { value: BLANK, label: "No group" },
+              ...props.groups.map((g) => ({
+                value: g.id,
+                label: g.name,
+                description: `${g.projects} project${g.projects === 1 ? "" : "s"}, ${g.variables} variable${g.variables === 1 ? "" : "s"}`,
+              })),
+            ]}
+          />
+        )}
         {err && <Banner role="alert" status="error" title={err} />}
       </VStack>
     </AppDialog>
   );
 }
 
-/** The Start from choice that is no template. */
+/** The Start from and Group choice that is none. */
 const BLANK = "(empty)";
 
 /**

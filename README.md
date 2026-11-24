@@ -2709,6 +2709,12 @@ group's secrets. The dialog that adds a project says so. Taking a project
 out of its group needs its owner or an editor of the group. A group's page
 lists its projects, so its people can see where its secrets go.
 
+**Starting a project in a group.** A group's editors start one from the
+group's page (**New project**), or pick the group in the New project dialog;
+whoever creates it owns it, so it goes straight in. **Add a project** on the
+group's page puts in one of your projects that is already there, and a
+project's own row on the home page moves it between groups or takes it out.
+
 Hub admins and the hub's API token own every group. The groups are kept
 beside the sharing settings (the hub's `.exuvia/hub.db`, or the shared
 `EXUVIA_DB`), and a hub export carries them, with the hub's key file when
@@ -2719,8 +2725,9 @@ The API: `GET /api/groups` (the groups you have a role on), `POST
 /api/groups` `{name}`, `GET`, `PATCH` `{name, owner}` and `DELETE
 /api/groups/{id}`, `PUT /api/groups/{id}/people` `{user | email, role}`,
 `DELETE /api/groups/{id}/people/{principal}`, `GET /api/groups/{id}/env`,
-`PUT` / `DELETE /api/groups/{id}/env/{name}` `{value, secret}`, and `PUT
-/api/projects/{project}/group` `{group}` (`null` takes it out). The agent's
+`PUT` / `DELETE /api/groups/{id}/env/{name}` `{value, secret}`, `PUT
+/api/projects/{project}/group` `{group}` (`null` takes it out), and `group`
+in `POST /api/projects` to create a project in a group you edit. The agent's
 `list_env` tool gives each variable's `source` (`project` or `group`).
 
 ## Embedding / using it inside another app

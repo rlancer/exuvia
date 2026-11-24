@@ -242,6 +242,21 @@ def test_adding_a_project_needs_its_owner_and_an_editor_of_the_group(hub):
     assert hub.put("/api/projects/a/group", json={"group": None}, headers=ALICE).json()["group"] is None
 
 
+def test_a_project_is_created_in_a_group_by_an_editor_of_it(hub):
+    gid = new_group(hub, BOB)
+    hub.put(f"/api/groups/{gid}/people", json={"user": uid(hub, CAROL), "role": "viewer"}, headers=BOB)
+    # Nobody else's group, and only an editor of it: the project is not made.
+    assert hub.post("/api/projects", json={"id": "a", "group": gid}, headers=ALICE).status_code == 404
+    r = hub.post("/api/projects", json={"id": "a", "group": gid}, headers=CAROL)
+    assert r.status_code == 403 and "editor of group" in r.json()["detail"]
+    assert "a" not in [p["id"] for p in hub.get("/api/projects", headers=BOB).json()["projects"]]
+    r = hub.post("/api/projects", json={"id": "a", "access": "private", "group": gid}, headers=BOB)
+    assert r.status_code == 200 and r.json()["group"] == {"id": gid, "name": "Research"}
+    # The group's viewer opens it through the group.
+    assert [p["id"] for p in hub.get(f"/api/groups/{gid}", headers=CAROL).json()["projects"]] == ["a"]
+    assert hub.get("/p/a/api/access", headers=CAROL).json()["role"] == "viewer"
+
+
 def test_group_variables_editors_set_viewers_see_names_and_secrets_stay_hidden(hub):
     gid = new_group(hub)
     hub.put(f"/api/groups/{gid}/people", json={"user": uid(hub, BOB), "role": "viewer"}, headers=ALICE)
