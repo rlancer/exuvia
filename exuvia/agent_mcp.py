@@ -19,12 +19,26 @@ and last four characters. They are kept in the server's database as they are
 ``.exuvia/hub.db``, the project's database for ``exuvia serve``, or the shared
 ``EXUVIA_DB``. A hub export leaves them out.
 
+OAuth: a server that signs people in with OAuth (MCP's authorization spec)
+gets a **Sign in** instead of a header. ``sign_in`` starts the flow with the
+MCP SDK's OAuth client: it discovers the server's authorization server,
+registers exuvia there (dynamic client registration) and hands back the page
+to open in a popup. The authorization server sends the browser back to
+``/api/me/mcp/oauth/callback`` on this exuvia server, and ``finish_sign_in``
+gives the code to the waiting flow, which trades it for tokens and keeps them
+on the server's row (``oauth``), as secret as the headers. Each turn then
+sends the access token and refreshes it when it runs out; when that no longer
+works the server is left out and the agent says to sign in again. A sign-in
+in progress lives in this process (``_SIGN_INS``), so the callback must reach
+the replica that started it.
+
 Where a server may point: anywhere public. Loopback, private and link-local
 addresses (the machine itself, the cluster's network, a cloud's metadata
 service) are refused on a server that needs a sign-in or a token, unless
 ``EXUVIA_AGENT_MCP_PRIVATE=1``. A local server with no auth allows them, so
-an MCP server on your own machine works. ``EXUVIA_AGENT_MCP=off`` turns the
-feature off.
+an MCP server on your own machine works. The same holds for every request a
+connection makes, the OAuth discovery, registration and token requests too.
+``EXUVIA_AGENT_MCP=off`` turns the feature off.
 
 Each connection lives in its own task for the length of one agent turn (the
 MCP client's task groups must open and close in the task that owns them, and
@@ -46,7 +60,7 @@ import weakref
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any, Callable
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from . import auth
 from .db import Database, database_url, scope_prefix, shared_database
@@ -76,6 +90,7 @@ TABLE = """create table if not exists agent_mcp_servers (
     name text not null,          -- the tools' prefix: <name>__<tool>
     url text not null,
     headers text not null,       -- a JSON object; the values are secrets and never leave the server
+    oauth text,                  -- an OAuth sign-in (JSON: the registered client and the tokens), secret too
     enabled integer not null default 1,
     created_at double precision not null,
     updated_at double precision not null,
@@ -99,6 +114,12 @@ def _prepare(db: Database) -> None:
             if db.dialect == "postgres":
                 db.query(f"select pg_advisory_xact_lock({SCHEMA_LOCK_KEY})")
             db.query(TABLE)
+    elif "oauth" not in db.columns("agent_mcp_servers"):
+        with db.transaction():
+            if db.dialect == "postgres":
+                db.query(f"select pg_advisory_xact_lock({SCHEMA_LOCK_KEY})")
+            if "oauth" not in db.columns("agent_mcp_servers"):
+                db.query("alter table agent_mcp_servers add column oauth text")
     _prepared.add(db)
 
 
@@ -175,6 +196,13 @@ class Server:
     name: str
     url: str
     headers: dict[str, str] = field(default_factory=dict)
+    # An OAuth sign-in (see the module doc) and how to save its refreshed tokens.
+    oauth: dict[str, Any] | None = field(default=None, compare=False, repr=False)
+    save_oauth: Callable[[dict[str, Any] | None], None] | None = field(default=None, compare=False, repr=False)
+
+
+def _signed_in(oauth: dict[str, Any] | None) -> bool:
+    return bool(oauth and oauth.get("tokens"))
 
 
 class McpServers:
@@ -213,7 +241,7 @@ class McpServers:
     def list(self, owner: str) -> list[dict[str, Any]]:
         """One person's servers, by name: the header values replaced by hints."""
         rows = self._q(
-            "select name, url, headers, enabled, created_at, updated_at from agent_mcp_servers "
+            "select name, url, headers, oauth, enabled, created_at, updated_at from agent_mcp_servers "
             "where scope=? and owner=? order by name",
             (self.scope, owner),
         )
@@ -223,17 +251,32 @@ class McpServers:
             out.append({
                 "name": r["name"], "url": r["url"], "enabled": bool(r["enabled"]),
                 "headers": [{"name": k, "hint": _hint(v)} for k, v in headers.items()],
+                "signed_in": _signed_in(json.loads(r["oauth"]) if r["oauth"] else None),
                 "created_at": r["created_at"], "updated_at": r["updated_at"],
             })
         return out
 
+    def _server(self, owner: str, r: dict[str, Any]) -> Server:
+        name = r["name"]
+        return Server(
+            name, r["url"], json.loads(r["headers"]), oauth=json.loads(r["oauth"]) if r["oauth"] else None,
+            save_oauth=lambda data: self.set_oauth(owner, name, data),
+        )
+
     def active(self, owner: str) -> list[Server]:
         """One person's enabled servers, with their headers, for a turn."""
         rows = self._q(
-            "select name, url, headers from agent_mcp_servers where scope=? and owner=? and enabled=1 order by name",
+            "select name, url, headers, oauth from agent_mcp_servers where scope=? and owner=? and enabled=1 order by name",
             (self.scope, owner),
         )
-        return [Server(r["name"], r["url"], json.loads(r["headers"])) for r in rows]
+        return [self._server(owner, r) for r in rows]
+
+    def set_oauth(self, owner: str, name: str, data: dict[str, Any] | None) -> None:
+        """Keep a server's OAuth sign-in (None: sign out)."""
+        self._q(
+            "update agent_mcp_servers set oauth=?, updated_at=? where scope=? and owner=? and name=?",
+            (json.dumps(data) if data else None, time.time(), self.scope, owner, name),
+        )
 
     def put(
         self, owner: str, name: str, *, url: str | None = None, headers: dict[str, Any] | None = None,
@@ -274,6 +317,11 @@ class McpServers:
                     "update agent_mcp_servers set url=?, headers=?, enabled=?, updated_at=? where scope=? and owner=? and name=?",
                     (new_url, json.dumps(merged), on, now, self.scope, owner, name),
                 )
+                if new_url != rows[0]["url"]:  # an OAuth sign-in is for the server it was made with
+                    self._q(
+                        "update agent_mcp_servers set oauth=null where scope=? and owner=? and name=?",
+                        (self.scope, owner, name),
+                    )
             else:
                 self._q(
                     "insert into agent_mcp_servers (scope, owner, name, url, headers, enabled, created_at, updated_at) "
@@ -284,10 +332,10 @@ class McpServers:
 
     def get(self, owner: str, name: str) -> Server | None:
         rows = self._q(
-            "select name, url, headers from agent_mcp_servers where scope=? and owner=? and name=?",
+            "select name, url, headers, oauth from agent_mcp_servers where scope=? and owner=? and name=?",
             (self.scope, owner, name),
         )
-        return Server(rows[0]["name"], rows[0]["url"], json.loads(rows[0]["headers"])) if rows else None
+        return self._server(owner, rows[0]) if rows else None
 
     def delete(self, owner: str, name: str) -> bool:
         with self.db.transaction():
@@ -338,15 +386,55 @@ class _Http:
             self.oauth = "resource_metadata" in response.headers.get("www-authenticate", "")
 
 
+class SignInNeeded(Exception):
+    """An OAuth server wants the person to sign in (again): a turn can't."""
+
+
+def _innermost(e: BaseException) -> BaseException:
+    while isinstance(e, BaseExceptionGroup) and e.exceptions:
+        e = e.exceptions[0]
+    return e
+
+
+def _find(e: BaseException, match: Callable[[BaseException], bool]) -> BaseException | None:
+    """The first exception in a failure that matches: in its groups and what
+    it was raised from (the MCP client wraps what the OAuth flow raises)."""
+    seen: set[int] = set()
+    stack = [e]
+    while stack:
+        x = stack.pop()
+        if id(x) in seen:
+            continue
+        seen.add(id(x))
+        if match(x):
+            return x
+        if isinstance(x, BaseExceptionGroup):
+            stack.extend(x.exceptions)
+        stack.extend(c for c in (x.__cause__, x.__context__) if c is not None)
+    return None
+
+
+def _sign_in_needed(e: BaseException) -> bool:
+    return _find(e, lambda x: isinstance(x, SignInNeeded)) is not None
+
+
+def wants_sign_in(e: BaseException, http: _Http | None = None) -> bool:
+    """Whether the server asked for an OAuth sign-in: the button to offer."""
+    return _sign_in_needed(e) or (http is not None and http.status == 401 and http.oauth)
+
+
 def describe_error(e: BaseException, http: _Http | None = None) -> str:
     """A connection failure in a sentence: the innermost useful exception of
     a task-group's exception group, and what an HTTP status means."""
-    while isinstance(e, BaseExceptionGroup) and e.exceptions:
-        e = e.exceptions[0]
+    if _sign_in_needed(e):
+        return "your OAuth sign-in to this server has run out: sign in again in the MCP servers menu"
+    flow = _find(e, lambda x: "OAuth" in type(x).__name__ and bool(str(x).strip()))
+    if flow is not None:  # the SDK's OAuth flow, or the callback's own sentence
+        return f"the OAuth sign-in failed: {str(flow).strip()}"
+    e = _innermost(e)
     status = getattr(getattr(e, "response", None), "status_code", None) or (http.status if http else None)
     if status == 401 and http is not None and http.oauth:
-        return ("the server wants a sign-in (HTTP 401) and offers OAuth, which exuvia does not do yet: "
-                "add an API key or token header instead")
+        return "the server wants you to sign in (HTTP 401, OAuth): use Sign in next to it in the MCP servers menu"
     if status in (401, 403):
         return f"the server refused the credentials (HTTP {status}): check the headers"
     if status == 404:
@@ -410,8 +498,25 @@ def result_text(result: Any) -> tuple[bool, str]:
     return not bool(getattr(result, "is_error", False)), text
 
 
-def _client(server: Server, seen: _Http) -> Any:
-    """The MCP client for a remote server, sending its headers."""
+def _guard(allow_private: bool) -> Callable[[Any], Any]:
+    """An httpx request hook that applies check_reachable to every request a
+    connection makes: an OAuth server names its own endpoints, so they are
+    checked as the MCP server's URL is. Each host once per connection."""
+    checked: set[str] = set()
+
+    async def hook(request: Any) -> None:
+        host = request.url.host
+        if host not in checked:
+            await check_reachable(str(request.url), allow_private)
+            checked.add(host)
+
+    return hook
+
+
+def _client(server: Server, seen: _Http, *, allow_private: bool = True, auth: Any = None) -> Any:
+    """The MCP client for a remote server, sending its headers, and signing
+    in with ``auth`` (an OAuth provider) or, when the server has an OAuth
+    sign-in, with its tokens."""
     import httpx2
     from mcp import Client
     from mcp.client.streamable_http import streamable_http_client
@@ -420,7 +525,10 @@ def _client(server: Server, seen: _Http) -> Any:
 
     from . import __version__
 
-    http = create_mcp_http_client(headers=server.headers, timeout=httpx2.Timeout(30.0, read=CALL_TIMEOUT))
+    if auth is None and _signed_in(server.oauth):
+        auth = _oauth(server, _SavedSignIn(server.oauth, server.save_oauth), _needs_sign_in, _needs_sign_in)
+    http = create_mcp_http_client(headers=server.headers, timeout=httpx2.Timeout(30.0, read=CALL_TIMEOUT), auth=auth)
+    http.event_hooks["request"].append(_guard(allow_private))
     http.event_hooks["response"].append(seen.hook)
     return http, Client(
         streamable_http_client(server.url, http_client=http),
@@ -438,6 +546,7 @@ class _Link:
     queue: "asyncio.Queue[tuple[str, dict[str, Any], asyncio.Future[tuple[bool, str]]] | None]"
     task: "asyncio.Task[None] | None" = None
     error: str | None = None
+    signin: bool = False  # the error is an OAuth sign-in the person has to make
     tools: list[Any] = field(default_factory=list)
 
 
@@ -504,7 +613,7 @@ class Toolbox:
                 if self._connect is not None:
                     client = self._connect(link.server)
                 else:
-                    http, client = _client(link.server, seen)
+                    http, client = _client(link.server, seen, allow_private=self.allow_private)
                     await stack.enter_async_context(http)
                 await stack.enter_async_context(client)
                 tools: list[Any] = []
@@ -535,7 +644,8 @@ class Toolbox:
             raise
         except BaseException as e:  # noqa: BLE001 - reported, never raised into the turn
             why = describe_error(e, seen)
-            link.error = link.error or why
+            if link.error is None:
+                link.error, link.signin = why, wants_sign_in(e, seen)
             if not ready.done():
                 ready.set_exception(RuntimeError(why))
             if pending is not None and not pending.done():
@@ -568,6 +678,8 @@ class Toolbox:
             entry: dict[str, Any] = {"name": name, "tools": sum(1 for s, _ in self._tools.values() if s == name)}
             if link.error and not entry["tools"]:
                 entry["error"] = link.error
+                if link.signin:
+                    entry["signin"] = True
             out.append(entry)
         return out
 
@@ -604,14 +716,186 @@ class Toolbox:
 
 async def probe(server: Server, *, allow_private: bool, connect: Connector | None = None) -> dict[str, Any]:
     """Connect once and list the tools, for the "Test" button: ``{ok, tools}``
-    or ``{ok: false, error}``."""
+    or ``{ok: false, error}``, with ``signin: true`` when the server wants an
+    OAuth sign-in."""
     box = Toolbox([server], allow_private=allow_private, connect=connect)
     try:
         await box.start(set())
         st = box.status()[0]
         if "error" in st:
-            return {"ok": False, "error": st["error"]}
+            return {"ok": False, "error": st["error"], **({"signin": True} if st.get("signin") else {})}
         tools = box._links[server.name].tools[:MAX_TOOLS]
         return {"ok": True, "tools": [{"name": t.name, "description": (t.description or t.title or "").strip()} for t in tools]}
     finally:
         await box.close()
+
+
+# -- OAuth sign-in ---------------------------------------------------------------
+CALLBACK_PATH = "/api/me/mcp/oauth/callback"
+SIGN_IN_TIMEOUT = 600.0  # from "Sign in" to the person coming back
+TOKEN_MARGIN = 60.0  # refresh an access token this long before it runs out
+
+
+class _SavedSignIn:
+    """The SDK's TokenStorage over a server's ``oauth`` value: the client
+    exuvia registered (``client``), the tokens and when the access token runs
+    out (``expires_at``). Saved when new tokens arrive, never before, so a
+    sign-in that is abandoned leaves the one before it."""
+
+    def __init__(self, data: dict[str, Any] | None, save: Callable[[dict[str, Any] | None], None] | None):
+        self.data: dict[str, Any] = dict(data or {})
+        self._save = save
+
+    async def get_tokens(self) -> Any:
+        from mcp.shared.auth import OAuthToken
+
+        tokens = self.data.get("tokens")
+        return OAuthToken.model_validate(tokens) if tokens else None
+
+    async def set_tokens(self, tokens: Any) -> None:
+        self.data["tokens"] = tokens.model_dump(mode="json", exclude_none=True)
+        self.data["expires_at"] = time.time() + tokens.expires_in - TOKEN_MARGIN if tokens.expires_in else None
+        if self._save is not None:
+            await asyncio.to_thread(self._save, dict(self.data))
+
+    async def get_client_info(self) -> Any:
+        from mcp.shared.auth import OAuthClientInformationFull
+
+        client = self.data.get("client")
+        return OAuthClientInformationFull.model_validate(client) if client else None
+
+    async def set_client_info(self, client_info: Any) -> None:
+        self.data["client"] = client_info.model_dump(mode="json", exclude_none=True)
+
+
+async def _needs_sign_in(*_: Any) -> Any:
+    """A turn's redirect and callback handlers: a turn can't open a browser."""
+    raise SignInNeeded("the server wants a new sign-in")
+
+
+def _oauth(server: Server, storage: _SavedSignIn, redirect: Callable[..., Any], callback: Callable[..., Any]) -> Any:
+    """The MCP SDK's OAuth client for one server. It refreshes the access
+    token before a request once it has run out, which needs the expiry the
+    SDK keeps only in memory: it is read back from ``storage`` here."""
+    from mcp.client.auth import OAuthClientProvider
+    from mcp.shared.auth import OAuthClientMetadata
+
+    class Provider(OAuthClientProvider):
+        async def _initialize(self) -> None:
+            await super()._initialize()
+            self.context.token_expiry_time = storage.data.get("expires_at")
+
+    metadata = OAuthClientMetadata(
+        client_name="exuvia",
+        redirect_uris=[storage.data["redirect_uri"]],
+        grant_types=["authorization_code", "refresh_token"],
+        response_types=["code"],
+        application_type="web",
+    )
+    return Provider(server.url, metadata, storage, redirect_handler=redirect, callback_handler=callback)
+
+
+@dataclass
+class _SignIn:
+    owner: str
+    name: str
+    code: "asyncio.Future[Any]"
+    task: "asyncio.Task[dict[str, Any]] | None" = None
+    back: str | None = None  # the page to return to, when the sign-in ran in its tab rather than a popup
+
+
+_SIGN_INS: dict[str, _SignIn] = {}  # sign-ins in progress, by their OAuth state
+
+
+async def _list_tools(server: Server, *, allow_private: bool, auth: Any) -> dict[str, Any]:
+    """Connect with ``auth``, list the tools and disconnect: probe's answer."""
+    seen = _Http()
+    try:
+        await check_reachable(server.url, allow_private)
+        http, client = _client(server, seen, allow_private=allow_private, auth=auth)
+        async with http, client:
+            tools = (await client.list_tools()).tools[:MAX_TOOLS]
+    except asyncio.CancelledError:
+        raise
+    except BaseException as e:  # noqa: BLE001 - reported
+        return {"ok": False, "error": describe_error(e, seen)}
+    return {"ok": True, "tools": [{"name": t.name, "description": (t.description or t.title or "").strip()} for t in tools]}
+
+
+async def sign_in(
+    store: McpServers, owner: str, server: Server, redirect_uri: str, back: str | None = None,
+) -> dict[str, Any]:
+    """Start an OAuth sign-in to a saved server. ``redirect_uri``: this exuvia
+    server's callback (``CALLBACK_PATH``) as the person's browser reaches it.
+    ``{url}``: the authorization server's page to open; or, when the server
+    let exuvia in without one, probe's answer."""
+    loop = asyncio.get_running_loop()
+    opened: asyncio.Future[str] = loop.create_future()
+    pending = _SignIn(owner, server.name, loop.create_future(), back=back)
+    states: list[str] = []
+
+    async def redirect(url: str) -> None:
+        if urlsplit(url).scheme not in ("http", "https"):
+            raise ValueError("the authorization server's sign-in page is not an http(s) address")
+        state = (parse_qs(urlsplit(url).query).get("state") or [""])[0]
+        _SIGN_INS[state] = pending
+        states.append(state)
+        if not opened.done():
+            opened.set_result(url)
+
+    async def callback() -> Any:
+        return await pending.code
+
+    # A fresh sign-in, with the client registered before if it was for this callback.
+    old = server.oauth or {}
+    client = old.get("client") if redirect_uri in ((old.get("client") or {}).get("redirect_uris") or []) else None
+    storage = _SavedSignIn(
+        {"redirect_uri": redirect_uri, **({"client": client} if client else {})},
+        lambda data: store.set_oauth(owner, server.name, data),
+    )
+    bare = Server(server.name, server.url, server.headers)
+
+    async def run() -> dict[str, Any]:
+        try:
+            return await asyncio.wait_for(
+                _list_tools(bare, allow_private=store.allow_private, auth=_oauth(bare, storage, redirect, callback)),
+                SIGN_IN_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            return {"ok": False, "error": "the sign-in was not finished in time: start it again"}
+        finally:
+            for s in states:
+                _SIGN_INS.pop(s, None)
+
+    pending.task = asyncio.create_task(run())
+    await asyncio.wait({opened, pending.task}, timeout=CONNECT_TIMEOUT, return_when=asyncio.FIRST_COMPLETED)
+    if opened.done():
+        return {"url": opened.result()}
+    if pending.task.done():
+        return pending.task.result()
+    pending.task.cancel()
+    return {"ok": False, "error": "the server did not answer in time"}
+
+
+async def finish_sign_in(
+    owner: str | None, state: str, code: str | None, iss: str | None = None, error: str | None = None,
+) -> dict[str, Any]:
+    """The authorization server sent the person back: hand the code to the
+    sign-in waiting for it and wait for it to connect. Probe's answer, with
+    the server's ``name``."""
+    from mcp.client.auth import OAuthFlowError
+    from mcp.shared.auth import AuthorizationCodeResult
+
+    pending = _SIGN_INS.get(state or "")
+    if pending is None or pending.owner != owner or pending.task is None or pending.task.done():
+        return {"ok": False, "error": "this sign-in is over or unknown here: start it again from the MCP servers menu"}
+    _SIGN_INS.pop(state, None)
+    if error or not code:
+        pending.code.set_exception(OAuthFlowError(f"the authorization server said {error or 'nothing'}"))
+    else:
+        pending.code.set_result(AuthorizationCodeResult(code=code, state=state, iss=iss))
+    try:
+        result = await asyncio.wait_for(asyncio.shield(pending.task), CONNECT_TIMEOUT * 2)
+    except asyncio.TimeoutError:
+        result = {"ok": False, "error": "signed in, but the server did not answer in time: press Test"}
+    return {**result, "name": pending.name, **({"back": pending.back} if pending.back else {})}

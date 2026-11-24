@@ -2127,15 +2127,28 @@ fails to connect is left out of that turn, and the agent tells you why.
   hub's `.exuvia/hub.db`, the project's database, or the shared
   `EXUVIA_DB`), so anyone who can read that database can read them. A hub
   export leaves them out.
+- **OAuth sign-in.** A server that signs you in with OAuth (MCP's
+  authorization spec) needs no header: add it with its URL alone, and when
+  **Test** finds it asking for a sign-in, **Sign in** opens its sign-in page
+  in a popup. exuvia registers itself with the server's authorization server
+  (dynamic client registration), the page sends you back to
+  `/api/me/mcp/oauth/callback` on this exuvia server, and the tokens are kept
+  beside your headers, as secret as they are. Each message sends the access
+  token and refreshes it when it runs out; when that no longer works the
+  agent says to sign in again. **Sign out** forgets the tokens, and so does
+  changing the server's URL. The API: `POST /api/me/mcp/{name}/oauth` with
+  `{"origin": "<this page's origin>"}` answers `{url}` to open, `DELETE`
+  signs out. A sign-in in progress lives in the exuvia process that started
+  it, so behind several replicas the callback must reach the same one
+  (sticky sessions).
 - **Where a server may point.** Any public address. On a server that needs
   a sign-in or a token, addresses on the machine itself, the private network
   or a cloud's metadata service are refused unless
-  `EXUVIA_AGENT_MCP_PRIVATE=1`. A local server with no auth allows them, so
-  an MCP server on your own machine works. `EXUVIA_AGENT_MCP=off` turns the
+  `EXUVIA_AGENT_MCP_PRIVATE=1`, for the MCP server and for the OAuth
+  endpoints it names alike. A local server with no auth allows them, so an
+  MCP server on your own machine works. `EXUVIA_AGENT_MCP=off` turns the
   feature off.
-- **Not yet:** servers that sign in only with OAuth (the agent says so when
-  one asks for it; give it an API key or token header instead), and local
-  servers started as a command (stdio).
+- **Not yet:** local servers started as a command (stdio).
 
 Things to ask it:
 

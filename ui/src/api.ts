@@ -435,6 +435,8 @@ export interface AgentMcpServer {
   enabled: boolean;
   /** Each header's name and its value's last 4 characters (empty for a short value). */
   headers: { name: string; hint: string }[];
+  /** Whether you have signed in to it with OAuth (the tokens stay on the server). */
+  signed_in: boolean;
   created_at: number;
   updated_at: number;
 }
@@ -447,7 +449,13 @@ export interface AgentMcpList {
   private: boolean;
 }
 
-export type AgentMcpTest = { ok: true; tools: { name: string; description: string }[] } | { ok: false; error: string };
+/** A connection's outcome. `signin`: the server wants an OAuth sign-in (`agentMcpApi.signIn`). */
+export type AgentMcpTest =
+  | { ok: true; tools: { name: string; description: string }[] }
+  | { ok: false; error: string; signin?: boolean };
+
+/** What the OAuth callback page posts to the window that opened it (exuvia/server.py). */
+export type AgentMcpSignedIn = AgentMcpTest & { type: "exuvia-mcp-oauth"; name: string };
 
 /** Your MCP servers for the built-in agent (`/api/me/mcp`, not under a project; exuvia/agent_mcp.py). */
 export const agentMcpApi = {
@@ -459,6 +467,18 @@ export const agentMcpApi = {
     await sendTo("DELETE", `/api/me/mcp/${encodeURIComponent(name)}`);
   },
   test: async (name: string) => (await sendTo("POST", `/api/me/mcp/${encodeURIComponent(name)}/test`)).json() as Promise<AgentMcpTest>,
+  /**
+   * Start an OAuth sign-in: `{url}`, the authorization server's page to open, which comes back to
+   * `<origin>/api/me/mcp/oauth/callback`; or the connection's outcome when no sign-in was needed.
+   * `back`: the page that callback returns to when the sign-in runs in this tab (no popup).
+   */
+  signIn: async (name: string, origin: string, back: string) =>
+    (await sendTo("POST", `/api/me/mcp/${encodeURIComponent(name)}/oauth`, { origin, back })).json() as Promise<
+      { url: string } | AgentMcpTest
+    >,
+  signOut: async (name: string) => {
+    await sendTo("DELETE", `/api/me/mcp/${encodeURIComponent(name)}/oauth`);
+  },
 };
 
 /** `GET /api/about`: the running version, how it was installed and whether a newer release is out (exuvia/about.py). */
