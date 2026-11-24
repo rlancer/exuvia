@@ -413,3 +413,56 @@ def test_exuvia_env_sets_a_groups_variables_over_the_hubs_api(tmp_path, monkeypa
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+
+
+def test_a_run_that_cannot_read_the_groups_variables_fails(hub):
+    hub.post("/api/projects", json={"id": "a"}, headers=ALICE)
+    gid = new_group(hub)
+    hub.put("/api/projects/a/group", json={"group": gid}, headers=ALICE)
+    node = 'import exuvia\n\n\n@exuvia.node()\ndef n():\n    return {"x": 1}\n'
+    assert hub.put("/p/a/api/nodes/n", json={"source": node, "kind": "python"}, headers=ALICE).status_code == 200
+
+    def locked(pid):
+        raise RuntimeError("database is locked")
+
+    hub.app.state.hub.inherited_env = locked  # what Hub.get's closure calls
+    done = hub.post("/p/a/api/nodes/n/run", json={"wait": 30, "force": True}, headers=ALICE).json()
+    ws = ws_of(hub, "a")
+    run = ws.store.run(done["run_id"])
+    assert run["status"] == "failed" and "database is locked" in run["error"]
+    assert not ws._inflight
+
+
+def test_a_change_made_while_the_groups_are_read_is_not_lost(hub):
+    gs = hub.app.state.hub.groups
+    hub.post("/api/projects", json={"id": "a"}, headers=ALICE)
+    gid = new_group(hub)
+    hub.put("/api/projects/a/group", json={"group": gid}, headers=ALICE)
+    bob = uid(hub, BOB)
+    hub.put(f"/api/groups/{gid}/people", json={"user": bob, "role": "editor"}, headers=ALICE)
+    read, armed = gs._q, [True]
+
+    def q(sql, args=()):
+        rows = read(sql, args)
+        if armed[0] and sql.startswith("select project, group_id from project_group_projects"):
+            armed[0] = False
+            gs.revoke(gid, f"user:{bob}")  # another request, while this one reads
+        return rows
+
+    gs._q = q
+    gs.snapshot(fresh=True)
+    gs._q = read
+    ident = Identity(user="bob", email="bob@example.com", method="headers", uid=bob, role="member")
+    assert gs.project_role("a", ident) is None
+
+
+def test_a_new_project_is_in_no_group_whatever_was_left_under_its_id(hub):
+    hub.post("/api/projects", json={"id": "a"}, headers=ALICE)
+    gid = new_group(hub)
+    hub.put("/api/projects/a/group", json={"group": gid}, headers=ALICE)
+    gs = hub.app.state.hub.groups
+    forget, gs.forget_project = gs.forget_project, lambda pid: None  # a delete that stopped half way
+    assert hub.delete("/api/projects/a", headers=ALICE).status_code == 200
+    gs.forget_project = forget
+    assert hub.post("/api/projects", json={"id": "a"}, headers=BOB).status_code == 200
+    assert gs.group_of("a", fresh=True) is None

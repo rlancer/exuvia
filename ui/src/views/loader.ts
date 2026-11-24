@@ -131,8 +131,17 @@ export function createLoader({ files, builtins, onCss, packages = NO_PACKAGES }:
       throw new ViewError(`The npm module ${path} imports "${spec}", which was not loaded: import "${spec}" in the view too.`);
     if (has(packages.errors, spec)) throw new ViewError(packages.errors[spec], path);
     const name = packageOf(spec);
-    if (packages.declared.includes(name))
+    // The package list could not be read (a bad package.json, the server): say so, not that it is missing.
+    if (packages.declared.includes(name) || packages.error)
       throw new ViewError(`Cannot import "${spec}": ${packages.error ?? `the modules of ${name} were not loaded`}.`, path);
+    if (spec.includes(":"))
+      throw new ViewError(`Cannot import "${spec}": a view runs in the browser, which has no ${spec.split(":")[0]}: modules.`, path);
+    if (Object.keys(builtins).some((b) => packageOf(b) === name))
+      throw new ViewError(
+        `Cannot import "${spec}": the views runtime has ${name} but not that part of it; a view can import ` +
+          `its own files and: ${Object.keys(builtins).join(", ")}.`,
+        path,
+      );
     throw new ViewError(
       `Cannot import "${spec}": ${name} is not in the project's package.json. Add it under Packages (npm, for views); ` +
         `without it, a view can import its own files and: ${Object.keys(builtins).join(", ")}.`,

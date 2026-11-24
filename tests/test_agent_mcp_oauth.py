@@ -63,6 +63,8 @@ class OAuthServer:
         self.refresh: set[str] = set()
         self.expires_in = 3600
         self.issued = 0
+        self.token_path = "/token"  # most hosted authorization servers keep it elsewhere
+        self.token_hits = 0
 
     def tokens(self):
         self.issued += 1
@@ -84,7 +86,7 @@ class OAuthServer:
         elif path.startswith("/.well-known/oauth-authorization-server"):
             res = JSONResponse({
                 "issuer": self.base, "authorization_endpoint": f"{self.base}/authorize",
-                "token_endpoint": f"{self.base}/token", "registration_endpoint": f"{self.base}/register",
+                "token_endpoint": f"{self.base}{self.token_path}", "registration_endpoint": f"{self.base}/register",
                 "response_types_supported": ["code"], "grant_types_supported": ["authorization_code", "refresh_token"],
                 "code_challenge_methods_supported": ["S256"], "token_endpoint_auth_methods_supported": ["none"],
             })
@@ -99,7 +101,8 @@ class OAuthServer:
             code = secrets.token_urlsafe(8)
             self.codes[code] = q["code_challenge"]
             res = RedirectResponse(f"{q['redirect_uri']}?{urlencode({'code': code, 'state': q['state']})}")
-        elif path == "/token":
+        elif path == self.token_path:
+            self.token_hits += 1
             form = {k: v[0] for k, v in parse_qs((await req.body()).decode()).items()}
             if form["grant_type"] == "authorization_code":
                 challenge = self.codes.pop(form["code"])
@@ -255,3 +258,58 @@ def test_a_sign_in_in_the_same_tab_returns_to_the_page(tmp_path, oauth):
         # Only a page on this server.
         r = client.post("/api/me/mcp/o/oauth", json={"origin": HERE, "back": "https://evil.example/"})
         assert "Back to exuvia" not in client.get(authorize(r.json()["url"])).text
+
+
+def test_a_refresh_goes_to_the_token_endpoint_the_server_named(tmp_path, oauth):
+    # Discovery is kept with the tokens: a later turn refreshes at the
+    # authorization server's token endpoint, not at `<server origin>/token`.
+    oauth.token_path = "/as/token"
+    root = tmp_path / "proj"
+    Project(root)
+    with TestClient(create_app(root)) as client:
+        client.put("/api/me/mcp/o", json={"url": f"{oauth.base}/mcp"})
+        oauth.expires_in = 1  # kept as already run out (TOKEN_MARGIN)
+        client.get(authorize(start(client)))
+        assert oauth.issued == 1 and oauth.token_hits == 1
+        r = client.post("/api/me/mcp/o/test").json()
+        assert r["ok"], r
+        assert oauth.issued == 2 and oauth.token_hits == 2
+
+
+def test_a_sign_in_is_kept_only_for_the_server_it_was_made_for(tmp_path, oauth):
+    root = tmp_path / "proj"
+    Project(root)
+    with TestClient(create_app(root)) as client:
+        # Pointed elsewhere before the person came back.
+        client.put("/api/me/mcp/o", json={"url": f"{oauth.base}/mcp"})
+        back = authorize(start(client))
+        client.put("/api/me/mcp/o", json={"url": "https://other.example/mcp"})
+        client.get(back)
+        assert server_row(client)["signed_in"] is False
+        # Removed and added again with another URL.
+        client.put("/api/me/mcp/o", json={"url": f"{oauth.base}/mcp"})
+        back = authorize(start(client))
+        client.delete("/api/me/mcp/o")
+        client.put("/api/me/mcp/o", json={"url": "https://other.example/mcp"})
+        client.get(back)
+        assert server_row(client)["signed_in"] is False
+
+
+def test_a_refresh_does_not_undo_a_sign_out(tmp_path):
+    from exuvia.agent_mcp import McpServers
+    from exuvia.db import SQLiteDatabase
+
+    store = McpServers(SQLiteDatabase(tmp_path / "mcp.db"), people=False, allow_private=True, owns_db=True)
+    store.put("", "o", url="https://mcp.example/mcp")
+    store.set_oauth("", "o", {"tokens": {"access_token": "a", "token_type": "bearer"}})
+    server = store.active("")[0]  # a turn starts with that sign-in
+    store.set_oauth("", "o", None)  # the person signs out meanwhile
+    server.save_oauth({"tokens": {"access_token": "b", "token_type": "bearer"}})  # and the turn refreshes
+    assert store.list("")[0]["signed_in"] is False
+    # A turn's own refreshes follow one another.
+    store.set_oauth("", "o", {"tokens": {"access_token": "c", "token_type": "bearer"}})
+    server = store.active("")[0]
+    server.save_oauth({"tokens": {"access_token": "d", "token_type": "bearer"}})
+    server.save_oauth({"tokens": {"access_token": "e", "token_type": "bearer"}})
+    assert store.get("", "o").oauth["tokens"]["access_token"] == "e"
+    store.close()

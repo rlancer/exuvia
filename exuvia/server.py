@@ -819,6 +819,14 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         ``push``; new output cascades downstream."""
         ws = ctx.ws
         _need(ws, name)
+        # A page on another site can POST a form or a no-cors fetch here
+        # without asking first; only those can't send another content type.
+        ct = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+        if ct in ("", "text/plain", "application/x-www-form-urlencoded", "multipart/form-data"):
+            raise HTTPException(
+                415, "send the data with Content-Type: application/vnd.apache.parquet or application/json "
+                "(or application/octet-stream and ?format=parquet|json)",
+            )
         try:
             fmt = format_of(format, request.headers.get("content-type"))
         except ValueError as e:

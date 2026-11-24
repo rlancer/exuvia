@@ -154,6 +154,7 @@ class GroupStore:
         _prepare(db)
         self._lock = threading.Lock()
         self._snap: tuple[Snapshot, float] | None = None
+        self._generation = 0  # one more for each change, so a read begun before it is not kept
 
     @property
     def people(self) -> bool:
@@ -169,12 +170,14 @@ class GroupStore:
     def _changed(self) -> None:
         with self._lock:
             self._snap = None
+            self._generation += 1
 
     # -- reading ---------------------------------------------------------------------
     def snapshot(self, now: float | None = None, fresh: bool = False) -> Snapshot:
         now = time.time() if now is None else now
         with self._lock:
             hit = None if fresh else self._snap
+            generation = self._generation
         if hit and now - hit[1] < SEEN_EVERY:
             return hit[0]
         groups = {r["id"]: r for r in self._q(
@@ -186,7 +189,8 @@ class GroupStore:
             "select project, group_id from project_group_projects where scope=?", (self.scope,))}
         snap = Snapshot(groups, members, projects)
         with self._lock:
-            self._snap = (snap, now)
+            if self._generation == generation:  # else a change came in while reading: not kept
+                self._snap = (snap, now)
         return snap
 
     def _snapshot_with(self, gid: str) -> Snapshot | None:
@@ -311,9 +315,13 @@ class GroupStore:
         name = clean_name(name)
         if owner_id is not None and (self.users is None or self.users.get(owner_id) is None):
             raise ValueError(f"no user {owner_id} to own the group")
-        n = self._q("select count(*) as n from project_groups where scope=?", (self.scope,))[0]["n"]
-        if int(n) >= MAX_GROUPS:
-            raise ValueError(f"a hub has at most {MAX_GROUPS} groups")
+        # Counted per owner: one person can't use up everyone's groups.
+        if owner_id is None:
+            rows = self._q("select count(*) as n from project_groups where scope=? and owner_id is null", (self.scope,))
+        else:
+            rows = self._q("select count(*) as n from project_groups where scope=? and owner_id=?", (self.scope, owner_id))
+        if int(rows[0]["n"]) >= MAX_GROUPS:
+            raise ValueError(f"at most {MAX_GROUPS} groups each")
         gid = "g" + uuid.uuid4().hex[:11]
         self._q(
             "insert into project_groups (scope, id, name, owner_id, created_at, updated_at) values (?,?,?,?,?,?)",
