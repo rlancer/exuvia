@@ -144,7 +144,7 @@ def test_redactor():
 
 def test_the_api_never_sends_a_secret_back(tmp_path):
     with TestClient(create_app(tmp_path)) as c:
-        assert c.get("/api/env").json() == {"variables": [], "requests": []}
+        assert c.get("/api/env").json() == {"variables": [], "requests": [], "group": None, "inherited": []}
         r = c.put("/api/env/FRED_API_KEY", json={"value": "fred-secret-123", "secret": True})
         assert r.status_code == 200 and "fred-secret-123" not in r.text
         c.put("/api/env/REGION", json={"value": "eu", "secret": False})
@@ -172,7 +172,8 @@ def test_the_agent_lists_names_but_never_a_secret(tmp_path):
     ok, text, _ = asyncio.run(go())
     assert ok and "fred-secret-123" not in text
     assert json.loads(text) == {"variables": [
-        {"name": "FRED_API_KEY", "secret": True, "value": None}, {"name": "REGION", "secret": False, "value": "eu"},
+        {"name": "FRED_API_KEY", "secret": True, "value": None, "source": "project"},
+        {"name": "REGION", "secret": False, "value": "eu", "source": "project"},
     ]}
     assert "list_env" in READ_TOOLS
 

@@ -46,6 +46,9 @@ PARTS_REL = ".exuvia/parts/"
 # The hub's user list (users.py), under the hub's directory beside the
 # projects, unless EXUVIA_DB holds it. Exports carry it at the same path.
 HUB_USERS_DB = ".exuvia/hub.db"
+# The hub's own secrets key (envvars.Keyring), for its groups' secrets
+# (groups.py) when the server has no EXUVIA_SECRETS_KEY. Exports carry it then.
+HUB_SECRETS_KEY = f".exuvia/{envvars.KEY_FILE}"
 # Package installs shared by the hub's projects (packages.py), beside them.
 # Projects that resolve to the same packages share an install, and it outlives
 # restarts and exuvia upgrades that leave the packages as they were.
@@ -77,6 +80,10 @@ class Hub:
         self.sharing: Any = None
         # The people's MCP servers for the built-in agent (agent_mcp.py).
         self.mcp: Any = None
+        # Groups of projects and the variables they share (groups.py; set by
+        # create_hub_app), and the keyring for those variables' secrets.
+        self.groups: Any = None
+        self.keyring = envvars.Keyring(self.root / ".exuvia")
         # The projects a request may see (create_hub_app filters by sharing).
         self.visible: Any = self.list
 
@@ -94,6 +101,10 @@ class Hub:
             project = ctx.ws.project if ctx else Project(self.root / pid)
             out.append({"id": pid, "name": project.name, "nodes": len(project.node_files()), "loaded": ctx is not None})
         return out
+
+    def project_name(self, project_id: str) -> str:
+        ctx = self._ctxs.get(project_id)
+        return (ctx.ws.project if ctx else Project(self.root / project_id)).name
 
     def templates(self) -> list[str]:
         if not self.templates_dir or not self.templates_dir.is_dir():
@@ -115,6 +126,8 @@ class Hub:
                     packages_store=self.root / HUB_PACKAGES,
                 )
                 ws.api_prefix = f"/p/{project_id}/api"
+                if self.groups is not None:
+                    ws.inherited_env = lambda pid=project_id: self.inherited_env(pid)
                 await ws.start()
                 ctx = Ctx(ws, Agent(ws))
                 ctx.agent.mcp = self.mcp
@@ -188,6 +201,44 @@ class Hub:
             self._load_origin[project_id] = "template"
             self._structural += 1
 
+    # -- groups (groups.py) --------------------------------------------------------
+    def group_env(self, gid: str) -> envvars.Env:
+        """A group's variables, with a project's rules (envvars.Env)."""
+        return envvars.Env(self.groups.vars(gid), self.keyring)
+
+    def inherited_env(self, project_id: str) -> dict[str, Any] | None:
+        """What a project's group gives its runs: ``{group, rows}`` with the
+        values decrypted, or None outside a group. Read from the database
+        every time, so a change on another replica reaches the next run."""
+        group = self.groups.group_of(project_id, fresh=True)
+        if group is None:
+            return None
+        rows = self.group_env(group["id"]).rows()
+        for r in rows:
+            if not r["readable"]:
+                r["problem"] = (
+                    f"it is group {group['name']}'s, and was encrypted with a key this hub does not have: set "
+                    "EXUVIA_SECRETS_KEY to that key (or put the hub's .exuvia/secrets.key back), or enter it again"
+                )
+        return {"group": group, "rows": rows}
+
+    def seal_group_env(self) -> None:
+        """Encrypt again, with the current key, the group secrets saved with
+        another (rotation), as projects do when they load."""
+        if self.groups is None:
+            return
+        for gid in self.groups.all_env_groups():
+            for name in self.group_env(gid).seal_all():
+                print(f"exuvia: group {gid}'s secret {name} cannot be decrypted with this hub's key", file=sys.stderr)
+
+    def env_changed(self, projects: list[str]) -> None:
+        """Tell the loaded projects among ``projects`` that their variables
+        changed (their workbench's Environment panel reloads)."""
+        for pid in projects:
+            ctx = self._ctxs.get(pid)
+            if ctx is not None:
+                ctx.ws.bus.publish({"type": "env"})
+
     async def _unload(self, project_id: str) -> None:
         ctx = self._ctxs.pop(project_id, None)
         if ctx is None:
@@ -210,6 +261,8 @@ class Hub:
                 shared.delete_all()
             if self.sharing is not None:
                 self.sharing.forget(project_id)
+            if self.groups is not None:
+                self.groups.forget_project(project_id)
             self._load_origin.pop(project_id, None)
         store = artifact_store()
         if store is not None:
@@ -224,6 +277,8 @@ class Hub:
                 await self._unload(pid)
         if self.sharing is not None:
             self.sharing.close()
+        if self.groups is not None:
+            self.groups.close()
         if self.users is not None:
             self.users.close()
         if self.mcp is not None:
@@ -321,14 +376,19 @@ class Hub:
                     tar.add(path, arcname=f"{pid}/{posix}")
                 if copy is not None:
                     tar.add(copy, arcname=f"{pid}/{DB_REL}")
-            # The user list and the projects' sharing, unless a shared database holds them.
-            if (self.users is not None or self.sharing is not None) and not database_url():
+            # The user list, the projects' sharing and the groups, unless a
+            # shared database holds them.
+            stores = [s for s in (self.users, self.sharing, self.groups) if s is not None]
+            if stores and not database_url():
                 users = Path(scratch) / "hub.db"
-                if self.users is not None:
-                    self.users.dump_to(users)
-                if self.sharing is not None:
-                    self.sharing.dump_to(users)
+                for s in stores:
+                    s.dump_to(users)
                 tar.add(users, arcname=HUB_USERS_DB)
+            # The hub's own key, for its groups' secrets: as a project's, only
+            # when EXUVIA_SECRETS_KEY does not encrypt them.
+            hub_key = self.root / HUB_SECRETS_KEY
+            if not own_key_stays and hub_key.is_file():
+                tar.add(hub_key, arcname=HUB_SECRETS_KEY)
         if self._export_path and self._export_path != out:
             self._export_path.unlink(missing_ok=True)
         self._export_path = out
@@ -356,6 +416,18 @@ class Hub:
                     self.users.replace_from(users)
                 if self.sharing is not None:
                     self.sharing.replace_from(users)
+                if self.groups is not None:
+                    self.groups.replace_from(users)
+            # The hub's key comes along with the groups it encrypts; with a
+            # shared database (whose groups the archive does not replace) it
+            # only fills in a key this hub does not have yet.
+            key = Path(scratch) / HUB_SECRETS_KEY
+            target = self.root / HUB_SECRETS_KEY
+            if key.is_file() and (not database_url() or not target.is_file()):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(key, target)
+                os.chmod(target, 0o600)
+                self.keyring = envvars.Keyring(self.root / ".exuvia")
             async with self._lock:
                 try:
                     for pid in found:

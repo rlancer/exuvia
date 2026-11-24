@@ -49,7 +49,7 @@ from contextlib import contextmanager, suppress
 from contextvars import Context, ContextVar
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Coroutine, Iterator
+from typing import Any, Callable, Coroutine, Iterator
 
 from croniter import croniter
 
@@ -120,6 +120,10 @@ class Workspace:
         self.env = envvars.Env(self.store, self.keyring)
         # Variables someone asked a person to set (request_secret), by name.
         self._env_requests: dict[str, dict[str, Any]] = {}
+        # On a hub: the variables the project's group gives it (groups.py),
+        # as ``{"group": {id, name}, "rows": [decrypted rows]}``, or None
+        # outside a group. Set by Hub.get; read for every run.
+        self.inherited_env: Callable[[], dict[str, Any] | None] | None = None
         self._seal_env_vars()
         self.bus = EventBus()
         self.graph: Graph = self.project.load()
@@ -383,19 +387,63 @@ class Workspace:
         for name in self.env.seal_all():
             print(f"exuvia: the secret {name} cannot be decrypted with this server's key", file=sys.stderr)
 
+    def _inherited(self) -> dict[str, Any] | None:
+        return self.inherited_env() if self.inherited_env is not None else None
+
+    def _run_rows(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """(what a run sets, what its logs mask). The project's own variable
+        wins over its group's of the same name (and both over the server's
+        environment, which the executor starts from). Every secret is masked,
+        a group secret a project variable overrides too."""
+        own = self._env_rows()
+        inherited = self._inherited()
+        group_rows = inherited["rows"] if inherited else []
+        names = {r["name"] for r in own}
+        return [r for r in group_rows if r["name"] not in names] + own, own + group_rows
+
     def env_vars(self) -> list[dict[str, Any]]:
         """The project's variables as a client may see them: no secret's value."""
         return envvars.public(self._env_rows())
 
+    def inherited_vars(self) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        """(the project's group, the variables it gives the project as a
+        client may see them), each marked ``overridden`` when the project has
+        its own variable of that name."""
+        inherited = self._inherited()
+        if not inherited:
+            return None, []
+        own = {r["name"] for r in self.store.env_vars()}
+        group = inherited["group"]
+        return group, [
+            {**v, "source": "group", "group": group, "overridden": v["name"] in own}
+            for v in envvars.public(inherited["rows"])
+        ]
+
+    def effective_env(self) -> list[dict[str, Any]]:
+        """Every variable a run gets, by name, with where it comes from
+        (``source``: project or group), as a client may see them."""
+        group, inherited = self.inherited_vars()
+        own = []
+        for v in self.env_vars():
+            shadow = next((i for i in inherited if i["name"] == v["name"]), None)
+            own.append({**v, "source": "project", **({"overrides": group} if shadow else {})})
+        out = own + [{k: x for k, x in v.items() if k != "overridden"} for v in inherited if not v["overridden"]]
+        return sorted(out, key=lambda v: v["name"])
+
     def env_state(self) -> dict[str, Any]:
-        """``GET /api/env``: the variables, and the requests for ones that are
-        not set yet (a request is answered by setting its variable, from the
-        workbench, the API or ``exuvia env set``)."""
+        """``GET /api/env``: the project's own variables, the ones its group
+        gives it (``inherited``), and the requests for ones that are not set
+        yet (a request is answered by setting its variable, from the
+        workbench, the API or ``exuvia env set``, or by the group's)."""
         variables = self.env_vars()
-        ready = {v["name"] for v in variables if v["readable"]}
+        group, inherited = self.inherited_vars()
+        ready = {v["name"] for v in (*variables, *inherited) if v["readable"]}
         for name in [n for n in self._env_requests if n in ready]:
             self._env_requests.pop(name, None)
-        return {"variables": variables, "requests": list(self._env_requests.values())}
+        return {
+            "variables": variables, "requests": list(self._env_requests.values()),
+            "group": group, "inherited": inherited,
+        }
 
     def set_env_var(self, name: str, value: str | None, secret: bool) -> list[dict[str, Any]]:
         """Add or change a variable (``envvars.Env.set``)."""
@@ -416,9 +464,12 @@ class Workspace:
         variable is set or the request dismissed."""
         envvars.check_name(name)
         reason = " ".join((reason or "").split())[:300]
-        have = next((v for v in self.env_vars() if v["name"] == name), None)
+        have = next((v for v in self.effective_env() if v["name"] == name), None)
         if have is not None and have["readable"]:
-            return {"status": "set", "name": name, "secret": have["secret"]}
+            out = {"status": "set", "name": name, "secret": have["secret"]}
+            if have["source"] == "group":
+                out["group"] = have["group"]["name"]
+            return out
         if name not in self._env_requests and len(self._env_requests) >= envvars.MAX_VARIABLES:
             raise envvars.EnvError("Too many variables are already waiting to be set.")
         self._env_requests[name] = {"name": name, "reason": reason, "origin": origin, "at": time.time()}
@@ -960,10 +1011,11 @@ class Workspace:
         self.store.update_run(run_id, status="running", code_hash=node.code_hash, inputs=input_ids, **started)
         self._emit_run(run_id)
 
-        # The project's variables, read for each attempt so a key fixed
-        # between retries is used. A secret's value never reaches the log.
-        env_rows = self._env_rows()
-        redact = envvars.Redactor(env_rows)
+        # The project's variables and its group's, read for each attempt so a
+        # key fixed between retries is used. A secret's value never reaches
+        # the log.
+        env_rows, secret_rows = self._run_rows()
+        redact = envvars.Redactor(secret_rows)
 
         def on_log(text: str) -> None:
             text = redact(text) or ""

@@ -35,7 +35,7 @@ const GENERAL_HINT: Record<GeneralAccess, string> = {
   edit: "They also change code and run nodes",
 };
 
-const ROLE_LABEL: Record<Role, string> = { viewer: "Viewer", editor: "Editor", owner: "Owner" };
+export const ROLE_LABEL: Record<Role, string> = { viewer: "Viewer", editor: "Editor", owner: "Owner" };
 const ROLES = [
   { value: "viewer", label: "Viewer", description: "Reads the code, data and views" },
   { value: "editor", label: "Editor", description: "Also changes code and runs nodes" },
@@ -335,11 +335,14 @@ export function ShareDialog(props: {
 type Pick = SearchableItem<{ person?: Person; email?: string }>;
 
 /** A name or email box that suggests people from the user list, a role, and Share. */
-function AddPeople(props: {
+export function AddPeople(props: {
   busy: boolean;
   /** The owner and everyone it is shared with: not suggested again. */
   have: Set<string>;
   onShare: (w: { user?: string; email?: string; role: Role }) => Promise<boolean>;
+  /** The roles offered (default: a project's), and the button's label (default: Share). */
+  roles?: { value: string; label: string; description: string }[];
+  action?: string;
 }) {
   const [role, setRole] = useState<Role>("viewer");
   const [picked, setPicked] = useState<Pick | null>(null);
@@ -389,8 +392,8 @@ function AddPeople(props: {
           />
         )}
       />
-      <Selector label="Role" isLabelHidden options={ROLES} value={role} onChange={(r) => r && setRole(r as Role)} containerXstyle={styles.role} />
-      <Button variant="primary" label="Share" isDisabled={!target || props.busy} onClick={share} />
+      <Selector label="Role" isLabelHidden options={props.roles ?? ROLES} value={role} onChange={(r) => r && setRole(r as Role)} containerXstyle={styles.role} />
+      <Button variant="primary" label={props.action ?? "Share"} isDisabled={!target || props.busy} onClick={share} />
       </HStack>
     </VStack>
   );

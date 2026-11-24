@@ -26,6 +26,9 @@ A hub project is one workflow, and it is shared the way a document is:
   revoked; only a hash of the token is kept.
 * **Access requests.** Someone signed in without (enough) access asks for a
   role; the owner approves or dismisses the request.
+* **Groups.** A project in a group (groups.py) also gives the group's people
+  their group role on it: ``viewer`` stays ``viewer``, ``editor`` and the
+  group's owner get ``editor``.
 
 Hub admins (users.py) and callers with the hub's API token can do anything
 on every project. Roles are ranked ``viewer`` < ``editor`` < ``owner``, and a
@@ -214,6 +217,9 @@ class SharingStore:
         self.scope = scope
         self.users = users
         self._owns_db = owns_db
+        # The hub's groups (groups.py): a group role is also a role on each
+        # project in the group. Set by create_hub_app.
+        self.groups: Any = None
         _prepare(db)
         self._lock = threading.Lock()
         self._rules: dict[str, tuple[Rules, float]] = {}
@@ -265,13 +271,15 @@ class SharingStore:
     def role(self, project: str, ident: Identity | None) -> str | None:
         """The role this request has on ``project``. Nobody signed in is the
         operator (the hub's API token, or a hub nobody signs in to): owner.
-        Admins are owners everywhere; a share link adds ``viewer`` on its own
-        project."""
+        Admins are owners everywhere; the project's group adds the role it
+        gives (groups.py); a share link adds ``viewer`` on its own project."""
         if ident is None:
             return "owner"
         if ident.role == "admin":
             return "owner"
         role = self.rules(project).role_of(ident) if ident.uid else None
+        if self.groups is not None and ident.uid:
+            role = higher(role, self.groups.project_role(project, ident))
         if ident.link == project:
             role = higher(role, "viewer")
         return role

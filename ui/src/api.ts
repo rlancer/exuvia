@@ -101,8 +101,25 @@ export type EnvVar = {
 /** A request to set a secret, from the agent or an MCP client (`request_secret`): its name and why, never a value. */
 export type EnvRequest = { name: string; reason: string; origin: string; at: number };
 
-/** `GET /api/env`: the variables, and the requests to set one that wait. */
-export type EnvState = { variables: EnvVar[]; requests: EnvRequest[] };
+/** A variable a hub project gets from its group (exuvia/groups.py), read-only here. */
+export type InheritedVar = EnvVar & {
+  source: "group";
+  group: GroupRef;
+  /** The project sets the same name itself, and its own wins. */
+  overridden: boolean;
+};
+
+/** A hub group, as a project or a variable names it. */
+export type GroupRef = { id: string; name: string };
+
+/** `GET /api/env`: the project's own variables, the requests to set one that
+ * wait, and on a hub the group the project is in and what it gives. */
+export type EnvState = {
+  variables: EnvVar[];
+  requests: EnvRequest[];
+  group?: GroupRef | null;
+  inherited?: InheritedVar[];
+};
 
 /** A view's state for one parameter set, derived from the nodes it reads. */
 export type ViewState = "ready" | "missing" | "stale" | "error";
@@ -513,6 +530,8 @@ export interface HubProject {
   shared?: boolean;
   /** Access requests waiting for the owner (counted for the owner only). */
   requests?: number;
+  /** The group it is in (exuvia/groups.py). */
+  group?: GroupRef | null;
 }
 
 /** `GET /api/projects`. `sharing` is null on a hub nobody has to get in to. */
@@ -521,6 +540,35 @@ export interface HubListing {
   templates: string[];
   auth: boolean;
   sharing: { people: boolean; default_access: GeneralAccess } | null;
+  /** The groups the caller has a role on. */
+  groups?: HubGroup[];
+}
+
+/** A group of hub projects (exuvia/groups.py), as `GET /api/groups` lists it. */
+export interface HubGroup {
+  id: string;
+  name: string;
+  owner: Person | null;
+  /** The caller's role on it. */
+  access: Role;
+  projects: number;
+  variables: number;
+}
+
+/** `GET /api/groups/<id>`: everything about one group the caller may see. */
+export interface Group {
+  id: string;
+  name: string;
+  owner: Person | null;
+  you: Role;
+  /** Sets variables, adds and removes projects. */
+  can_edit: boolean;
+  /** Manages people, renames, hands over, deletes. */
+  can_manage: boolean;
+  people_enabled: boolean;
+  people: Member[];
+  projects: { id: string; name: string; access: Role | null }[];
+  variables: EnvVar[];
 }
 
 /** `GET <project>/api/access`: what this page may do in its project. */
@@ -537,6 +585,8 @@ export interface Access {
   general?: GeneralAccess;
   can_request?: boolean;
   requested?: { role: Role; message: string; created_at: number } | null;
+  /** The group the project is in, and the caller's role on it (null: none). */
+  group?: (GroupRef & { access: Role | null }) | null;
 }
 
 /** One person a project is shared with by name. */
@@ -610,6 +660,29 @@ export const sharingApi = {
   /** People to share with: enabled users whose name or email contains `q`. */
   people: async (q: string) =>
     (await json<{ people: Person[] }>(sendTo("GET", `/api/people?q=${encodeURIComponent(q)}`))).people,
+};
+
+const groupUrl = (gid: string, rest = "") => `/api/groups/${encodeURIComponent(gid)}${rest}`;
+const envOf = (g: Group): EnvState => ({ variables: g.variables, requests: [] });
+
+/** A hub's groups (exuvia/server.py `_group_routes`). */
+export const groupApi = {
+  list: () => json<{ groups: HubGroup[]; can_create: boolean; people: boolean }>(sendTo("GET", "/api/groups")),
+  create: (name: string) => json<Group>(sendTo("POST", "/api/groups", { name })),
+  get: (gid: string) => json<Group>(sendTo("GET", groupUrl(gid))),
+  patch: (gid: string, change: { name?: string; owner?: string }) => json<Group>(sendTo("PATCH", groupUrl(gid), change)),
+  remove: (gid: string) => json<{ ok: true; projects: string[] }>(sendTo("DELETE", groupUrl(gid))),
+  share: (gid: string, who: { user?: string; email?: string; role: Role }) => json<Group>(sendTo("PUT", groupUrl(gid, "/people"), who)),
+  /** Take someone off; `{left: true}` when you took yourself off. */
+  unshare: (gid: string, principal: string) =>
+    json<Group | { ok: true; left: true }>(sendTo("DELETE", groupUrl(gid, `/people/${encodeURIComponent(principal)}`))),
+  setEnv: async (gid: string, name: string, b: { value?: string; secret: boolean }) =>
+    json<EnvState>(sendTo("PUT", groupUrl(gid, `/env/${encodeURIComponent(name)}`), b)),
+  removeEnv: async (gid: string, name: string) => json<EnvState>(sendTo("DELETE", groupUrl(gid, `/env/${encodeURIComponent(name)}`))),
+  env: async (gid: string) => envOf(await groupApi.get(gid)),
+  /** Put a project in a group (out of any other), or out of its group with `null`. */
+  setProjectGroup: (project: string, group: string | null) =>
+    json<{ project: string; group: GroupRef | null }>(sendTo("PUT", `/api/projects/${encodeURIComponent(project)}/group`, { group })),
 };
 
 /** Project ids a hub accepts (exuvia/hub.py PROJECT_ID). */
