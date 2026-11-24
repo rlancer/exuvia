@@ -420,7 +420,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "docs",
         "description": (
-            "exuvia's documentation, for what the guide does not cover: deploying a server or hub (Docker, "
+            "exuvia's documentation, for what the guide does not cover: the `exuvia` command line (every command "
+            "and its options) and updating exuvia, deploying a server or hub (Docker, "
             "Compose, Kubernetes), auth and agent tokens, private package indexes and Kerberos, executors, record "
             "databases, schedules on hosts that sleep, the HTTP API, embedding exuvia, MCP setup, views in depth. "
             "With no input: the table of contents. `topic`: one section by its heading. `query`: the passages "
@@ -432,6 +433,25 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "topic": {"type": "string", "description": "a heading from the table of contents, e.g. `Kerberos` or `Deploying`"},
                 "query": {"type": "string", "description": "words to search for, e.g. `postgres records`"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "version",
+        "description": (
+            "Which exuvia this is and how to update it: the running `version`, how it was `install`ed (`uvx`, "
+            "`uv-tool`, `pipx`, `pip`, `source` for a clone, or `deployed` for a server run from the image), the "
+            "`latest` release on PyPI, `update` (`available`, `current`, `off`, `dev` or `error`) and `upgrade`: the "
+            "command that updates this install, or null on a deployed server, which whoever runs it updates by "
+            "deploying the new `image`. Through `exuvia mcp --url` it answers for the server and for the `exuvia` on "
+            "this machine, which can differ. An update takes effect when that exuvia restarts. Never update exuvia "
+            "unless the user asks you to."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "refresh": {"type": "boolean", "description": "ask PyPI again rather than use the answer cached for a few hours"},
             },
             "additionalProperties": False,
         },
@@ -475,7 +495,7 @@ VIEW_TOOLS = {
 READ_TOOLS = frozenset({
     "list_nodes", "read_node", "list_files", "read_file", "list_revisions", "read_revision",
     "list_views", "read_view", "query_data", "list_runs", "read_run", "list_packages", "list_env",
-    "report_issue",
+    "report_issue", "version",
 })
 
 RUNS_LIMIT = 100
@@ -570,7 +590,8 @@ def rolling_vol(returns):
 - Add a `chart` when a node's output is naturally visual (time series, distributions, rankings).
 - Imports go inside the function or at module top; available packages: {packages}; `list_packages` with `environment: true` lists every installed package and its version. Do not pip install. A package that is not listed goes in the project's `pyproject.toml` under `[project] dependencies`, which exuvia installs from: {packages_how}
 - Only delete or rename nodes when asked. Keep edits minimal when changing an existing node.
-- For anything about exuvia this guide does not cover (deploying it, hubs, auth and tokens, executors, package indexes, the HTTP API, MCP setup), read `docs` before you answer or act: it is the documentation of the installed version. Do not answer those from memory.
+- For anything about exuvia this guide does not cover (the `exuvia` command line and its options, updating exuvia, deploying it, hubs, auth and tokens, executors, package indexes, the HTTP API, MCP setup), read `docs` before you answer or act: it is the documentation of the installed version. Do not answer those from memory, and do not guess at commands or flags.
+- `version` says which exuvia is running, how it was installed, whether a newer release is out and the exact command that updates it. Use it when the user asks about the version or updating, or when something they want is not in this version's `docs`. Update exuvia only when the user asks.
 - Finish with a short summary of what you changed and what the data shows — a few sentences, not a report. Describe findings factually; you are a research tool and do not give investment advice.
 
 ## Views
@@ -628,8 +649,11 @@ def _validate(name: str, args: Any) -> str | None:
 
 
 class Agent:
-    def __init__(self, ws: Workspace):
+    def __init__(self, ws: Workspace, command: str = "serve"):
         self.ws = ws
+        # The exuvia command hosting this agent (serve, hub or mcp): the
+        # `version` tool's update command for uvx runs it again.
+        self.command = command
         self.sessions: dict[str, list[Any]] = {}
         self.transcripts: dict[str, list[dict[str, Any]]] = {}
         self.active = 0  # chats in flight (a host must not stop the server mid-turn)
@@ -879,6 +903,10 @@ class Agent:
         if name == "docs":
             ok, text = docs.tool(args)
             return ok, text, {}
+        if name == "version":
+            from . import about
+
+            return True, json.dumps(await about.about(args.get("refresh") is True, self.command)), {}
         if name == "report_issue":
             return True, json.dumps(feedback.draft(args["title"], args["details"], args.get("kind") or "bug", origin)), {}
         return False, f"unknown tool {name}", {}

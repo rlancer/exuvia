@@ -109,9 +109,8 @@ const PAGES: PageSpec[] = [
   {
     slug: "command-line",
     group: "Run",
-    source: { heading: "Headless" },
-    title: "Command line",
-    summary: "Run and inspect a project without the UI, in CI or from cron.",
+    source: { heading: "Command line" },
+    summary: "Every exuvia command, running a project without the UI in CI or from cron, and updating exuvia.",
   },
   {
     slug: "architecture",

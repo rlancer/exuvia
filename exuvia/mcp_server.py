@@ -108,7 +108,64 @@ HUB_GUIDE_TOOL = {
 
 # Project tools that are about exuvia, not a project: a hub offers them
 # without a `project` argument and answers them itself.
-PROJECT_FREE = {"docs"}
+PROJECT_FREE = {"docs", "version"}
+
+
+def with_local_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A server's tool list plus the PROJECT_FREE tools this install answers
+    itself, for a relay to an older server that does not list them."""
+    from .agent import TOOLS
+
+    have = {t["name"] for t in tools}
+    return [*tools, *(
+        {"name": t["name"], "description": t["description"], "input_schema": t["input_schema"]}
+        for t in TOOLS if t["name"] in PROJECT_FREE and t["name"] not in have
+    )]
+
+
+async def project_free(name: str, args: dict[str, Any], command: str, target: str = "<folder>") -> tuple[bool, str]:
+    """A PROJECT_FREE tool, answered by this process: the docs of this
+    install, or its version (``command`` and ``target``: what it runs, for
+    the uvx update command)."""
+    import json
+
+    from .agent import _validate
+
+    problem = _validate(name, args)
+    if problem:
+        return False, f"INVALID_INPUT: {problem}"
+    if name == "docs":
+        from . import docs
+
+        return docs.tool(args)
+    from . import about
+
+    return True, json.dumps(await about.about(args.get("refresh") is True, command, target))
+
+
+async def relay_version(server: tuple[bool, str], url: str, args: dict[str, Any]) -> tuple[bool, str]:
+    """``version`` through a relay (``exuvia mcp --url``): the server's answer
+    (``server``: its ``version`` tool's result) and this machine's exuvia,
+    which runs the relay and can be another version."""
+    import json
+
+    ok, local = await project_free("version", args, "mcp", f"--url {url}")
+    if not ok:
+        return ok, local
+    s_ok, s_text = server
+    try:
+        srv = json.loads(s_text) if s_ok else {"error": s_text}
+    except ValueError:
+        srv = {"error": s_text}
+    return True, json.dumps({
+        "server": {"url": url, **srv},
+        "this_machine": json.loads(local),
+        "note": (
+            "`server` is the exuvia at that URL: its `upgrade` runs where that server runs (null: whoever runs it "
+            "deploys the new image). `this_machine` is the `exuvia mcp` this client starts, the `exuvia` command "
+            "on the user's machine; after updating it, the MCP client has to restart it."
+        ),
+    })
 
 
 def hub_tool_list(project_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -139,7 +196,8 @@ def hub_instructions(url: str, projects: list[dict[str, Any]] | str) -> str:
     return (
         f"An exuvia hub at {url}: many exuvia projects (DAG workbenches of Python and SQL nodes), each "
         f"with its own nodes, runs, outputs and views, and its workbench at {url}/p/<project>/. "
-        "Every project tool takes the project's id as `project`; `docs` (exuvia's documentation) needs none. "
+        "Every project tool takes the project's id as `project`; `docs` (exuvia's documentation, the `exuvia` "
+        "command line included) and `version` (which exuvia this is and how to update it) need none. "
         "Before you write or change anything in a project, call `guide` with that `project`: it says how "
         "exuvia works and holds the project's own "
         "parameters and notes. Work in the project the user names, or the one this conversation already "
@@ -206,7 +264,7 @@ class LocalBackend:
         from .workspace import Workspace
 
         self.ws = Workspace(root)
-        self.agent = Agent(self.ws)
+        self.agent = Agent(self.ws, command="mcp")
 
     async def start(self) -> None:
         await self.ws.start()
@@ -303,15 +361,24 @@ class RemoteBackend:
         import httpx
 
         if self._guide:
-            return self._guide["tools"]
+            return with_local_tools(self._guide["tools"])
         try:
-            return (await self._load_guide())["tools"]
+            return with_local_tools((await self._load_guide())["tools"])
         except httpx.HTTPError:
             from .agent import TOOLS  # the same tools, from this install
 
             return TOOLS
 
     async def call(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
+        if name == "version":
+            return await relay_version(await self._post(name, args), self.api.removesuffix("/api"), args)
+        ok, text = await self._post(name, args)
+        if ok and name == "request_secret":
+            base = self.api.removesuffix("/api")
+            text = secret_request_links(text, base, f"--url {base}")
+        return ok, text
+
+    async def _post(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
         import httpx
 
         try:
@@ -321,11 +388,7 @@ class RemoteBackend:
         if r.status_code != 200:
             return False, f"HTTP {r.status_code}: {r.text[:2000]}"
         body = r.json()
-        ok, text = bool(body.get("ok")), str(body.get("text", ""))
-        if ok and name == "request_secret":
-            base = self.api.removesuffix("/api")
-            text = secret_request_links(text, base, f"--url {base}")
-        return ok, text
+        return bool(body.get("ok")), str(body.get("text", ""))
 
 
 class HubBackend:
@@ -376,7 +439,7 @@ class HubBackend:
         return [{"name": t["name"], "description": t["description"], "input_schema": t["input_schema"]} for t in TOOLS]
 
     async def tools(self) -> list[dict[str, Any]]:
-        return hub_tool_list(self._project_tools or [])
+        return hub_tool_list(with_local_tools(self._project_tools or []))
 
     async def _projects(self) -> tuple[bool, dict[str, Any] | str]:
         import httpx
@@ -388,6 +451,18 @@ class HubBackend:
         if r.status_code != 200:
             return False, f"HTTP {r.status_code}: {r.text[:2000]}"
         return True, r.json()
+
+    async def _hub_about(self) -> tuple[bool, str]:
+        """The hub's own version, as its help menu shows it (``GET /api/about``)."""
+        import httpx
+
+        try:
+            r = await self.http.get(f"{self.url}/api/about")
+        except httpx.HTTPError as e:
+            return False, f"could not reach the exuvia hub at {self.url} ({type(e).__name__})"
+        if r.status_code != 200:
+            return False, f"HTTP {r.status_code}: {r.text[:300]}"
+        return True, r.text
 
     async def instructions(self) -> str:
         ok, listing = await self._projects()
@@ -420,10 +495,10 @@ class HubBackend:
             if name == "list_projects":
                 ok, listing = await self._projects()
                 return ok, json.dumps(listing, indent=1) if ok else str(listing)
+            if name == "version":  # the hub's and this machine's
+                return await relay_version(await self._hub_about(), self.url, args)
             if name in PROJECT_FREE:  # the docs of this install, which may be a different version than the hub
-                from . import docs
-
-                return docs.tool(args)
+                return await project_free(name, args, "mcp", f"--url {self.url}")
             if name == "create_project":
                 r = await self.http.post(f"{self.url}/api/projects", json={k: v for k, v in args.items() if k in ("id", "name", "template")})
                 if r.status_code != 200:
