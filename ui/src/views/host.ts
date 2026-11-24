@@ -145,6 +145,7 @@ export class ViewBridge {
   private params: ParamsState;
   private dark: boolean;
   private cache = new Map<string, Promise<ResultOf["table"] | ResultOf["json"]>>();
+  private refreshing: string[] = [];
 
   constructor(
     private frame: HTMLIFrameElement,
@@ -182,6 +183,13 @@ export class ViewBridge {
     if (changed.length || paramsChanged) this.post({ type: "changed", nodes: changed, params });
   }
 
+  /** The read nodes being re-run, for the view's `useRefreshing()`. */
+  setRefreshing(nodes: string[]): void {
+    if (nodes.join() === this.refreshing.join()) return;
+    this.refreshing = nodes;
+    this.post({ type: "refreshing", nodes });
+  }
+
   setTheme(dark: boolean): void {
     if (dark === this.dark) return;
     this.dark = dark;
@@ -213,6 +221,7 @@ export class ViewBridge {
           view: { name: got.name, title: got.title, entry: got.entry, reads: got.reads, files, packages },
           params: this.params,
           dark: this.dark,
+          refreshing: this.refreshing,
         });
       } catch (e) {
         this.opts.onStatus({ phase: "compile", error: `Could not load the view: ${(e as Error).message}` });

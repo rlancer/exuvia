@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ViewError, compile, createLoader, packageOf, resolveImport, resolvePackageImport } from "./loader";
 import { CHANNEL, NO_PACKAGES, isToFrame, isToHost } from "./protocol";
-import { frameDocument, refusal, resolveOutput, splitOutput } from "./host";
+import { ViewBridge, frameDocument, refusal, resolveOutput, splitOutput } from "./host";
 import { fileOrder, missingNpmPackage } from "./files";
 
 const files = {
@@ -133,7 +133,26 @@ describe("protocol", () => {
     expect(dl({ node: "prices", format: "csv", filename: 3 })).toBe(false);
     expect(isToHost(null)).toBe(false);
     expect(isToFrame({ channel: CHANNEL, type: "changed", nodes: [], params: { params: {}, specs: [] } })).toBe(true);
+    expect(isToFrame({ channel: CHANNEL, type: "refreshing", nodes: ["prices"] })).toBe(true);
     expect(isToFrame({ channel: CHANNEL, type: "request" })).toBe(false);
+  });
+});
+
+describe("live refresh", () => {
+  const view = { name: "board", title: "", reads: ["prices", "universe"], outputs: [] } as never;
+  const params = { params: {}, specs: [] };
+
+  it("tells the frame which read nodes are being re-run, once per change", () => {
+    const sent: unknown[] = [];
+    const frame = { contentWindow: { postMessage: (m: unknown) => sent.push(m) } } as unknown as HTMLIFrameElement;
+    const b = new ViewBridge(frame, view, params, false, { setParams: async () => params, onStatus: () => {} });
+    b.setRefreshing(["prices"]);
+    b.setRefreshing(["prices"]);
+    b.setRefreshing([]);
+    expect(sent).toEqual([
+      { channel: CHANNEL, type: "refreshing", nodes: ["prices"] },
+      { channel: CHANNEL, type: "refreshing", nodes: [] },
+    ]);
   });
 });
 

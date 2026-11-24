@@ -17,10 +17,12 @@ interface State {
   dark: boolean;
   /** Per read node, bumped when its output is replaced. */
   versions: Record<string, number>;
+  /** Read nodes being re-run (a live node refreshing as the view opened, or any run). */
+  refreshing: string[];
 }
 
 let call: Call = () => Promise.reject(new Error("The view runtime is not connected."));
-let state: State = { view: { name: "", title: "", reads: [] }, params: { params: {}, specs: [] }, dark: false, versions: {} };
+let state: State = { view: { name: "", title: "", reads: [] }, params: { params: {}, specs: [] }, dark: false, versions: {}, refreshing: [] };
 const listeners = new Set<() => void>();
 const changeListeners = new Set<(nodes: string[]) => void>();
 
@@ -36,9 +38,12 @@ function subscribe(l: () => void): () => void {
 
 /** Wiring for runtime.tsx: not part of the API views use. */
 export const internal = {
-  connect(fn: Call, view: ViewBundle, params: ParamsState, dark: boolean) {
+  connect(fn: Call, view: ViewBundle, params: ParamsState, dark: boolean, refreshing: string[] = []) {
     call = fn;
-    set({ view: { name: view.name, title: view.title, reads: view.reads }, params, dark });
+    set({ view: { name: view.name, title: view.title, reads: view.reads }, params, dark, refreshing });
+  },
+  refreshing(nodes: string[]) {
+    set({ refreshing: nodes });
   },
   changed(nodes: string[], params: ParamsState) {
     const versions = { ...state.versions };
@@ -177,6 +182,15 @@ export function useParams(): [Params, (p: Params) => Promise<ParamsState>, Param
 /** The view's name, title and reads. */
 export function useView(): State["view"] {
   return useStore().view;
+}
+
+/** Whether newer data is on its way: true while a node the view reads is
+ * being re-run (a live node refreshing because the view was opened, or any
+ * other run), or only for `node` when given. The view keeps showing what it
+ * has; the hooks reload when the new output lands. */
+export function useRefreshing(node?: string): boolean {
+  const s = useStore();
+  return node === undefined ? s.refreshing.length > 0 : s.refreshing.includes(nodeOf(node));
 }
 
 /** True when the exuvia page is in dark mode (the CSS variables follow it too). */

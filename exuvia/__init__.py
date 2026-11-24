@@ -52,6 +52,7 @@ def node(
     retry_delay: float = 30,
     overlap: str = "queue",
     push: bool = False,
+    live: bool | float = False,
 ) -> Any:
     """Mark a function as a exuvia node.
 
@@ -78,6 +79,12 @@ def node(
             never computed by exuvia: for data only that machine can read,
             such as a Bloomberg Terminal's. A push node takes no upstream
             nodes and has no schedule; its function is not run.
+        live: re-run the node whenever a view that depends on it is opened
+            (or its parameters change), so the view shows current data: it
+            renders the last output at once, says it is refreshing, and
+            updates when the new output lands. ``True`` re-runs every time;
+            a number of seconds re-runs only when the output is older than
+            that (``live=300``: at most every five minutes).
 
     The decorator is a no-op at runtime; exuvia reads these keyword arguments
     from the source with ``ast`` so they must be literals.
@@ -94,6 +101,7 @@ def node(
             "retry_delay": retry_delay,
             "overlap": overlap,
             "push": push,
+            "live": live,
         }
         return f
 

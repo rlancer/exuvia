@@ -48,6 +48,8 @@ export interface GraphNode {
   finished_at: number | null;
   last_run: RunRow | null;
   schedule: { cron: string; paused: boolean; next: number | null } | null;
+  /** Re-run when a view that depends on it is opened: null when not live, else the seconds an output stays recent enough. */
+  live?: number | null;
   /** The last run failed importing something not installed: the package that likely provides it. */
   missing_package?: { module: string; package: string } | null;
 }
@@ -176,6 +178,15 @@ export interface ProjectView {
   state: ViewState;
   reason: string | null;
   outputs: ViewOutput[];
+  /** The live nodes it depends on (`live=True`): opening the view re-runs them (`api.refreshView`). */
+  live: string[];
+}
+
+/** `POST /api/views/{name}/refresh`: the view's live nodes, those re-run now, and why the others were not. */
+export interface ViewRefresh {
+  live: string[];
+  started: string[];
+  skipped: Record<string, string>;
 }
 
 /** A declared run parameter and its value in the requested parameter set. */
@@ -343,6 +354,9 @@ export const api = {
   viewData,
   /** The npm modules a view imports, for its frame (see views/loader.ts). */
   viewPackages: (name: string) => req<PackageModules>("GET", `/api/views/${name}/packages`),
+  /** Re-run the live nodes a view depends on, for one parameter set; returns once they are queued. */
+  refreshView: (name: string, params: Record<string, unknown>) =>
+    req<ViewRefresh>("POST", `/api/views/${name}/refresh`, { params: Object.keys(params).length ? params : null }),
   /** DuckDB SQL that sees only the view's `reads`; the whole result as Arrow bytes. */
   viewQuery: async (view: string, sql: string, params?: Record<string, unknown>) =>
     (await send("POST", `/api/views/${view}/query`, { sql, params: params ?? null }, ARROW_STREAM)).arrayBuffer(),
