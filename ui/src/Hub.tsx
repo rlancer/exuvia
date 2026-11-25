@@ -27,13 +27,14 @@ import { EnvEditor, type EnvClient } from "./EnvDialog";
 import { notifyError } from "./toast";
 import { GENERAL_LABEL, ShareDialog } from "./Share";
 import { ConnectDialog } from "./Connect";
+import { AgentMcpDialog, McpPresetsDialog } from "./AgentMcp";
 import { SignedInAs } from "./Me";
 import { HelpMenu } from "./Help";
 import { useMe } from "./useMe";
 import { useColorMode } from "./theme/colorMode";
 import { Brand, Mark } from "./Brand";
 import { AppDialog } from "./ui/AppDialog";
-import { IconFolder, IconKey, IconMoon, IconPlus, IconShare, IconSpark, IconSun, IconTrash } from "./icons";
+import { IconFolder, IconKey, IconMoon, IconPlug, IconPlus, IconShare, IconSpark, IconSun, IconTrash } from "./icons";
 import { Toasts } from "./toast";
 
 const workbench = (id: string) => `/p/${encodeURIComponent(id)}/`;
@@ -80,6 +81,8 @@ export default function Hub() {
   // The hub's own variables, open: from their section, or `/?env=hub` (the Environment dialog's link).
   const [hubEnvOpen, setHubEnvOpen] = useState(() => new URLSearchParams(location.search).get("env") === "hub");
   const [grouping, setGrouping] = useState<HubProject | null>(null);
+  // The MCP servers on offer for the agent: an admin's list of them, or your own list to connect them to.
+  const [mcpOpen, setMcpOpen] = useState<"offer" | "mine" | null>(null);
   const [dark, toggleTheme] = useColorMode();
   // Someone signed in reaches Connect agent from their account menu.
   const who = useMe();
@@ -135,6 +138,7 @@ export default function Hub() {
     history.replaceState(null, "", url);
   };
   const hubEnv = listing?.hub_env;
+  const agentMcp = listing?.agent_mcp;
   const uid = who?.user?.uid ?? null;
   // People and roles exist where people sign in; a token hub shares by link only.
   const people = !!listing?.sharing?.people && !!uid;
@@ -233,6 +237,7 @@ export default function Hub() {
             />
             <Groups groups={groups} onOpen={showGroup} onNew={() => setNewGroup(true)} people={people} />
             {hubEnv && <HubVariables {...hubEnv} onOpen={() => showHubEnv(true)} />}
+            {agentMcp && <HubMcp {...agentMcp} onEdit={() => setMcpOpen("offer")} onConnect={() => setMcpOpen("mine")} />}
           </VStack>
         ) : (
           <VStack gap={4}>
@@ -326,6 +331,7 @@ export default function Hub() {
             )}
             <Groups groups={groups} onOpen={showGroup} onNew={() => setNewGroup(true)} people={people} />
             {hubEnv && <HubVariables {...hubEnv} onOpen={() => showHubEnv(true)} />}
+            {agentMcp && <HubMcp {...agentMcp} onEdit={() => setMcpOpen("offer")} onConnect={() => setMcpOpen("mine")} />}
           </VStack>
         )}
       </main>
@@ -355,6 +361,15 @@ export default function Hub() {
           }}
         />
       )}
+      {mcpOpen === "offer" && (
+        <McpPresetsDialog
+          onClose={() => {
+            setMcpOpen(null);
+            load();
+          }}
+        />
+      )}
+      {mcpOpen === "mine" && <AgentMcpDialog onClose={() => setMcpOpen(null)} />}
       {openGroup && (
         <GroupDialog
           gid={openGroup}
@@ -487,6 +502,30 @@ function HubVariables(props: { variables: number; can_edit: boolean; onOpen: () 
       <Text type="supporting" color="secondary">
         Environment variables and secrets every project on the hub gets, unless the project or its group sets the same name.
         Only hub admins change them.
+      </Text>
+    </VStack>
+  );
+}
+
+/** The MCP servers an admin offers for the agent, under the hub's variables. Hidden from a non-admin while there are none. */
+function HubMcp(props: { presets: number; can_edit: boolean; onEdit: () => void; onConnect: () => void }) {
+  if (!props.presets && !props.can_edit) return null;
+  return (
+    <VStack gap={3}>
+      <HStack gap={3} vAlign="center">
+        <div {...stylex.props(styles.title)}>
+          <Heading level={2}>MCP servers</Heading>
+          <Text color="secondary" hasTabularNumbers>
+            {props.presets}
+          </Text>
+        </div>
+        <span {...stylex.props(styles.grow)} />
+        {props.can_edit && <Button label="Edit" icon={props.presets > 0 ? undefined : <IconPlug />} onClick={props.onEdit} />}
+        {props.presets > 0 && <Button label="Connect" icon={<IconPlug />} onClick={props.onConnect} />}
+      </HStack>
+      <Text type="supporting" color="secondary">
+        Outside tools, such as a tracker or docs, that anyone on the hub can connect to the built-in agent. Nobody has one until they
+        press Connect, here or in the agent's MCP servers menu. Only hub admins change what is on offer.
       </Text>
     </VStack>
   );

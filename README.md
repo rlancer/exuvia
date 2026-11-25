@@ -2329,6 +2329,18 @@ fails to connect is left out of that turn, and the agent tells you why.
   token reads its owner's list but cannot change it). On a server nobody
   signs in to, such as a local `exuvia serve`, there is one list for
   everyone who can open it. A share link alone has none.
+- **Servers on offer.** An admin can offer servers to everyone on the
+  server: on a hub, **MCP servers → Edit** on the home page. Each has a
+  name, a URL, a line on what it is and the names of the headers each
+  person fills in (none for an OAuth server). Nobody's agent uses one until
+  they press **Connect** (on the home page, or under "On offer here" in the
+  agent's MCP servers menu), which puts a copy on their own list with the
+  values they type; from then on it is theirs. Changing an offer, or taking
+  it back, leaves the copies alone. An offer holds no secret. The API:
+  `GET /api/mcp/presets` for anyone, `PUT` and `DELETE
+  /api/mcp/presets/{name}` for an admin (`{"url", "description",
+  "headers": [names]}`), and `POST /api/me/mcp/presets/{name}/connect` with
+  `{"headers": {name: value}}`.
 - **Header values are write-only.** The API (`GET`, `PUT` and `DELETE
   /api/me/mcp/{name}`, `POST /api/me/mcp/{name}/test`) never returns them:
   a listing shows each header's name and its value's last 4 characters. They

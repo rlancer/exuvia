@@ -56,7 +56,8 @@ def hub(tmp_path):
 
 def test_create_from_template_list_delete(hub):
     assert hub.get("/api/projects").json() == {"projects": [], "templates": ["dated"], "auth": False, "sharing": None, "groups": [],
-                                           "hub_env": {"variables": 0, "can_edit": True}}
+                                           "hub_env": {"variables": 0, "can_edit": True},
+                                               "agent_mcp": {"presets": 0, "can_edit": True}}
     r = hub.post("/api/projects", json={"id": "wf_1", "name": "Put selling", "template": "dated"})
     assert r.status_code == 200 and r.json() == {"id": "wf_1", "name": "Put selling"}
     assert hub.post("/api/projects", json={"id": "wf_1"}).status_code == 409
