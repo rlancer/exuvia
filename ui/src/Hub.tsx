@@ -36,6 +36,8 @@ import { Brand, Mark } from "./Brand";
 import { AppDialog } from "./ui/AppDialog";
 import { IconFolder, IconKey, IconMoon, IconPlug, IconPlus, IconShare, IconSpark, IconSun, IconTrash } from "./icons";
 import { Toasts } from "./toast";
+import { isProjectSort, recentWork, SORT_LABEL, sortProjects, type ProjectSort } from "./projectOrder";
+import { ago } from "./util";
 
 const workbench = (id: string) => `/p/${encodeURIComponent(id)}/`;
 
@@ -56,6 +58,24 @@ type Filter = "all" | "mine" | "shared";
 
 const ROLE_WORD = { viewer: "can view", editor: "can edit", owner: "owner" } as const;
 
+/** The project list's order, kept in this browser. */
+const SORT_KEY = "exuvia-hub-sort";
+const keptSort = (): ProjectSort => {
+  try {
+    const s = localStorage.getItem(SORT_KEY);
+    return isProjectSort(s) ? s : "used";
+  } catch {
+    return "used";
+  }
+};
+const keepSort = (s: ProjectSort) => {
+  try {
+    localStorage.setItem(SORT_KEY, s);
+  } catch {
+    // Private windows and blocked storage: the order lasts as long as the page.
+  }
+};
+
 /**
  * The hub's home page, at `/` of `exuvia hub`: every project, with a button
  * to create one and a way to delete one; each opens its workbench at
@@ -74,6 +94,7 @@ export default function Hub() {
   const [deleting, setDeleting] = useState<HubProject | null>(null);
   const [sharing, setSharing] = useState<HubProject | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
+  const [sort, setSort] = useState<ProjectSort>(keptSort);
   const [connecting, setConnecting] = useState(false);
   // The group open on its page: from a row, or `/?group=<id>` (the Environment dialog's link).
   const [openGroup, setOpenGroup] = useState<string | null>(() => new URLSearchParams(location.search).get("group"));
@@ -143,21 +164,25 @@ export default function Hub() {
   // People and roles exist where people sign in; a token hub shares by link only.
   const people = !!listing?.sharing?.people && !!uid;
   const mine = (p: HubProject) => !!uid && p.owner?.id === uid;
-  const projects = !people || filter === "all" ? all : all.filter((p) => (filter === "mine" ? mine(p) : !mine(p)));
+  const projects = sortProjects(!people || filter === "all" ? all : all.filter((p) => (filter === "mine" ? mine(p) : !mine(p))), sort);
+  // What you created or changed lately, above the list: only when the list has more than that.
+  const recent = recentWork(all);
+  const showRecent = recent.length > 0 && all.length > recent.length;
   const canDelete = owns;
   const someDeletable = projects.some(canDelete);
   useEffect(() => {
     document.title = "Projects · exuvia";
   }, []);
 
-  /** A row's second line: the id, the size, then whose it is and who else can open it. */
-  const meta = (p: HubProject) => {
+  /** A row's second line: the id, the size, when (what the list is ordered by), then whose it is and who else can open it. */
+  const meta = (p: HubProject, when: string) => {
     const parts: ReactNode[] = [
       <span key="id" {...stylex.props(styles.mono)}>
         {p.id}
       </span>,
       `${p.nodes} node${p.nodes === 1 ? "" : "s"}`,
     ];
+    if (when) parts.push(when);
     if (people && p.access) {
       parts.push(mine(p) ? "yours" : p.owner ? `${p.owner.name}'s` : "no owner");
       if (!mine(p)) parts.push(`you ${ROLE_WORD[p.access]}`);
@@ -172,6 +197,74 @@ export default function Hub() {
     if (p.group) parts.push(`in ${p.group.name}`);
     return parts.flatMap((part, i) => (i ? [" · ", part] : [part]));
   };
+
+  /** When, on a row of the list: what its order goes by. */
+  const listWhen = (p: HubProject) =>
+    sort === "used" ? (p.opened_at ? `you opened it ${ago(p.opened_at)}` : "") : p.changed_at ? `changed ${ago(p.changed_at)}` : "";
+
+  const row = (p: HubProject, when: string) => (
+    <ListItem
+      key={p.id}
+      href={workbench(p.id)}
+      label={
+        <HStack gap={2} vAlign="center">
+          <Text weight="semibold" maxLines={1}>
+            {p.name || p.id}
+          </Text>
+          {p.requests ? (
+            <Tooltip content="People asking for access: open Share to answer">
+              <Badge variant="info" label={`${p.requests} request${p.requests === 1 ? "" : "s"}`} />
+            </Tooltip>
+          ) : null}
+        </HStack>
+      }
+      description={
+        <Text type="supporting" color="secondary" maxLines={1} hasTruncateTooltip={false}>
+          {meta(p, when)}
+        </Text>
+      }
+      endContent={
+        listing?.sharing || canDelete(p) ? (
+          <HStack gap={0.5} vAlign="center">
+            {canGroup(p) && (
+              <IconButton
+                variant="ghost"
+                size="sm"
+                label={p.group ? `${p.id}'s group: ${p.group.name}` : `Put ${p.id} in a group`}
+                tooltip={p.group ? `In ${p.group.name}: move or take out` : "Put in a group: share its variables and access"}
+                icon={<IconFolder />}
+                onClick={() => setGrouping(p)}
+              />
+            )}
+            {listing?.sharing && (
+              <Button
+                variant="ghost"
+                size="sm"
+                label={p.access === "owner" ? "Share" : "Access"}
+                icon={<IconShare />}
+                isIconOnly={compact}
+                tooltip={p.access === "owner" ? `Share ${p.id}` : `Who has access to ${p.id}`}
+                onClick={() => setSharing(p)}
+              />
+            )}
+            {canDelete(p) ? (
+              <IconButton
+                variant="ghost"
+                size="sm"
+                label={`Delete ${p.id}`}
+                tooltip={`Delete ${p.id}`}
+                icon={<IconTrash />}
+                onClick={() => setDeleting(p)}
+              />
+            ) : (
+              // Keeps Share and Access in one column down the list.
+              someDeletable && <span {...stylex.props(styles.slot)} />
+            )}
+          </HStack>
+        ) : undefined
+      }
+    />
+  );
 
   return (
     <div {...stylex.props(styles.page)}>
@@ -251,81 +344,49 @@ export default function Hub() {
               <span {...stylex.props(styles.grow)} />
               <Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewIn("")} />
             </HStack>
-            {people && (
-              <SegmentedControl label="Which projects" size="sm" value={filter} onChange={(f) => setFilter(f as Filter)} xstyle={styles.filter}>
-                <SegmentedControlItem value="all" label="All" />
-                <SegmentedControlItem value="mine" label="Owned by me" />
-                <SegmentedControlItem value="shared" label="Shared with me" />
-              </SegmentedControl>
+            {showRecent && (
+              <VStack gap={2}>
+                <Heading level={2}>Recently worked on</Heading>
+                <div {...stylex.props(styles.list)}>
+                  <List hasDividers density="spacious">
+                    {recent.map((p) => row(p, `you changed it ${ago(p.edited_at)}`))}
+                  </List>
+                </div>
+              </VStack>
             )}
+            <VStack gap={2}>
+              {showRecent && <Heading level={2}>All projects</Heading>}
+              <HStack gap={2} vAlign="center" wrap="wrap">
+                {people && (
+                  <SegmentedControl label="Which projects" size="sm" value={filter} onChange={(f) => setFilter(f as Filter)}>
+                    <SegmentedControlItem value="all" label="All" />
+                    <SegmentedControlItem value="mine" label="Owned by me" />
+                    <SegmentedControlItem value="shared" label="Shared with me" />
+                  </SegmentedControl>
+                )}
+                <span {...stylex.props(styles.grow)} />
+                <Selector
+                  label="Sort by"
+                  isLabelHidden
+                  size="sm"
+                  variant="ghost"
+                  value={sort}
+                  onChange={(v) => {
+                    if (!isProjectSort(v)) return;
+                    setSort(v);
+                    keepSort(v);
+                  }}
+                  renderValue={(o) => `Sort: ${o.label}`}
+                  options={(Object.keys(SORT_LABEL) as ProjectSort[]).map((value) => ({ value, label: SORT_LABEL[value] }))}
+                />
+              </HStack>
+            </VStack>
             {projects.length === 0 ? (
               <Text color="secondary">No projects here.</Text>
             ) : (
               <div {...stylex.props(styles.list)}>
                 <List hasDividers density="spacious">
-                  {projects.map((p) => (
-                    <ListItem
-                      key={p.id}
-                      href={workbench(p.id)}
-                      label={
-                        <HStack gap={2} vAlign="center">
-                          <Text weight="semibold" maxLines={1}>
-                            {p.name || p.id}
-                          </Text>
-                          {p.requests ? (
-                            <Tooltip content="People asking for access: open Share to answer">
-                              <Badge variant="info" label={`${p.requests} request${p.requests === 1 ? "" : "s"}`} />
-                            </Tooltip>
-                          ) : null}
-                        </HStack>
-                      }
-                      description={
-                        <Text type="supporting" color="secondary" maxLines={1} hasTruncateTooltip={false}>
-                          {meta(p)}
-                        </Text>
-                      }
-                      endContent={
-                        listing.sharing || canDelete(p) ? (
-                          <HStack gap={0.5} vAlign="center">
-                            {canGroup(p) && (
-                              <IconButton
-                                variant="ghost"
-                                size="sm"
-                                label={p.group ? `${p.id}'s group: ${p.group.name}` : `Put ${p.id} in a group`}
-                                tooltip={p.group ? `In ${p.group.name}: move or take out` : "Put in a group: share its variables and access"}
-                                icon={<IconFolder />}
-                                onClick={() => setGrouping(p)}
-                              />
-                            )}
-                            {listing.sharing && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                label={p.access === "owner" ? "Share" : "Access"}
-                                icon={<IconShare />}
-                                isIconOnly={compact}
-                                tooltip={p.access === "owner" ? `Share ${p.id}` : `Who has access to ${p.id}`}
-                                onClick={() => setSharing(p)}
-                              />
-                            )}
-                            {canDelete(p) ? (
-                              <IconButton
-                                variant="ghost"
-                                size="sm"
-                                label={`Delete ${p.id}`}
-                                tooltip={`Delete ${p.id}`}
-                                icon={<IconTrash />}
-                                onClick={() => setDeleting(p)}
-                              />
-                            ) : (
-                              // Keeps Share and Access in one column down the list.
-                              someDeletable && <span {...stylex.props(styles.slot)} />
-                            )}
-                          </HStack>
-                        ) : undefined
-                      }
-                    />
-                  ))}
+                  {projects.map((p) => row(p, listWhen(p)))}
                 </List>
               </div>
             )}
@@ -840,7 +901,6 @@ const styles = stylex.create({
     paddingBlockEnd: spacingVars["--spacing-10"],
   },
   title: { display: "flex", alignItems: "baseline", gap: spacingVars["--spacing-2"], minWidth: 0 },
-  filter: { alignSelf: "flex-start" },
   // The rows stand on one surface, as a panel of the workbench does.
   list: {
     overflow: "hidden",

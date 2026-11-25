@@ -35,6 +35,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import _STARTED, __version__, about as about_mod, auth, mcp_http
+from .activity import ActivityStore
 from .agent import READ_TOOLS, TOOLS, Agent
 from .arrowstream import MEDIA_TYPE as ARROW_STREAM, ArrowStream, wants_arrow
 from .envvars import EnvError, public as envvars_public
@@ -2111,6 +2112,12 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
     if hub.sharing is not None:
         hub.sharing.groups = hub.groups
     hub.seal_group_env()
+    hub.activity = ActivityStore(hub.groups.db, scope=hub.groups.scope)
+
+    def note_use(project: str, need: str) -> None:
+        """Who opened (and, needing edit access, changed) the project: the
+        home page's Recently used and Recently changed."""
+        hub.activity.touch(project, auth.current_uid(), edited=need != "viewer")
 
     def role_on(project: str) -> str | None:
         """The request's role on a project: owner for everyone on a hub
@@ -2158,6 +2165,7 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
         role = await asyncio.to_thread(role_on, project)
         if role is None:
             return JSONResponse({"detail": denial(project, role, "viewer")}, status_code=403)
+        await asyncio.to_thread(note_use, project, "viewer")
         return await hub.get(project)
 
     def path_role(scope: dict[str, Any]) -> str | None:
@@ -2187,7 +2195,9 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
     async def get_ctx(project: str, request: Request) -> Ctx:
         # The rules may need a database read: off the event loop (the thread
         # gets this request's context, so it sees who is signed in).
-        await asyncio.to_thread(require, project, _needed_role(request))
+        need = _needed_role(request)
+        await asyncio.to_thread(require, project, need)
+        await asyncio.to_thread(note_use, project, need)
         return await hub.get(project)
 
     @app.get("/p/{project}/api/access")
@@ -2245,7 +2255,7 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
         has sharing. `auth`: whether clients need the API token (the home
         page's MCP setup says so)."""
         out: dict[str, Any] = {
-            "projects": visible_projects(), "templates": hub.templates(),
+            "projects": with_activity(visible_projects()), "templates": hub.templates(),
             "auth": bool(os.environ.get("EXUVIA_API_TOKEN")), "sharing": None,
             "groups": hub.groups.visible(auth.current()),
             "hub_env": {"variables": len(hub.groups.hub_env_rows()), "can_edit": is_admin()},
@@ -2271,6 +2281,20 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
             return listed
         seen = hub.sharing.overview([p["id"] for p in listed], auth.current())
         return [{**p, **seen[p["id"]]} for p in listed if p["id"] in seen]
+
+    def with_activity(projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Each project with when the caller last opened it (``opened_at``)
+        and changed it (``edited_at``; creating it counts), and when anyone
+        last changed it (``changed_at``): null when not known."""
+        mine = hub.activity.of(auth.current_uid())
+        changed = hub.activity.changed()
+        out = []
+        for p in projects:
+            used = mine.get(p["id"], {})
+            times = [t for t in (changed.get(p["id"]), hub.files_changed(p["id"])) if t is not None]
+            out.append({**p, "opened_at": used.get("opened_at"), "edited_at": used.get("edited_at"),
+                        "changed_at": max(times, default=None)})
+        return out
 
     hub.visible = visible_projects  # the hub's MCP lists the same projects (mcp_http.py)
 
@@ -2298,6 +2322,8 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         out = {"id": body.id, "name": (await hub.get(body.id)).ws.project.name}
+        # Whoever creates it worked on it: it heads their Recently worked on.
+        await asyncio.to_thread(note_use, body.id, "owner")
         if group is not None:
             hub.groups.set_project_group(body.id, group, by=auth.current_uid())
             hub.env_changed([body.id])
