@@ -57,6 +57,8 @@ export const IconUser = icon(
     <path d="M2.8 13.6c.7-2.5 2.7-3.9 5.2-3.9s4.5 1.4 5.2 3.9" />
   </>,
 );
+/** Home: the hub's projects page. */
+export const IconHome = icon(<path d="M2.5 7.2 8 2.5l5.5 4.7M4 6v7a.5.5 0 0 0 .5.5h2.5V10h2v3.5h2.5a.5.5 0 0 0 .5-.5V6" />);
 export const IconFolder = icon(<path d="M1.8 4.2a1 1 0 0 1 1-1h3.1l1.5 1.6h5.8a1 1 0 0 1 1 1v6.7a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z" />);
 export const IconFile = icon(<path d="M4 1.8h5.2L12.5 5v8.2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1zM9 1.8V5.3h3.5" />);
 export const IconDownload = icon(<path d="M8 2v8.5M4.5 7 8 10.5 11.5 7M2.5 11.5v1.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-1.5" />);

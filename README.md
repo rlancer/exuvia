@@ -2115,8 +2115,8 @@ later does not split anyone in two.
 `EXUVIA_ADMINS` (user names or emails, comma-separated) names the first
 admins. They are admins whenever they sign in, and nobody can demote or
 disable them through exuvia, so the hub always has a way back in. On a
-hub, an admin finds **Users** on the admin page (`/admin`: the **Admin**
-button in the home page's top bar, or **Admin** in the account menu); on
+hub, an admin finds **Users** on the admin page (`/admin`: **Admin** in
+the hub's left nav, or in the account menu); on
 `exuvia serve` it is **Users…** in the account menu. There, everyone who has signed in is listed, and an admin
 can make others admins or members and disable or re-enable them. A
 disabled user gets a 403 even though the proxy lets them through, which
@@ -2576,7 +2576,13 @@ agent's machine, which can differ.
 `exuvia hub <dir>` serves every project under one directory, each with the
 full API under its own prefix and the web UI at `/p/<project>/`. `/` is the
 hub's home page: it lists the projects, creates one (from a template, when
-the hub has any) and opens its workbench, and deletes one. Its **Connect
+the hub has any) and opens its workbench, and deletes one. Every page of
+the hub, the workbench included, has the hub's left nav: **Home**, **Admin**
+(for an admin, with the admin page's sections under it), then every project
+you can open, the one you used last first, and **+** for a new one. It folds
+to a rail of icons, each project shown by its initials; the browser keeps
+whether it is folded, separately for the hub's pages and for the workbench,
+which starts folded unless the window is wide. Its **Connect
 agent** button gives the [MCP](#mcp-the-agents-tools-in-your-own-agent) setup
 for the whole hub (one server for every project): a prompt that has your
 coding agent add the server itself, the `claude mcp add` and `codex mcp add`
