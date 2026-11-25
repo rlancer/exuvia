@@ -1247,6 +1247,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
 
 # Marks the page a hub serves at / as the hub's home (ui/src/main.tsx).
 HUB_HOME_META = '<meta name="exuvia-hub" content="home">'
+HUB_ADMIN_META = '<meta name="exuvia-hub" content="admin">'
 # Kept under 300 characters with its JSON: an old client shows only that much.
 HUB_GUIDE_HINT = (
     "This is an exuvia hub. MCP for a whole hub needs exuvia 0.3.11 or newer: "
@@ -2364,6 +2365,15 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
         ``busy`` is true while runs, backfills or agent turns are in flight."""
         return hub.state()
 
+    @app.get("/api/admin/settings")
+    def admin_settings() -> dict[str, Any]:
+        """How the server is set up, for the admin page (admin.py): read-only,
+        set by environment variables, with no secret in it."""
+        require_admin()
+        from .admin import settings
+
+        return {"groups": settings(_auth_method())}
+
     @app.get("/api/hub/export")
     async def hub_export() -> FileResponse:
         """All projects with their run history and artifacts, as one .tar.gz."""
@@ -2437,14 +2447,23 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
                 return bool(token) and _token_ok(request, token)
             return not token or _browser_open() or _token_ok(request, token)
 
-        @app.get("/", response_class=HTMLResponse)
-        def hub_home() -> HTMLResponse:
+        def marked(meta: str) -> HTMLResponse:
+            """The UI's page with a meta tag saying which of the hub's own pages it is."""
             page = (STATIC / "index.html").read_text(encoding="utf-8")
             # Into <head>, or right after the doctype (before it would mean quirks mode).
-            marked, n = re.subn(r"<head\b[^>]*>", lambda m: m.group(0) + HUB_HOME_META, page, count=1, flags=re.I)
+            out, n = re.subn(r"<head\b[^>]*>", lambda m: m.group(0) + meta, page, count=1, flags=re.I)
             if not n:
-                marked = re.sub(r"^(\s*<!doctype[^>]*>)?", lambda m: (m.group(0) or "") + HUB_HOME_META, page, count=1, flags=re.I)
-            return HTMLResponse(marked)
+                out = re.sub(r"^(\s*<!doctype[^>]*>)?", lambda m: (m.group(0) or "") + meta, page, count=1, flags=re.I)
+            return HTMLResponse(out)
+
+        @app.get("/", response_class=HTMLResponse)
+        def hub_home() -> HTMLResponse:
+            return marked(HUB_HOME_META)
+
+        @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
+        def hub_admin_page() -> HTMLResponse:
+            """The admin page: the page itself says who may use it (its API is admins only)."""
+            return marked(HUB_ADMIN_META)
 
         @app.get("/p/{project}", include_in_schema=False)
         def project_page_slash(project: str) -> RedirectResponse:

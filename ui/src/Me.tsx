@@ -27,11 +27,11 @@ import { useMe } from "./useMe";
  * The signed-in person's account menu (EXUVIA_AUTH=headers), at the end of
  * the top bar: a profile icon that opens who they are and what they can do
  * from here. Connect an agent (on a hub: their own agent token, with the MCP
- * setup around it) and, for an admin, Users, which manages the user list.
- * `hub`: this page is the hub's home; a hub project's workbench is one too.
- * `onAdmin`: this page has an admin panel (the hub's home), which takes Users' place.
+ * setup around it) and, for an admin, the hub's admin page (`/admin`), or
+ * Users, which manages the user list, on a server with no hub.
+ * `hub`: this page is one of the hub's own; a hub project's workbench is one too.
  */
-export function SignedInAs(props: { hub?: boolean; onAdmin?: () => void }) {
+export function SignedInAs(props: { hub?: boolean }) {
   const who = useMe()?.user ?? null;
   const [dialog, setDialog] = useState<"users" | "connect" | null>(null);
 
@@ -45,8 +45,8 @@ export function SignedInAs(props: { hub?: boolean; onAdmin?: () => void }) {
       : []),
     ...(who.role === "admin"
       ? [
-          props.onAdmin
-            ? { label: "Admin…", description: "Users, hub variables and MCP servers", icon: <IconSliders />, onClick: props.onAdmin }
+          props.hub || HUB_PROJECT
+            ? { label: "Admin", description: "Users, settings and the rest of the hub", icon: <IconSliders />, onClick: () => location.assign("/admin") }
             : { label: "Users…", description: "Roles and disabled accounts", icon: <IconUser />, onClick: () => setDialog("users") },
         ]
       : []),
