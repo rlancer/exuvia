@@ -2,8 +2,9 @@
 
 Status: **exploration, nothing built.** Notes from a design discussion
 (November 2026) on nodes that add a little data each run, and on whether
-DuckLake should be where that data lives. Code references are to `main` at
-the time of writing. The DuckLake and Quack sections were checked against
+that data should live in DuckLake or in partitioned Parquet that exuvia
+manages itself (prototyped, and the current leaning). Code references are
+to `main` at the time of writing. The DuckLake and Quack sections were checked against
 the DuckDB 2.0 and DuckLake 1.1 docs on 2026-11-22.
 
 ## The problem
@@ -116,6 +117,125 @@ place.
    corporate actions? (That favours C.)
 3. Do downstream nodes need point-in-time correctness? (That favours A's
    design.)
+
+## Partitioned outputs without DuckLake (prototyped)
+
+Using DuckLake for incremental nodes only would leave exuvia with two
+storage systems: content-addressed files for ordinary nodes and a lake for
+incremental ones. Using it for every output would put a young system under
+all of exuvia, and gain little: exuvia already keeps every run's output.
+This option instead generalizes the artifact exuvia already has.
+
+**An output is a manifest of content-addressed Parquet chunks.** A manifest
+is a small JSON artifact. It maps each partition value (a date) to a digest
+of that partition's rows, and lists the chunk files with the partitions each
+holds. An ordinary node's output is a manifest with one chunk, so there is
+one storage model.
+
+- **A commit replaces partitions.** The control plane, the only writer,
+  splits the rows a run returns by the key and writes one chunk per
+  partition. A daily run writes one, a backfill writes ten years in one call,
+  and a correction overwrites its day. The new manifest is recorded as the
+  run's artifact: one database write, so it's atomic.
+- **Two ids.** The *logical id* hashes the partition-to-digest map. It
+  changes only when data changes, and freshness and cascades would key on
+  it. The *physical id* hashes the file list, which compaction changes.
+  Rewriting a partition with identical rows writes nothing and leaves the
+  logical id alone, so a cascade stops as it does today.
+- **Readers get a file list.** `read_parquet([...], union_by_name = true)`
+  over the manifest's chunks. The query sandbox allows exactly those files.
+  exuvia can drop chunks whose partitions a filter excludes before handing
+  over the list.
+- **Compaction** merges chunks into one file per group of partitions (a year
+  of days), copy-on-write. A correction to a compacted day rewrites that
+  file without the day, and adds the new day's chunk.
+- **Old manifests stay readable,** so time travel and pinned reads work as
+  they do now. Chunks are shared between manifests, so storage grows
+  linearly instead of quadratically.
+
+[`partitioned-outputs/`](partitioned-outputs/) has the prototype
+(`manifest.py`) and the measurements (`bench.py`). It uses only the `duckdb`
+exuvia depends on (2.0.1), on the same shared 4-core Windows machine as the
+Quack tests.
+
+### What was measured
+
+A daily node with 500 tickers a day, built from one backfill of 10,000 days
+(5 million rows). Each read builds a fresh sandbox connection as exuvia does
+per request: `allowed_paths` set to the files, a view, external access off,
+the lock. Medians of 3 runs (1 for 10,000 files), in ms:
+
+| Days | Layout | Files | Sandbox setup | Count and sum | Last 30 days |
+|---|---|---|---|---|---|
+| 1,000 | One file | 1 | 61 | 20 | 10 |
+| 1,000 | Union per file (today's `__runs`) | 1,000 | 1,533 | 2,604 | 1,958 |
+| 1,000 | File list | 1,000 | 688 | 1,342 | 1,350 |
+| 1,000 | File list, pruned to 30 days | 30 | | | 104 (with setup) |
+| 1,000 | Compacted by year | 3 | 49 | 18 | 12 |
+| 10,000 | One file | 1 | 49 | 123 | 14 |
+| 10,000 | File list | 10,000 | 8,042 | 15,731 | 17,407 |
+| 10,000 | File list, pruned to 30 days | 30 | | | 138 (with setup) |
+| 10,000 | Compacted by year | 28 | 77 | 153 | 46 |
+
+All four layouts returned the same answers.
+
+- **Each file costs about 1.5 ms a query, plus about 0.8 ms to set up the
+  sandbox.** That cost depends on the number of files, not their size: 10,000
+  small files take 15 s to count 5 million rows, while one file takes 0.1 s.
+- **Compacted, a manifest reads like one file.** 28 yearly files were within
+  noise of the single file for full scans. For the last 30 days they were
+  46 ms against 14, because Parquet statistics skip most of each year.
+- **Pruning by partition makes recent reads cheap** whatever the history's
+  size: the last 30 days' chunks took 104–138 ms, setup included.
+- **Commits are cheap.** A daily commit took 20–28 ms. A correction to a day
+  inside a compacted year took 153 ms, rewriting that year's file. The
+  10,000-day backfill took 71 s in one pass, and compacting it by year took
+  17 s.
+- **Identity holds.** A daily rewrite with identical rows, and an identical
+  rewrite of a day first written by the backfill, both left the manifest
+  unchanged. Compaction kept every row (`EXCEPT ALL` was empty) and the
+  logical id. A correction changed the logical id and touched only its day.
+- **Hash rows, not files.** The same day's rows written alone and written by
+  the backfill's one-pass partitioned `COPY` gave different Parquet bytes.
+  A partition's digest is therefore SHA-256 of its rows as text, sorted,
+  computed in one SQL pass. A DuckDB upgrade that formats a value
+  differently would change digests once, and cause one spurious cascade.
+- **Storage.** The chunks took 40 MB; compacted by year, 31 MB, the same as
+  one file. A full-history node writing one full file a day would have
+  written about 156 GB over the same 10,000 days (estimated from the final
+  file's size).
+- **The sandbox holds.** A chunk outside the manifest's list was refused.
+- **The manifest grows with partitions.** 10,000 partitions made 2.1 MB of
+  JSON, parsed in 22 ms. In exuvia it would belong in the records database
+  rather than one JSON value.
+- **Today's `__runs` is about twice as slow as a file list.** It joins one
+  `read_parquet` per run with `UNION ALL BY NAME`. One `read_parquet` over
+  the list, with `union_by_name`, would halve it. That change stands on its
+  own, but it wasn't tried in exuvia.
+
+What it implies:
+
+- **Compaction is required, not an optimization.** Keep each output to a few
+  dozen files. One rule that would do it: when the uncompacted tail passes
+  about 30 chunks, fold it into the current period's file, months into
+  years. Folding rewrites the open period's file, about 150 ms here.
+- **Not tested:**
+  - chunks on S3 (`EXUVIA_ARTIFACT_STORE`), where each file costs HTTP
+    requests and compaction matters even more;
+  - a remote executor caching chunks between runs;
+  - a node taking the manifest as input, and freshness and cascades keyed on
+    the logical id;
+  - merge on a key finer than the partition;
+  - schema changes between partitions beyond added columns;
+  - when unreferenced chunks get deleted. exuvia never deletes outputs
+    today.
+
+**Against DuckLake** it gives up row-level merge, inlining small writes, a
+row-level change feed, several writers and outside DuckDB attach. Merge at
+partition granularity, compaction and manifest diffs stand in for the first
+three. The others aren't needed now. In return it needs no extensions, no
+Quack, no catalog migrations and no read-only policy, and ordinary and
+incremental outputs share one model.
 
 ## DuckLake as the storage layer
 
@@ -689,9 +809,16 @@ release calendar.
 
 ## Current leaning
 
-- Add DuckLake as the storage for a new kind of incremental node (append, or
-  merge on a key). Keep ordinary per-run outputs as they are.
-- Readers get a read-only Quack token. The policy is built and tested
+- Store incremental nodes as partitioned outputs: a manifest of
+  content-addressed Parquet chunks, with compaction in exuvia ("Partitioned
+  outputs without DuckLake"). An ordinary output is the one-chunk case, so
+  exuvia keeps one storage model. The prototype read as fast as one file
+  once compacted; S3 and the graph integration are untested.
+- Keep DuckLake and Quack for later: for row-level merge, several writers,
+  or outside DuckDB readers, and once the DuckLake REST API ships. The work
+  below stands if that happens. Quack isn't exuvia's outside read API: the
+  HTTP API already serves Arrow streams and Parquet files.
+- If the lake is adopted, readers get a read-only Quack token. The policy is built and tested
   three ways. Drop the SQL macro: every statement, a writer's included,
   costs about 25 times a no-op hook. Keep the Python UDF hook, with its
   startup self-test, while Quack is experimental anyway. Serve it from the
@@ -704,8 +831,10 @@ release calendar.
   extension would be faster only by calling DuckDB's parser directly, at
   the price of a rebuild for every DuckDB release. Revisit all of it when
   the DuckLake REST API ships.
-- Option A (`__runs` as a node input) doesn't need DuckLake and could ship
-  first, depending on how soon the lake is wanted.
+- Option A (`__runs` as a node input) could ship first. With partitioned
+  outputs, `__runs` becomes a manifest over each date's latest output, so A
+  and C converge. Reading it as one `read_parquet` over a list would halve
+  its cost today.
 
 ## Sources
 
