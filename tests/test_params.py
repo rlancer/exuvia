@@ -162,6 +162,48 @@ def test_history_and_runs_view_compare_dates(tmp_path):
     assert ws.query("select sum(sig) from signal", params={"as_of": "2026-03-03"})["rows"] == [[12]]
 
 
+def test_runs_view_reads_every_file_at_once(tmp_path):
+    """`<node>__runs` is one read_parquet over the runs' files, joined to
+    their parameters: two dates with identical output share one file and
+    still both show, and a column added later is null for earlier runs."""
+    config(tmp_path, **AS_OF)
+    write(tmp_path, "flat.py", '''
+        import exuvia
+
+        @exuvia.node(params=["as_of"])
+        def flat():
+            import pandas as pd
+            day = exuvia.param("as_of")
+            if day >= "2026-03-04":
+                return pd.DataFrame({"v": [1], "extra": ["x"]})
+            return pd.DataFrame({"v": [1]})
+    ''')
+    ws = Workspace(tmp_path)
+    for day in ("2026-03-02", "2026-03-03", "2026-03-04"):
+        run(ws, ["flat"], params={"as_of": day})
+    hist = ws.history("flat")
+    assert hist[1]["artifact_id"] == hist[2]["artifact_id"]  # the same file for two dates
+    out = ws.query('select "_as_of", v, extra from flat__runs order by 1')
+    assert out["rows"] == [["2026-03-02", 1, None], ["2026-03-03", 1, None], ["2026-03-04", 1, "x"]]
+    assert [c["name"] for c in ws.query("select * from flat__runs limit 0")["columns"]] == ["_as_of", "v", "extra"]
+    con = ws._outputs_db(None)
+    (sql,) = con.execute("select sql from duckdb_views() where view_name = 'flat__runs'").fetchone()
+    assert sql.lower().count("read_parquet") == 1
+
+
+def test_runs_view_falls_back_to_a_union(tmp_path):
+    """When the single read can't be built (here: a parameter recorded as a
+    number for one run and text for another, which one VALUES list can't
+    hold), `__runs` is the union of one read per run, as it used to be."""
+    ws = project(tmp_path)
+    for day in ("2026-03-02", "2026-03-03"):
+        run(ws, ["prices"], params={"as_of": day})
+    older = ws.history("prices")[1]
+    ws.store.update_run(older["run_id"], params=json.dumps({"as_of": 5}))
+    out = ws.query('select "_as_of", px from prices__runs order by px')
+    assert out["rows"] == [["5", 2], ["5", 2], ["2026-03-03", 3], ["2026-03-03", 3]]
+
+
 def test_backfill_replays_each_value_in_order(tmp_path):
     ws = project(tmp_path)
     days = ["2026-03-02", "2026-03-03", "2026-03-04"]
