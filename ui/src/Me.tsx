@@ -20,7 +20,7 @@ import { HUB_PROJECT, usersApi, type UserRow } from "./api";
 import { ConnectDialog } from "./Connect";
 import { ago } from "./util";
 import { AppDialog } from "./ui/AppDialog";
-import { IconSpark, IconUser } from "./icons";
+import { IconSliders, IconSpark, IconUser } from "./icons";
 import { useMe } from "./useMe";
 
 /**
@@ -29,8 +29,9 @@ import { useMe } from "./useMe";
  * from here. Connect an agent (on a hub: their own agent token, with the MCP
  * setup around it) and, for an admin, Users, which manages the user list.
  * `hub`: this page is the hub's home; a hub project's workbench is one too.
+ * `onAdmin`: this page has an admin panel (the hub's home), which takes Users' place.
  */
-export function SignedInAs(props: { hub?: boolean }) {
+export function SignedInAs(props: { hub?: boolean; onAdmin?: () => void }) {
   const who = useMe()?.user ?? null;
   const [dialog, setDialog] = useState<"users" | "connect" | null>(null);
 
@@ -43,7 +44,11 @@ export function SignedInAs(props: { hub?: boolean }) {
       ? [{ label: "Connect an agent…", description: "Your agent token and the MCP setup", icon: <IconSpark />, onClick: () => setDialog("connect") }]
       : []),
     ...(who.role === "admin"
-      ? [{ label: "Users…", description: "Roles and disabled accounts", icon: <IconUser />, onClick: () => setDialog("users") }]
+      ? [
+          props.onAdmin
+            ? { label: "Admin…", description: "Users, hub variables and MCP servers", icon: <IconSliders />, onClick: props.onAdmin }
+            : { label: "Users…", description: "Roles and disabled accounts", icon: <IconUser />, onClick: () => setDialog("users") },
+        ]
       : []),
   ];
   return (
@@ -86,12 +91,27 @@ export function SignedInAs(props: { hub?: boolean }) {
 /** A user as a table row: Astryx's Table takes a record, which an interface is not. */
 type Row = Pick<UserRow, keyof UserRow>;
 
+/** The user list in a dialog of its own: where there is no admin panel (a project's workbench). */
+function UsersDialog(props: { self: string | null; onClose: () => void }) {
+  return (
+    <AppDialog
+      title="Users"
+      subtitle="Everyone who has signed in."
+      width={760}
+      onClose={props.onClose}
+      footer={<Button label="Close" onClick={props.onClose} />}
+    >
+      <UsersPanel self={props.self} />
+    </AppDialog>
+  );
+}
+
 /**
  * The user list, for an admin: who has signed in, what each may do, and a way
  * to turn someone away. A person's role is set in their row; a disabled one
  * stays in the list, greyed and struck through, so they can be let back in.
  */
-function UsersDialog(props: { self: string | null; onClose: () => void }) {
+export function UsersPanel(props: { self: string | null }) {
   const [users, setUsers] = useState<UserRow[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const load = useCallback(() => usersApi.list().then(setUsers).catch((e: Error) => setErr(e.message)), []);
@@ -182,30 +202,22 @@ function UsersDialog(props: { self: string | null; onClose: () => void }) {
   ];
 
   return (
-    <AppDialog
-      title="Users"
-      subtitle="Everyone who has signed in."
-      width={760}
-      onClose={props.onClose}
-      footer={<Button label="Close" onClick={props.onClose} />}
-    >
-      <VStack gap={4}>
-        <Text type="supporting" color="secondary">
-          A disabled user is turned away even when the sign-in proxy lets them in. People named in <Code>EXUVIA_ADMINS</Code> are always
-          admins.
-        </Text>
-        {err && <Banner role="alert" status="error" title={err} />}
-        {!users ? (
-          !err && (
-            <Center padding={6}>
-              <Spinner aria-label="Loading the users" />
-            </Center>
-          )
-        ) : (
-          <Table<Row> data={users} columns={columns} idKey="id" density="compact" textOverflow="truncate" xstyle={styles.table} />
-        )}
-      </VStack>
-    </AppDialog>
+    <VStack gap={4}>
+      <Text type="supporting" color="secondary">
+        A disabled user is turned away even when the sign-in proxy lets them in. People named in <Code>EXUVIA_ADMINS</Code> are always
+        admins.
+      </Text>
+      {err && <Banner role="alert" status="error" title={err} />}
+      {!users ? (
+        !err && (
+          <Center padding={6}>
+            <Spinner aria-label="Loading the users" />
+          </Center>
+        )
+      ) : (
+        <Table<Row> data={users} columns={columns} idKey="id" density="compact" textOverflow="truncate" xstyle={styles.table} />
+      )}
+    </VStack>
   );
 }
 

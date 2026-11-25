@@ -21,20 +21,19 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
-import { ApiError, groupApi, hubApi, hubEnvApi, PROJECT_ID, type GeneralAccess, type HubGroup, type HubListing, type HubProject } from "./api";
+import { ApiError, groupApi, hubApi, PROJECT_ID, type GeneralAccess, type HubGroup, type HubListing, type HubProject } from "./api";
 import { GroupDialog, GroupNameDialog, ProjectGroupDialog } from "./GroupDialog";
-import { EnvEditor, type EnvClient } from "./EnvDialog";
 import { notifyError } from "./toast";
 import { GENERAL_LABEL, ShareDialog } from "./Share";
 import { ConnectDialog } from "./Connect";
-import { AgentMcpDialog, McpPresetsDialog } from "./AgentMcp";
+import { AdminDialog, HubVariablesPanel, type AdminTab } from "./AdminPanel";
 import { SignedInAs } from "./Me";
 import { HelpMenu } from "./Help";
 import { useMe } from "./useMe";
 import { useColorMode } from "./theme/colorMode";
 import { Brand, Mark } from "./Brand";
 import { AppDialog } from "./ui/AppDialog";
-import { IconFolder, IconKey, IconMoon, IconPlug, IconPlus, IconShare, IconSpark, IconSun, IconTrash } from "./icons";
+import { IconFolder, IconMoon, IconPlus, IconShare, IconSliders, IconSpark, IconSun, IconTrash } from "./icons";
 import { Toasts } from "./toast";
 
 const workbench = (id: string) => `/p/${encodeURIComponent(id)}/`;
@@ -78,11 +77,15 @@ export default function Hub() {
   // The group open on its page: from a row, or `/?group=<id>` (the Environment dialog's link).
   const [openGroup, setOpenGroup] = useState<string | null>(() => new URLSearchParams(location.search).get("group"));
   const [newGroup, setNewGroup] = useState(false);
-  // The hub's own variables, open: from their section, or `/?env=hub` (the Environment dialog's link).
-  const [hubEnvOpen, setHubEnvOpen] = useState(() => new URLSearchParams(location.search).get("env") === "hub");
+  // The admin panel, open on a tab: from the bar or the account menu, `/?admin=<tab>`, or `/?env=hub`
+  // (the Environment dialog's link to the hub's variables, which a non-admin sees read-only).
+  const [admin, setAdmin] = useState<AdminTab | null>(() => {
+    const q = new URLSearchParams(location.search);
+    const tab = q.get("admin");
+    if (tab === "users" || tab === "variables" || tab === "mcp") return tab;
+    return q.get("env") === "hub" ? "variables" : null;
+  });
   const [grouping, setGrouping] = useState<HubProject | null>(null);
-  // The MCP servers on offer for the agent: an admin's list of them, or your own list to connect them to.
-  const [mcpOpen, setMcpOpen] = useState<"offer" | "mine" | null>(null);
   const [dark, toggleTheme] = useColorMode();
   // Someone signed in reaches Connect agent from their account menu.
   const who = useMe();
@@ -130,15 +133,22 @@ export default function Hub() {
     else url.searchParams.delete("group");
     history.replaceState(null, "", url);
   };
-  const showHubEnv = (open: boolean) => {
-    setHubEnvOpen(open);
+  const showAdmin = (tab: AdminTab | null) => {
+    setAdmin(tab);
     const url = new URL(location.href);
-    if (open) url.searchParams.set("env", "hub");
-    else url.searchParams.delete("env");
+    url.searchParams.delete("env");
+    if (tab) url.searchParams.set("admin", tab);
+    else url.searchParams.delete("admin");
     history.replaceState(null, "", url);
   };
   const hubEnv = listing?.hub_env;
-  const agentMcp = listing?.agent_mcp;
+  // An admin, or the operator (the API token, or a hub nobody signs in to): what the admin panel is for.
+  const isAdmin = !!hubEnv?.can_edit || who?.user?.role === "admin";
+  const adminTabs: AdminTab[] = [
+    ...(who?.user?.role === "admin" ? (["users"] as const) : []),
+    ...(hubEnv ? (["variables"] as const) : []),
+    ...(listing?.agent_mcp?.can_edit ? (["mcp"] as const) : []),
+  ];
   const uid = who?.user?.uid ?? null;
   // People and roles exist where people sign in; a token hub shares by link only.
   const people = !!listing?.sharing?.people && !!uid;
@@ -190,6 +200,15 @@ export default function Hub() {
             <Divider orientation="vertical" xstyle={styles.rule} />
           </>
         )}
+        {isAdmin && adminTabs.length > 0 && (
+          <Button
+            label="Admin"
+            icon={<IconSliders />}
+            isIconOnly={compact}
+            tooltip="Users, hub variables and MCP servers"
+            onClick={() => showAdmin(adminTabs[0])}
+          />
+        )}
         <HStack gap={0.5} vAlign="center">
           <HelpMenu />
           <IconButton
@@ -199,7 +218,7 @@ export default function Hub() {
             icon={dark ? <IconSun /> : <IconMoon />}
             onClick={toggleTheme}
           />
-          <SignedInAs hub />
+          <SignedInAs hub onAdmin={isAdmin && adminTabs.length > 0 ? () => showAdmin(adminTabs[0]) : undefined} />
         </HStack>
       </header>
 
@@ -236,8 +255,6 @@ export default function Hub() {
               actions={<Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewIn("")} />}
             />
             <Groups groups={groups} onOpen={showGroup} onNew={() => setNewGroup(true)} people={people} />
-            {hubEnv && <HubVariables {...hubEnv} onOpen={() => showHubEnv(true)} />}
-            {agentMcp && <HubMcp {...agentMcp} onEdit={() => setMcpOpen("offer")} onConnect={() => setMcpOpen("mine")} />}
           </VStack>
         ) : (
           <VStack gap={4}>
@@ -330,8 +347,6 @@ export default function Hub() {
               </div>
             )}
             <Groups groups={groups} onOpen={showGroup} onNew={() => setNewGroup(true)} people={people} />
-            {hubEnv && <HubVariables {...hubEnv} onOpen={() => showHubEnv(true)} />}
-            {agentMcp && <HubMcp {...agentMcp} onEdit={() => setMcpOpen("offer")} onConnect={() => setMcpOpen("mine")} />}
           </VStack>
         )}
       </main>
@@ -352,24 +367,26 @@ export default function Hub() {
       {sharing && (
         <ShareDialog project={sharing.id} name={sharing.name} self={uid} onClose={() => setSharing(null)} onChanged={load} />
       )}
-      {hubEnvOpen && hubEnv && (
+      {admin && listing && isAdmin && adminTabs.length > 0 && (
+        <AdminDialog
+          tabs={adminTabs}
+          tab={admin}
+          onTab={showAdmin}
+          self={uid}
+          onClose={() => {
+            showAdmin(null);
+            load();
+          }}
+        />
+      )}
+      {admin === "variables" && listing && !isAdmin && hubEnv && (
         <HubEnvDialog
-          canEdit={hubEnv.can_edit}
           onClose={() => {
-            showHubEnv(false);
+            showAdmin(null);
             load();
           }}
         />
       )}
-      {mcpOpen === "offer" && (
-        <McpPresetsDialog
-          onClose={() => {
-            setMcpOpen(null);
-            load();
-          }}
-        />
-      )}
-      {mcpOpen === "mine" && <AgentMcpDialog onClose={() => setMcpOpen(null)} />}
       {openGroup && (
         <GroupDialog
           gid={openGroup}
@@ -484,86 +501,17 @@ function Groups(props: { groups: HubGroup[]; people: boolean; onOpen: (gid: stri
   );
 }
 
-/** The hub's own variables, under the groups: every project gets them. Hidden from a non-admin while there are none. */
-function HubVariables(props: { variables: number; can_edit: boolean; onOpen: () => void }) {
-  if (!props.variables && !props.can_edit) return null;
-  return (
-    <VStack gap={3}>
-      <HStack gap={3} vAlign="center">
-        <div {...stylex.props(styles.title)}>
-          <Heading level={2}>Hub variables</Heading>
-          <Text color="secondary" hasTabularNumbers>
-            {props.variables}
-          </Text>
-        </div>
-        <span {...stylex.props(styles.grow)} />
-        <Button label={props.can_edit ? "Edit" : "View"} icon={<IconKey />} onClick={props.onOpen} />
-      </HStack>
-      <Text type="supporting" color="secondary">
-        Environment variables and secrets every project on the hub gets, unless the project or its group sets the same name.
-        Only hub admins change them.
-      </Text>
-    </VStack>
-  );
-}
-
-/** The MCP servers an admin offers for the agent, under the hub's variables. Hidden from a non-admin while there are none. */
-function HubMcp(props: { presets: number; can_edit: boolean; onEdit: () => void; onConnect: () => void }) {
-  if (!props.presets && !props.can_edit) return null;
-  return (
-    <VStack gap={3}>
-      <HStack gap={3} vAlign="center">
-        <div {...stylex.props(styles.title)}>
-          <Heading level={2}>MCP servers</Heading>
-          <Text color="secondary" hasTabularNumbers>
-            {props.presets}
-          </Text>
-        </div>
-        <span {...stylex.props(styles.grow)} />
-        {props.can_edit && <Button label="Edit" icon={props.presets > 0 ? undefined : <IconPlug />} onClick={props.onEdit} />}
-        {props.presets > 0 && <Button label="Connect" icon={<IconPlug />} onClick={props.onConnect} />}
-      </HStack>
-      <Text type="supporting" color="secondary">
-        Outside tools, such as a tracker or docs, that anyone on the hub can connect to the built-in agent. Nobody has one until they
-        press Connect, here or in the agent's MCP servers menu. Only hub admins change what is on offer.
-      </Text>
-    </VStack>
-  );
-}
-
-/** The hub's own variables: an admin sets them, everyone else sees their names and plain values. */
-function HubEnvDialog(props: { canEdit: boolean; onClose: () => void }) {
-  const client: EnvClient = { load: hubEnvApi.env, set: hubEnvApi.setEnv, remove: hubEnvApi.removeEnv };
+/** The hub's own variables, read-only: what a non-admin sees from a project's Environment dialog. */
+function HubEnvDialog(props: { onClose: () => void }) {
   return (
     <AppDialog
       title="Hub variables"
       subtitle="Every project on the hub gets these in os.environ, unless the project or its group sets the same name."
       width={680}
       onClose={props.onClose}
-      purpose="form"
-      footerNote={
-        <Text type="supporting" color="secondary">
-          Runs started from now on use them
-        </Text>
-      }
       footer={<Button label="Done" onClick={props.onClose} />}
     >
-      <VStack gap={4}>
-        <Banner
-          status="warning"
-          title="Everyone who can edit any project on this hub can read these secrets"
-          description="A node can read anything in os.environ and send it anywhere. Masking secrets as *** in run logs only stops accidents. Put a key here only when everyone on the hub may use it; a key for some people belongs in a group."
-        />
-        <EnvEditor
-          client={client}
-          canEdit={props.canEdit}
-          empty={
-            props.canEdit
-              ? "No variables yet. Every project on the hub gets the ones added here, unless the project or its group sets the same name."
-              : "The hub has no variables."
-          }
-        />
-      </VStack>
+      <HubVariablesPanel canEdit={false} />
     </AppDialog>
   );
 }
