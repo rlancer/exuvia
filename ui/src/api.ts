@@ -632,6 +632,10 @@ export interface HubProject {
   requests?: number;
   /** The group it is in (exuvia/groups.py). */
   group?: GroupRef | null;
+  /** When the caller last opened it and last changed it (creating it counts), and when anyone last changed it (exuvia/activity.py); null: not known. */
+  opened_at?: number | null;
+  edited_at?: number | null;
+  changed_at?: number | null;
 }
 
 /** `GET /api/projects`. `sharing` is null on a hub nobody has to get in to. */

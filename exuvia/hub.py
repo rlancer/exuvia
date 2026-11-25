@@ -87,6 +87,9 @@ class Hub:
         # Groups of projects and the variables they share (groups.py; set by
         # create_hub_app), and the keyring for those variables' secrets.
         self.groups: Any = None
+        # When each person last opened and changed each project (activity.py;
+        # set by create_hub_app, in the groups' database).
+        self.activity: Any = None
         self.keyring = envvars.Keyring(self.root / ".exuvia")
         # The projects a request may see (create_hub_app filters by sharing).
         self.visible: Any = self.list
@@ -105,6 +108,19 @@ class Hub:
             project = ctx.ws.project if ctx else Project(self.root / pid)
             out.append({"id": pid, "name": project.name, "nodes": len(project.node_files()), "loaded": ctx is not None})
         return out
+
+    def files_changed(self, project_id: str) -> float | None:
+        """When the project's code last changed on disk: its newest node file
+        or ``exuvia.json`` (the time it changed for anyone, before activity.py
+        noted it)."""
+        project = Project(self.root / project_id)
+        times = []
+        for f in (*project.node_files(), project.root / "exuvia.json"):
+            try:
+                times.append(f.stat().st_mtime)
+            except OSError:
+                pass
+        return max(times, default=None)
 
     def project_name(self, project_id: str) -> str:
         ctx = self._ctxs.get(project_id)
@@ -292,6 +308,8 @@ class Hub:
                 self.sharing.forget(project_id)
             if self.groups is not None:
                 self.groups.forget_project(project_id)
+            if self.activity is not None:
+                self.activity.forget(project_id)
             self._load_origin.pop(project_id, None)
         store = artifact_store()
         if store is not None:
