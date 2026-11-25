@@ -33,12 +33,11 @@ import { useMe } from "./useMe";
 import { useColorMode } from "./theme/colorMode";
 import { Brand, Mark } from "./Brand";
 import { AppDialog } from "./ui/AppDialog";
-import { IconFolder, IconMoon, IconPlus, IconShare, IconSliders, IconSpark, IconSun, IconTrash } from "./icons";
+import { IconFolder, IconMoon, IconPlus, IconShare, IconSpark, IconSun, IconTrash } from "./icons";
+import { HubNav, workbenchUrl as workbench } from "./HubNav";
 import { Toasts } from "./toast";
 import { isProjectSort, recentWork, SORT_LABEL, sortProjects, type ProjectSort } from "./projectOrder";
 import { ago } from "./util";
-
-const workbench = (id: string) => `/p/${encodeURIComponent(id)}/`;
 
 /** A project id from what is typed in the id field: spaces and other characters become `-`. */
 export const toProjectId = (s: string) =>
@@ -81,15 +80,17 @@ const keepSort = (s: ProjectSort) => {
  * `/p/<id>/`. Without the API token it asks for it.
  *
  * The top bar is the workbench's app bar: where you are, then the hub's own
- * menus. Under it the page is a document that scrolls, one column wide: its
- * title with the one thing to do here (New project), then the projects as rows.
+ * menus. Under it, the hub's left nav (src/HubNav.tsx) and the page, a
+ * document that scrolls, one column wide: its title with the one thing to do
+ * here (New project), then the projects as rows.
  */
 export default function Hub() {
   const [listing, setListing] = useState<Listing | null>(null);
   const [needToken, setNeedToken] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // The New project dialog, and the group it starts in ("" for none).
-  const [newIn, setNewIn] = useState<string | null>(null);
+  // `/?new`, the left nav's New project from another page, opens it at once.
+  const [newIn, setNewIn] = useState<string | null>(() => (new URLSearchParams(location.search).has("new") ? "" : null));
   const [deleting, setDeleting] = useState<HubProject | null>(null);
   const [sharing, setSharing] = useState<HubProject | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
@@ -177,6 +178,12 @@ export default function Hub() {
   const someDeletable = projects.some(canDelete);
   useEffect(() => {
     document.title = "Projects · exuvia";
+    // `?new` has done its work once the dialog is open: a reload doesn't open it again.
+    const url = new URL(location.href);
+    if (url.searchParams.has("new")) {
+      url.searchParams.delete("new");
+      history.replaceState(null, "", url);
+    }
   }, []);
 
   /** A row's second line: the id, the size, when (what the list is ordered by), then whose it is and who else can open it. */
@@ -288,9 +295,6 @@ export default function Hub() {
             <Divider orientation="vertical" xstyle={styles.rule} />
           </>
         )}
-        {isAdmin && (
-          <Button label="Admin" icon={<IconSliders />} isIconOnly={compact} tooltip="Users, settings and everything else for the whole hub" href="/admin" />
-        )}
         <HStack gap={0.5} vAlign="center">
           <HelpMenu />
           <IconButton
@@ -304,102 +308,107 @@ export default function Hub() {
         </HStack>
       </header>
 
-      <main {...stylex.props(styles.main)}>
-        {needToken ? (
-          <TokenForm />
-        ) : err ? (
-          <Banner
-            role="alert"
-            status="error"
-            title="Couldn't load the projects"
-            description={err}
-            endContent={<Button size="sm" label="Try again" onClick={load} />}
-          />
-        ) : !listing ? (
-          <Center padding={8}>
-            <Spinner label="Loading…" />
-          </Center>
-        ) : all.length === 0 && groups.length === 0 ? (
-          <EmptyState
-            icon={<Mark size={40} />}
-            title="No projects yet"
-            headingLevel={1}
-            description="A project is one graph of Python and SQL nodes, with its own runs, outputs and views."
-            actions={<Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewIn("")} />}
-          />
-        ) : all.length === 0 ? (
-          <VStack gap={8}>
-            <EmptyState
-              icon={<Mark size={40} />}
-              title="No projects yet"
-              headingLevel={1}
-              description="A project is one graph of Python and SQL nodes, with its own runs, outputs and views."
-              actions={<Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewIn("")} />}
-            />
-            <Groups groups={groups} onOpen={showGroup} onNew={() => setNewGroup(true)} people={people} />
-          </VStack>
-        ) : (
-          <VStack gap={4}>
-            <HStack gap={3} vAlign="center">
-              <div {...stylex.props(styles.title)}>
-                <Heading level={1}>Projects</Heading>
-                <Text color="secondary" hasTabularNumbers>
-                  {projects.length}
-                </Text>
-              </div>
-              <span {...stylex.props(styles.grow)} />
-              <Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewIn("")} />
-            </HStack>
-            {showRecent && (
-              <VStack gap={2}>
-                <Heading level={2}>Recently worked on</Heading>
-                <div {...stylex.props(styles.list)}>
-                  <List hasDividers density="spacious">
-                    {recent.map((p) => row(p, `you changed it ${ago(p.edited_at)}`))}
-                  </List>
-                </div>
+      <div {...stylex.props(styles.body)}>
+        <HubNav place={{ page: "home" }} listing={listing} onNewProject={() => setNewIn("")} />
+        <div {...stylex.props(styles.scroll)}>
+          <main {...stylex.props(styles.main)}>
+            {needToken ? (
+              <TokenForm />
+            ) : err ? (
+              <Banner
+                role="alert"
+                status="error"
+                title="Couldn't load the projects"
+                description={err}
+                endContent={<Button size="sm" label="Try again" onClick={load} />}
+              />
+            ) : !listing ? (
+              <Center padding={8}>
+                <Spinner label="Loading…" />
+              </Center>
+            ) : all.length === 0 && groups.length === 0 ? (
+              <EmptyState
+                icon={<Mark size={40} />}
+                title="No projects yet"
+                headingLevel={1}
+                description="A project is one graph of Python and SQL nodes, with its own runs, outputs and views."
+                actions={<Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewIn("")} />}
+              />
+            ) : all.length === 0 ? (
+              <VStack gap={8}>
+                <EmptyState
+                  icon={<Mark size={40} />}
+                  title="No projects yet"
+                  headingLevel={1}
+                  description="A project is one graph of Python and SQL nodes, with its own runs, outputs and views."
+                  actions={<Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewIn("")} />}
+                />
+                <Groups groups={groups} onOpen={showGroup} onNew={() => setNewGroup(true)} people={people} />
+              </VStack>
+            ) : (
+              <VStack gap={4}>
+                <HStack gap={3} vAlign="center">
+                  <div {...stylex.props(styles.title)}>
+                    <Heading level={1}>Projects</Heading>
+                    <Text color="secondary" hasTabularNumbers>
+                      {projects.length}
+                    </Text>
+                  </div>
+                  <span {...stylex.props(styles.grow)} />
+                  <Button variant="primary" label="New project" icon={<IconPlus />} onClick={() => setNewIn("")} />
+                </HStack>
+                {showRecent && (
+                  <VStack gap={2}>
+                    <Heading level={2}>Recently worked on</Heading>
+                    <div {...stylex.props(styles.list)}>
+                      <List hasDividers density="spacious">
+                        {recent.map((p) => row(p, `you changed it ${ago(p.edited_at)}`))}
+                      </List>
+                    </div>
+                  </VStack>
+                )}
+                <VStack gap={2}>
+                  {showRecent && <Heading level={2}>All projects</Heading>}
+                  <HStack gap={2} vAlign="center" wrap="wrap">
+                    {people && (
+                      <SegmentedControl label="Which projects" size="sm" value={filter} onChange={(f) => setFilter(f as Filter)}>
+                        <SegmentedControlItem value="all" label="All" />
+                        <SegmentedControlItem value="mine" label="Owned by me" />
+                        <SegmentedControlItem value="shared" label="Shared with me" />
+                      </SegmentedControl>
+                    )}
+                    <span {...stylex.props(styles.grow)} />
+                    <Selector
+                      label="Sort by"
+                      isLabelHidden
+                      size="sm"
+                      variant="ghost"
+                      value={sort}
+                      onChange={(v) => {
+                        if (!isProjectSort(v)) return;
+                        setSort(v);
+                        keepSort(v);
+                      }}
+                      renderValue={(o) => `Sort: ${o.label}`}
+                      options={(Object.keys(SORT_LABEL) as ProjectSort[]).map((value) => ({ value, label: SORT_LABEL[value] }))}
+                    />
+                  </HStack>
+                </VStack>
+                {projects.length === 0 ? (
+                  <Text color="secondary">No projects here.</Text>
+                ) : (
+                  <div {...stylex.props(styles.list)}>
+                    <List hasDividers density="spacious">
+                      {projects.map((p) => row(p, listWhen(p)))}
+                    </List>
+                  </div>
+                )}
+                <Groups groups={groups} onOpen={showGroup} onNew={() => setNewGroup(true)} people={people} />
               </VStack>
             )}
-            <VStack gap={2}>
-              {showRecent && <Heading level={2}>All projects</Heading>}
-              <HStack gap={2} vAlign="center" wrap="wrap">
-                {people && (
-                  <SegmentedControl label="Which projects" size="sm" value={filter} onChange={(f) => setFilter(f as Filter)}>
-                    <SegmentedControlItem value="all" label="All" />
-                    <SegmentedControlItem value="mine" label="Owned by me" />
-                    <SegmentedControlItem value="shared" label="Shared with me" />
-                  </SegmentedControl>
-                )}
-                <span {...stylex.props(styles.grow)} />
-                <Selector
-                  label="Sort by"
-                  isLabelHidden
-                  size="sm"
-                  variant="ghost"
-                  value={sort}
-                  onChange={(v) => {
-                    if (!isProjectSort(v)) return;
-                    setSort(v);
-                    keepSort(v);
-                  }}
-                  renderValue={(o) => `Sort: ${o.label}`}
-                  options={(Object.keys(SORT_LABEL) as ProjectSort[]).map((value) => ({ value, label: SORT_LABEL[value] }))}
-                />
-              </HStack>
-            </VStack>
-            {projects.length === 0 ? (
-              <Text color="secondary">No projects here.</Text>
-            ) : (
-              <div {...stylex.props(styles.list)}>
-                <List hasDividers density="spacious">
-                  {projects.map((p) => row(p, listWhen(p)))}
-                </List>
-              </div>
-            )}
-            <Groups groups={groups} onOpen={showGroup} onNew={() => setNewGroup(true)} people={people} />
-          </VStack>
-        )}
-      </main>
+          </main>
+        </div>
+      </div>
 
       {newIn !== null && listing && (
         <NewProjectDialog
@@ -792,7 +801,10 @@ export function DeleteDialog(props: { project: HubProject; onClose: () => void; 
 const COMPACT = "@media (max-width: 900px)";
 
 const styles = stylex.create({
-  page: { display: "flex", flexDirection: "column", minHeight: "100dvh" },
+  // The bar on top, then the left nav beside the page, which scrolls on its own.
+  page: { display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", height: "100dvh" },
+  body: { display: "flex", minHeight: 0 },
+  scroll: { flexGrow: 1, minWidth: 0, overflowY: "auto" },
   bar: {
     display: "flex",
     alignItems: "center",

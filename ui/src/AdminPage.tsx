@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { colorVars, radiusVars, spacingVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
@@ -12,7 +12,7 @@ import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { List, ListItem } from "@astryxdesign/core/List";
-import { SideNav, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav";
+import { SideNavItem } from "@astryxdesign/core/SideNav";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
@@ -36,6 +36,7 @@ import { McpPresetsPanel } from "./AgentMcp";
 import { Brand, Mark } from "./Brand";
 import { EnvEditor, type EnvClient } from "./EnvDialog";
 import { HelpMenu } from "./Help";
+import { HubNav } from "./HubNav";
 import { DeleteDialog } from "./Hub";
 import { SignedInAs, UsersPanel } from "./Me";
 import { GENERAL_LABEL, ShareDialog } from "./Share";
@@ -82,7 +83,7 @@ const isSection = (s: string | null): s is AdminSection => !!s && s in SECTIONS;
 
 /**
  * The hub's admin page, at `/admin`: everything an admin manages for the whole hub, one section at a time
- * (`/admin?section=<id>`), with a side nav that becomes tabs on a narrow screen. An admin, or the operator
+ * (`/admin?section=<id>`), listed under Admin in the hub's left nav, and as tabs on a narrow screen. An admin, or the operator
  * (the API token, or a hub nobody signs in to), uses it; anyone else is told it is for admins.
  */
 export default function AdminPage() {
@@ -95,6 +96,8 @@ export default function AdminPage() {
   const [dark, toggleTheme] = useColorMode();
   const who = useMe();
   const narrow = useMediaQuery("(max-width: 800px)");
+  // The page scrolls under the bar, beside the left nav.
+  const scroller = useRef<HTMLDivElement>(null);
 
   const load = useCallback(
     () =>
@@ -132,7 +135,7 @@ export default function AdminPage() {
     if (s === "overview") url.searchParams.delete("section");
     else url.searchParams.set("section", s);
     history.replaceState(null, "", url);
-    window.scrollTo({ top: 0 });
+    scroller.current?.scrollTo({ top: 0 });
   };
 
   let body: ReactNode;
@@ -168,20 +171,12 @@ export default function AdminPage() {
   else
     body = (
       <div {...stylex.props(styles.frame)}>
-        {narrow ? (
+        {narrow && (
           <TabList role="tablist" value={shown} onChange={(s) => go(s as AdminSection)} hasDivider overflow="scroll">
             {sections.map((s) => (
               <Tab key={s} value={s} label={SECTIONS[s].title} />
             ))}
           </TabList>
-        ) : (
-          <SideNav xstyle={styles.nav}>
-            <SideNavSection title="Admin" isHeaderHidden>
-              {sections.map((s) => (
-                <SideNavItem key={s} label={SECTIONS[s].title} icon={SECTIONS[s].icon} isSelected={s === shown} onClick={() => go(s)} />
-              ))}
-            </SideNavSection>
-          </SideNav>
         )}
         <main {...stylex.props(styles.main)}>
           <VStack gap={6}>
@@ -206,7 +201,6 @@ export default function AdminPage() {
       <header {...stylex.props(styles.bar)}>
         <Brand home="/">admin</Brand>
         <span {...stylex.props(styles.grow)} />
-        <Button label="Projects" icon={<IconFolder />} isIconOnly={narrow} tooltip="Back to the projects" href="/" />
         <HStack gap={0.5} vAlign="center">
           <HelpMenu />
           <IconButton
@@ -219,7 +213,24 @@ export default function AdminPage() {
           <SignedInAs hub />
         </HStack>
       </header>
-      {body}
+      <div {...stylex.props(styles.body)}>
+        <HubNav
+          place={{
+            page: "admin",
+            // The sections, under Admin in the nav; on a narrow screen they are tabs over the section instead.
+            sections:
+              listing && isAdmin && !narrow
+                ? sections.map((s) => (
+                    <SideNavItem key={s} label={SECTIONS[s].title} icon={SECTIONS[s].icon} isSelected={s === shown} onClick={() => go(s)} />
+                  ))
+                : undefined,
+          }}
+          listing={listing}
+        />
+        <div ref={scroller} {...stylex.props(styles.scroll)}>
+          {body}
+        </div>
+      </div>
     </div>
   );
 }
@@ -624,7 +635,10 @@ export function HubVariablesPanel(props: { canEdit: boolean }) {
 const NARROW = "@media (max-width: 800px)";
 
 const styles = stylex.create({
-  page: { display: "flex", flexDirection: "column", minHeight: "100dvh" },
+  // The bar on top, then the hub's left nav beside the page, which scrolls on its own.
+  page: { display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", height: "100dvh" },
+  body: { display: "flex", minHeight: 0 },
+  scroll: { flexGrow: 1, minWidth: 0, overflowY: "auto" },
   bar: {
     display: "flex",
     alignItems: "center",
@@ -639,15 +653,8 @@ const styles = stylex.create({
     borderBottomColor: colorVars["--color-border"],
   },
   grow: { flexGrow: 1 },
-  // The side nav and the section side by side; stacked (tabs over the section) on a narrow screen.
-  frame: {
-    display: "flex",
-    flexDirection: { default: "row", [NARROW]: "column" },
-    flexGrow: 1,
-    minHeight: 0,
-    alignItems: { default: "stretch", [NARROW]: "stretch" },
-  },
-  nav: { flexShrink: 0, width: "240px" },
+  // The section; on a narrow screen, under its tabs.
+  frame: { display: "flex", flexDirection: "column" },
   main: {
     boxSizing: "border-box",
     flexGrow: 1,

@@ -25,6 +25,7 @@ import { codeGroup, DownloadMenu } from "./Export";
 import type { FileRef } from "./tree";
 import { SignedInAs } from "./Me";
 import { HelpMenu } from "./Help";
+import { HubNav } from "./HubNav";
 import { useColorMode } from "./theme/colorMode";
 import { Brand, Mark } from "./Brand";
 import { IconClock, IconClose, IconKey, IconMoon, IconPackage, IconPlay, IconPlus, IconShare, IconSun } from "./icons";
@@ -326,7 +327,7 @@ function Workbench() {
   };
 
   return (
-    <div {...stylex.props(styles.app, !canEdit && styles.appBanner, embed && styles.appEmbed, embed && !canEdit && styles.appEmbedBanner)}>
+    <div {...stylex.props(styles.app, embed && styles.appEmbed)}>
       {/* The app bar: where you are, what you do with the project as a whole, and the app's own menus. */}
       {!embed && (
         <header {...stylex.props(styles.bar, styles.appBar)}>
@@ -358,166 +359,172 @@ function Workbench() {
           </HStack>
         </header>
       )}
-      {!canEdit && <ViewOnlyBanner />}
+      <div {...stylex.props(styles.body)}>
+        {/* On a hub, its left nav: home, admin and the other projects (HubNav.tsx). */}
+        {HUB_PROJECT && !embed && <HubNav place={{ page: "project", id: HUB_PROJECT }} />}
+        <div {...stylex.props(styles.content, !canEdit && styles.contentBanner)}>
+          {!canEdit && <ViewOnlyBanner />}
 
-      <div {...stylex.props(styles.workspace, !agentOpen && styles.workspaceRail)}>
-        <div {...stylex.props(styles.main)}>
-          {/* The project's bar: its two faces, and what the graph is doing and can be told to do. */}
-          <div {...stylex.props(styles.bar, styles.workBar)}>
-            <TabList role="tablist" value={mode === "views" || mode === "graph" || mode === "schedule" ? mode : ""} onChange={(v) => setMode(v as Mode)} xstyle={styles.modes}>
-              <Tab value="graph" label="Graph" />
-              <Tab value="views" label="Views" endContent={project?.views.length ? <Badge label={project.views.length} /> : undefined} />
-              <Tab value="schedule" label="Schedule" endContent={scheduled ? <Badge label={scheduled} /> : undefined} />
-            </TabList>
-            <span {...stylex.props(styles.grow)} />
-            {!conn && <Badge variant="error" label="Reconnecting…" />}
-            {/* The graph's own state and actions: with the graph, not with the views. */}
-            {mode === "graph" && (<>
-            <HStack gap={3} vAlign="center" xstyle={styles.counts}>
-              {(["fresh", "stale", "new", "failed", "error", "running"] as const).map((s) =>
-                counts[s] ? (
-                  <HStack key={s} gap={1.5} vAlign="center">
-                    <StateDot state={s} />
-                    <Text type="supporting" color="secondary" hasTabularNumbers>
-                      {counts[s]} {s}
-                    </Text>
-                  </HStack>
-                ) : null,
-              )}
-            </HStack>
-            {canEdit && (
-              <HStack gap={1} vAlign="center">
-                <Button
-                  label="Packages"
-                  icon={<IconPackage />}
-                  isIconOnly={compact}
-                  tooltip={pkgs?.requests.length ? "The agent is waiting for you to approve packages" : "The packages your nodes import"}
-                  endContent={
-                    pkgs?.requests.length ? (
-                      <Badge variant="info" label={pkgs.requests.length} />
-                    ) : pkgs?.status === "failed" ? (
-                      <Badge variant="error" label="Failed" />
-                    ) : pkgs?.status === "installing" || pkgs?.status === "pending" ? (
-                      <Badge variant="info" label="Installing" />
-                    ) : undefined
-                  }
-                  onClick={() => setPkgOpen(true)}
-                />
-                <Button
-                  label="Environment"
-                  icon={<IconKey />}
-                  isIconOnly={compact}
-                  tooltip={envRequests ? "The agent is waiting for you to set a secret" : "API keys, tokens and settings your nodes read from os.environ"}
-                  endContent={envRequests ? <Badge variant="info" label={envRequests} /> : undefined}
-                  onClick={() => setEnvOpen({})}
-                />
-                <Button label="New node" icon={<IconPlus />} isIconOnly={compact} tooltip="Add a node to the graph" onClick={() => setNewOpen(true)} />
-                <Button
-                  label="Run stale"
-                  variant={staleCount ? "primary" : "secondary"}
-                  icon={<IconPlay />}
-                  isIconOnly={compact}
-                  isDisabled={!staleCount}
-                  tooltip={staleCount ? "Run every stale, new, or failed node" : "Every node is up to date"}
-                  endContent={staleCount ? <Badge label={staleCount} /> : undefined}
-                  onClick={() => api.runStale().catch(failed("Couldn't start the run"))}
-                />
-              </HStack>
-            )}
-            </>)}
-          </div>
-
-          {mode === "helper" && helper && project ? (
-            <section {...stylex.props(styles.wide)}>
-              <HelperEditor key={helper} path={helper} project={project} dark={dark} onClose={toGraph} onOpenNode={(name) => { openNode(name); setShowCode((n) => n + 1); }} />
-            </section>
-          ) : mode === "history" ? (
-            <section {...stylex.props(styles.wide)}>
-              <div {...stylex.props(styles.wideHead)}>
-                <IconClock />
-                <Heading level={4} accessibilityLevel={2}>Code history</Heading>
-                <Text type="supporting" color="secondary" maxLines={1} xstyle={styles.wideHint}>
-                  Every saved version of the code. Pick one to compare it and restore it.
-                </Text>
+          <div {...stylex.props(styles.workspace, !agentOpen && styles.workspaceRail)}>
+            <div {...stylex.props(styles.main)}>
+              {/* The project's bar: its two faces, and what the graph is doing and can be told to do. */}
+              <div {...stylex.props(styles.bar, styles.workBar)}>
+                <TabList role="tablist" value={mode === "views" || mode === "graph" || mode === "schedule" ? mode : ""} onChange={(v) => setMode(v as Mode)} xstyle={styles.modes}>
+                  <Tab value="graph" label="Graph" />
+                  <Tab value="views" label="Views" endContent={project?.views.length ? <Badge label={project.views.length} /> : undefined} />
+                  <Tab value="schedule" label="Schedule" endContent={scheduled ? <Badge label={scheduled} /> : undefined} />
+                </TabList>
                 <span {...stylex.props(styles.grow)} />
-                <IconButton variant="ghost" size="sm" label="Close the history" tooltip="Close and go back to the graph" icon={<IconClose />} onClick={toGraph} />
-              </div>
-              <HistoryBrowser filter={{}} tick={codeTick} dark={dark} layout="side" path={rev?.path} rev={rev?.id} deletedFilter onRestored={() => refresh()} />
-            </section>
-          ) : mode === "schedule" ? (
-            <Schedule tick={project} onOpenNode={openNode} />
-          ) : mode === "views" ? (
-            <Suspense fallback={<div {...stylex.props(styles.wide)} />}>
-              <Views project={project} nodes={nodes} dark={dark} open={viewOpen} onOpenNode={openNode} onShown={onShown} />
-            </Suspense>
-          ) : (
-            <div {...stylex.props(styles.graph, !agentOpen && styles.graphRail)}>
-              <div {...stylex.props(styles.canvas)}>
-                <ReactFlowProvider>
-                  <Canvas nodes={nodes} selected={selected} flash={flash} onSelect={setSelected} />
-                </ReactFlowProvider>
-                {project && nodes.length === 0 && (
-                  <div {...stylex.props(styles.emptyCanvas)}>
-                    <EmptyState
-                      xstyle={styles.emptyCard}
-                      icon={<Mark size={40} />}
-                      title="An empty graph"
-                      headingLevel={2}
-                      description={
-                        !canEdit
-                          ? "Nobody has added a node yet."
-                          : aiOn
-                            ? "Describe a pipeline to the agent, or add a node by hand."
-                            : "Add your first node: a Python function or a SQL query."
+                {!conn && <Badge variant="error" label="Reconnecting…" />}
+                {/* The graph's own state and actions: with the graph, not with the views. */}
+                {mode === "graph" && (<>
+                <HStack gap={3} vAlign="center" xstyle={styles.counts}>
+                  {(["fresh", "stale", "new", "failed", "error", "running"] as const).map((s) =>
+                    counts[s] ? (
+                      <HStack key={s} gap={1.5} vAlign="center">
+                        <StateDot state={s} />
+                        <Text type="supporting" color="secondary" hasTabularNumbers>
+                          {counts[s]} {s}
+                        </Text>
+                      </HStack>
+                    ) : null,
+                  )}
+                </HStack>
+                {canEdit && (
+                  <HStack gap={1} vAlign="center">
+                    <Button
+                      label="Packages"
+                      icon={<IconPackage />}
+                      isIconOnly={compact}
+                      tooltip={pkgs?.requests.length ? "The agent is waiting for you to approve packages" : "The packages your nodes import"}
+                      endContent={
+                        pkgs?.requests.length ? (
+                          <Badge variant="info" label={pkgs.requests.length} />
+                        ) : pkgs?.status === "failed" ? (
+                          <Badge variant="error" label="Failed" />
+                        ) : pkgs?.status === "installing" || pkgs?.status === "pending" ? (
+                          <Badge variant="info" label="Installing" />
+                        ) : undefined
                       }
-                      actions={canEdit ? <Button variant="primary" label="New node" icon={<IconPlus />} onClick={() => setNewOpen(true)} /> : undefined}
+                      onClick={() => setPkgOpen(true)}
                     />
-                  </div>
+                    <Button
+                      label="Environment"
+                      icon={<IconKey />}
+                      isIconOnly={compact}
+                      tooltip={envRequests ? "The agent is waiting for you to set a secret" : "API keys, tokens and settings your nodes read from os.environ"}
+                      endContent={envRequests ? <Badge variant="info" label={envRequests} /> : undefined}
+                      onClick={() => setEnvOpen({})}
+                    />
+                    <Button label="New node" icon={<IconPlus />} isIconOnly={compact} tooltip="Add a node to the graph" onClick={() => setNewOpen(true)} />
+                    <Button
+                      label="Run stale"
+                      variant={staleCount ? "primary" : "secondary"}
+                      icon={<IconPlay />}
+                      isIconOnly={compact}
+                      isDisabled={!staleCount}
+                      tooltip={staleCount ? "Run every stale, new, or failed node" : "Every node is up to date"}
+                      endContent={staleCount ? <Badge label={staleCount} /> : undefined}
+                      onClick={() => api.runStale().catch(failed("Couldn't start the run"))}
+                    />
+                  </HStack>
                 )}
+                </>)}
               </div>
-              <section {...stylex.props(styles.pane)}>
-                {sel ? (
-                  <Inspector
-                    key={sel.name}
-                    node={sel}
-                    nodes={nodes}
-                    logs={logs}
-                    dark={dark}
-                    aiEnabled={aiOn}
-                    onAskAI={askAI}
-                    onDeleted={() => setSelected(null)}
-                    onInstall={(pkg) => installFor(sel.name, pkg)}
-                    installing={rerun.includes(sel.name)}
-                    showCode={showCode}
-                  />
-                ) : (
-                  <Overview nodes={nodes} onSelect={setSelected} />
-                )}
-              </section>
-            </div>
-          )}
-        </div>
 
-        {agentOpen ? (
-          <SidePanel
-            ref={agent}
-            sheet={sheet}
-            enabled={aiOn}
-            agent={canEdit}
-            model={cfg?.model ?? ""}
-            selected={sel}
-            hasNodes={nodes.length > 0}
-            onTouch={touch}
-            onSelect={openNode}
-            onCollapse={() => setAgentOpen(false)}
-            tab={sideTab}
-            onTab={setSideTab}
-            files={<FileTree project={project} current={treeCurrent} onOpen={openFile} />}
-            history={<HistoryRail tick={codeTick} current={mode === "history" ? (rev?.id ?? null) : null} onOpen={openRev} />}
-          />
-        ) : (
-          <SideRail agent={canEdit} bar={sheet} onOpen={openSide} />
-        )}
+              {mode === "helper" && helper && project ? (
+                <section {...stylex.props(styles.wide)}>
+                  <HelperEditor key={helper} path={helper} project={project} dark={dark} onClose={toGraph} onOpenNode={(name) => { openNode(name); setShowCode((n) => n + 1); }} />
+                </section>
+              ) : mode === "history" ? (
+                <section {...stylex.props(styles.wide)}>
+                  <div {...stylex.props(styles.wideHead)}>
+                    <IconClock />
+                    <Heading level={4} accessibilityLevel={2}>Code history</Heading>
+                    <Text type="supporting" color="secondary" maxLines={1} xstyle={styles.wideHint}>
+                      Every saved version of the code. Pick one to compare it and restore it.
+                    </Text>
+                    <span {...stylex.props(styles.grow)} />
+                    <IconButton variant="ghost" size="sm" label="Close the history" tooltip="Close and go back to the graph" icon={<IconClose />} onClick={toGraph} />
+                  </div>
+                  <HistoryBrowser filter={{}} tick={codeTick} dark={dark} layout="side" path={rev?.path} rev={rev?.id} deletedFilter onRestored={() => refresh()} />
+                </section>
+              ) : mode === "schedule" ? (
+                <Schedule tick={project} onOpenNode={openNode} />
+              ) : mode === "views" ? (
+                <Suspense fallback={<div {...stylex.props(styles.wide)} />}>
+                  <Views project={project} nodes={nodes} dark={dark} open={viewOpen} onOpenNode={openNode} onShown={onShown} />
+                </Suspense>
+              ) : (
+                <div {...stylex.props(styles.graph, !agentOpen && styles.graphRail)}>
+                  <div {...stylex.props(styles.canvas)}>
+                    <ReactFlowProvider>
+                      <Canvas nodes={nodes} selected={selected} flash={flash} onSelect={setSelected} />
+                    </ReactFlowProvider>
+                    {project && nodes.length === 0 && (
+                      <div {...stylex.props(styles.emptyCanvas)}>
+                        <EmptyState
+                          xstyle={styles.emptyCard}
+                          icon={<Mark size={40} />}
+                          title="An empty graph"
+                          headingLevel={2}
+                          description={
+                            !canEdit
+                              ? "Nobody has added a node yet."
+                              : aiOn
+                                ? "Describe a pipeline to the agent, or add a node by hand."
+                                : "Add your first node: a Python function or a SQL query."
+                          }
+                          actions={canEdit ? <Button variant="primary" label="New node" icon={<IconPlus />} onClick={() => setNewOpen(true)} /> : undefined}
+                        />
+                      </div>
+                    )}
+                  </div>
+                  <section {...stylex.props(styles.pane)}>
+                    {sel ? (
+                      <Inspector
+                        key={sel.name}
+                        node={sel}
+                        nodes={nodes}
+                        logs={logs}
+                        dark={dark}
+                        aiEnabled={aiOn}
+                        onAskAI={askAI}
+                        onDeleted={() => setSelected(null)}
+                        onInstall={(pkg) => installFor(sel.name, pkg)}
+                        installing={rerun.includes(sel.name)}
+                        showCode={showCode}
+                      />
+                    ) : (
+                      <Overview nodes={nodes} onSelect={setSelected} />
+                    )}
+                  </section>
+                </div>
+              )}
+            </div>
+
+            {agentOpen ? (
+              <SidePanel
+                ref={agent}
+                sheet={sheet}
+                enabled={aiOn}
+                agent={canEdit}
+                model={cfg?.model ?? ""}
+                selected={sel}
+                hasNodes={nodes.length > 0}
+                onTouch={touch}
+                onSelect={openNode}
+                onCollapse={() => setAgentOpen(false)}
+                tab={sideTab}
+                onTab={setSideTab}
+                files={<FileTree project={project} current={treeCurrent} onOpen={openFile} />}
+                history={<HistoryRail tick={codeTick} current={mode === "history" ? (rev?.id ?? null) : null} onOpen={openRev} />}
+              />
+            ) : (
+              <SideRail agent={canEdit} bar={sheet} onOpen={openSide} />
+            )}
+          </div>
+        </div>
       </div>
 
       <Suspense fallback={null}>
@@ -574,9 +581,11 @@ const COMPACT = "@media (max-width: 900px)";
 
 const styles = stylex.create({
   app: { display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", height: "100dvh" },
-  appBanner: { gridTemplateRows: "auto auto minmax(0, 1fr)" },
   appEmbed: { gridTemplateRows: "minmax(0, 1fr)" },
-  appEmbedBanner: { gridTemplateRows: "auto minmax(0, 1fr)" },
+  // Under the app bar: the hub's left nav (on a hub), beside the project.
+  body: { display: "flex", minHeight: 0 },
+  content: { display: "grid", gridTemplateRows: "minmax(0, 1fr)", flexGrow: 1, minWidth: 0, minHeight: 0 },
+  contentBanner: { gridTemplateRows: "auto minmax(0, 1fr)" },
   bar: {
     display: "flex",
     alignItems: "center",
