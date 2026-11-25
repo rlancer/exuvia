@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { colorVars } from "@astryxdesign/core/theme/tokens.stylex";
-import { Avatar } from "@astryxdesign/core/Avatar";
 import { Badge } from "@astryxdesign/core/Badge";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { SideNav, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav";
@@ -62,9 +61,10 @@ function useListing(given: HubListing | null | undefined): HubListing | null {
 }
 
 /**
- * The hub's left nav, on every page of the hub: its home and (for an admin)
- * its admin page, then every project you can open, the one you used last
- * first. It folds to a rail of icons, where each project is its initials.
+ * The hub's left nav, on every page of the hub: its home, then every project
+ * you can open (the one you used last first, by name alone), and last, at its
+ * foot, the admin page (for an admin). It folds to a rail of Home's and
+ * Admin's icons; the projects show when it is open.
  *
  * `listing` is the page's own when it has loaded one (the home and admin
  * pages); left out, the nav asks for it (the workbench), and shows nothing to
@@ -88,14 +88,18 @@ export function HubNav(props: { place: HubPlace; listing?: HubListing | null; on
     <SideNav
       xstyle={styles.nav}
       collapsible={{ isCollapsed: railOnly || folded, onCollapsedChange: setFolded, hasButton: !railOnly }}
+      footer={
+        isAdmin && (
+          <SideNavSection title="Hub" isHeaderHidden>
+            <SideNavItem label="Admin" icon={<IconSliders />} href="/admin" isSelected={place.page === "admin" && !place.sections}>
+              {place.page === "admin" ? place.sections : undefined}
+            </SideNavItem>
+          </SideNavSection>
+        )
+      }
     >
-      <SideNavSection title="Hub" isHeaderHidden>
+      <SideNavSection title="Home" isHeaderHidden>
         <SideNavItem label="Home" icon={<IconHome />} href="/" isSelected={place.page === "home"} />
-        {isAdmin && (
-          <SideNavItem label="Admin" icon={<IconSliders />} href="/admin" isSelected={place.page === "admin" && !place.sections}>
-            {place.page === "admin" ? place.sections : undefined}
-          </SideNavItem>
-        )}
       </SideNavSection>
       <SideNavSection
         title="Projects"
@@ -114,7 +118,6 @@ export function HubNav(props: { place: HubPlace; listing?: HubListing | null; on
           <SideNavItem
             key={p.id}
             label={p.name || p.id}
-            icon={<Avatar name={p.name || p.id} size={20} shape="rounded" tooltip={false} />}
             href={workbenchUrl(p.id)}
             isSelected={p.id === current}
             endContent={p.requests ? <Badge variant="info" label={p.requests} /> : undefined}
