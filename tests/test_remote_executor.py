@@ -215,8 +215,52 @@ def test_remote_run_reads_a_partitioned_input(tmp_path, executor_url, monkeypatc
         for _ in range(3):  # exuvia.partitions() reaches the remote node too
             assert run(ws, ["daily"], force={"daily"})["daily"]["status"] == "success"
         assert [p["value"] for p in ws.partitions_of("daily")["partitions"]] == ["2026-01-01", "2026-01-02", "2026-01-03"]
+        sent = []
+        put = ws.executor.http.put
+
+        def spy(url, **kw):
+            if url.startswith("/v1/chunks/"):
+                sent.append(url.rsplit("/", 1)[1])
+            return put(url, **kw)
+
+        ws.executor.http.put = spy
         finals = run(ws, ["total"])
         assert finals["total"]["status"] == "success", finals["total"]["error"]
         assert ws.preview("total")["rows"] == [[6, 3]]
+        files = [f["artifact_id"] for f in ws.partitions_of("daily")["files"]]
+        assert sorted(sent) == sorted(files) and len(files) == 3  # each chunk, by its hash
+
+        # The executor keeps them: the next read sends only the new day's chunk.
+        sent.clear()
+        assert run(ws, ["daily"], force={"daily"})["daily"]["status"] == "success"
+        assert run(ws, ["total"], force={"total"})["total"]["status"] == "success"
+        assert ws.preview("total")["rows"] == [[10, 4]]
+        assert len(sent) == 1
+
+        # An executor without a chunk cache gets the input as one file.
+        ws.executor._chunks_ok = False
+        sent.clear()
+        assert run(ws, ["total"], force={"total"})["total"]["status"] == "success"
+        assert ws.preview("total")["rows"] == [[10, 4]] and sent == []
     finally:
         ws.executor.close()
+
+
+def test_executor_verifies_chunks(executor_url):
+    import hashlib
+
+    h = {"Authorization": f"Bearer {TOKEN}"}
+    blob = b"not really parquet"
+    digest = hashlib.sha256(blob).hexdigest()[:16]
+    with httpx.Client(base_url=executor_url, headers=h) as c:
+        assert c.put("/v1/chunks/0123456789abcdef", content=blob).status_code == 400
+        assert c.put("/v1/chunks/../../x", content=blob).status_code in (400, 404)
+        assert c.post("/v1/chunks/missing", json={"chunks": [digest]}).json() == {"missing": [digest]}
+        assert c.put(f"/v1/chunks/{digest}", content=blob).status_code == 200
+        assert c.post("/v1/chunks/missing", json={"chunks": [digest]}).json() == {"missing": []}
+        assert c.post("/v1/chunks/missing", json={"chunks": ["../etc"]}).status_code == 400
+        # A run naming a chunk the executor doesn't have is refused before it starts.
+        spec = {"bundle": "0" * 24, "node": "x", "kind": "sql", "path": "x.sql",
+                "inputs": {"d": {"kind": "table", "chunks": ["fedcba9876543210"]}}}
+        assert c.post("/v1/runs/r1", json=spec).status_code == 409
+        assert httpx.post(f"{executor_url}/v1/chunks/missing", json={"chunks": []}).status_code == 401

@@ -287,6 +287,16 @@ the wiring in `exuvia/workspace.py`, close to the prototype:
   those partitions. `GET /api/nodes/{name}/partitions` lists the manifest, and
   `/api/artifacts/{node}/{chunk}.parquet` serves each file. The query sandbox
   doesn't prune: compaction keeps it to a few dozen files.
+- **Remote executors** cache chunks by hash (`POST /v1/chunks/missing`,
+  `PUT /v1/chunks/{hash}`, verified on upload) in their scratch directory,
+  across runs. A run names its input's chunks, so a daily run ships only the
+  new day's chunk, or a year's file when compaction rewrote it. A chunk
+  unused for `EXUVIA_CHUNK_TTL_DAYS` (7) is removed. An executor without the
+  cache (`/healthz` has no `"chunks"`) gets the input as one combined file.
+- **The example.** `examples/markets/nodes/prices.py` is partitioned by
+  date: its first run backfills since 2025 in one write (two files, a year
+  each), later runs add only new business days, and a run with nothing new
+  changes nothing downstream.
 - **Still open:** merging on a key finer than the partition; schema changes
   between partitions beyond what `union_by_name` combines; point-in-time
   reads for a downstream node with `as_of`; deleting chunks no manifest

@@ -20,6 +20,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import tempfile
 import threading
 import zipfile
@@ -255,6 +256,8 @@ class RemoteExecutor:
     HEAD /v1/bundles/{hash}                 is this project version cached?
     PUT  /v1/bundles/{hash}                 upload project zip (verified by hash)
     PUT  /v1/runs/{id}/inputs/{dep}         upload an upstream artifact
+    POST /v1/chunks/missing                 which of a partitioned input's files it lacks
+    PUT  /v1/chunks/{hash}                  upload one (verified by hash, cached across runs)
     POST /v1/runs/{id}                      run; response is NDJSON: log lines, then a result
     GET  /v1/runs/{id}/output               download the artifact
     DELETE /v1/runs/{id}                    clean up
@@ -271,6 +274,7 @@ class RemoteExecutor:
         )
         self._bundle_cache: tuple[tuple, str, bytes] | None = None
         self._lock = threading.Lock()
+        self._chunks_ok: bool | None = None
 
     def start(self) -> None:
         pass
@@ -292,13 +296,38 @@ class RemoteExecutor:
             self.http.put(f"/v1/bundles/{digest}", content=blob).raise_for_status()
         return digest
 
+    def _chunks(self, paths: list[str]) -> list[str] | None:
+        """Send the files of a partitioned input that the executor doesn't
+        already hold, and return their ids. None when the executor is an
+        older one, which takes the input as a single file."""
+        if self._chunks_ok is None:
+            try:
+                self._chunks_ok = bool(self.http.get("/healthz").json().get("chunks"))
+            except Exception:
+                self._chunks_ok = False
+        ids = [Path(p).stem for p in paths]
+        if not self._chunks_ok or not all(CHUNK_ID.match(i) for i in ids):
+            return None
+        resp = self.http.post("/v1/chunks/missing", json={"chunks": ids})
+        resp.raise_for_status()
+        missing = set(resp.json()["missing"])
+        for p, i in zip(paths, ids):
+            if i in missing:
+                with open(p, "rb") as f:
+                    self.http.put(f"/v1/chunks/{i}", content=f.read()).raise_for_status()
+        return ids
+
     def execute(self, req: ExecRequest, on_log: LogFn) -> ExecResult:
         try:
             digest = self._bundle(req.root)
+            chunked: dict[str, list[str]] = {}
             for dep, inp in req.inputs.items():
                 if inp.get("paths") is not None:
-                    # A partitioned output, sent as one file for now.
-                    blob = _combined(inp["paths"])
+                    ids = self._chunks(inp["paths"])
+                    if ids is not None:
+                        chunked[dep] = ids
+                        continue
+                    blob = _combined(inp["paths"])  # an executor without a chunk cache
                     self.http.put(f"/v1/runs/{req.run_id}/inputs/{dep}", content=blob).raise_for_status()
                 elif inp.get("path"):
                     with open(inp["path"], "rb") as f:
@@ -309,7 +338,9 @@ class RemoteExecutor:
                 "kind": req.kind,
                 "path": req.path,
                 "inputs": {
-                    d: {"kind": i["kind"], "has_file": bool(i.get("path")) or i.get("paths") is not None}
+                    d: {"kind": i["kind"], "chunks": chunked[d]}
+                    if d in chunked
+                    else {"kind": i["kind"], "has_file": bool(i.get("path")) or i.get("paths") is not None}
                     for d, i in req.inputs.items()
                 },
                 "params": req.params,
@@ -369,6 +400,9 @@ class RemoteExecutor:
             return self.http.post(f"/v1/runs/{run_id}/cancel").json().get("ok", False)
         except Exception:
             return False
+
+
+CHUNK_ID = re.compile(r"^[0-9a-f]{16}$")
 
 
 def _combined(paths: list[str]) -> bytes:

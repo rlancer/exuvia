@@ -1363,7 +1363,10 @@ at a time and return a content-addressed artifact; they hold no project state.
   Every request flows control plane → executor (project zip, upstream
   artifacts in; logs and artifact out), so a laptop can drive a cloud
   executor without being reachable from it. Project bundles are hash-verified
-  and cached on the executor, so unchanged code is not re-sent.
+  and cached on the executor, so unchanged code is not re-sent. So are the
+  files of a [partitioned](#partitioned-nodes-a-history-that-grows-each-run)
+  input: a run sends only the ones the executor lacks, and the executor drops
+  a file no run has used for `EXUVIA_CHUNK_TTL_DAYS` (default 7).
 
 Executor protocol (bearer `EXUVIA_EXECUTOR_TOKEN`):
 
@@ -1371,6 +1374,7 @@ Executor protocol (bearer `EXUVIA_EXECUTOR_TOKEN`):
 |---|---|
 | `HEAD/PUT /v1/bundles/{hash}` | is this project version cached / upload it (zip, verified against the hash) |
 | `PUT /v1/runs/{id}/inputs/{dep}` | upload an upstream artifact |
+| `POST /v1/chunks/missing`, `PUT /v1/chunks/{hash}` | which files of a partitioned input it lacks / upload one (verified against the hash, kept across runs) |
 | `POST /v1/runs/{id}` | run; NDJSON response: `{"type":"log"}` lines then one `{"type":"result"}` |
 | `GET /v1/runs/{id}/output` | download the artifact (control plane re-verifies its hash) |
 | `POST /v1/runs/{id}/cancel`, `DELETE /v1/runs/{id}` | cancel / clean up |
@@ -2246,6 +2250,7 @@ empty file, stops exuvia with an error.
 | `UV_INDEX`, `UV_INDEX_<NAME>_USERNAME` / `_PASSWORD` | PyPI only | a package index for every project, and its credentials (see "Packages") |
 | `HTTPS_PROXY` / `NO_PROXY` | direct | the proxy that package installs, exuvia's other outbound HTTPS and nodes' own requests go through, and the hosts reached without it (see "Package installs on an isolated network" and "Nodes that can't reach their data" above) |
 | `EXUVIA_EXECUTOR_DIR` | temp | executor scratch space |
+| `EXUVIA_CHUNK_TTL_DAYS` | 7 | days an executor keeps a partitioned input's file that no run has used |
 | `EXUVIA_PROVIDER` | auto | `anthropic`, `openrouter`, `portkey`, or `openai` (any OpenAI-compatible server) |
 | `EXUVIA_MODEL` | per provider | agent model (see below) |
 | `EXUVIA_EFFORT` | `medium` | Claude effort level |
