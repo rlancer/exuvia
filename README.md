@@ -2115,10 +2115,9 @@ later does not split anyone in two.
 `EXUVIA_ADMINS` (user names or emails, comma-separated) names the first
 admins. They are admins whenever they sign in, and nobody can demote or
 disable them through exuvia, so the hub always has a way back in. On a
-hub, an admin finds **Users** in the **Admin** panel (the Admin button in
-the home page's top bar, or **Admin…** in the account menu), next to the
-hub's variables and its MCP servers; on `exuvia serve` it is **Users…** in
-the account menu. There, everyone who has signed in is listed, and an admin
+hub, an admin finds **Users** on the admin page (`/admin`: the **Admin**
+button in the home page's top bar, or **Admin** in the account menu); on
+`exuvia serve` it is **Users…** in the account menu. There, everyone who has signed in is listed, and an admin
 can make others admins or members and disable or re-enable them. A
 disabled user gets a 403 even though the proxy lets them through, which
 locks them out of exuvia without touching the company sign-in. Nobody can
@@ -2333,7 +2332,7 @@ fails to connect is left out of that turn, and the agent tells you why.
   signs in to, such as a local `exuvia serve`, there is one list for
   everyone who can open it. A share link alone has none.
 - **Servers on offer.** An admin can offer servers to everyone on the
-  server: on a hub, the **MCP servers** tab of the **Admin** panel. Each has a
+  server: on a hub, **MCP servers** on the admin page (`/admin`). Each has a
   name, a URL, a line on what it is and the names of the headers each
   person fills in (none for an OAuth server). Nobody's agent uses one until
   they press **Connect** under "On offer here" in the agent's MCP servers
@@ -2603,6 +2602,8 @@ exuvia hub ./projects --templates ./templates --scheduler external
 | Route | |
 |---|---|
 | `GET /` | the hub's home page (the web UI): list, create, open and delete projects |
+| `GET /admin` | the admin page (the web UI): an overview, users, every project, hub variables, MCP servers on offer, export and import, and the server's settings |
+| `GET /api/admin/settings` | how the server is set up, for the admin page: each setting's value and the environment variable that sets it, read-only; secrets show only as set or not set (admins only) |
 | `GET /p/{project}/` | that project's workbench (the web UI, talking to `/p/{project}/api`) |
 | `GET /api/projects` | list projects (`{projects, templates, auth}`; `auth`: whether clients need the API token) |
 | `GET /api/tools` | the project tools, as each project's `/guide` lists them (for `exuvia mcp --url <hub>`) |
@@ -2770,8 +2771,7 @@ in `POST /api/projects` to create a project in a group you edit. The agent's
 Some keys every project on a hub needs: an LLM gateway's key, a
 warehouse's address, an error tracker's DSN. Rather than set them in every
 project or every group, a hub admin sets them once as **hub variables**
-(the **Hub variables** tab of the **Admin** panel, from the home page's
-top bar), and every
+(**Hub variables** on the admin page, `/admin`), and every
 project on the hub gets them.
 
 - **They work like a project's variables** (same names, values,

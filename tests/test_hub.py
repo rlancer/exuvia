@@ -480,3 +480,38 @@ def test_export_carries_a_multi_output_but_not_its_extracted_parts(tmp_path, hub
     with TestClient(create_hub_app(tmp_path / "elsewhere")) as fresh:
         assert fresh.post("/api/hub/import", content=blob).json()["ok"]
         assert fresh.get("/p/mo/api/nodes/fit/data", params={"part": "metrics"}).json()["value"] == {"r2": 0.5}
+
+
+def test_the_admin_page_and_its_settings(tmp_path, monkeypatch):
+    """/admin is the UI marked as the admin page; /api/admin/settings tells an
+    admin how the server is set up, and never a secret."""
+    from exuvia.admin import shown_url
+    from exuvia.server import HUB_ADMIN_META, HUB_HOME_META
+
+    fake_ui(tmp_path, monkeypatch)
+    monkeypatch.setenv("EXUVIA_AUTH", "headers")
+    monkeypatch.setenv("EXUVIA_ADMINS", "alice")
+    monkeypatch.setenv("EXUVIA_FAILURE_WEBHOOK", "https://hooks.example/T0/secret-hook-1")
+    monkeypatch.setenv("EXUVIA_EXECUTOR_URL", "https://runner:secret-pw-2@exec.example:8443/x?token=secret-tok-3")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxyuser:secret-pw-4@proxy.example:3128")
+    monkeypatch.setenv("EXUVIA_MAX_PARALLEL", "8")
+    alice = {"X-Forwarded-User": "alice", "X-Forwarded-Email": "alice@example.com"}
+    bob = {"X-Forwarded-User": "bob", "X-Forwarded-Email": "bob@example.com"}
+    with TestClient(create_hub_app(tmp_path / "hub", template(tmp_path))) as hub:
+        page = hub.get("/admin", headers=bob)
+        assert page.status_code == 200 and HUB_ADMIN_META in page.text and HUB_HOME_META not in page.text
+
+        assert hub.get("/api/admin/settings", headers=bob).status_code == 403
+        r = hub.get("/api/admin/settings", headers=alice)
+        assert r.status_code == 200
+        assert "secret-" not in r.text
+        rows = {i["env"]: i for g in r.json()["groups"] for i in g["items"]}
+        assert rows["EXUVIA_FAILURE_WEBHOOK"]["value"] == "set" and rows["EXUVIA_FAILURE_WEBHOOK"]["set"]
+        assert rows["EXUVIA_EXECUTOR_URL"]["value"] == "https://exec.example:8443/x"
+        assert rows["HTTPS_PROXY"]["value"] == "http://proxy.example:3128"
+        assert rows["EXUVIA_MAX_PARALLEL"] == {"label": "Node runs at once", "env": "EXUVIA_MAX_PARALLEL", "value": "8", "set": True}
+        assert rows["EXUVIA_RUN_TIMEOUT"]["set"] is False and rows["EXUVIA_ADMINS"]["value"] == "alice"
+        assert rows["EXUVIA_AUTH"]["value"] == "a sign-in proxy names each person"
+
+    assert shown_url("postgresql://u:pw@db.example:5432/exuvia?sslmode=require") == "postgresql://db.example:5432/exuvia"
+    assert shown_url("nope") == "(not a URL)"

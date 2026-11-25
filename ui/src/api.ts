@@ -829,6 +829,40 @@ export const hubEnvApi = {
   removeEnv: (name: string) => json<EnvState>(sendTo("DELETE", `/api/hub/env/${encodeURIComponent(name)}`)),
 };
 
+/** One row of the server's setup on the admin page (exuvia/admin.py): never a secret, only whether one is set. */
+export interface AdminSetting {
+  label: string;
+  /** The environment variable that sets it, if one does. */
+  env: string | null;
+  value: string;
+  /** Whether the variable was given, rather than left at its default. */
+  set: boolean;
+  note?: string;
+}
+
+/** What the hub's admin page reads beyond the other APIs (`/api/admin/*`, admins only). */
+export const adminApi = {
+  settings: () => json<{ groups: { title: string; items: AdminSetting[] }[] }>(sendTo("GET", "/api/admin/settings")),
+  /** `GET /api/hub/state`: whether runs, backfills or agent turns are in flight. */
+  state: () => json<{ version: number; busy: boolean }>(sendTo("GET", "/api/hub/state")),
+  /** Where the browser downloads an export of every project (`GET`, admins only). */
+  exportUrl: "/api/hub/export",
+  /** Restore projects from an export: those in it replace same-named ones, the rest stay. */
+  importHub: async (file: File) => {
+    const res = await fetch("/api/hub/import", { method: "POST", headers: { "Content-Type": "application/gzip" }, body: file });
+    if (!res.ok) {
+      let msg = res.statusText;
+      try {
+        msg = (await res.json()).detail ?? msg;
+      } catch {
+        /* not json */
+      }
+      throw new ApiError(msg, res.status);
+    }
+    return (await res.json()) as { ok: true; projects: string[] };
+  },
+};
+
 /** Project ids a hub accepts (exuvia/hub.py PROJECT_ID). */
 export const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 

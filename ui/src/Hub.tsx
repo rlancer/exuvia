@@ -26,7 +26,7 @@ import { GroupDialog, GroupNameDialog, ProjectGroupDialog } from "./GroupDialog"
 import { notifyError } from "./toast";
 import { GENERAL_LABEL, ShareDialog } from "./Share";
 import { ConnectDialog } from "./Connect";
-import { AdminDialog, HubVariablesPanel, type AdminTab } from "./AdminPanel";
+import { HubVariablesPanel } from "./AdminPage";
 import { SignedInAs } from "./Me";
 import { HelpMenu } from "./Help";
 import { useMe } from "./useMe";
@@ -98,14 +98,9 @@ export default function Hub() {
   // The group open on its page: from a row, or `/?group=<id>` (the Environment dialog's link).
   const [openGroup, setOpenGroup] = useState<string | null>(() => new URLSearchParams(location.search).get("group"));
   const [newGroup, setNewGroup] = useState(false);
-  // The admin panel, open on a tab: from the bar or the account menu, `/?admin=<tab>`, or `/?env=hub`
-  // (the Environment dialog's link to the hub's variables, which a non-admin sees read-only).
-  const [admin, setAdmin] = useState<AdminTab | null>(() => {
-    const q = new URLSearchParams(location.search);
-    const tab = q.get("admin");
-    if (tab === "users" || tab === "variables" || tab === "mcp") return tab;
-    return q.get("env") === "hub" ? "variables" : null;
-  });
+  // `/?env=hub`, the Environment dialog's link to the hub's variables: an admin goes on to the admin
+  // page's section for them, anyone else sees them read-only here.
+  const [hubEnvOpen, setHubEnvOpen] = useState(() => new URLSearchParams(location.search).get("env") === "hub");
   const [grouping, setGrouping] = useState<HubProject | null>(null);
   const [dark, toggleTheme] = useColorMode();
   // Someone signed in reaches Connect agent from their account menu.
@@ -154,22 +149,22 @@ export default function Hub() {
     else url.searchParams.delete("group");
     history.replaceState(null, "", url);
   };
-  const showAdmin = (tab: AdminTab | null) => {
-    setAdmin(tab);
+  const closeHubEnv = () => {
+    setHubEnvOpen(false);
     const url = new URL(location.href);
     url.searchParams.delete("env");
-    if (tab) url.searchParams.set("admin", tab);
-    else url.searchParams.delete("admin");
     history.replaceState(null, "", url);
   };
   const hubEnv = listing?.hub_env;
-  // An admin, or the operator (the API token, or a hub nobody signs in to): what the admin panel is for.
+  // An admin, or the operator (the API token, or a hub nobody signs in to): who the admin page is for.
   const isAdmin = !!hubEnv?.can_edit || who?.user?.role === "admin";
-  const adminTabs: AdminTab[] = [
-    ...(who?.user?.role === "admin" ? (["users"] as const) : []),
-    ...(hubEnv ? (["variables"] as const) : []),
-    ...(listing?.agent_mcp?.can_edit ? (["mcp"] as const) : []),
-  ];
+  useEffect(() => {
+    // The admin panel's old links (`/?admin=<tab>`), and an admin following the hub's variables link: on to the admin page.
+    const q = new URLSearchParams(location.search);
+    const tab = q.get("admin");
+    if (tab) location.replace(`/admin?section=${encodeURIComponent(tab)}`);
+    else if (hubEnvOpen && listing && isAdmin) location.replace("/admin?section=variables");
+  }, [hubEnvOpen, listing, isAdmin]);
   const uid = who?.user?.uid ?? null;
   // People and roles exist where people sign in; a token hub shares by link only.
   const people = !!listing?.sharing?.people && !!uid;
@@ -293,14 +288,8 @@ export default function Hub() {
             <Divider orientation="vertical" xstyle={styles.rule} />
           </>
         )}
-        {isAdmin && adminTabs.length > 0 && (
-          <Button
-            label="Admin"
-            icon={<IconSliders />}
-            isIconOnly={compact}
-            tooltip="Users, hub variables and MCP servers"
-            onClick={() => showAdmin(adminTabs[0])}
-          />
+        {isAdmin && (
+          <Button label="Admin" icon={<IconSliders />} isIconOnly={compact} tooltip="Users, settings and everything else for the whole hub" href="/admin" />
         )}
         <HStack gap={0.5} vAlign="center">
           <HelpMenu />
@@ -311,7 +300,7 @@ export default function Hub() {
             icon={dark ? <IconSun /> : <IconMoon />}
             onClick={toggleTheme}
           />
-          <SignedInAs hub onAdmin={isAdmin && adminTabs.length > 0 ? () => showAdmin(adminTabs[0]) : undefined} />
+          <SignedInAs hub />
         </HStack>
       </header>
 
@@ -428,26 +417,7 @@ export default function Hub() {
       {sharing && (
         <ShareDialog project={sharing.id} name={sharing.name} self={uid} onClose={() => setSharing(null)} onChanged={load} />
       )}
-      {admin && listing && isAdmin && adminTabs.length > 0 && (
-        <AdminDialog
-          tabs={adminTabs}
-          tab={admin}
-          onTab={showAdmin}
-          self={uid}
-          onClose={() => {
-            showAdmin(null);
-            load();
-          }}
-        />
-      )}
-      {admin === "variables" && listing && !isAdmin && hubEnv && (
-        <HubEnvDialog
-          onClose={() => {
-            showAdmin(null);
-            load();
-          }}
-        />
-      )}
+      {hubEnvOpen && listing && !isAdmin && hubEnv && <HubEnvDialog onClose={closeHubEnv} />}
       {openGroup && (
         <GroupDialog
           gid={openGroup}
@@ -766,7 +736,7 @@ const BLANK = "(empty)";
  * Deleting a project takes its code, runs and outputs with it, so a click is
  * not enough: the button works once the project's id is typed.
  */
-function DeleteDialog(props: { project: HubProject; onClose: () => void; onDeleted: () => void }) {
+export function DeleteDialog(props: { project: HubProject; onClose: () => void; onDeleted: () => void }) {
   const [typed, setTyped] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
