@@ -428,10 +428,11 @@ function ConnectForm(props: { preset: AgentMcpPreset; onCancel: () => void; onSa
 }
 
 /**
- * The MCP servers this server offers everyone, for an admin to change. Nobody's agent uses one until
- * they press Connect in their own MCP servers menu, which copies it onto their list.
+ * The MCP servers this server offers everyone, for an admin to change (a tab of the admin panel). Nobody's
+ * agent uses one until they press Connect in their own MCP servers menu, which copies it onto their list.
+ * Adding or editing one swaps the list for its form, in place.
  */
-export function McpPresetsDialog(props: { onClose: () => void }) {
+export function McpPresetsPanel() {
   const [presets, setPresets] = useState<AgentMcpPreset[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [editing, setEditing] = useState<AgentMcpPreset | "new" | null>(null);
@@ -463,68 +464,57 @@ export function McpPresetsDialog(props: { onClose: () => void }) {
     );
 
   return (
-    <AppDialog
-      title="MCP servers on offer"
-      subtitle="Everyone can connect these to their agent; nobody has them until they do."
-      width={640}
-      onClose={props.onClose}
-      footer={
-        <>
-          <Button label="Done" onClick={props.onClose} />
-          <Button variant="primary" label="Offer a server" icon={<IconPlus />} onClick={() => setEditing("new")} />
-        </>
-      }
-    >
-      <VStack gap={4}>
-        <Text color="secondary">
-          Each person finds these in the agent's MCP servers menu and presses Connect, typing their own key if the server asks for
-          one, or signing in with OAuth. A change here, or taking one off offer, leaves the copies people already connected as
-          they are.
+    <VStack gap={4}>
+      <HStack gap={3} vAlign="start">
+        <Text color="secondary" xstyle={styles.grow}>
+          Outside tools, such as a tracker or docs, that anyone here can connect to the built-in agent. Each person finds these in
+          the agent's MCP servers menu and presses Connect, typing their own key if the server asks for one, or signing in with
+          OAuth. Changing one, or taking it off offer, leaves the copies people already connected as they are.
         </Text>
-        {err && <Banner role="alert" status="error" title={err} />}
-        {presets === null && !err ? (
-          <Center padding={4}>
-            <Spinner label="Loading…" />
-          </Center>
-        ) : presets?.length === 0 ? (
-          <Text type="supporting" color="secondary">
-            Nothing on offer yet. Offer a server with its URL, and the names of the headers each person fills in with their own
-            value, such as <Code>Authorization</Code> or <Code>{PORTKEY_HEADER}</Code>. A server that signs people in with OAuth asks
-            for none.
-          </Text>
-        ) : (
-          <List hasDividers edge="flush">
-            {(presets ?? []).map((p) => (
-              <ListItem
-                key={p.name}
-                align="first-line"
-                label={
-                  <HStack gap={2} vAlign="center">
-                    <Text weight="semibold">{p.name}</Text>
-                    <Text type="supporting" color="secondary" maxLines={1}>
-                      {p.url}
-                    </Text>
-                  </HStack>
-                }
-                description={<PresetLine preset={p} />}
-                endContent={
-                  <HStack gap={1} vAlign="center">
-                    <Button size="sm" variant="ghost" label="Edit" onClick={() => setEditing(p)} />
-                    <IconButton
-                      size="sm"
-                      variant="ghost"
-                      label={`Stop offering ${p.name}`}
-                      tooltip={`Stop offering ${p.name}`}
-                      icon={<IconTrash />}
-                      onClick={() => setRemoving(p)}
-                    />
-                  </HStack>
-                }
-              />
-            ))}
-          </List>
-        )}
-      </VStack>
+        <Button variant="primary" label="Offer a server" icon={<IconPlus />} onClick={() => setEditing("new")} />
+      </HStack>
+      {err && <Banner role="alert" status="error" title={err} />}
+      {presets === null && !err ? (
+        <Center padding={4}>
+          <Spinner label="Loading…" />
+        </Center>
+      ) : presets?.length === 0 ? (
+        <Text type="supporting" color="secondary">
+          Nothing on offer yet. Offer a server with its URL, and the names of the headers each person fills in with their own value,
+          such as <Code>Authorization</Code> or <Code>{PORTKEY_HEADER}</Code>. A server that signs people in with OAuth asks for none.
+        </Text>
+      ) : (
+        <List hasDividers edge="flush">
+          {(presets ?? []).map((p) => (
+            <ListItem
+              key={p.name}
+              align="first-line"
+              label={
+                <HStack gap={2} vAlign="center">
+                  <Text weight="semibold">{p.name}</Text>
+                  <Text type="supporting" color="secondary" maxLines={1}>
+                    {p.url}
+                  </Text>
+                </HStack>
+              }
+              description={<PresetLine preset={p} />}
+              endContent={
+                <HStack gap={1} vAlign="center">
+                  <Button size="sm" variant="ghost" label="Edit" onClick={() => setEditing(p)} />
+                  <IconButton
+                    size="sm"
+                    variant="ghost"
+                    label={`Stop offering ${p.name}`}
+                    tooltip={`Stop offering ${p.name}`}
+                    icon={<IconTrash />}
+                    onClick={() => setRemoving(p)}
+                  />
+                </HStack>
+              }
+            />
+          ))}
+        </List>
+      )}
       <AlertDialog
         isOpen={!!removing}
         onOpenChange={(open) => {
@@ -547,7 +537,7 @@ export function McpPresetsDialog(props: { onClose: () => void }) {
           }
         }}
       />
-    </AppDialog>
+    </VStack>
   );
 }
 
@@ -583,26 +573,20 @@ function PresetForm(props: { preset: AgentMcpPreset | null; taken: string[]; onC
   };
 
   return (
-    <AppDialog
-      title={preset ? `Edit ${preset.name}` : "Offer an MCP server"}
-      subtitle="A remote MCP server (Streamable HTTP) everyone can connect their agent to."
-      width={640}
-      onClose={props.onCancel}
-      onSubmit={save}
-      footer={(formId) => (
-        <>
-          <Button label="Cancel" onClick={props.onCancel} />
-          <Button
-            type="submit"
-            form={formId}
-            variant="primary"
-            label={preset ? "Save" : "Offer"}
-            isDisabled={busy || !name || !url.trim() || !!nameProblem}
-          />
-        </>
-      )}
+    // A form of its own, so Enter saves: it sits in the admin panel's body, not a dialog's.
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        save();
+      }}
     >
       <VStack gap={4}>
+        <VStack gap={1}>
+          <Heading level={3}>{preset ? `Edit ${preset.name}` : "Offer an MCP server"}</Heading>
+          <Text type="supporting" color="secondary">
+            A remote MCP server (Streamable HTTP) everyone can connect their agent to.
+          </Text>
+        </VStack>
         {err && <Banner role="alert" status="error" title={err} />}
         {!preset && (
           <TextInput
@@ -630,8 +614,12 @@ function PresetForm(props: { preset: AgentMcpPreset | null; taken: string[]; onC
           value={headers}
           onChange={setHeaders}
         />
+        <HStack gap={2} hAlign="end">
+          <Button label="Cancel" onClick={props.onCancel} />
+          <Button type="submit" variant="primary" label={preset ? "Save" : "Offer"} isDisabled={busy || !name || !url.trim() || !!nameProblem} />
+        </HStack>
       </VStack>
-    </AppDialog>
+    </form>
   );
 }
 
