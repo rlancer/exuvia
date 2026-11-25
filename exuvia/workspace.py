@@ -1747,7 +1747,11 @@ class Workspace:
             total = sum(parts[p][1] for p in keep if p in parts)
             meta["partitions"] = [lo, hi]
         if not files:
-            return con, None, total, meta
+            every = self.manifest_files(ls) if partitions is not None else []
+            if not every:
+                return con, None, total, meta
+            # No partition in the range: no rows, but the output's columns.
+            return con, con.read_parquet([self._local_file(f["file"]) for f in every], union_by_name=True).limit(0), total, meta
         rel = con.read_parquet([self._local_file(f["file"]) for f in files], union_by_name=True)
         if keep is not None:
             column = '"' + str(ls.get("partition_by")).replace('"', '""') + '"'
@@ -1919,6 +1923,7 @@ class Workspace:
             return None
         assert ls is not None
         parts, files = self.store.manifest(name, ls.get("params_key") or "", ls.get("version"))
+        files = prune(files, None, None)  # in partition order
         return {
             "node": name,
             "partition_by": ls.get("partition_by"),

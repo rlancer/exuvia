@@ -328,6 +328,14 @@ def _partition_range(raw: str | None) -> tuple[str | None, str | None] | None:
     return (lo or None, hi or None) if sep else (raw, raw)
 
 
+def _need_partitioned(ws: Workspace, name: str, partitions: Any, run_id: str | None) -> None:
+    """``?partitions=`` only means something for a partitioned node: say so
+    rather than answer with every row."""
+    node = ws.graph.nodes.get(name)
+    if partitions is not None and run_id is None and node is not None and not node.partition_by:
+        raise HTTPException(400, f"{name} is not partitioned: leave out partitions")
+
+
 def _export_output(
     ws: Workspace,
     name: str,
@@ -343,6 +351,7 @@ def _export_output(
     (``fmt`` zip) or, with ``part``, one of them like an output of its own.
     ``partitions`` keeps a range of a partitioned output's partitions."""
     fmt = _export_format(fmt, allow_zip=True)
+    _need_partitioned(ws, name, partitions, run_id)
     stream = (
         None if fmt == "zip"
         else ws.preview_arrow(name, params=params, run_id=run_id, part=part, partitions=partitions)
@@ -1037,6 +1046,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         _need(ctx.ws, name)
         resolved = _resolve(ctx.ws, _query_params(params))
         rng = _partition_range(partitions)
+        _need_partitioned(ctx.ws, name, rng, run_id)
         if wants_arrow(request.headers.get("accept")):
             stream = ctx.ws.preview_arrow(
                 name, limit=limit, offset=offset, params=resolved, run_id=run_id, part=part, partitions=rng

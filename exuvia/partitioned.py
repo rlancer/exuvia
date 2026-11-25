@@ -225,7 +225,8 @@ def commit(base: Manifest, staged: str | None, w: Writer, *, full_refresh: bool 
         q = _ident(key)
         (nulls,) = con.execute(f"select count(*) from _new where {q} is null").fetchone() or (0,)
         if nulls:
-            raise PartitionError(f"{nulls} of the rows returned have no `{key}`: every row needs a partition")
+            some = "1 row" if nulls == 1 else f"{nulls} rows"
+            raise PartitionError(f"{some} returned {'has' if nulls == 1 else 'have'} no `{key}`: every row needs a partition value")
         # Each row as text, hashed; a partition's digest hashes its rows' hashes in order.
         rows = con.execute(
             f"select v, sha256(string_agg(h, '' order by h)), count(*) from "
@@ -296,7 +297,9 @@ def compact(m: Manifest, w: Writer, *, force: bool = False) -> Manifest:
 
 
 def prune(files: list[dict[str, Any]], lo: str | None, hi: str | None) -> list[dict[str, Any]]:
-    """The files holding a partition in [lo, hi]."""
+    """The files holding a partition in [lo, hi], ordered by their first
+    partition, so that reading them in turn gives the oldest rows first."""
+    files = sorted(files, key=lambda f: _sortable(f["partitions"][0]) if f["partitions"] else (2, ""))
     if not lo and not hi:
         return files
     return [f for f in files if any(in_range(p, lo, hi) for p in f["partitions"])]
