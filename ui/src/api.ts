@@ -527,6 +527,21 @@ export interface AgentMcpList {
   shared: boolean;
   /** Whether a server may be on a private address (this machine, the local network). */
   private: boolean;
+  /** The servers an admin offers everyone: on nobody's list until they connect. */
+  presets: AgentMcpPreset[];
+  /** Whether you (an admin) can change what is on offer. */
+  can_edit_presets: boolean;
+}
+
+/** A server an admin offers everyone (exuvia/agent_mcp.py): no secrets, only the header names each person fills in. */
+export interface AgentMcpPreset {
+  name: string;
+  url: string;
+  description: string;
+  /** The headers you type a value for when you connect, such as Authorization. */
+  headers: string[];
+  created_at: number;
+  updated_at: number;
 }
 
 /** A connection's outcome. `signin`: the server wants an OAuth sign-in (`agentMcpApi.signIn`). */
@@ -558,6 +573,19 @@ export const agentMcpApi = {
     >,
   signOut: async (name: string) => {
     await sendTo("DELETE", `/api/me/mcp/${encodeURIComponent(name)}/oauth`);
+  },
+  /** Put a server on offer on your list, with a value for each header it asks for. */
+  connect: async (name: string, headers: Record<string, string>) =>
+    (await sendTo("POST", `/api/me/mcp/presets/${encodeURIComponent(name)}/connect`, { headers })).json() as Promise<AgentMcpServer>,
+};
+
+/** The MCP servers on offer to everyone (`/api/mcp/presets`): everyone reads them, admins change them. */
+export const mcpPresetsApi = {
+  list: async () => (await sendTo("GET", "/api/mcp/presets")).json() as Promise<{ presets: AgentMcpPreset[]; can_edit: boolean }>,
+  put: async (name: string, body: { url: string; description: string; headers: string[] }) =>
+    (await sendTo("PUT", `/api/mcp/presets/${encodeURIComponent(name)}`, body)).json() as Promise<AgentMcpPreset>,
+  remove: async (name: string) => {
+    await sendTo("DELETE", `/api/mcp/presets/${encodeURIComponent(name)}`);
   },
 };
 
@@ -644,6 +672,8 @@ export interface HubListing {
   groups?: HubGroup[];
   /** The hub's own variables, which every project gets: how many, and whether the caller (an admin) can change them. */
   hub_env?: { variables: number; can_edit: boolean };
+  /** The MCP servers on offer for the agent: how many, and whether the caller (an admin) can change them. Absent when that is off. */
+  agent_mcp?: { presets: number; can_edit: boolean };
 }
 
 /** A group of hub projects (exuvia/groups.py), as `GET /api/groups` lists it. */

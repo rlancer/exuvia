@@ -146,6 +146,18 @@ class McpServerReq(BaseModel):
     enabled: bool | None = None
 
 
+class McpPresetReq(BaseModel):
+    url: str
+    description: str = ""
+    # The header names each person fills in when they connect: no values.
+    headers: list[str] = []
+
+
+class McpConnectReq(BaseModel):
+    # A value for each header the preset asks for.
+    headers: dict[str, str] | None = None
+
+
 class McpSignInReq(BaseModel):
     # The page's origin (https://exuvia.example.com): the OAuth callback is
     # sent there, so it is where the person's browser reaches this server.
@@ -1275,10 +1287,18 @@ def _open_agent_mcp(local: Any, users: UserStore | None) -> McpServers:
     return open_mcp_servers(local, people=users is not None, allow_private=private_allowed(_auth_method()))
 
 
-def _agent_mcp_routes(app: FastAPI, store: McpServers) -> None:
+def _operator_or_admin() -> bool:
+    """An admin, or the operator (the API token, or a server nobody signs in to)."""
+    ident = auth.current()
+    return ident is None or ident.role == "admin"
+
+
+def _agent_mcp_routes(app: FastAPI, store: McpServers, is_admin: Callable[[], bool] = _operator_or_admin) -> None:
     """``/api/me/mcp``: the MCP servers the built-in agent connects to when
     this person talks to it (agent_mcp.py). Header values go in and never
-    come back out: a listing shows each header's name and last 4 characters."""
+    come back out: a listing shows each header's name and last 4 characters.
+    ``/api/mcp/presets``: the servers an admin offers everyone, which each
+    person connects to from their own list (``is_admin``: who may change them)."""
 
     def owner(write: bool = False) -> str:
         if not agent_mcp_enabled():
@@ -1297,7 +1317,57 @@ def _agent_mcp_routes(app: FastAPI, store: McpServers) -> None:
         signs in to, where everyone who can open it shares one list.
         ``private``: whether servers may point at private addresses."""
         who = owner()
-        return {"servers": store.list(who), "shared": not store.people, "private": store.allow_private}
+        return {
+            "servers": store.list(who), "shared": not store.people, "private": store.allow_private,
+            "presets": store.presets(), "can_edit_presets": can_edit_presets(),
+        }
+
+    def can_edit_presets() -> bool:
+        """An admin (or the operator), but not through an agent token."""
+        ident = auth.current()
+        return is_admin() and not (ident is not None and ident.method == "token")
+
+    def require_preset_admin() -> None:
+        if not agent_mcp_enabled():
+            raise HTTPException(404, "MCP servers for the agent are off on this server (EXUVIA_AGENT_MCP=off)")
+        if not can_edit_presets():
+            raise HTTPException(403, "only an admin can change the MCP servers on offer: everyone sees them")
+
+    @app.get("/api/mcp/presets")
+    def mcp_presets() -> dict[str, Any]:
+        """The MCP servers on offer to everyone, and whether the caller may change them."""
+        if not agent_mcp_enabled():
+            raise HTTPException(404, "MCP servers for the agent are off on this server (EXUVIA_AGENT_MCP=off)")
+        return {"presets": store.presets(), "can_edit": can_edit_presets()}
+
+    @app.put("/api/mcp/presets/{name}")
+    def mcp_preset_put(name: str, body: McpPresetReq) -> dict[str, Any]:
+        """Offer an MCP server to everyone, or change one on offer (admins)."""
+        require_preset_admin()
+        try:
+            return store.put_preset(name, url=body.url, description=body.description, headers=body.headers)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.delete("/api/mcp/presets/{name}")
+    def mcp_preset_delete(name: str) -> dict[str, Any]:
+        """Stop offering a server (admins). Whoever connected to it keeps their copy."""
+        require_preset_admin()
+        if not store.delete_preset(name):
+            raise HTTPException(404, f"no MCP server {name} on offer")
+        return {"ok": True}
+
+    @app.post("/api/me/mcp/presets/{name}/connect")
+    def mcp_connect(name: str, body: McpConnectReq | None = None) -> dict[str, Any]:
+        """Put a server on offer on this person's list, with the header
+        values it asks for: the agent uses it from their next message on."""
+        who = owner(write=True)
+        try:
+            return store.connect(who, name, body.headers if body else None)
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
 
     @app.put("/api/me/mcp/{name}")
     def mcp_put(name: str, body: McpServerReq) -> dict[str, Any]:
@@ -2112,7 +2182,7 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
     _install_common(app, hub.users, "hub", hub.sharing)
     app.state.hub = hub
     hub.mcp = _open_agent_mcp(hub.root / HUB_USERS_DB, hub.users)
-    _agent_mcp_routes(app, hub.mcp)
+    _agent_mcp_routes(app, hub.mcp, is_admin)
 
     async def get_ctx(project: str, request: Request) -> Ctx:
         # The rules may need a database read: off the event loop (the thread
@@ -2180,6 +2250,13 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
             "groups": hub.groups.visible(auth.current()),
             "hub_env": {"variables": len(hub.groups.hub_env_rows()), "can_edit": is_admin()},
         }
+        if agent_mcp_enabled():
+            # The MCP servers an admin offers everyone (agent_mcp.py): how many, and whether the caller changes them.
+            ident = auth.current()
+            out["agent_mcp"] = {
+                "presets": len(hub.mcp.presets()),
+                "can_edit": is_admin() and not (ident is not None and ident.method == "token"),
+            }
         if hub.sharing is not None:
             from .sharing import new_project_general
 

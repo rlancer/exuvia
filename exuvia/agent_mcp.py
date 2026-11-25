@@ -19,6 +19,12 @@ and last four characters. They are kept in the server's database as they are
 ``.exuvia/hub.db``, the project's database for ``exuvia serve``, or the shared
 ``EXUVIA_DB``. A hub export leaves them out.
 
+Presets: an admin can offer servers to everyone (``put_preset``): a name, a
+URL, a line on what it is and the names of the headers each person fills in.
+Nobody's turns use one until they press Connect (``connect``), which copies it
+onto their own list, with the header values they type, under its name; from
+then on it is theirs, as one they added themselves. A preset holds no secret.
+
 OAuth: a server that signs people in with OAuth (MCP's authorization spec)
 gets a **Sign in** instead of a header. ``sign_in`` starts the flow with the
 MCP SDK's OAuth client: it discovers the server's authorization server,
@@ -97,6 +103,22 @@ TABLE = """create table if not exists agent_mcp_servers (
     primary key (scope, owner, name)
 )"""
 
+# Presets: servers an admin offers everyone, which nobody uses until they
+# press Connect (``connect``), which copies one onto their own list. A preset
+# holds no secret: it names the headers each person fills in, never values.
+PRESETS_TABLE = """create table if not exists agent_mcp_presets (
+    scope text not null default '',
+    name text not null,          -- the name each person's copy gets
+    url text not null,
+    description text not null default '',
+    headers text not null,       -- a JSON list of the header names each person fills in when they connect
+    created_at double precision not null,
+    updated_at double precision not null,
+    primary key (scope, name)
+)"""
+MAX_PRESETS = 50
+MAX_DESCRIPTION = 300
+
 _prepared: "weakref.WeakSet[Any]" = weakref.WeakSet()
 
 
@@ -120,6 +142,11 @@ def _prepare(db: Database) -> None:
                 db.query(f"select pg_advisory_xact_lock({SCHEMA_LOCK_KEY})")
             if "oauth" not in db.columns("agent_mcp_servers"):
                 db.query("alter table agent_mcp_servers add column oauth text")
+    if not db.columns("agent_mcp_presets"):
+        with db.transaction():
+            if db.dialect == "postgres":
+                db.query(f"select pg_advisory_xact_lock({SCHEMA_LOCK_KEY})")
+            db.query(PRESETS_TABLE)
     _prepared.add(db)
 
 
@@ -156,6 +183,25 @@ def check_headers(headers: dict[str, Any]) -> dict[str, str]:
         if not isinstance(v, str) or not v or len(v) > MAX_HEADER_VALUE or any(ord(c) < 32 or ord(c) == 127 for c in v):
             raise ValueError(f"the value of {k} must be non-empty text on one line")
         out[k] = v
+    if len(out) > MAX_HEADERS:
+        raise ValueError(f"at most {MAX_HEADERS} headers")
+    return out
+
+
+def check_header_names(names: Any) -> list[str]:
+    """The header names a preset asks each person for: valid, not ones the
+    MCP connection sets itself, each once."""
+    if not isinstance(names, list):
+        raise ValueError("headers must be a list of header names")
+    out: list[str] = []
+    for k in names:
+        if not isinstance(k, str) or not HEADER_NAME.match(k):
+            raise ValueError(f"not a header name: {k!r}")
+        if k.lower() in RESERVED_HEADERS:
+            raise ValueError(f"the MCP connection sets {k} itself")
+        if k.lower() in (o.lower() for o in out):
+            raise ValueError(f"{k} is in the list twice")
+        out.append(k)
     if len(out) > MAX_HEADERS:
         raise ValueError(f"at most {MAX_HEADERS} headers")
     return out
@@ -365,6 +411,81 @@ class McpServers:
             if found:
                 self._q("delete from agent_mcp_servers where scope=? and owner=? and name=?", (self.scope, owner, name))
         return bool(found)
+
+    # -- presets (an admin's, for everyone to connect to) ---------------------
+    def presets(self) -> list[dict[str, Any]]:
+        """The servers on offer, by name. Nothing secret in them."""
+        rows = self._q(
+            "select name, url, description, headers, created_at, updated_at from agent_mcp_presets "
+            "where scope=? order by name",
+            (self.scope,),
+        )
+        return [{**r, "headers": json.loads(r["headers"])} for r in rows]
+
+    def preset(self, name: str) -> dict[str, Any] | None:
+        return next((p for p in self.presets() if p["name"] == name), None)
+
+    def put_preset(
+        self, name: str, *, url: str, description: str = "", headers: list[str] | None = None, now: float | None = None,
+    ) -> dict[str, Any]:
+        """Offer a server, or change one on offer. Copies people already
+        connected keep what they connected to. ValueError: a bad name, URL,
+        description or header name, or too many presets."""
+        now = time.time() if now is None else now
+        check_name(name)
+        url = check_url(url)
+        description = description.strip() if isinstance(description, str) else ""
+        if len(description) > MAX_DESCRIPTION or any(ord(c) < 32 for c in description):
+            raise ValueError(f"the description is one line of at most {MAX_DESCRIPTION} characters")
+        names = check_header_names(headers or [])
+        with self._lock, self.db.transaction():
+            found = self._q("select 1 from agent_mcp_presets where scope=? and name=?", (self.scope, name))
+            if found:
+                self._q(
+                    "update agent_mcp_presets set url=?, description=?, headers=?, updated_at=? where scope=? and name=?",
+                    (url, description, json.dumps(names), now, self.scope, name),
+                )
+            else:
+                count = self._q("select count(*) as n from agent_mcp_presets where scope=?", (self.scope,))
+                if count[0]["n"] >= MAX_PRESETS:
+                    raise ValueError(f"at most {MAX_PRESETS} servers on offer")
+                self._q(
+                    "insert into agent_mcp_presets (scope, name, url, description, headers, created_at, updated_at) "
+                    "values (?,?,?,?,?,?,?)",
+                    (self.scope, name, url, description, json.dumps(names), now, now),
+                )
+        return self.preset(name)  # type: ignore[return-value]
+
+    def delete_preset(self, name: str) -> bool:
+        """Stop offering a server. Copies people connected stay theirs."""
+        with self.db.transaction():
+            found = self._q("select 1 from agent_mcp_presets where scope=? and name=?", (self.scope, name))
+            if found:
+                self._q("delete from agent_mcp_presets where scope=? and name=?", (self.scope, name))
+        return bool(found)
+
+    def connect(self, owner: str, name: str, headers: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Put a preset on one person's list, under its name, with the values
+        they typed for the headers it asks for. LookupError: no such preset.
+        ValueError: they already have a server by that name, or a header is
+        missing or not one the preset asks for."""
+        preset = self.preset(name)
+        if preset is None:
+            raise LookupError(f"no MCP server {name} on offer")
+        if self.get(owner, name) is not None:
+            raise ValueError(f"you already have an MCP server named {name}: remove it first to connect this one")
+        given = headers or {}
+        if not isinstance(given, dict):
+            raise ValueError("headers must be an object of name: value")
+        asked = {h.lower(): h for h in preset["headers"]}
+        extra = [k for k in given if not isinstance(k, str) or k.lower() not in asked]
+        if extra:
+            raise ValueError(f"{name} does not ask for {extra[0]}")
+        values = {asked[k.lower()]: v for k, v in given.items()}
+        missing = [h for h in preset["headers"] if not values.get(h)]
+        if missing:
+            raise ValueError(f"{name} needs a value for {missing[0]}")
+        return self.put(owner, name, url=preset["url"], headers=values, enabled=True)
 
 
 def open_mcp_servers(local: Any, *, people: bool, allow_private: bool) -> McpServers:

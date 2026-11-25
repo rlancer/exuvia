@@ -294,7 +294,7 @@ def test_api_on_a_local_server_is_one_shared_list(tmp_path, other):
     Project(root)
     with TestClient(create_app(root)) as client:
         listing = client.get("/api/me/mcp").json()
-        assert listing == {"servers": [], "shared": True, "private": True}
+        assert listing == {"servers": [], "shared": True, "private": True, "presets": [], "can_edit_presets": True}
         client.put("/api/me/mcp/other", json={"url": other, "headers": {"Authorization": "Bearer s3cret"}})
         r = client.post("/api/me/mcp/other/test").json()
         assert r["ok"] and "list_nodes" in {t["name"] for t in r["tools"]}
@@ -311,3 +311,88 @@ def test_api_on_a_hub_and_switched_off(tmp_path, monkeypatch):
     monkeypatch.setenv("EXUVIA_AGENT_MCP", "off")
     with TestClient(create_hub_app(tmp_path / "hub")) as client:
         assert client.get("/api/me/mcp", headers=ALICE).status_code == 404
+
+
+# -- presets: servers an admin offers, which each person connects to ----------------
+def test_presets_are_offered_and_connected_one_person_at_a_time(tmp_path):
+    s = store(tmp_path)
+    p = s.put_preset("linear", url="https://mcp.portkey.ai/linear/mcp", description="Our tracker, through Portkey",
+                     headers=["x-portkey-api-key"])
+    assert p["headers"] == ["x-portkey-api-key"] and p["description"] == "Our tracker, through Portkey"
+    s.put_preset("docs", url="https://docs.example/mcp")
+    assert [x["name"] for x in s.presets()] == ["docs", "linear"]
+    # On offer is not connected: nobody's turns use it yet.
+    assert s.active("u-alice") == [] and s.active("u-bob") == []
+
+    with pytest.raises(ValueError, match="needs a value for x-portkey-api-key"):
+        s.connect("u-alice", "linear")
+    with pytest.raises(ValueError, match="does not ask for Authorization"):
+        s.connect("u-alice", "linear", {"x-portkey-api-key": "pk-1", "Authorization": "Bearer x"})
+    with pytest.raises(LookupError):
+        s.connect("u-alice", "nope")
+    row = s.connect("u-alice", "linear", {"X-Portkey-Api-Key": "pk-alice-secret-0001"})
+    assert row["url"] == "https://mcp.portkey.ai/linear/mcp" and row["enabled"]
+    assert s.get("u-alice", "linear").headers == {"x-portkey-api-key": "pk-alice-secret-0001"}
+    assert s.active("u-bob") == []
+    with pytest.raises(ValueError, match="already have"):
+        s.connect("u-alice", "linear", {"x-portkey-api-key": "pk-2"})
+    assert [x.name for x in s.active("u-alice")] == ["linear"]
+    s.connect("u-bob", "docs")
+    assert s.get("u-bob", "docs").headers == {}
+
+    # A change to the offer, or taking it back, leaves the copies alone.
+    s.put_preset("linear", url="https://mcp.example/linear", headers=[])
+    assert s.get("u-alice", "linear").url == "https://mcp.portkey.ai/linear/mcp"
+    assert s.delete_preset("linear") and not s.delete_preset("linear")
+    assert [x.name for x in s.active("u-alice")] == ["linear"]
+
+
+@pytest.mark.parametrize("kw,error", [
+    ({"url": "nope"}, "http:// or https://"),
+    ({"url": "https://x.example/mcp", "headers": ["Content-Type"]}, "sets Content-Type itself"),
+    ({"url": "https://x.example/mcp", "headers": ["a b"]}, "not a header name"),
+    ({"url": "https://x.example/mcp", "headers": ["X-Key", "x-key"]}, "twice"),
+    ({"url": "https://x.example/mcp", "description": "two\nlines"}, "one line"),
+])
+def test_bad_presets_are_refused(tmp_path, kw, error):
+    with pytest.raises(ValueError, match=error):
+        store(tmp_path).put_preset("ok", **kw)
+
+
+def test_presets_api_on_a_hub(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXUVIA_AUTH", "headers")
+    monkeypatch.setenv("EXUVIA_ADMINS", "alice")
+    with TestClient(create_hub_app(tmp_path / "hub")) as client:
+        client.get("/api/me", headers=BOB)  # Bob signs in once: a member
+        offer = {"url": "https://mcp.example/mcp", "description": "Docs", "headers": ["Authorization"]}
+        assert client.put("/api/mcp/presets/docs", headers=BOB, json=offer).status_code == 403
+        r = client.put("/api/mcp/presets/docs", headers=ALICE, json=offer)
+        assert r.status_code == 200 and r.json()["headers"] == ["Authorization"]
+        assert client.put("/api/mcp/presets/bad", headers=ALICE, json={"url": "nope"}).status_code == 400
+
+        # Everyone sees it on offer; nobody has it until they connect.
+        listing = client.get("/api/me/mcp", headers=BOB).json()
+        assert [p["name"] for p in listing["presets"]] == ["docs"] and listing["servers"] == []
+        assert listing["can_edit_presets"] is False
+        assert client.get("/api/me/mcp", headers=ALICE).json()["can_edit_presets"] is True
+        assert client.get("/api/projects", headers=BOB).json()["agent_mcp"] == {"presets": 1, "can_edit": False}
+        assert client.get("/api/projects", headers=ALICE).json()["agent_mcp"] == {"presets": 1, "can_edit": True}
+
+        assert client.post("/api/me/mcp/presets/docs/connect", headers=BOB, json={}).status_code == 400
+        r = client.post("/api/me/mcp/presets/docs/connect", headers=BOB,
+                        json={"headers": {"Authorization": "Bearer bob-secret-0042"}})
+        assert r.status_code == 200 and r.json()["headers"] == [{"name": "Authorization", "hint": "0042"}]
+        assert "bob-secret" not in json.dumps(client.get("/api/me/mcp", headers=BOB).json())
+        assert client.get("/api/me/mcp", headers=ALICE).json()["servers"] == []
+        assert client.post("/api/me/mcp/presets/missing/connect", headers=BOB, json={}).status_code == 404
+
+        # An admin's agent token can't change the offer.
+        token = client.post("/api/me/tokens", headers=ALICE, json={"name": "t"}).json()["token"]
+        bearer = {"Authorization": f"Bearer {token}"}
+        assert client.delete("/api/mcp/presets/docs", headers=bearer).status_code == 403
+        assert client.delete("/api/mcp/presets/docs", headers=ALICE).json() == {"ok": True}
+        assert [s["name"] for s in client.get("/api/me/mcp", headers=BOB).json()["servers"]] == ["docs"]
+    monkeypatch.setenv("EXUVIA_AGENT_MCP", "off")
+    with TestClient(create_hub_app(tmp_path / "hub")) as client:
+        assert client.get("/api/mcp/presets", headers=ALICE).status_code == 404
+        assert "agent_mcp" not in client.get("/api/projects", headers=ALICE).json()
