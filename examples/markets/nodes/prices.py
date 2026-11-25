@@ -12,7 +12,7 @@ import exuvia
 START = "2025-01-01"
 
 
-@exuvia.node(partition_by="date", schedule="0 17 * * 1-5", tags=["source"])
+@exuvia.node(partition_by="date", key=["date", "ticker"], schedule="0 17 * * 1-5", tags=["source"])
 def prices(universe):
     import numpy as np
     import pandas as pd

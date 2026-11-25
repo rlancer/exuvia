@@ -65,6 +65,7 @@ from .executor import ExecRequest, LocalExecutor, make_executor
 from .notify import failure_webhook, payload, send
 from .npm import Npm, bare_imports
 from .packages import Packages, missing_package
+from .keys import KeyViolation, enforce_file
 from .partitioned import Manifest, PartitionError, Writer, commit, in_range, prune, sort_values
 from .pushing import save_pushed
 from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Project, View, _hash, _validate_cron
@@ -1023,15 +1024,18 @@ class Workspace:
                         self._commit_partitions, run_id, name, key, prev, res.get("artifact_path"), False
                     )
                 else:
+                    keyed = await asyncio.to_thread(self._enforce_key, run_id, name, res["kind"], res.get("artifact_path"))
+                    if keyed:
+                        res["artifact_path"], res["artifact_id"], res["rows"] = keyed
                     rel = self._rel(res["artifact_path"])
                     await asyncio.to_thread(self._upload, rel)
                     fields = {
                         "artifact_id": res["artifact_id"], "artifact_path": rel,
                         "kind": res["kind"], "rows": res["rows"], "schema": res["schema"],
                     }
-            except PartitionError as e:
+            except (PartitionError, KeyViolation) as e:
                 self.store.append_log(run_id, f"exuvia: {e}\n")
-                self._finish(run_id, name, key, status="failed", error=f"PartitionError: {e}")
+                self._finish(run_id, name, key, status="failed", error=f"{type(e).__name__}: {e}")
                 return self.store.run(run_id) or {}
             except BaseException as e:  # the object store failed, or the request went away
                 error = "the push was interrupted" if isinstance(e, asyncio.CancelledError) else f"{type(e).__name__}: {e}"
@@ -1174,6 +1178,28 @@ class Workspace:
         """Where a partitioned node's run leaves the rows it returned, until they are committed."""
         return self.project.state_dir / "staging" / run_id
 
+    def _enforce_key(self, run_id: str, name: str, kind: str | None, path: str | None) -> tuple[str, str, int] | None:
+        """Check an ordinary (not partitioned) output against its node's key
+        (keys.py). Raises KeyViolation when it breaks it. With on_duplicate
+        "last" and repeated keys, the output rewritten with one row per key:
+        (path, artifact id, rows). None when there is nothing to change. Blocking."""
+        node = self.graph.nodes[name]
+        if not node.key or kind in (None, "none"):
+            return None
+        if kind != "table" or not path:
+            raise KeyViolation(
+                f"{name} declares a key ({', '.join(node.key)}), but its output is {kind}, not one table"
+            )
+        done = enforce_file(path, node.key, node.on_duplicate)
+        if done is None:
+            return None
+        new_path, artifact_id, rows, dropped = done
+        self.store.append_log(
+            run_id, f"exuvia: kept the last row for each key ({', '.join(node.key)}); "
+            f"dropped {dropped} row{'s' if dropped != 1 else ''} that repeated one\n",
+        )
+        return new_path, artifact_id, rows
+
     def _commit_partitions(
         self, run_id: str, name: str, key: str, prev: dict[str, Any] | None, staged: str | None, full_refresh: bool
     ) -> dict[str, Any]:
@@ -1194,13 +1220,19 @@ class Workspace:
         parts, files = self.store.manifest(name, key, version)
         base = Manifest(column, parts, files, version)
         w = Writer(self.project.state_dir / "artifacts" / name, lambda p: self._rel(str(p)) or "", self._local_file)
-        done = commit(base, staged, w, full_refresh=full_refresh)
+        unique_key = json.dumps(node.key) if node.key else None
+        done = commit(
+            base, staged, w, full_refresh=full_refresh, unique=node.key or None, on_duplicate=node.on_duplicate,
+            # The stored output was checked against this key when it was written.
+            verified=bool(version) and (prev or {}).get("unique_key") == unique_key,
+            log=lambda text: self.store.append_log(run_id, text),
+        )
         if done is None:  # identical rows, or none: the output stays as it is
             self.store.append_log(run_id, "exuvia: no partition changed\n")
             return {
                 "artifact_id": base.logical_id, "artifact_path": None, "kind": "table", "rows": base.rows,
                 "schema": (prev or {}).get("schema") if version else [], "version": version or 0,
-                "partition_by": column,
+                "partition_by": column, "unique_key": unique_key,
             }
         m = done.manifest
         for rel in done.written:
@@ -1212,7 +1244,7 @@ class Workspace:
         )
         fields = {
             "artifact_id": m.logical_id, "artifact_path": None, "kind": "table", "rows": m.rows,
-            "schema": w.schema([f["file"] for f in m.files]), "partition_by": column,
+            "schema": w.schema([f["file"] for f in m.files]), "partition_by": column, "unique_key": unique_key,
         }
         fields["version"] = self.store.record_manifest(
             name, key, (m.partitions, m.files), run_id,
@@ -1396,6 +1428,15 @@ class Workspace:
                 self._emit_run(run_id)
                 return RETRY
             return self._finish(run_id, name, key, status="failed", error=res.error)
+        if node.key:
+            try:
+                keyed = await asyncio.to_thread(self._enforce_key, run_id, name, res.kind, res.artifact_path)
+            except KeyViolation as e:  # the same rows would break it again: no retry
+                error = redact(f"KeyViolation: {e}") or ""
+                on_log(f"exuvia: the output was not stored: {error}\n")
+                return self._finish(run_id, name, key, status="failed", error=error)
+            if keyed:
+                res.artifact_path, res.artifact_id, res.rows = keyed
         rel = self._rel(res.artifact_path)
         await asyncio.to_thread(self._upload, rel)
         return self._finish(

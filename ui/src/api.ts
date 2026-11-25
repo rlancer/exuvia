@@ -90,6 +90,10 @@ export interface GraphNode {
   live?: number | null;
   /** The column a partitioned node's output is split by: each run replaces the partitions it returns. */
   partition_by?: string | null;
+  /** The columns that identify a row: every output is checked to hold no null in them and no key twice. */
+  key?: string[];
+  /** What a run whose rows repeat a key does: fail ("error") or keep the last row per key. */
+  on_duplicate?: "error" | "last";
   /** The last run failed importing something not installed: the package that likely provides it. */
   missing_package?: { module: string; package: string } | null;
 }

@@ -1,4 +1,5 @@
 -- Latest 20d vol and trailing 1-month return, averaged by sector.
+-- key: sector
 -- chart: {"mark": "bar", "encoding": {"x": {"field": "sector", "type": "nominal", "sort": "-y"}, "y": {"field": "avg_vol", "type": "quantitative", "axis": {"format": ".0%"}}}}
 with latest as (
     select ticker, vol_20d

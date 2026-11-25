@@ -46,6 +46,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from . import keys
+
 # How many files an output may have beyond one per period before compacting.
 COMPACT_AFTER = int(os.environ.get("EXUVIA_COMPACT_AFTER", "30"))
 _DATE_LIKE = re.compile(r"^\d{4}-\d{2}")
@@ -202,11 +204,28 @@ class Writer:
         return [{"name": r[0], "type": r[1]} for r in rows]
 
 
-def commit(base: Manifest, staged: str | None, w: Writer, *, full_refresh: bool = False) -> Commit | None:
+def commit(
+    base: Manifest,
+    staged: str | None,
+    w: Writer,
+    *,
+    full_refresh: bool = False,
+    unique: list[str] | None = None,
+    on_duplicate: str = "error",
+    verified: bool = False,
+    log: Callable[[str], None] | None = None,
+) -> Commit | None:
     """Commit the rows of the Parquet file ``staged`` (None: no rows) on top
     of ``base``: each partition they hold replaces that partition; with
     ``full_refresh`` every partition they don't hold is dropped too. Returns
-    None when nothing changed: identical rows write nothing."""
+    None when nothing changed: identical rows write nothing.
+
+    With a ``unique`` key (keys.py) the rows must hold it, and so must the
+    whole output they make, whether or not anything changed: raises
+    KeyViolation otherwise, having written nothing that stays. ``verified``
+    says ``base`` was already checked against this key, so only the run's
+    rows need checking against the partitions that stay; otherwise every
+    row of the output is checked (a key declared or changed since)."""
     key = base.key
     con = w.con
     digests: dict[str, tuple[str, int]] = {}
@@ -227,6 +246,15 @@ def commit(base: Manifest, staged: str | None, w: Writer, *, full_refresh: bool 
         if nulls:
             some = "1 row" if nulls == 1 else f"{nulls} rows"
             raise PartitionError(f"{some} returned {'has' if nulls == 1 else 'have'} no `{key}`: every row needs a partition value")
+        if unique:
+            extra = keys.check(con, "_new", unique)
+            if extra and on_duplicate != "last":
+                raise keys.duplicates_error(con, "_new", unique, extra)
+            if extra:
+                con.execute(f"create or replace temp table _new as {keys.keep_last_sql(keys.read_numbered(staged), unique)}")
+                if log:
+                    log(f"exuvia: kept the last row for each key ({', '.join(unique)}); "
+                        f"dropped {extra} row{'s' if extra != 1 else ''} that repeated one\n")
         # Each row as text, hashed; a partition's digest hashes its rows' hashes in order.
         rows = con.execute(
             f"select v, sha256(string_agg(h, '' order by h)), count(*) from "
@@ -236,7 +264,16 @@ def commit(base: Manifest, staged: str | None, w: Writer, *, full_refresh: bool 
     changed = sort_values(v for v, (d, _) in digests.items() if (base.partitions.get(v) or (None,))[0] != d)
     removed = sort_values(set(base.partitions) - set(digests)) if full_refresh else []
     if not changed and not removed:
+        if unique and not verified:
+            keys.check_output(con, [w.local(f["file"]) for f in base.files], unique, key)
         return None
+    if unique and verified and key not in unique and changed:
+        # The run's rows against the stored rows that stay.
+        gone = set(changed) | set(removed)
+        con.execute("create or replace temp table _gone (v varchar)")
+        con.executemany("insert into _gone values (?)", [(v,) for v in gone])
+        stay = [w.local(f["file"]) for f in base.files if set(f["partitions"]) - gone]
+        keys.check_against(con, "_new", stay, "_gone", unique, key)
     if len(changed) == 1:
         (v,) = changed
         new = {v: w.write(f"select * from _new where cast({_ident(key)} as varchar) = {_lit(v)}")}
@@ -249,6 +286,12 @@ def commit(base: Manifest, staged: str | None, w: Writer, *, full_refresh: bool 
     partitions = {v: p for v, p in base.partitions.items() if v not in removed}
     partitions.update({v: digests[v] for v in changed})
     manifest = compact(Manifest(key, partitions, files), w)
+    if unique and not verified:
+        try:
+            keys.check_output(con, [w.local(f["file"]) for f in manifest.files], unique, key)
+        except keys.KeyViolation:
+            w.discard_unused(set())  # nothing refers to what this commit wrote
+            raise
     used = {f["file"] for f in manifest.files}
     w.discard_unused(used)
     before = {f["file"] for f in base.files}

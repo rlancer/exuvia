@@ -83,6 +83,13 @@ const PAGES: PageSpec[] = [
     summary: "Nodes whose runs add or replace a day (or any partition) of one output: daily runs, backfills and corrections without rewriting the history.",
   },
   {
+    slug: "keys",
+    group: "Build",
+    source: { heading: "Keys: no row twice" },
+    title: "Keys",
+    summary: "Declare the columns that identify a row, and a run that would store a duplicate or a null key fails instead.",
+  },
+  {
     slug: "push-nodes",
     group: "Build",
     source: { heading: "Push nodes: data from someone's desktop" },
