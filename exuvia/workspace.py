@@ -1747,7 +1747,8 @@ class Workspace:
         resolved = self.resolve_params(params)
         con = duckdb.connect(config={"autoinstall_known_extensions": False, "autoload_known_extensions": False})
         names = [n for n in self.graph.nodes if only is None or n in only]
-        views: list[tuple[str, str]] = []  # (view name, select)
+        # (view name, select, a select to try when the first one fails)
+        views: list[tuple[str, str, str | None]] = []
         files: list[str] = []
 
         def read(path: str | None, cols: str = "") -> str:
@@ -1765,38 +1766,46 @@ class Workspace:
         for name in names:
             ls = self.store.last_success(name, self.node_params(name, resolved)[1])
             if ls and ls["kind"] == "table":
-                views.append((f'"{name}"', read(self.artifact_path(ls))))
+                views.append((f'"{name}"', read(self.artifact_path(ls)), None))
             elif ls and ls["kind"] == "multi":
                 # Several outputs: each table is <node>.<part>, in a schema named after the node.
                 schemas.add(name)
                 for part in table_parts(ls):
-                    views.append((f'"{name}"."{part}"', read(part_path(ls, part))))
+                    views.append((f'"{name}"."{part}"', read(part_path(ls, part)), None))
             if not self.graph.effective_params(name):
                 continue
             history = self.store.history(name, HISTORY_VIEW_LIMIT)
-            unions: dict[str, list[str]] = {}  # view name -> selects
+            outputs: dict[str, list[tuple[str, dict[str, Any]]]] = {}  # view name -> [(file, run params)]
             for run in history:
-                cols = ", ".join(f'{_lit(v)} as "_{k}"' for k, v in sorted((run.get("params") or {}).items()))
-                cols = cols + ", " if cols else ""
+                params = run.get("params") or {}
                 if run["kind"] == "table":
-                    unions.setdefault(f'"{name}__runs"', []).append(read(self.artifact_path(run), cols))
+                    path = self.artifact_path(run)
+                    if path:
+                        outputs.setdefault(f'"{name}__runs"', []).append((path, params))
                 elif run["kind"] == "multi":
                     schemas.add(name)
                     for part in table_parts(run):
-                        unions.setdefault(f'"{name}"."{part}__runs"', []).append(read(part_path(run, part), cols))
-            views.extend((view, " union all by name ".join(selects)) for view, selects in unions.items())
+                        path = part_path(run, part)
+                        if path:
+                            outputs.setdefault(f'"{name}"."{part}__runs"', []).append((path, params))
+            for view, runs in outputs.items():
+                files.extend(path for path, _ in runs)
+                views.append((view, _history_select(runs), _history_union(runs)))
         # Only the files behind these views stay readable once external
         # access is off; the lock makes every setting final.
         con.execute("set allowed_paths = ?", [sorted({f for f in files if f})])
         for schema in sorted(schemas):
             con.execute(f'create schema if not exists "{schema}"')
-        for view, select in views:
+        for view, select, fallback in views:
             try:
                 con.execute(f"create view {view} as {select}")
             except duckdb.Error:
-                if not view.endswith('__runs"'):
+                if fallback is None:
                     raise
-                # incompatible schemas across runs: leave the history view out
+                try:
+                    con.execute(f"create view {view} as {fallback}")
+                except duckdb.Error:
+                    pass  # incompatible schemas across runs: leave the history view out
         con.execute("set enable_external_access = false")
         con.execute("set lock_configuration = true")
         return con
@@ -1861,6 +1870,39 @@ def output_parts(schema: Any) -> list[dict[str, Any]]:
         for p in schema
         if isinstance(p, dict) and isinstance(p.get("name"), str) and p.get("type") in PART_EXT
     ]
+
+
+# The column naming the file each row came from, in a `<node>__runs` view's
+# read (dropped from what the view shows).
+_RUN_FILE = "__exuvia_file"
+
+
+def _history_select(runs: list[tuple[str, dict[str, Any]]]) -> str:
+    """A `<node>__runs` view: one ``read_parquet`` over every run's file,
+    joined to each run's parameters (one ``_<param>`` column each) by file.
+    Two runs with the same output share a file, read once and joined to
+    both. About twice as fast as a union of one read per run."""
+    names = sorted({k for _, params in runs for k in params})
+    files = ", ".join(_lit(f) for f in dict.fromkeys(path for path, _ in runs))
+    rows = ", ".join(
+        "(" + ", ".join([_lit(path), *(_lit(params.get(k)) for k in names)]) + ")" for path, params in runs
+    )
+    cols = ", ".join(f'"_{k}"' for k in names)
+    return (
+        f'select r.* exclude ("{_RUN_FILE}"), f.* exclude ("{_RUN_FILE}") '
+        f"from read_parquet([{files}], union_by_name = true, filename = '{_RUN_FILE}') f "
+        f'join (values {rows}) r("{_RUN_FILE}"{", " + cols if cols else ""}) using ("{_RUN_FILE}")'
+    )
+
+
+def _history_union(runs: list[tuple[str, dict[str, Any]]]) -> str:
+    """The same view as a union of one read per run: slower, but it holds
+    where the single read fails (types across runs that don't combine)."""
+    selects = []
+    for path, params in runs:
+        cols = ", ".join(f'{_lit(v)} as "_{k}"' for k, v in sorted(params.items()))
+        selects.append(f"select {cols + ', ' if cols else ''}* from read_parquet({_lit(path)})")
+    return " union all by name ".join(selects)
 
 
 def _lit(value: Any) -> str:
