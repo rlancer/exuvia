@@ -2577,10 +2577,10 @@ agent's machine, which can differ.
 full API under its own prefix and the web UI at `/p/<project>/`. `/` is the
 hub's home page: it lists the projects, creates one (from a template, when
 the hub has any) and opens its workbench, and deletes one. Every page of
-the hub, the workbench included, has the hub's left nav: **Home**, **Admin**
-(for an admin, with the admin page's sections under it), then every project
-you can open, the one you used last first, and **+** for a new one. It folds
-to a rail of icons, each project shown by its initials; the browser keeps
+the hub, the workbench included, has the hub's left nav: **Home**, then every
+project you can open, the one you used last first, with **+** for a new one,
+and last, at its foot, **Admin** (for an admin, with the admin page's
+sections under it). It folds to a rail of Home's and Admin's icons; the browser keeps
 whether it is folded, separately for the hub's pages and for the workbench,
 which starts folded unless the window is wide. Its **Connect
 agent** button gives the [MCP](#mcp-the-agents-tools-in-your-own-agent) setup
