@@ -18,6 +18,8 @@ from datetime import date, datetime, tzinfo
 from pathlib import Path
 from typing import Any, Callable
 
+from .keys import key_columns, on_duplicate_value
+
 NODE_NAME = re.compile(r"^[a-z_][a-z0-9_]*$")
 NODE_SUFFIXES = {".py": "python", ".sql": "sql"}
 PARAM_TYPES = ("date", "string", "number", "boolean")
@@ -79,6 +81,11 @@ class Node:
     # The column its output is partitioned by (partitioned.py): each run's
     # rows replace the partitions they hold, and every other one is kept.
     partition_by: str | None = None
+    # The columns that identify a row of its output (keys.py): every output
+    # is checked to hold no null in them and no key twice before it is
+    # stored. on_duplicate "last" keeps the last row for a repeated key.
+    key: list[str] = field(default_factory=list)
+    on_duplicate: str = "error"
     # Its output is uploaded (``exuvia push``), never computed here: for data
     # only another machine can read, such as a Bloomberg Terminal's.
     push: bool = False
@@ -718,10 +725,20 @@ def _parse_python(node: Node, text: str) -> None:
                 node.live = _live_value(value)
             elif kw.arg == "partition_by":
                 node.partition_by = _partition_column(value)
+            elif kw.arg == "key":
+                node.key = key_columns(value)
+            elif kw.arg == "on_duplicate":
+                node.on_duplicate = on_duplicate_value(value)
+    _check_key(node)
     if node.push:
         _check_push(node)
     if node.schedule:
         _validate_cron(node.schedule)
+
+
+def _check_key(node: Node) -> None:
+    if node.on_duplicate != "error" and not node.key:
+        raise ValueError("`on_duplicate` says what to do with rows that repeat a key: declare the `key` too.")
 
 
 def _check_push(node: Node) -> None:
@@ -836,11 +853,16 @@ def _parse_sql(node: Node, text: str) -> None:
                 node.live = _live_value(val)
             elif key == "partition_by":
                 node.partition_by = _partition_column(val)
+            elif key == "key":
+                node.key = key_columns([t for t in val.split(",") if t.strip()])
+            elif key == "on_duplicate" and val:
+                node.on_duplicate = on_duplicate_value(val.strip())
             else:
                 desc.append(line.strip()[2:].strip())
         else:
             desc.append(line.strip()[2:].strip())
     node.description = " ".join(d for d in desc if d)
+    _check_key(node)
     if node.schedule:
         _validate_cron(node.schedule)
 

@@ -54,6 +54,8 @@ def node(
     push: bool = False,
     live: bool | float = False,
     partition_by: str | None = None,
+    key: str | list[str] | None = None,
+    on_duplicate: str = "error",
 ) -> Any:
     """Mark a function as a exuvia node.
 
@@ -95,6 +97,15 @@ def node(
             is stored already. Its own ``params`` don't split the output, so
             a backfill over ``as_of`` fills one history. A full refresh (run
             with ``full_refresh``) starts from an empty output.
+        key: the column, or columns, that identify a row of the table the
+            node returns, e.g. ``["date", "ticker"]``. Before an output is
+            stored exuvia checks that no row has a null in them and no two
+            rows share a key; a run that breaks that fails and the previous
+            output stays. For a partitioned node the key holds across the
+            whole output, not only one run's rows.
+        on_duplicate: ``"error"`` (default) fails a run whose rows repeat a
+            key; ``"last"`` keeps the last row for each key, in the order
+            returned, for sources known to send a row twice.
 
     The decorator is a no-op at runtime; exuvia reads these keyword arguments
     from the source with ``ast`` so they must be literals.
@@ -113,6 +124,8 @@ def node(
             "push": push,
             "live": live,
             "partition_by": partition_by,
+            "key": key,
+            "on_duplicate": on_duplicate,
         }
         return f
 

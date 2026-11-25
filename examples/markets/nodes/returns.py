@@ -2,7 +2,7 @@
 import exuvia
 
 
-@exuvia.node()
+@exuvia.node(key=["date", "ticker"])
 def returns(prices):
     import numpy as np
 

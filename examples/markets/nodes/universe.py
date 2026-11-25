@@ -2,7 +2,7 @@
 import exuvia
 
 
-@exuvia.node(tags=["source"])
+@exuvia.node(key="ticker", tags=["source"])
 def universe():
     import pandas as pd
 

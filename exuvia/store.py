@@ -61,6 +61,7 @@ TABLES = {
     started_by_user text,   -- the same person's user id (users.py)
     version integer,        -- a partitioned node's output: its manifest version (output_partitions; 0: empty)
     partition_by text,      -- and the column it is partitioned by
+    unique_key text,        -- json [column]: the key its whole output was checked against (keys.py)
     primary key (project, id)
 )""",
     "schedules": """create table if not exists schedules (
@@ -185,7 +186,7 @@ TITLE_CHARS = 80
 
 RUN_COLS = (
     "id,node,batch_id,trigger,status,queued_at,started_at,finished_at,"
-    "artifact_id,kind,rows,error,params,params_key,started_by,started_by_user,version,partition_by"
+    "artifact_id,kind,rows,error,params,params_key,started_by,started_by_user,version,partition_by,unique_key"
 )
 
 # One changed file for ``Store.record_code``: (path, node, view, hash,
@@ -270,6 +271,8 @@ def _upgrade_legacy(db: Database) -> None:
     if cols and "version" not in cols:  # from before partitioned outputs
         db.query("alter table runs add column version integer")
         db.query("alter table runs add column partition_by text")
+    if cols and "unique_key" not in cols:  # from before keys
+        db.query("alter table runs add column unique_key text")
     cols = db.columns("code_revisions")
     if cols and "view_name" not in cols:  # from before views existed
         db.query("alter table code_revisions add column view_name text")

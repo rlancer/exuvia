@@ -230,6 +230,12 @@ export function Inspector(props: {
               partitioned by {node.partition_by}
             </Text>
           )}
+          {node.key && node.key.length > 0 && (
+            <Text type="supporting" color="secondary" maxLines={1}>
+              key {node.key.join(", ")}
+              {node.on_duplicate === "last" ? " (last row wins)" : ""}
+            </Text>
+          )}
           {node.deps.length > 0 && (
             <Text type="supporting" color="secondary" maxLines={1} xstyle={styles.deps}>
               ← {node.deps.join(", ")}

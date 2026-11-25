@@ -196,6 +196,7 @@ import exuvia
     cascade=True,                      # re-run when upstream output changes (default)
     retries=2,                         # optional: try a failed run again, up to 2 more times
     live=True,                         # optional: re-run when a view that reads it is opened
+    key=["date", "ticker"],            # optional: fail a run whose rows repeat a key (see "Keys")
     chart={"mark": "line", "encoding": {...}},   # optional Vega-Lite spec, no `data`
 )
 def rolling_vol(returns):
@@ -417,6 +418,48 @@ exuvia never deletes outputs.
 - `GET /api/nodes/{name}/partitions` lists the manifest: every partition with
   its row count and digest, and the Parquet files with the partitions each
   holds. Each file is `GET /api/artifacts/{name}/{artifact_id}.parquet`.
+
+## Keys: no row twice
+
+A duplicate row doesn't fail anything by itself: it doubles a sum, skews an
+average, and the analysis is quietly wrong. Declare the columns that
+identify a row and exuvia checks every output against them before storing
+it:
+
+```python
+@exuvia.node(partition_by="date", key=["date", "ticker"])
+def prices(universe): ...
+```
+
+```sql
+-- key: sector
+select sector, avg(vol_20d) as avg_vol from rolling_vol join universe using (ticker) group by 1
+```
+
+- **A run that breaks the key fails.** No row may have a null in a key
+  column, and no two rows may share a key. Otherwise the run fails with how
+  many rows repeat a key and the worst examples (`3 rows repeat a key (date,
+  ticker), e.g. (2026-11-03, AAPL) ×2, ...`), and the node's previous output
+  stays: nothing downstream sees the duplicates. A failed key isn't retried.
+- **`on_duplicate="last"`** (SQL: `-- on_duplicate: last`) keeps, for each
+  key, the last row in the order the node returned them, for a source known
+  to send a row twice (overlapping pages, a re-sent file). The log says how
+  many rows were dropped. Nulls in a key column still fail.
+- **A partitioned node's key holds across its whole output**, not only the
+  rows one run returns. Take a trade re-dated from the 3rd to the 4th: a run
+  that returns only the 4th would leave the old copy in the 3rd, so it fails
+  and names both. Return the 3rd as well, without the trade, and the run
+  succeeds. `on_duplicate="last"` doesn't apply here: exuvia can't tell which
+  copy is right. A run checks its own rows against the partitions it keeps
+  (only for a key without the partition column; with it, a key can't repeat
+  across partitions). When the key is first declared or changes, the next run
+  checks the whole stored output instead, even if it changes nothing, so an
+  output that already has duplicates says so (fix it with a
+  [full refresh](#partitioned-nodes-a-history-that-grows-each-run)). That is
+  a scan of the key columns, under a second for five million rows.
+- It works on any node that returns one table, pushed outputs included. The
+  check runs in DuckDB on the control plane, over what the run wrote, so it
+  is the same for Python and SQL nodes and for local and remote executors.
 
 ## Push nodes: data from someone's desktop
 

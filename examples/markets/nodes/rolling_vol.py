@@ -3,6 +3,7 @@ import exuvia
 
 
 @exuvia.node(
+    key=["date", "ticker"],
     chart={
         "mark": {"type": "line", "strokeWidth": 1.5},
         "encoding": {
