@@ -9,6 +9,7 @@ Env:
     EXUVIA_EXECUTOR_TOKEN  required bearer token (strongly recommended off-box)
     EXUVIA_EXECUTOR_DIR    scratch dir for bundles/runs (default: system temp)
     EXUVIA_MAX_PARALLEL    concurrent node runs (default 4)
+    EXUVIA_CHUNK_TTL_DAYS  days a cached input chunk is kept unused (default 7)
 
 Security: requests can run arbitrary code (that is the point). Only expose
 this to a trusted control plane, and always set a token when it is reachable
@@ -18,6 +19,7 @@ over a network.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import io
 import json
@@ -41,6 +43,7 @@ from .project import NODE_NAME
 
 RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 BUNDLE_ID = re.compile(r"^[0-9a-f]{24}$")
+CHUNK_ID = re.compile(r"^[0-9a-f]{16}$")
 INPUT_EXT = {"table": ".parquet", "json": ".json", "multi": ".zip"}
 RUN_TTL_S = 2 * 3600
 
@@ -49,9 +52,11 @@ def create_executor_app() -> FastAPI:
     token = os.environ.get("EXUVIA_EXECUTOR_TOKEN")
     workers = int(os.environ.get("EXUVIA_MAX_PARALLEL", "4"))
     base = Path(os.environ.get("EXUVIA_EXECUTOR_DIR") or Path(tempfile.gettempdir()) / "exuvia-executor")
-    bundles, runs = base / "bundles", base / "runs"
-    bundles.mkdir(parents=True, exist_ok=True)
-    runs.mkdir(parents=True, exist_ok=True)
+    bundles, runs, chunks = base / "bundles", base / "runs", base / "chunks"
+    for d in (bundles, runs, chunks):
+        d.mkdir(parents=True, exist_ok=True)
+    chunk_ttl_s = float(os.environ.get("EXUVIA_CHUNK_TTL_DAYS", "7")) * 86400
+    last_chunk_sweep = [0.0]
     local = LocalExecutor(base, workers, packages_dir=base / "packages")
     slots = asyncio.Semaphore(workers)
     results: dict[str, dict[str, Any]] = {}
@@ -82,10 +87,57 @@ def create_executor_app() -> FastAPI:
             if d.is_dir() and d.stat().st_mtime < cutoff:
                 shutil.rmtree(d, ignore_errors=True)
                 results.pop(d.name, None)
+        # Chunks stay while runs use them (each use touches the file); the
+        # rest go after EXUVIA_CHUNK_TTL_DAYS, checked at most once an hour.
+        now = time.time()
+        if now - last_chunk_sweep[0] > 3600:
+            last_chunk_sweep[0] = now
+            for f in chunks.glob("*.parquet"):
+                try:
+                    if f.stat().st_mtime < now - chunk_ttl_s:
+                        f.unlink()
+                except OSError:
+                    pass
+
+    def chunk_file(chunk: Any) -> Path:
+        if not isinstance(chunk, str) or not CHUNK_ID.match(chunk):
+            raise HTTPException(400, "bad chunk id")
+        return chunks / f"{chunk}.parquet"
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
-        return {"ok": True, "version": __version__, "workers": workers, "auth": bool(token)}
+        return {"ok": True, "version": __version__, "workers": workers, "auth": bool(token), "chunks": True}
+
+    @app.post("/v1/chunks/missing", dependencies=[Depends(auth)])
+    async def missing_chunks(request: Request) -> dict[str, Any]:
+        """Which of these chunks (a partitioned output's Parquet files, by
+        content hash) this executor doesn't have. The ones it has are
+        touched, so they are kept a while longer."""
+        body = await request.json()
+        ids = body.get("chunks") if isinstance(body, dict) else None
+        if not isinstance(ids, list) or len(ids) > 100_000:
+            raise HTTPException(400, "chunks must be a list")
+        missing = []
+        for c in ids:
+            f = chunk_file(c)
+            try:
+                os.utime(f)
+            except OSError:
+                missing.append(c)
+        return {"missing": missing}
+
+    @app.put("/v1/chunks/{chunk}", dependencies=[Depends(auth)])
+    async def put_chunk(chunk: str, request: Request) -> dict[str, Any]:
+        f = chunk_file(chunk)
+        blob = await request.body()
+        if hashlib.sha256(blob).hexdigest()[:16] != chunk:
+            raise HTTPException(400, "chunk content does not match its hash")
+        if not f.exists():
+            fd, tmp = tempfile.mkstemp(dir=chunks, prefix=".incoming-")
+            with os.fdopen(fd, "wb") as out:
+                out.write(blob)
+            os.replace(tmp, f)
+        return {"ok": True}
 
     @app.head("/v1/bundles/{digest}", dependencies=[Depends(auth)])
     @app.get("/v1/bundles/{digest}", dependencies=[Depends(auth)])
@@ -146,6 +198,15 @@ def create_executor_app() -> FastAPI:
         for dep, meta in (spec.get("inputs") or {}).items():
             if not NODE_NAME.match(dep):
                 raise HTTPException(400, "bad input name")
+            if meta.get("chunks") is not None:  # a partitioned output: its files, cached here by hash
+                if not isinstance(meta["chunks"], list):
+                    raise HTTPException(400, "bad chunks")
+                paths = [chunk_file(c) for c in meta["chunks"]]
+                gone = [p.stem for p in paths if not p.is_file()]
+                if gone:
+                    raise HTTPException(409, f"input {dep} chunks not uploaded: {', '.join(gone[:5])}")
+                inputs[dep] = {"path": None, "paths": [str(p) for p in paths], "kind": meta.get("kind")}
+                continue
             f = rd / "inputs" / dep
             if meta.get("has_file") and not f.is_file():
                 raise HTTPException(409, f"input {dep} not uploaded")

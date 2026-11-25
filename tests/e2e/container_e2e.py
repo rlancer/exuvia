@@ -208,7 +208,14 @@ def exercise(http: Http, demo: str, scratch: str, from_template: bool) -> None:
     cols = [c["name"] for c in data["columns"]]
     check(data["kind"] == "table" and data["rows"] and "avg_vol" in cols, "sector_summary has rows", data)
     prices = http.json("GET", f"{api}/nodes/prices/data?limit=5")
-    check(prices["total"] == 8 * 260 and len(prices["rows"]) == 5, "prices has 8 tickers x 260 days", prices)
+    # prices is partitioned: every business day since 2025-01-01, so the count grows with the date.
+    check(
+        prices["total"] % 8 == 0 and prices["total"] >= 8 * 261 and len(prices["rows"]) == 5,
+        "prices has 8 tickers x every business day since 2025",
+        prices,
+    )
+    parts = http.json("GET", f"{api}/nodes/prices/partitions")
+    check(len(parts["partitions"]) * 8 == prices["total"], "prices has one partition per day", len(parts["partitions"]))
 
     rv = next(n for n in graph["nodes"] if n["name"] == "rolling_vol")
     status, headers, body = http.request("GET", f"{api}/artifacts/rolling_vol/{rv['artifact_id']}.parquet")
