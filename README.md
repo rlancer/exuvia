@@ -393,9 +393,23 @@ select * from source where $last_partition is null or date > $last_partition
   my-project prices --full-refresh`, or `run_node` with `full_refresh`):
   `exuvia.partitions()` is empty for that run, and what it returns becomes
   the whole output. Changing `partition_by` itself needs one.
+- **Sources that send part of a day: `merge=True`.** With a `key` (see
+  [Keys](#keys-no-row-twice)), `merge=True` (SQL: `-- merge: true`) makes a
+  run update or insert rows by key into the partitions it returns instead of
+  replacing them: a run's row replaces the stored row with its key, a new key
+  is added, and a stored row whose key the run didn't return stays. A feed
+  that sends the morning's trades, then the afternoon's, then one corrected
+  trade, keeps all of them. `on_duplicate="last"` applies to the run's own
+  rows before they merge. A merged partition is digested like any other, so a
+  merge that changes nothing writes nothing and runs nothing downstream; only
+  the files holding the partitions a run returns are read. **A merge never
+  removes a row**: to delete rows, or to move a row to another partition, run
+  a full refresh, which doesn't merge: what that run returns becomes the
+  whole output.
 - One partition column per node, and one table: a node with several outputs
   can't be partitioned. A push node can (`push=True, partition_by="date"`):
-  each push replaces the partitions it holds.
+  each push replaces the partitions it holds (or, with `merge=True`, merges
+  into them).
 
 **How it is stored.** The output is a manifest of Parquet files: one per
 partition as it is written, in `.exuvia/artifacts/<node>/` like every output
@@ -450,13 +464,18 @@ select sector, avg(vol_20d) as avg_vol from rolling_vol join universe using (tic
   that returns only the 4th would leave the old copy in the 3rd, so it fails
   and names both. Return the 3rd as well, without the trade, and the run
   succeeds. `on_duplicate="last"` doesn't apply here: exuvia can't tell which
-  copy is right. A run checks its own rows against the partitions it keeps
+  copy is right. A node with `merge=True` can't move a row that way, since a
+  merge never removes one: that takes a full refresh. A run checks its own rows against the partitions it keeps
   (only for a key without the partition column; with it, a key can't repeat
   across partitions). When the key is first declared or changes, the next run
   checks the whole stored output instead, even if it changes nothing, so an
   output that already has duplicates says so (fix it with a
   [full refresh](#partitioned-nodes-a-history-that-grows-each-run)). That is
   a scan of the key columns, under a second for five million rows.
+- **A partitioned node with a key can merge** (`merge=True`): its runs update
+  or insert rows by key instead of replacing whole partitions, for sources
+  that send part of a day at a time. See
+  [Partitioned nodes](#partitioned-nodes-a-history-that-grows-each-run).
 - It works on any node that returns one table, pushed outputs included. The
   check runs in DuckDB on the control plane, over what the run wrote, so it
   is the same for Python and SQL nodes and for local and remote executors.

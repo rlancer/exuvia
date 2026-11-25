@@ -13,7 +13,9 @@ For a partitioned node the key holds across the whole output, not only the
 rows one run returns: a row whose partition changed (a trade re-dated from
 the 3rd to the 4th) must be returned with its old partition too, or the old
 copy would stay behind. That is always an error, whatever ``on_duplicate``
-says: exuvia can't tell which copy is right.
+says: exuvia can't tell which copy is right. A merging node
+(``merge=True``, partitioned.py) can't move a row that way at all: a merge
+never removes a row, so only a full refresh can.
 """
 
 from __future__ import annotations
@@ -164,16 +166,34 @@ def _where_key(key: list[str], values: tuple[Any, ...]) -> tuple[str, list[Any]]
     return " and ".join(f"{_ident(k)} = ?" for k in key), list(values)
 
 
-def check_output(con: Any, paths: list[str], key: list[str], partition_by: str) -> None:
+def _moved_hint(partition_by: str, merge: bool) -> str:
+    if merge:
+        return (
+            f"A merge never removes a row, so a row whose `{partition_by}` changed stays in its old "
+            f"`{partition_by}` too: run a full refresh"
+        )
+    return (
+        f"A row whose `{partition_by}` changed must be returned with its old `{partition_by}` too, so "
+        "that partition is replaced without it; or run a full refresh"
+    )
+
+
+def check_output(con: Any, paths: list[str], key: list[str], partition_by: str, *, merge: bool = False) -> None:
     """Raise KeyViolation when two rows of a partitioned output (its files
     ``paths``) share a key, naming the partitions each example sits in. A
     scan of the key columns: about 0.8 s for 5 million rows."""
     if not paths:
         return
     files = "[" + ", ".join(_lit(p) for p in paths) + "]"
+    check_rows(con, f"read_parquet({files}, union_by_name = true)", key, partition_by, merge=merge)
+
+
+def check_rows(con: Any, source: str, key: list[str], partition_by: str, *, merge: bool = False) -> None:
+    """Raise KeyViolation when two rows of ``source`` (a table, or a
+    read_parquet over a partitioned output's files) share a key."""
     cols_sql = ", ".join(_ident(k) for k in key)
     rows = con.execute(
-        f"select {cols_sql}, count(*) n from read_parquet({files}, union_by_name = true) "
+        f"select {cols_sql}, count(*) n from {source} "
         f"group by all having count(*) > 1 order by n desc, {cols_sql} limit 3"
     ).fetchall()
     if not rows:
@@ -183,17 +203,18 @@ def check_output(con: Any, paths: list[str], key: list[str], partition_by: str) 
         where, args = _where_key(key, tuple(r[:-1]))
         (parts,) = con.execute(
             f"select list(distinct cast({_ident(partition_by)} as varchar) order by cast({_ident(partition_by)} as varchar)) "
-            f"from read_parquet({files}, union_by_name = true) where {where}", args
+            f"from {source} where {where}", args
         ).fetchone()
         examples.append(f"{_key_text(tuple(r[:-1]))} ×{r[-1]} in {', '.join(parts)}")
     raise KeyViolation(
         f"the output would hold a key ({', '.join(key)}) more than once, e.g. {'; '.join(examples)}. "
-        f"A row whose `{partition_by}` changed must be returned with its old `{partition_by}` too, so "
-        "that partition is replaced without it; or run a full refresh"
+        + _moved_hint(partition_by, merge)
     )
 
 
-def check_against(con: Any, new: str, paths: list[str], gone: str, key: list[str], partition_by: str) -> None:
+def check_against(
+    con: Any, new: str, paths: list[str], gone: str, key: list[str], partition_by: str, *, merge: bool = False
+) -> None:
     """Raise KeyViolation when a row of table ``new`` (one run's rows, which
     hold the key among themselves) has the key of a stored row that stays:
     one in the files ``paths`` whose partition isn't in table ``gone`` (the
@@ -216,6 +237,5 @@ def check_against(con: Any, new: str, paths: list[str], gone: str, key: list[str
     eg = "; ".join(f"{_key_text(tuple(r[:-2]))} returned in {r[-2]} and stored in {', '.join(r[-1])}" for r in rows)
     raise KeyViolation(
         f"the output would hold a key ({', '.join(key)}) more than once, e.g. {eg}. "
-        f"A row whose `{partition_by}` changed must be returned with its old `{partition_by}` too, so "
-        "that partition is replaced without it; or run a full refresh"
+        + _moved_hint(partition_by, merge)
     )

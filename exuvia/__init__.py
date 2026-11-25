@@ -56,6 +56,7 @@ def node(
     partition_by: str | None = None,
     key: str | list[str] | None = None,
     on_duplicate: str = "error",
+    merge: bool = False,
 ) -> Any:
     """Mark a function as a exuvia node.
 
@@ -106,6 +107,12 @@ def node(
         on_duplicate: ``"error"`` (default) fails a run whose rows repeat a
             key; ``"last"`` keeps the last row for each key, in the order
             returned, for sources known to send a row twice.
+        merge: for a partitioned node with a ``key``: the rows a run returns
+            update or insert, by key, into the partitions they hold, instead
+            of replacing them, and the stored rows they don't name stay. For
+            sources that send part of a day at a time. A merge never removes
+            a row: a full refresh rebuilds the output from what the run
+            returns.
 
     The decorator is a no-op at runtime; exuvia reads these keyword arguments
     from the source with ``ast`` so they must be literals.
@@ -126,6 +133,7 @@ def node(
             "partition_by": partition_by,
             "key": key,
             "on_duplicate": on_duplicate,
+            "merge": merge,
         }
         return f
 

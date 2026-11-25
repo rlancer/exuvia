@@ -94,6 +94,8 @@ export interface GraphNode {
   key?: string[];
   /** What a run whose rows repeat a key does: fail ("error") or keep the last row per key. */
   on_duplicate?: "error" | "last";
+  /** A partitioned node's runs update or insert rows by key instead of replacing the partitions they return. */
+  merge?: boolean;
   /** The last run failed importing something not installed: the package that likely provides it. */
   missing_package?: { module: string; package: string } | null;
 }
