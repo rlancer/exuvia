@@ -53,6 +53,7 @@ def node(
     overlap: str = "queue",
     push: bool = False,
     live: bool | float = False,
+    partition_by: str | None = None,
 ) -> Any:
     """Mark a function as a exuvia node.
 
@@ -85,6 +86,15 @@ def node(
             updates when the new output lands. ``True`` re-runs every time;
             a number of seconds re-runs only when the output is older than
             that (``live=300``: at most every five minutes).
+        partition_by: a column of the table the node returns. The node keeps
+            one output that every run adds to: the rows a run returns
+            replace the partitions (values of that column) they hold, and
+            every other partition is kept. A daily run returns today's rows,
+            a backfill years of them, a correction the day it fixes; ``None``
+            or no rows changes nothing. :func:`exuvia.partitions` says what
+            is stored already. Its own ``params`` don't split the output, so
+            a backfill over ``as_of`` fills one history. A full refresh (run
+            with ``full_refresh``) starts from an empty output.
 
     The decorator is a no-op at runtime; exuvia reads these keyword arguments
     from the source with ``ast`` so they must be literals.
@@ -102,6 +112,7 @@ def node(
             "overlap": overlap,
             "push": push,
             "live": live,
+            "partition_by": partition_by,
         }
         return f
 
@@ -117,6 +128,22 @@ def push(url: str, node: str, value: Any, **kw: Any) -> dict[str, Any]:
     from .pushing import push as _push
 
     return _push(url, node, value, **kw)
+
+
+def partitions() -> list[str]:
+    """Inside a partitioned node's run (``@exuvia.node(partition_by=...)``):
+    the partition values its output already holds, as text, in order (ISO
+    dates sort as dates, numbers by value). Empty on the first run and on a
+    full refresh, when the node should return everything. Outside a node
+    run (a REPL, a unit test) it is empty."""
+    rt = _runtime
+    if rt is None:
+        return []
+    if "partitions" not in rt:
+        raise RuntimeError(
+            f"node `{rt['node']}` is not partitioned: exuvia.partitions() is for @exuvia.node(partition_by=...)."
+        )
+    return list(rt["partitions"])
 
 
 def param(name: str, default: Any = _MISSING) -> Any:

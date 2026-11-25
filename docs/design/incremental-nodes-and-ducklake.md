@@ -1,11 +1,13 @@
 # Incremental nodes and DuckLake
 
-Status: **exploration, nothing built.** Notes from a design discussion
-(November 2026) on nodes that add a little data each run, and on whether
-that data should live in DuckLake or in partitioned Parquet that exuvia
-manages itself (prototyped, and the current leaning). Code references are
-to `main` at the time of writing. The DuckLake and Quack sections were checked against
-the DuckDB 2.0 and DuckLake 1.1 docs on 2026-11-22.
+Status: **partitioned outputs are built** (`partition_by`; see "What was
+built" below and the README's "Partitioned nodes"). DuckLake and Quack were
+not adopted. The rest are notes from a design discussion (November 2026) on
+nodes that add a little data each run, and on whether that data should live
+in DuckLake or in partitioned Parquet that exuvia manages itself. Code
+references are to `main` at the time of writing. The DuckLake and Quack
+sections were checked against the DuckDB 2.0 and DuckLake 1.1 docs on
+2026-11-22.
 
 ## The problem
 
@@ -229,6 +231,66 @@ What it implies:
   - schema changes between partitions beyond added columns;
   - when unreferenced chunks get deleted. exuvia never deletes outputs
     today.
+
+### What was built
+
+Built in `exuvia/partitioned.py`, with the records in `exuvia/store.py` and
+the wiring in `exuvia/workspace.py`, close to the prototype:
+
+- **The API.** `@exuvia.node(partition_by="date")` (SQL: `-- partition_by:
+  date`). A run returns one table; each partition value in it replaces that
+  partition and every other one is kept. `None` or no rows changes nothing.
+  `exuvia.partitions()` lists the stored values (SQL: `$last_partition`, the
+  newest), empty on a first run or a full refresh. A full refresh happens only
+  when asked (`full_refresh` on the run API, `run_node`, `exuvia run
+  --full-refresh`, a button in the inspector), never on a code change: a
+  source that only reports "now" would lose its history. Changing
+  `partition_by` needs one. Push nodes can be partitioned; multi-output
+  nodes can't.
+- **Options A and C converged as planned.** A partitioned node's own
+  `params` don't key its output (`Graph.effective_params`), so a daily
+  `as_of` run, or a backfill over `as_of`, fills one history that downstream
+  nodes read whole and don't inherit `as_of` from. `<node>__runs` stays the
+  per-parameter-set view for comparing runs in SQL, and is not a node input.
+  It is now one `read_parquet` over its files joined to each run's
+  parameters, falling back to the union per run.
+- **Storage.** Chunks are ordinary artifacts,
+  `.exuvia/artifacts/<node>/<sha16>.parquet`, so the S3 keys, the upload and
+  sync loop and hub exports needed no change. The manifest is not a JSON
+  value: two versioned tables, `output_partitions` (value, digest, rows) and
+  `output_files` (file, partitions, rows), where a row belongs to every
+  version from `since` to `until`. Storage grows with what is written, not
+  with partitions times runs. A version is recorded in the same transaction
+  that marks its run successful (`runs.version`, `runs.partition_by`), so an
+  older run's output stays readable by its run id.
+- **Ids.** A run's `artifact_id` is the logical id, so freshness, cascades
+  and view caches needed no change, and compaction can't make anything
+  stale. There is no separate physical id: the file list is read per
+  version.
+- **Digest.** SHA-256 over the sorted SHA-256 of each row cast to text. Same
+  multiset of rows, same digest; hashing row hashes keeps a large partition
+  from becoming one huge string.
+- **Writes.** The runner writes the returned rows to a staging file; the
+  control plane commits it under the node's lock. Many changed partitions
+  are written in one `COPY ... PARTITION_BY`, split on each value's index
+  rather than the value itself: DuckDB names a folder after the value, and
+  `..` broke that. A day chunk that compaction folds into its year in the
+  same commit is deleted at once (nothing can refer to it); nothing else is
+  deleted.
+- **Compaction.** When an output has more than 30 files beyond one per
+  period, every period with several files is merged into one. Date-like
+  values group by year, other values into one group.
+- **Readers.** Previews, the data and export routes, the query and view
+  sandbox (`allowed_paths` is exactly the manifest's files) and node inputs
+  all read one `read_parquet([files], union_by_name = true)`. The data and
+  export routes take `partitions=lo..hi` and read only the files that hold
+  those partitions. `GET /api/nodes/{name}/partitions` lists the manifest, and
+  `/api/artifacts/{node}/{chunk}.parquet` serves each file. The query sandbox
+  doesn't prune: compaction keeps it to a few dozen files.
+- **Still open:** merging on a key finer than the partition; schema changes
+  between partitions beyond what `union_by_name` combines; point-in-time
+  reads for a downstream node with `as_of`; deleting chunks no manifest
+  uses.
 
 **Against DuckLake** it gives up row-level merge, inlining small writes, a
 row-level change feed, several writers and outside DuckDB attach. Merge at
@@ -811,9 +873,9 @@ release calendar.
 
 - Store incremental nodes as partitioned outputs: a manifest of
   content-addressed Parquet chunks, with compaction in exuvia ("Partitioned
-  outputs without DuckLake"). An ordinary output is the one-chunk case, so
-  exuvia keeps one storage model. The prototype read as fast as one file
-  once compacted; S3 and the graph integration are untested.
+  outputs without DuckLake"). **Built** ("What was built"). Ordinary outputs
+  kept their single file rather than becoming one-chunk manifests: the same
+  readers handle both, and existing outputs needed no migration.
 - Keep DuckLake and Quack for later: for row-level merge, several writers,
   or outside DuckDB readers, and once the DuckLake REST API ships. The work
   below stands if that happens. Quack isn't exuvia's outside read API: the
@@ -831,10 +893,9 @@ release calendar.
   extension would be faster only by calling DuckDB's parser directly, at
   the price of a rebuild for every DuckDB release. Revisit all of it when
   the DuckLake REST API ships.
-- Option A (`__runs` as a node input) could ship first. With partitioned
-  outputs, `__runs` becomes a manifest over each date's latest output, so A
-  and C converge. Reading it as one `read_parquet` over a list would halve
-  its cost today.
+- Option A (`__runs` as a node input) wasn't built: a partitioned node that
+  reads `as_of` gives the same history as one output. `__runs` is now read
+  as one `read_parquet` over a list.
 
 ## Sources
 

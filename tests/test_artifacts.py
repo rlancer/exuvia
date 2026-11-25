@@ -194,3 +194,34 @@ def test_missing_local_copy_is_downloaded_for_downstream_runs(tmp_path, s3):
         wait_idle(hub)
         assert hub.get("/p/wf/api/nodes/doubled/data", params=AS_OF).json()["rows"] == [[4]]
         assert any(Path(p).parts[-2] == "prices" for p in (root / "wf" / ".exuvia" / "artifacts").rglob("*.parquet"))
+
+
+def test_partitioned_chunks_live_in_the_store(tmp_path, s3):
+    """Each chunk of a partitioned output is uploaded under the same keys
+    as any output, and a cold cache downloads what a read needs."""
+    import asyncio
+
+    from exuvia.workspace import Workspace
+
+    root = tmp_path / "proj"
+    (root / "nodes").mkdir(parents=True)
+    (root / "nodes" / "daily.py").write_text(
+        "import exuvia\n\n\n@exuvia.node(partition_by='d')\ndef daily():\n    import pandas as pd\n"
+        "    n = len(exuvia.partitions())\n    return pd.DataFrame({'d': [f'2026-01-0{n + 1}'], 'v': [n]})\n",
+        encoding="utf-8",
+    )
+    ws = Workspace(root)
+
+    async def go():
+        ws.bus.bind(asyncio.get_running_loop())
+        for _ in range(3):
+            finals = await ws.run(["daily"], force={"daily"})
+            assert finals["daily"]["status"] == "success", finals["daily"]["error"]
+
+    asyncio.run(go())
+    files = ws.partitions_of("daily")["files"]
+    assert len(files) == 3
+    assert {f"proj/daily/{f['artifact_id']}.parquet" for f in files} <= {k.removeprefix("wf-tests/") for k in s3.objects}
+    assert ws.store.unstored_outputs() == []
+    shutil.rmtree(root / ".exuvia" / "artifacts")  # a cold cache
+    assert ws.query("select sum(v) from daily")["rows"] == [[3]]

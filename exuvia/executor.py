@@ -51,6 +51,11 @@ class ExecRequest:
     # The project's environment variables (envvars.py), set in the node's
     # process on top of the environment it starts with.
     env: dict[str, str] = field(default_factory=dict)
+    # A partitioned node (partitioned.py): its partition column, and the
+    # partition values its output holds (empty on a full refresh), which
+    # the node reads with exuvia.partitions().
+    partition_by: str | None = None
+    partitions: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -130,9 +135,14 @@ class LocalExecutor:
                 "node": req.node,
                 "kind": req.kind,
                 "path": req.path,
-                "inputs": {d: {"path": i["path"], "kind": i["kind"]} for d, i in req.inputs.items()},
+                "inputs": {
+                    d: {"path": i.get("path"), "kind": i["kind"], **({"paths": i["paths"]} if "paths" in i else {})}
+                    for d, i in req.inputs.items()
+                },
                 "params": req.params,
                 "env": req.env,
+                "partition_by": req.partition_by,
+                "partitions": req.partitions,
                 "out_dir": str(req.out_dir),
                 "result_path": str(result_path),
             }
@@ -286,7 +296,11 @@ class RemoteExecutor:
         try:
             digest = self._bundle(req.root)
             for dep, inp in req.inputs.items():
-                if inp.get("path"):
+                if inp.get("paths") is not None:
+                    # A partitioned output, sent as one file for now.
+                    blob = _combined(inp["paths"])
+                    self.http.put(f"/v1/runs/{req.run_id}/inputs/{dep}", content=blob).raise_for_status()
+                elif inp.get("path"):
                     with open(inp["path"], "rb") as f:
                         self.http.put(f"/v1/runs/{req.run_id}/inputs/{dep}", content=f.read()).raise_for_status()
             spec = {
@@ -294,9 +308,14 @@ class RemoteExecutor:
                 "node": req.node,
                 "kind": req.kind,
                 "path": req.path,
-                "inputs": {d: {"kind": i["kind"], "has_file": bool(i.get("path"))} for d, i in req.inputs.items()},
+                "inputs": {
+                    d: {"kind": i["kind"], "has_file": bool(i.get("path")) or i.get("paths") is not None}
+                    for d, i in req.inputs.items()
+                },
                 "params": req.params,
                 "env": req.env,
+                "partition_by": req.partition_by,
+                "partitions": req.partitions,
             }
             result: dict[str, Any] | None = None
             with self.http.stream("POST", f"/v1/runs/{req.run_id}", json=spec) as resp:
@@ -350,6 +369,24 @@ class RemoteExecutor:
             return self.http.post(f"/v1/runs/{run_id}/cancel").json().get("ok", False)
         except Exception:
             return False
+
+
+def _combined(paths: list[str]) -> bytes:
+    """A partitioned output's chunk files as one Parquet file's bytes."""
+    import duckdb
+
+    with tempfile.TemporaryDirectory(prefix="exuvia-") as tmp:
+        out = Path(tmp) / "combined.parquet"
+        con = duckdb.connect()
+        if paths:
+            files = ", ".join("'" + p.replace("'", "''") + "'" for p in paths)
+            con.execute(f"copy (select * from read_parquet([{files}], union_by_name = true)) to '{out.as_posix()}' (format parquet)")
+        else:
+            import pandas as pd
+
+            pd.DataFrame().to_parquet(out)
+        con.close()
+        return out.read_bytes()
 
 
 def make_executor(root: Path, workers: int) -> Executor:

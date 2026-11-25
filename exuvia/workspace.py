@@ -65,6 +65,7 @@ from .executor import ExecRequest, LocalExecutor, make_executor
 from .notify import failure_webhook, payload, send
 from .npm import Npm, bare_imports
 from .packages import Packages, missing_package
+from .partitioned import Manifest, PartitionError, Writer, commit, in_range, prune, sort_values
 from .pushing import save_pushed
 from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Project, View, _hash, _validate_cron
 from .runner import PART_EXT, PART_NAME
@@ -864,15 +865,24 @@ class Workspace:
         pull_upstream: bool = True,
         cascade: bool = True,
         recheck: set[str] | None = None,
+        full_refresh: set[str] | None = None,
     ) -> dict[str, Any]:
         """Run targets (and stale ancestors) for one parameter set.
         ``recheck`` are targets to queue even while they are fresh, and to
         check again once what they read has run: they run only if that
-        changed their inputs, and are cached otherwise.
+        changed their inputs, and are cached otherwise. ``full_refresh``
+        are partitioned nodes to rebuild from an empty output (they run
+        even when fresh): what the run returns becomes the whole output.
         Returns {node: final run row}."""
         self.graph = self.project.load()
         g = self.graph
-        force = set(force or ())
+        full_refresh = set(full_refresh or ())
+        unpartitioned = sorted(n for n in full_refresh if n in g.nodes and not g.nodes[n].partition_by)
+        if unpartitioned:
+            raise ValueError(
+                f"a full refresh is for partitioned nodes (partition_by); not: {', '.join(unpartitioned)}"
+            )
+        force = set(force or ()) | full_refresh
         recheck = set(recheck or ())
         unknown = [t for t in targets if t not in g.nodes]
         if unknown:
@@ -926,7 +936,10 @@ class Workspace:
                     async with self._slots:
                         if attempt == 1 and name not in force and self._is_fresh_ignoring_inflight(name, key, params):
                             return self._finish(run_id, name, key, status="cached")
-                        result = await self._execute(run_id, name, key, params, attempt=attempt, attempts=attempts)
+                        result = await self._execute(
+                            run_id, name, key, params, attempt=attempt, attempts=attempts,
+                            full_refresh=name in full_refresh,
+                        )
                     if result != RETRY:
                         return result
                     if not await self._wait_to_retry(run_id, node.retry_delay * 2 ** (attempt - 1)):
@@ -989,9 +1002,11 @@ class Workspace:
             by = f" by {started_by}" if started_by else ""
             said = f": {note}" if note else ""
             self.store.append_log(run_id, f"exuvia: output pushed{by}{said}\n")
-            out_dir = self.project.state_dir / "artifacts" / name
+            out_dir = self._staging(run_id) if node.partition_by else self.project.state_dir / "artifacts" / name
             try:
                 res = await asyncio.to_thread(save_pushed, data, fmt, out_dir)
+                if node.partition_by and res["kind"] not in ("table", "none"):
+                    raise PartitionError(f"{name} is partitioned by `{node.partition_by}`: push a table")
             except Exception as e:  # unreadable data fails the run, as a node that raises does
                 error = f"{type(e).__name__}: {e}"
                 self.store.append_log(run_id, f"exuvia: could not read the pushed {fmt}: {error}\n")
@@ -1003,17 +1018,30 @@ class Workspace:
             try:
                 if res["kind"] == "table":
                     self.store.append_log(run_id, f"exuvia: {res['rows']} rows, {len(res['schema'])} columns\n")
-                rel = self._rel(res["artifact_path"])
-                await asyncio.to_thread(self._upload, rel)
+                if node.partition_by:
+                    fields = await asyncio.to_thread(
+                        self._commit_partitions, run_id, name, key, prev, res.get("artifact_path"), False
+                    )
+                else:
+                    rel = self._rel(res["artifact_path"])
+                    await asyncio.to_thread(self._upload, rel)
+                    fields = {
+                        "artifact_id": res["artifact_id"], "artifact_path": rel,
+                        "kind": res["kind"], "rows": res["rows"], "schema": res["schema"],
+                    }
+            except PartitionError as e:
+                self.store.append_log(run_id, f"exuvia: {e}\n")
+                self._finish(run_id, name, key, status="failed", error=f"PartitionError: {e}")
+                return self.store.run(run_id) or {}
             except BaseException as e:  # the object store failed, or the request went away
                 error = "the push was interrupted" if isinstance(e, asyncio.CancelledError) else f"{type(e).__name__}: {e}"
                 self._finish(run_id, name, key, status="failed", error=error)
                 raise
-            self._finish(
-                run_id, name, key, status="success", artifact_id=res["artifact_id"], artifact_path=rel,
-                kind=res["kind"], rows=res["rows"], schema=res["schema"],
-            )
-        if prev is None or prev["artifact_id"] != res["artifact_id"]:
+            finally:
+                if node.partition_by:
+                    shutil.rmtree(self._staging(run_id), ignore_errors=True)
+            self._finish(run_id, name, key, status="success", **fields)
+        if prev is None or prev["artifact_id"] != fields["artifact_id"]:
             downstream = self._cascade_set([name])
             if downstream:
                 self._spawn(
@@ -1113,12 +1141,84 @@ class Workspace:
         artifact store first when this process does not have it yet.
         Blocking: call it off the event loop."""
         p = run.get("artifact_path")
-        if not p:
-            return None
-        local = Path(p) if Path(p).is_absolute() else self.project.root / p
+        return self._local_file(p) if p else None
+
+    def _local_file(self, rel: str) -> str:
+        """Local path of an output file recorded at ``rel``, downloaded from
+        the remote artifact store first when this process lacks it. Blocking."""
+        local = Path(rel) if Path(rel).is_absolute() else self.project.root / rel
         if not local.exists():
-            self._download(p, local)
+            self._download(rel, local)
         return str(local)
+
+    @staticmethod
+    def is_partitioned(run: dict[str, Any] | None) -> bool:
+        """Whether ``run``'s output is a partitioned one (a manifest version)."""
+        return bool(run) and run.get("version") is not None  # type: ignore[union-attr]
+
+    def manifest_files(self, run: dict[str, Any], lo: str | None = None, hi: str | None = None) -> list[dict[str, Any]]:
+        """The chunk files of a partitioned run's output ([{file, partitions,
+        rows}]), only those holding a partition in [lo, hi] when given."""
+        return prune(self.store.manifest_files(run["node"], run.get("params_key") or "", run.get("version")), lo, hi)
+
+    def table_files(self, run: dict[str, Any], lo: str | None = None, hi: str | None = None) -> list[str]:
+        """The local files of a table output: one for an ordinary output,
+        the manifest's chunks (pruned to [lo, hi]) for a partitioned one.
+        Downloads what this process lacks. Blocking."""
+        if self.is_partitioned(run):
+            return [self._local_file(f["file"]) for f in self.manifest_files(run, lo, hi)]
+        p = self.artifact_path(run)
+        return [p] if p else []
+
+    def _staging(self, run_id: str) -> Path:
+        """Where a partitioned node's run leaves the rows it returned, until they are committed."""
+        return self.project.state_dir / "staging" / run_id
+
+    def _commit_partitions(
+        self, run_id: str, name: str, key: str, prev: dict[str, Any] | None, staged: str | None, full_refresh: bool
+    ) -> dict[str, Any]:
+        """Commit the rows a partitioned node's run returned (the Parquet file
+        ``staged``; None for none) on top of its current output ``prev``:
+        write the changed partitions' chunks, compact, upload, and record the
+        new version with the run. Returns the run's output fields. Raises
+        PartitionError for rows that can't be committed. Blocking."""
+        node = self.graph.nodes[name]
+        column = node.partition_by or ""
+        was = prev.get("partition_by") if self.is_partitioned(prev) else None
+        if was and was != column and not full_refresh:
+            raise PartitionError(
+                f"{name} was partitioned by `{was}` and is now partitioned by `{column}`: "
+                "run it with a full refresh to rebuild its output"
+            )
+        version = prev.get("version") if prev and was == column else None
+        parts, files = self.store.manifest(name, key, version)
+        base = Manifest(column, parts, files, version)
+        w = Writer(self.project.state_dir / "artifacts" / name, lambda p: self._rel(str(p)) or "", self._local_file)
+        done = commit(base, staged, w, full_refresh=full_refresh)
+        if done is None:  # identical rows, or none: the output stays as it is
+            self.store.append_log(run_id, "exuvia: no partition changed\n")
+            return {
+                "artifact_id": base.logical_id, "artifact_path": None, "kind": "table", "rows": base.rows,
+                "schema": (prev or {}).get("schema") if version else [], "version": version or 0,
+                "partition_by": column,
+            }
+        m = done.manifest
+        for rel in done.written:
+            self._upload(rel)
+        changed = sort_values(v for v in set(m.partitions) | set(parts) if m.partitions.get(v) != parts.get(v))
+        shown = ", ".join(changed[:5]) + (f" and {len(changed) - 5} more" if len(changed) > 5 else "")
+        self.store.append_log(
+            run_id, f"exuvia: {len(changed)} partition(s) written ({shown}); {len(m.files)} file(s), {m.rows} rows\n"
+        )
+        fields = {
+            "artifact_id": m.logical_id, "artifact_path": None, "kind": "table", "rows": m.rows,
+            "schema": w.schema([f["file"] for f in m.files]), "partition_by": column,
+        }
+        fields["version"] = self.store.record_manifest(
+            name, key, (m.partitions, m.files), run_id,
+            **{k: v for k, v in fields.items() if k != "version"}, finished_at=time.time(),
+        )
+        return fields
 
     def part_file(self, run: dict[str, Any], part: str) -> tuple[Path, str] | None:
         """The local file of one part of a run with several outputs, and its
@@ -1195,7 +1295,15 @@ class Workspace:
             self.bus.touch()
 
     async def _execute(
-        self, run_id: str, name: str, key: str, params: dict[str, Any], *, attempt: int = 1, attempts: int = 1
+        self,
+        run_id: str,
+        name: str,
+        key: str,
+        params: dict[str, Any],
+        *,
+        attempt: int = 1,
+        attempts: int = 1,
+        full_refresh: bool = False,
     ) -> str:
         """Run one attempt of ``name``. Returns the run's final status, or
         RETRY when the attempt failed and the caller should try again (the
@@ -1210,9 +1318,17 @@ class Workspace:
             if ls is None:
                 why = "has not been pushed yet (exuvia push)" if g.nodes[dep].push else "has no output yet"
                 return self._finish(run_id, name, key, status="failed", error=f"upstream {dep} {why}")
-            path = await asyncio.to_thread(self.artifact_path, ls)
-            inputs[dep] = {"path": path, "kind": ls["kind"], "artifact_id": ls["artifact_id"]}
+            if self.is_partitioned(ls):  # the whole partitioned output, as its chunk files
+                paths = await asyncio.to_thread(self.table_files, ls)
+                inputs[dep] = {"path": None, "paths": paths, "kind": "table", "artifact_id": ls["artifact_id"]}
+            else:
+                path = await asyncio.to_thread(self.artifact_path, ls)
+                inputs[dep] = {"path": path, "kind": ls["kind"], "artifact_id": ls["artifact_id"]}
             input_ids[dep] = ls["artifact_id"]
+        prev = self.store.last_success(name, key) if node.partition_by else None
+        have: list[str] = []
+        if node.partition_by and not full_refresh and self.is_partitioned(prev) and prev.get("partition_by") == node.partition_by:
+            have = sort_values(self.store.manifest(name, key, prev.get("version"))[0])
 
         # A retry keeps the first attempt's start time, so the run's duration
         # covers every attempt.
@@ -1245,15 +1361,32 @@ class Workspace:
             kind=node.kind,
             path=node.path,
             root=self.project.root,
-            out_dir=self.project.state_dir / "artifacts" / name,
+            out_dir=self._staging(run_id) if node.partition_by else self.project.state_dir / "artifacts" / name,
             inputs=inputs,
             # Only what the node declared: reading anything else is an error,
             # because the output would not be keyed by it.
             params={p: params.get(p) for p in node.params},
             env=envvars.run_env(env_rows),
+            partition_by=node.partition_by,
+            partitions=have,
         )
+        if node.partition_by and full_refresh:
+            on_log("exuvia: full refresh: what this run returns becomes the whole output\n")
         # Executors block (subprocess pipes / HTTP streams); keep them off the loop.
-        res = await asyncio.to_thread(self.executor.execute, req, on_log)
+        try:
+            res = await asyncio.to_thread(self.executor.execute, req, on_log)
+            if node.partition_by and res.ok:
+                staged = res.artifact_path if res.kind == "table" else None
+                try:
+                    fields = await asyncio.to_thread(self._commit_partitions, run_id, name, key, prev, staged, full_refresh)
+                except Exception as e:  # rows that can't be committed, or a write that failed
+                    error = redact(f"{type(e).__name__}: {e}") or ""
+                    on_log(f"exuvia: the output was not stored: {error}\n")
+                    return self._finish(run_id, name, key, status="failed", error=error)
+                return self._finish(run_id, name, key, status="success", **fields)
+        finally:
+            if node.partition_by:
+                shutil.rmtree(self._staging(run_id), ignore_errors=True)
         res.error = redact(res.error)
         if not res.ok:
             if attempt < attempts and run_id not in self._cancelled and res.error != "cancelled":
@@ -1590,6 +1723,39 @@ class Workspace:
             return self.store.last_success(name, self.node_params(name, self.resolve_params(params))[1])
         return None
 
+    def _partitioned_read(
+        self, ls: dict[str, Any], partitions: tuple[str | None, str | None] | None
+    ) -> tuple[Any, Any, int, dict[str, Any]] | None:
+        """For a partitioned run: (connection, relation over its files, total
+        rows, meta), keeping only the partitions in ``partitions`` (lo, hi)
+        when given. The relation is None for an empty output. None for a run
+        that isn't partitioned."""
+        if not self.is_partitioned(ls):
+            return None
+        import duckdb
+
+        lo, hi = partitions or (None, None)
+        files = self.manifest_files(ls, lo, hi)
+        meta: dict[str, Any] = {"partition_by": ls.get("partition_by")}
+        con = duckdb.connect()
+        if partitions is None:
+            total = int(ls.get("rows") or 0)
+            keep = None
+        else:
+            keep = [p for f in files for p in f["partitions"] if in_range(p, lo, hi)]
+            parts = self.store.manifest(ls["node"], ls.get("params_key") or "", ls.get("version"))[0]
+            total = sum(parts[p][1] for p in keep if p in parts)
+            meta["partitions"] = [lo, hi]
+        if not files:
+            return con, None, total, meta
+        rel = con.read_parquet([self._local_file(f["file"]) for f in files], union_by_name=True)
+        if keep is not None:
+            column = '"' + str(ls.get("partition_by")).replace('"', '""') + '"'
+            con.execute("create or replace temp table __keep (v varchar)")
+            con.executemany("insert into __keep values (?)", [(p,) for p in keep])
+            rel = rel.filter(f"cast({column} as varchar) in (select v from __keep)")
+        return con, rel, total, meta
+
     def preview(
         self,
         name: str,
@@ -1598,10 +1764,13 @@ class Workspace:
         params: dict[str, Any] | None = None,
         run_id: str | None = None,
         part: str | None = None,
+        partitions: tuple[str | None, str | None] | None = None,
     ) -> dict[str, Any]:
         """A node's current output for a parameter set, or the output of one
         specific historical run. For a node with several outputs, ``part``
-        picks one; without it the answer lists them (``parts``).
+        picks one; without it the answer lists them (``parts``). For a
+        partitioned output, ``partitions`` (lo, hi) keeps only those
+        partitions, reading only the files that hold them.
         Raises KeyError for a ``part`` the output does not have."""
         ls = self._output_run(name, params, run_id)
         if ls is None:
@@ -1609,6 +1778,22 @@ class Workspace:
         meta = {"run_id": ls["id"], "run_params": ls.get("params") or {}, "finished_at": ls.get("finished_at")}
         kind = ls["kind"]
         total = ls.get("rows")
+        read = self._partitioned_read(ls, partitions)
+        if read is not None:
+            if part is not None:
+                raise KeyError(f"{name} has a single output, not several: leave out part")
+            con, rel, total, extra = read
+            if rel is None:
+                return {"kind": "table", "columns": [], "rows": [], "total": total, **meta, **extra}
+            rel = rel.limit(int(limit), int(offset))
+            return {
+                "kind": "table",
+                "columns": [{"name": c, "type": str(t)} for c, t in zip(rel.columns, rel.types)],
+                "rows": _jsonable([list(r) for r in rel.fetchall()]),
+                "total": total,
+                **meta,
+                **extra,
+            }
         if kind == "multi":
             parts = output_parts(ls.get("schema"))
             meta["parts"] = parts
@@ -1652,6 +1837,7 @@ class Workspace:
         params: dict[str, Any] | None = None,
         run_id: str | None = None,
         part: str | None = None,
+        partitions: tuple[str | None, str | None] | None = None,
     ) -> ArrowStream | None:
         """The table ``preview`` would answer with, as an Arrow stream: every
         row unless ``limit`` is given. None when there is no table output
@@ -1661,6 +1847,18 @@ class Workspace:
             return None
         total = ls.get("rows")
         extra: dict[str, Any] = {}
+        read = self._partitioned_read(ls, partitions)
+        if read is not None:
+            con, rel, total, extra = read
+            if rel is None or part is not None:
+                return None  # nothing to stream: preview answers
+            if limit is not None or offset:
+                rel = rel.limit(_ALL_ROWS if limit is None else int(limit), int(offset))
+            meta = {
+                "kind": "table", "total": total, "run_id": ls["id"], "run_params": ls.get("params") or {},
+                "finished_at": ls.get("finished_at"), **extra,
+            }
+            return ArrowStream(rel, meta, owner=con)
         if ls["kind"] == "multi" and part is not None:
             found = self.part_file(ls, part)
             if found is None or found[1] != "table":
@@ -1697,12 +1895,44 @@ class Workspace:
         run = self.store.run_with_artifact(node, artifact_id)
         if run is not None and part is not None:
             return self.part_file(run, part)
-        if run is None or run["kind"] not in ("table", "json", "multi"):
+        if run is None or self.is_partitioned(run):
+            # One chunk of a partitioned output (a partitioned output's own
+            # id names no single file: GET /nodes/{node}/partitions lists them).
+            rel = self.store.chunk(node, f"{artifact_id}.parquet") if part is None else None
+            if rel is None:
+                return None
+            local = Path(self._local_file(rel))
+            return (local, "table") if local.is_file() else None
+        if run["kind"] not in ("table", "json", "multi"):
             return None
         path = self.artifact_path(run)
         if not path or not Path(path).is_file():
             return None
         return Path(path), run["kind"]
+
+    def partitions_of(self, name: str, params: dict[str, Any] | None = None, run_id: str | None = None) -> dict[str, Any] | None:
+        """A partitioned output's manifest: its partitions (value, digest,
+        rows) and the chunk files that hold them. None when ``name``'s output
+        for these parameters (or run ``run_id``) is not a partitioned one."""
+        ls = self._output_run(name, params, run_id)
+        if not self.is_partitioned(ls):
+            return None
+        assert ls is not None
+        parts, files = self.store.manifest(name, ls.get("params_key") or "", ls.get("version"))
+        return {
+            "node": name,
+            "partition_by": ls.get("partition_by"),
+            "artifact_id": ls["artifact_id"],
+            "version": ls.get("version"),
+            "run_id": ls["id"],
+            "run_params": ls.get("params") or {},
+            "rows": ls.get("rows"),
+            "partitions": [{"value": v, "digest": parts[v][0], "rows": parts[v][1]} for v in sort_values(parts)],
+            "files": [
+                {"artifact_id": Path(f["file"]).stem, "partitions": sort_values(f["partitions"]), "rows": f["rows"]}
+                for f in files
+            ],
+        }
 
     def history(self, name: str) -> list[dict[str, Any]]:
         """Every parameter set ``name`` has an output for, newest first."""
@@ -1755,6 +1985,10 @@ class Workspace:
             files.append(path or "")
             return f"select {cols}* from read_parquet({_lit(path)})"
 
+        def read_all(paths: list[str]) -> str:
+            files.extend(paths)
+            return f"select * from read_parquet([{', '.join(_lit(p) for p in paths)}], union_by_name = true)"
+
         def table_parts(run: dict[str, Any]) -> list[str]:
             return [p["name"] for p in output_parts(run.get("schema")) if p["kind"] == "table"]
 
@@ -1765,7 +1999,12 @@ class Workspace:
         schemas: set[str] = set()
         for name in names:
             ls = self.store.last_success(name, self.node_params(name, resolved)[1])
-            if ls and ls["kind"] == "table":
+            if self.is_partitioned(ls):
+                # Exactly the manifest's files: no chunk of another version is readable.
+                paths = self.table_files(ls)  # type: ignore[arg-type]
+                if paths:
+                    views.append((f'"{name}"', read_all(paths), None))
+            elif ls and ls["kind"] == "table":
                 views.append((f'"{name}"', read(self.artifact_path(ls)), None))
             elif ls and ls["kind"] == "multi":
                 # Several outputs: each table is <node>.<part>, in a schema named after the node.
@@ -1779,8 +2018,7 @@ class Workspace:
             for run in history:
                 params = run.get("params") or {}
                 if run["kind"] == "table":
-                    path = self.artifact_path(run)
-                    if path:
+                    for path in self.table_files(run):
                         outputs.setdefault(f'"{name}__runs"', []).append((path, params))
                 elif run["kind"] == "multi":
                     schemas.add(name)

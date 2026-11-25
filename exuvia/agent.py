@@ -256,11 +256,16 @@ TOOLS: list[dict[str, Any]] = [
             "and on success the output schema, row count, and the first rows (`parts`, by name, for a node with "
             "several outputs). `params` overrides run "
             "parameters for this run (e.g. {\"as_of\": \"2026-03-02\"} to replay a past date); omitted "
-            "parameters use their defaults."
+            "parameters use their defaults. `full_refresh` (partitioned nodes only) rebuilds the output from "
+            "empty: what the run returns becomes the whole output, and exuvia.partitions() is [] for it."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {"name": {"type": "string"}, "params": {"type": "object"}},
+            "properties": {
+                "name": {"type": "string"},
+                "params": {"type": "object"},
+                "full_refresh": {"type": "boolean"},
+            },
             "required": ["name"],
             "additionalProperties": False,
         },
@@ -595,8 +600,8 @@ SYSTEM = """You are the agent inside exuvia, a DAG workbench for analysts and da
 - A project is a folder of node files in `nodes/`. One file = one node. File name (snake_case) = node name.
 - Python node: a module with exactly one function decorated `@exuvia.node(...)`. Its parameter names ARE its upstream dependencies; exuvia passes each upstream's output (table outputs arrive as pandas DataFrames). Return a DataFrame (preferred), a dict/list/scalar (stored as JSON; numpy values, dates, dataclasses and pydantic models are converted), or None. Any other object (a fitted model, a custom class) fails the run: return the numbers you need from it instead. Put the description in the function docstring.
 - Several outputs from one node: when one step naturally yields several results of different shapes (a model fit's predictions, coefficients and metrics; an API call that returns two tables), return a dict, dataclass or pydantic model whose values include DataFrames, e.g. `return {"preds": preds_df, "coefs": coefs_df, "metrics": {"r2": r2}}`. Names are lowercase identifiers. Each DataFrame is a table and anything else is JSON. Downstream, SQL reads a table as `<node>.<name>` (`select * from fit.coefs`); a Python parameter `fit` gets a dict `{"preds": DataFrame, ...}`, or the dataclass / pydantic model itself when the parameter is annotated with it (`def report(fit: FitResult)`, the class in a `lib/` helper). A JSON output can be typed the same way. Prefer separate nodes when the results do not come from the same expensive step.
-- Decorator keywords (must be literals): `schedule="<cron>"` (local time; re-runs this node on that cadence), `cascade=True|False` (auto re-run when upstream output changes; default True), `chart={...}` a Vega-Lite spec WITHOUT a `data` key — the UI injects the node's output rows, `tags=[...]`, `retries=N` (try a failed run again up to N more times, 0-10; for flaky sources such as APIs) with `retry_delay=<seconds>` (default 30, doubling per retry), `overlap="queue"|"skip"` (a scheduled fire while the node is still running: run it after, the default, or drop it), `push=True` (a push node: its output is uploaded from another machine with `exuvia push`, for data only that machine can read, such as a Bloomberg Terminal's; it takes no upstream nodes and no schedule, its function never runs here, and run_node refuses it), `live=True` or `live=<seconds>` (a live node re-runs whenever a view that depends on it is opened, or only when its output is older than that many seconds; the view shows its last output at once and updates when the new one lands; for data worth fetching again whenever someone looks, such as quotes; not for push nodes).
-- SQL node (`.sql`): DuckDB SQL; reference upstream nodes by name as tables. Header comments: first `--` lines are the description; `-- schedule: <cron>`, `-- cascade: false`, `-- chart: {json}`, `-- retries: 2`, `-- retry_delay: 60`, `-- overlap: skip`, `-- live: true` (or seconds).
+- Decorator keywords (must be literals): `schedule="<cron>"` (local time; re-runs this node on that cadence), `cascade=True|False` (auto re-run when upstream output changes; default True), `chart={...}` a Vega-Lite spec WITHOUT a `data` key — the UI injects the node's output rows, `tags=[...]`, `retries=N` (try a failed run again up to N more times, 0-10; for flaky sources such as APIs) with `retry_delay=<seconds>` (default 30, doubling per retry), `overlap="queue"|"skip"` (a scheduled fire while the node is still running: run it after, the default, or drop it), `push=True` (a push node: its output is uploaded from another machine with `exuvia push`, for data only that machine can read, such as a Bloomberg Terminal's; it takes no upstream nodes and no schedule, its function never runs here, and run_node refuses it), `live=True` or `live=<seconds>` (a live node re-runs whenever a view that depends on it is opened, or only when its output is older than that many seconds; the view shows its last output at once and updates when the new one lands; for data worth fetching again whenever someone looks, such as quotes; not for push nodes), `partition_by="<column>"` (a partitioned node, for data that grows a little each run, such as daily prices: each run returns rows for one or many values of that column and they replace those partitions, every other partition is kept; `exuvia.partitions()` lists the values already stored, [] on the first run or a full refresh, so the node fetches only what is new; SQL: `-- partition_by: date` and `$last_partition`; downstream nodes read the whole history; its own params such as as_of don't split the output; rebuild it from scratch with run_node full_refresh).
+- SQL node (`.sql`): DuckDB SQL; reference upstream nodes by name as tables. Header comments: first `--` lines are the description; `-- schedule: <cron>`, `-- cascade: false`, `-- chart: {json}`, `-- retries: 2`, `-- retry_delay: 60`, `-- overlap: skip`, `-- live: true` (or seconds), `-- partition_by: date` (then `$last_partition` is the newest stored value, or NULL).
 - Run parameters make results reproducible over time. A project declares them (see "Run parameters" below; add one with define_param). A node that reads one must declare it: `@exuvia.node(params=["as_of"])` then `exuvia.param("as_of")` (dates arrive as "YYYY-MM-DD" strings); in SQL, `-- params: as_of` then `$as_of`. A node's output is stored per value of the parameters it or its upstream nodes declare, so each date has its own output and history, and nodes without parameters are computed once and shared. A node that reads `as_of` must compute "as of that date": filter source data to rows known on or before it, and never call "now"/"today" yourself.
 - Outputs are content-hashed. Unchanged output stops a cascade. Each node runs in its own subprocess with the project root as the working directory and on sys.path.
 - Shared helpers: code several nodes need (a formula, an interpolation, a cleaning step) goes in a helper module under `lib/` instead of being copied into each node. Write it with write_file (e.g. `lib/stats.py`; packages like `lib/vol/surface.py` work too, no `__init__.py` needed) and import it in the node with a plain import statement: `from lib.stats import weighted_corr`. Helpers are Python only and are not nodes: no `@exuvia.node`, no outputs. A node's code hash covers every helper it imports (directly or through other helpers), so editing a helper makes those nodes stale; write_file returns them in `used_by` — re-run them. Imports built at runtime (importlib, `__import__`) are not tracked.
@@ -817,11 +822,16 @@ class Agent:
                     f"{target} is a push node: its output is uploaded from another machine with "
                     "`exuvia push`, never run here. Ask the user to push it."
                 ), {"node": target}
+            refresh = bool(args.get("full_refresh"))
+            if refresh and not ws.graph.nodes[target].partition_by:
+                return False, f"{target} is not partitioned: full_refresh is for nodes with partition_by", {}
             try:
                 params = ws.resolve_params(args.get("params"))
             except ValueError as e:
                 return False, str(e), {}
-            finals = await ws.run([target], params=params, force={target}, trigger=origin)
+            finals = await ws.run(
+                [target], params=params, force={target}, trigger=origin, full_refresh={target} if refresh else None
+            )
             ok, report = await node_report(ws, target, params, finals)
             return ok, json.dumps(report, default=str)[:12000], {"node": target}
         if name == "query_data":

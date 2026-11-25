@@ -91,6 +91,7 @@ export function Inspector(props: {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmRefresh, setConfirmRefresh] = useState(false);
   const panelId = useId();
   const dirty = source !== saved;
   const loadedFor = useRef<string>("");
@@ -129,12 +130,12 @@ export function Inspector(props: {
     }
   }, [dirty, canEdit, node.name, source]);
 
-  const run = async () => {
+  const run = async (fullRefresh = false) => {
     if (!canEdit) return;
     setBusy(true);
     try {
       await save();
-      await api.run(node.name, true);
+      await api.run(node.name, true, fullRefresh);
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -191,7 +192,16 @@ export function Inspector(props: {
                 label={running ? "Running…" : dirty ? "Save & run" : "Run"}
                 icon={running || dirty ? undefined : <IconPlay size={11} />}
                 isDisabled={busy || running || !!node.parse_error}
-                onClick={run}
+                onClick={() => run()}
+              />
+            )}
+            {canEdit && node.partition_by && (
+              <Button
+                variant="secondary"
+                label="Full refresh"
+                tooltip="Rebuild the output from nothing: what the run returns becomes all of it"
+                isDisabled={busy || running || !!node.parse_error}
+                onClick={() => setConfirmRefresh(true)}
               />
             )}
             <DownloadMenu
@@ -215,6 +225,11 @@ export function Inspector(props: {
               </Text>
             )}
           </HStack>
+          {node.partition_by && (
+            <Text type="supporting" color="secondary" maxLines={1}>
+              partitioned by {node.partition_by}
+            </Text>
+          )}
           {node.deps.length > 0 && (
             <Text type="supporting" color="secondary" maxLines={1} xstyle={styles.deps}>
               ← {node.deps.join(", ")}
@@ -361,6 +376,20 @@ export function Inspector(props: {
         }
         actionLabel="Delete node"
         onAction={del}
+      />
+      <AlertDialog
+        isOpen={confirmRefresh}
+        onOpenChange={setConfirmRefresh}
+        title={`Rebuild ${node.name} from nothing?`}
+        description={
+          `The run starts from an empty output: exuvia.partitions() is empty, and every ${node.partition_by} the run ` +
+          "doesn't return is dropped from the output. Earlier runs' outputs stay readable in its history."
+        }
+        actionLabel="Full refresh"
+        onAction={() => {
+          setConfirmRefresh(false);
+          run(true);
+        }}
       />
     </div>
   );

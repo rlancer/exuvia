@@ -76,6 +76,13 @@ const PAGES: PageSpec[] = [
     summary: "Declare run parameters, keep one output per value, and replay date ranges.",
   },
   {
+    slug: "partitioned-nodes",
+    group: "Build",
+    source: { heading: "Partitioned nodes: a history that grows each run" },
+    title: "Partitioned nodes",
+    summary: "Nodes whose runs add or replace a day (or any partition) of one output: daily runs, backfills and corrections without rewriting the history.",
+  },
+  {
     slug: "push-nodes",
     group: "Build",
     source: { heading: "Push nodes: data from someone's desktop" },

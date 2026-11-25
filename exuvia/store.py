@@ -59,6 +59,8 @@ TABLES = {
     params_key text not null default '',
     started_by text,        -- the signed-in person who started it, or whose run cascaded into it, by name (see auth.py)
     started_by_user text,   -- the same person's user id (users.py)
+    version integer,        -- a partitioned node's output: its manifest version (output_partitions; 0: empty)
+    partition_by text,      -- and the column it is partitioned by
     primary key (project, id)
 )""",
     "schedules": """create table if not exists schedules (
@@ -119,6 +121,32 @@ TABLES = {
     updated_by text,           -- the signed-in person who last set it, by name (see auth.py)
     primary key (project, name)
 )""",
+    # A partitioned node's output (partitioned.py), one manifest version per
+    # successful run that changed it. A row is part of every version from
+    # `since` up to, not including, `until`, so storage grows with the
+    # partitions written, not with partitions times runs.
+    "output_partitions": """create table if not exists output_partitions (
+    project text not null default '',
+    node text not null,
+    params_key text not null default '',
+    value text not null,       -- one partition: the partition column's value as text
+    digest text not null,      -- SHA-256 of its rows as text, sorted (partitioned.py)
+    rows integer not null,
+    since integer not null,    -- the version that wrote it
+    until integer,             -- the version that replaced or dropped it; null while current
+    primary key (project, node, params_key, value, since)
+)""",
+    "output_files": """create table if not exists output_files (
+    project text not null default '',
+    node text not null,
+    params_key text not null default '',
+    file text not null,        -- a Parquet chunk, relative to the project root (.exuvia/artifacts/<node>/<sha>.parquet)
+    partitions text not null,  -- json: the partition values it holds
+    rows integer not null,
+    since integer not null,
+    until integer,
+    primary key (project, node, params_key, file, since)
+)""",
 }
 
 INDEXES = (
@@ -127,6 +155,9 @@ INDEXES = (
     "create index if not exists code_revisions_path on code_revisions(project, path, saved_at)",
     "create index if not exists code_revisions_node on code_revisions(project, node, saved_at)",
     "create index if not exists code_revisions_view on code_revisions(project, view_name, saved_at)",
+    "create index if not exists output_partitions_version on output_partitions(project, node, params_key, since)",
+    "create index if not exists output_files_version on output_files(project, node, params_key, since)",
+    "create index if not exists output_files_file on output_files(project, file)",
 )
 
 # Columns each table had before scopes existed, in order (for the rebuild).
@@ -154,13 +185,17 @@ TITLE_CHARS = 80
 
 RUN_COLS = (
     "id,node,batch_id,trigger,status,queued_at,started_at,finished_at,"
-    "artifact_id,kind,rows,error,params,params_key,started_by,started_by_user"
+    "artifact_id,kind,rows,error,params,params_key,started_by,started_by_user,version,partition_by"
 )
 
 # One changed file for ``Store.record_code``: (path, node, view, hash,
 # source). ``node`` / ``view`` name the node or view the file belongs to (or
 # None); hash and source are None for a deletion.
 CodeChange = tuple[str, str | None, str | None, str | None, str | None]
+
+# One version of a partitioned output as ``Store.manifest`` reads it:
+# ({value: (digest, rows)}, [{file, partitions, rows}]).
+Manifest = tuple[dict[str, tuple[str, int]], list[dict[str, Any]]]
 
 # Who changed the code, recorded on each revision.
 ORIGIN_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789_-")
@@ -232,6 +267,9 @@ def _upgrade_legacy(db: Database) -> None:
         db.query("alter table runs add column started_by text")
     if cols and "started_by_user" not in cols:  # from before the user list
         db.query("alter table runs add column started_by_user text")
+    if cols and "version" not in cols:  # from before partitioned outputs
+        db.query("alter table runs add column version integer")
+        db.query("alter table runs add column partition_by text")
     cols = db.columns("code_revisions")
     if cols and "view_name" not in cols:  # from before views existed
         db.query("alter table code_revisions add column view_name text")
@@ -431,8 +469,10 @@ class Store:
         rows = self._q(
             "select distinct artifact_path from runs where project=? and status='success' "
             "and artifact_path is not null "
-            "and artifact_path not in (select path from stored_artifacts where project=?)",
-            (self.scope, self.scope),
+            "and artifact_path not in (select path from stored_artifacts where project=?) "
+            "union select distinct file from output_files where project=? "
+            "and file not in (select path from stored_artifacts where project=?)",
+            (self.scope, self.scope, self.scope, self.scope),
         )
         return [r["artifact_path"] for r in rows]
 
@@ -443,6 +483,103 @@ class Store:
             (self.scope,),
         )
         return [json.loads(r["params"]) for r in rows]
+
+    # -- partitioned outputs (partitioned.py) ------------------------------------
+    def manifest(self, node: str, params_key: str, version: int | None) -> Manifest:
+        """The partitions ({value: (digest, rows)}) and files of one version
+        of a partitioned output; empty for version None or 0."""
+        if not version:
+            return {}, []
+        where = "project=? and node=? and params_key=? and since<=? and (until is null or until>?)"
+        args = (self.scope, node, params_key, version, version)
+        parts = {
+            r["value"]: (r["digest"], int(r["rows"]))
+            for r in self._q(f"select value, digest, rows from output_partitions where {where}", args)
+        }
+        return parts, self.manifest_files(node, params_key, version)
+
+    def manifest_files(self, node: str, params_key: str, version: int | None) -> list[dict[str, Any]]:
+        """``manifest``'s files alone (what a reader needs)."""
+        if not version:
+            return []
+        rows = self._q(
+            "select file, partitions, rows from output_files where project=? and node=? and params_key=? "
+            "and since<=? and (until is null or until>?) order by file",
+            (self.scope, node, params_key, version, version),
+        )
+        return [{"file": r["file"], "partitions": json.loads(r["partitions"]), "rows": int(r["rows"])} for r in rows]
+
+    def record_manifest(self, node: str, params_key: str, new: Manifest, run_id: str, **run: Any) -> int:
+        """Record ``new`` as the next version of a partitioned output (what
+        differs from the current version: partitions and files it no longer
+        has are closed, new ones added) and mark run ``run_id`` successful
+        with it (and ``run``'s other fields), in one transaction: a version
+        exists only with its run. Returns the version."""
+        new_parts, new_files = new
+        key = (self.scope, node, params_key)
+        with self.db.transaction():
+            (row,) = self._q(
+                "select max(v) as v from (select max(coalesce(until, since)) as v from output_partitions "
+                "where project=? and node=? and params_key=? union all select max(coalesce(until, since)) "
+                "from output_files where project=? and node=? and params_key=?) t",
+                (*key, *key),
+            )
+            version = int(row["v"] or 0) + 1
+            open_parts = {
+                r["value"]: r["digest"]
+                for r in self._q(
+                    "select value, digest from output_partitions where project=? and node=? and params_key=? "
+                    "and until is null",
+                    key,
+                )
+            }
+            open_files = {
+                r["file"]
+                for r in self._q(
+                    "select file from output_files where project=? and node=? and params_key=? and until is null", key
+                )
+            }
+            for value, digest in open_parts.items():
+                if (new_parts.get(value) or (None,))[0] != digest:
+                    self._q(
+                        "update output_partitions set until=? where project=? and node=? and params_key=? "
+                        "and value=? and until is null",
+                        (version, *key, value),
+                    )
+            for value, (digest, rows) in new_parts.items():
+                if open_parts.get(value) != digest:
+                    self._q(
+                        "insert into output_partitions (project, node, params_key, value, digest, rows, since) "
+                        "values (?,?,?,?,?,?,?)",
+                        (*key, value, digest, rows, version),
+                    )
+            kept = {f["file"] for f in new_files}
+            for file in open_files - kept:
+                self._q(
+                    "update output_files set until=? where project=? and node=? and params_key=? "
+                    "and file=? and until is null",
+                    (version, *key, file),
+                )
+            for f in new_files:
+                if f["file"] not in open_files:
+                    self._q(
+                        "insert into output_files (project, node, params_key, file, partitions, rows, since) "
+                        "values (?,?,?,?,?,?,?)",
+                        (*key, f["file"], json.dumps(f["partitions"]), f["rows"], version),
+                    )
+            self.update_run(run_id, status="success", version=version, **run)
+        return version
+
+    def chunk(self, node: str, name: str) -> str | None:
+        """The recorded path of chunk ``name`` (``<sha>.parquet``) of
+        ``node``'s partitioned output, when some version lists it."""
+        for r in self._q(
+            "select distinct file from output_files where project=? and node=? and file like ?",
+            (self.scope, node, f"%{name}"),
+        ):
+            if r["file"].rsplit("/", 1)[-1] == name:
+                return r["file"]
+        return None
 
     # -- schedules ---------------------------------------------------------
     def paused(self) -> set[str]:

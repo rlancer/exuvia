@@ -171,6 +171,8 @@ def create_executor_app() -> FastAPI:
             inputs=inputs,
             params=params,
             env=env,
+            partition_by=spec.get("partition_by") if isinstance(spec.get("partition_by"), str) else None,
+            partitions=[str(v) for v in spec.get("partitions") or []],
         )
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[str | None] = asyncio.Queue()

@@ -331,7 +331,9 @@ select * from screen where as_of_date <= $as_of
 - **Time series for free.** In `query_data` and `POST /api/query`,
   `<node>__runs` unions a node's output across every parameter set that has
   run, with a `_<param>` column each (`select _as_of, count(*) from screen__runs group by 1`).
-  For a node with several outputs it is `<node>.<name>__runs`.
+  For a node with several outputs it is `<node>.<name>__runs`. It is for
+  comparing runs in SQL and views; a node that should read a growing history
+  is better [partitioned](#partitioned-nodes-a-history-that-grows-each-run).
 - `timezone` also sets the clock for cron schedules. `schedules` overrides or
   adds a per-node cron without editing the node file (this is what the
   schedule API writes), so an embedding app can let people schedule nodes.
@@ -342,6 +344,79 @@ select * from screen where as_of_date <= $as_of
 exuvia run my-project --param as_of=2026-11-06
 exuvia status my-project --param as_of=2026-11-06
 ```
+
+## Partitioned nodes: a history that grows each run
+
+Some data arrives a little at a time: a closing price a day, a reading an
+hour. Returning the whole history from every run refetches it and stores a
+new full copy each time; one output per `as_of` stores each day once but
+gives downstream nodes only that day. A **partitioned** node keeps one
+output that each run adds to:
+
+```python
+@exuvia.node(partition_by="date", schedule="0 17 * * 1-5")
+def prices(universe):
+    have = exuvia.partitions()             # dates already stored, oldest first; [] the first time
+    start = next_day(have[-1]) if have else "2006-01-01"
+    return fetch_closes(universe, start)   # rows for any number of dates
+```
+
+```sql
+-- partition_by: date
+select * from source where $last_partition is null or date > $last_partition
+```
+
+- **A run replaces the partitions it returns.** Each value of the
+  `partition_by` column in the rows a run returns (a date) is a partition:
+  those rows replace whatever that partition held, and every partition the
+  run leaves out is kept. A daily run returns today's rows, a backfill ten
+  years of them in one call, a correction the day it fixes. `None` or no rows
+  changes nothing (a holiday). Every row needs a value in the column.
+- **What it already has.** `exuvia.partitions()` lists the stored values as
+  text, in order (dates and numbers sort as such); a SQL node gets the newest
+  as `$last_partition` (null when there is none).
+- **Downstream nodes read the whole history** as their input table, and
+  `<node>` in `query_data`, views and `/api/query` is all of it.
+- **Identical rows change nothing.** A partition is identified by a hash of
+  its rows, so a run that returns the same rows for a day writes nothing, the
+  output keeps its `artifact_id`, and downstream nodes don't run again. When
+  a day does change, they do.
+- **Parameters.** A partitioned node may read `as_of` (`params=["as_of"]`)
+  to know which day to fetch, but its own parameters don't split its output:
+  each `as_of` run, and a backfill over `as_of` (`POST /api/backfill`), fills
+  the same history, and downstream nodes don't inherit `as_of` from it.
+- **Full refresh.** A code change marks the node stale, but its next run still
+  adds to what is there: a source that only reports "now" never loses its
+  history by accident. To rebuild from nothing, run it with a full refresh
+  (`POST /api/nodes/{name}/run` with `"full_refresh": true`, `exuvia run
+  my-project prices --full-refresh`, or `run_node` with `full_refresh`):
+  `exuvia.partitions()` is empty for that run, and what it returns becomes
+  the whole output. Changing `partition_by` itself needs one.
+- One partition column per node, and one table: a node with several outputs
+  can't be partitioned. A push node can (`push=True, partition_by="date"`):
+  each push replaces the partitions it holds.
+
+**How it is stored.** The output is a manifest of Parquet files: one per
+partition as it is written, in `.exuvia/artifacts/<node>/` like every output
+and uploaded to `EXUVIA_ARTIFACT_STORE` under the same keys. Every file costs a
+reader a little, so exuvia compacts: once a node has more than 30 files
+beyond one per year, each year's files are merged into one (dates group by
+year; other values are merged together). A correction to a day inside a
+merged year rewrites that year's file without it. Readers get exactly the
+manifest's files, the query sandbox can open no other, and compaction never
+changes the output's id, so it never makes anything stale. Each run's version
+of the manifest is kept in the records database, so an earlier run's output
+stays readable (`?run_id=`). Nothing deletes files no manifest uses anymore:
+exuvia never deletes outputs.
+
+**Reading it from outside.**
+
+- `GET /api/nodes/{name}/data` and `/export` take `partitions=lo..hi`
+  (either end may be left out) or one value, and read only the files that
+  hold those partitions: `?partitions=2026-11-01..` is this month so far.
+- `GET /api/nodes/{name}/partitions` lists the manifest: every partition with
+  its row count and digest, and the Parquet files with the partitions each
+  holds. Each file is `GET /api/artifacts/{name}/{artifact_id}.parquet`.
 
 ## Push nodes: data from someone's desktop
 
@@ -2917,7 +2992,9 @@ value (`.json`) or several outputs (`.zip`, `multi`; each one is also served
 on its own as `/api/artifacts/{node}/{artifact_id}/{part}.parquet` or
 `.json`). `GET /api/artifacts/{node}/{artifact_id}.parquet` returns
 that file as it is stored, downloading it from `EXUVIA_ARTIFACT_STORE` first
-when this process does not have it.
+when this process does not have it. A partitioned node's output is several
+files: `GET /api/nodes/{name}/partitions` lists them, each served the same way
+(see [Partitioned nodes](#partitioned-nodes-a-history-that-grows-each-run)).
 
 - The answer for a given URL never changes, so it is sent with
   `Cache-Control: private, max-age=31536000, immutable` and the artifact id
@@ -3142,7 +3219,7 @@ the package to public once (package settings → Change visibility).
 
 Prototype. Not yet: SSO in exuvia itself (people are identified only by a sign-in
 proxy's headers, or share a token), sharing a project with groups
-rather than one person at a time, notifications when someone asks for access, executor autoscaling, incremental nodes (run parameters cover date partitions), non-Python runtimes, reading secrets from an external secret manager (Vault, a cloud's).
+rather than one person at a time, notifications when someone asks for access, executor autoscaling, merging rows on a key finer than a partition, non-Python runtimes, reading secrets from an external secret manager (Vault, a cloud's).
 
 Found a bug, or something missing? Open an issue at
 [github.com/rlancer/exuvia/issues](https://github.com/rlancer/exuvia/issues). Your agent can draft one

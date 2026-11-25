@@ -88,6 +88,8 @@ export interface GraphNode {
   schedule: { cron: string; paused: boolean; next: number | null } | null;
   /** Re-run when a view that depends on it is opened: null when not live, else the seconds an output stays recent enough. */
   live?: number | null;
+  /** The column a partitioned node's output is split by: each run replaces the partitions it returns. */
+  partition_by?: string | null;
   /** The last run failed importing something not installed: the package that likely provides it. */
   missing_package?: { module: string; package: string } | null;
 }
@@ -411,7 +413,8 @@ export const api = {
   create: (b: { name: string; kind: string; deps: string[]; description: string }) =>
     req<Project>("POST", "/api/nodes", b),
   remove: (name: string) => req<Project>("DELETE", `/api/nodes/${name}`),
-  run: (name: string, force = true) => req("POST", `/api/nodes/${name}/run`, { force }),
+  run: (name: string, force = true, fullRefresh = false) =>
+    req("POST", `/api/nodes/${name}/run`, fullRefresh ? { force, full_refresh: true } : { force }),
   /** Bring `targets` up to date (stale ancestors included) for one parameter set. */
   runWith: (targets: string[], params: Record<string, unknown>) =>
     req("POST", "/api/run", { targets, force: false, params: Object.keys(params).length ? params : null }),

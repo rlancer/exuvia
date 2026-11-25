@@ -187,6 +187,7 @@ def cmd_run(args: argparse.Namespace) -> None:
                 targets,
                 params=_cli_params(args.param),
                 force=set(args.nodes) if args.force else set(),
+                full_refresh=set(args.nodes) if args.full_refresh else None,
                 trigger="cli",
                 cascade=False,
             )
@@ -293,6 +294,10 @@ def main() -> None:
     p.add_argument("dir", nargs="?", default=".")
     p.add_argument("nodes", nargs="*")
     p.add_argument("--force", action="store_true", help="re-run named nodes even if fresh")
+    p.add_argument(
+        "--full-refresh", action="store_true",
+        help="rebuild the named partitioned nodes from an empty output (what the run returns becomes all of it)",
+    )
     p.add_argument("--param", action="append", metavar="NAME=VALUE",
                    help="run parameter, repeatable (e.g. --param as_of=2026-03-02)")
     p.set_defaults(fn=cmd_run)
