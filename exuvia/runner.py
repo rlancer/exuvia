@@ -20,6 +20,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import traceback
@@ -289,16 +290,124 @@ def save_artifact(value: Any, out_dir: Path) -> dict[str, Any]:
             tmp_path.write_text(_to_json(value), encoding="utf-8")
             kind, ext = "json", "json"
             meta["schema"] = [{"name": "value", "type": type(value).__name__}]
-        digest = hashlib.sha256(tmp_path.read_bytes()).hexdigest()[:16]
-        final = out_dir / f"{digest}.{ext}"
-        if final.exists():
-            tmp_path.unlink()
-        else:
-            tmp_path.replace(final)
-        return {"kind": kind, "artifact_id": digest, "artifact_path": str(final), **meta}
+        return {"kind": kind, **_keep(tmp_path, out_dir, ext), **meta}
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
+
+
+def _keep(tmp_path: Path, out_dir: Path, ext: str) -> dict[str, Any]:
+    """Name a written output by its content: ``<sha256[:16]>.<ext>``."""
+    with open(tmp_path, "rb") as f:
+        digest = hashlib.file_digest(f, "sha256").hexdigest()[:16]
+    final = out_dir / f"{digest}.{ext}"
+    if final.exists():
+        tmp_path.unlink()
+    else:
+        tmp_path.replace(final)
+    return {"artifact_id": digest, "artifact_path": str(final)}
+
+
+# The same choices as PARQUET_OPTIONS, in DuckDB's COPY: zstd, format v2
+# data pages and encodings, page indexes. DuckDB has no page checksums.
+DUCKDB_PARQUET = "format parquet, compression zstd, parquet_version v2, write_page_index true"
+
+
+def _sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _sql_inputs(con: Any, inputs: dict[str, Any], scratch: Path) -> None:
+    """Each upstream table as a view named after its node, read from its
+    Parquet file(s) where they are: no copy in memory, and DuckDB's own types.
+    A node with several outputs is a schema holding a view per table part.
+    JSON outputs, and upstreams with no output, are not readable from SQL."""
+    for dep, i in inputs.items():
+        name = '"' + dep.replace('"', '""') + '"'
+        paths, kind = i.get("paths"), i.get("kind")
+        if paths is not None and kind == "table":  # a partitioned output: its chunk files
+            if not paths:
+                raise ValueError(
+                    f"upstream {dep} is a partitioned output with no partitions yet, so it has no columns SQL can read"
+                )
+            files = ", ".join(_sql_literal(p) for p in paths)
+            con.execute(f"create view {name} as select * from read_parquet([{files}], union_by_name = true)")
+        elif not i.get("path"):
+            continue
+        elif kind == "table":
+            con.execute(f"create view {name} as select * from read_parquet({_sql_literal(i['path'])})")
+        elif kind == "multi":
+            # DuckDB cannot read inside a zip: each table part is extracted
+            # next to the run, then is <dep>.<part>.
+            con.execute(f"create schema if not exists {name}")
+            with zipfile.ZipFile(i["path"]) as z:
+                for member in z.namelist():
+                    part, part_kind = _member_part(member)
+                    if part_kind != "table":
+                        continue
+                    local = scratch / dep / member
+                    local.parent.mkdir(parents=True, exist_ok=True)
+                    with z.open(member) as src, open(local, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    con.execute(
+                        f'create view {name}."{part}" as select * from read_parquet({_sql_literal(local.as_posix())})'
+                    )
+
+
+def _without_trailing_terminators(sql: str) -> str:
+    """``sql`` without the semicolons and comments after its last statement.
+    DuckDB keeps them in the text of the relation the last statement makes,
+    and fails on them when it reads that relation again."""
+    import duckdb
+
+    tokens = duckdb.tokenize(sql)
+    end = len(tokens)
+    while end:
+        pos, kind = tokens[end - 1]
+        stop = tokens[end][0] if end < len(tokens) else len(sql)
+        if kind == duckdb.token_type.comment or set(sql[pos:stop].strip()) == {";"}:
+            end -= 1
+        else:
+            break
+    return sql[: tokens[end][0]] if end < len(tokens) else sql
+
+
+def _run_sql(sql: str, params: dict[str, Any], inputs: dict[str, Any], out_dir: Path) -> dict[str, Any]:
+    """Run a SQL node in DuckDB and write its result straight to Parquet with
+    COPY. The rows never become a DataFrame, so every column keeps its DuckDB
+    type (DATE, DECIMAL, nullable integers, time zones, lists, structs).
+
+    Parameters bind as in ``con.execute``: DuckDB named parameters, used by
+    the last statement. The statements before it run first; the last one's
+    rows are the output."""
+    import duckdb
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="exuvia-sql-") as scratch:
+        con = duckdb.connect()
+        try:
+            _sql_inputs(con, inputs, Path(scratch))
+            sql = _without_trailing_terminators(sql)
+            result = con.sql(sql, params=params) if params else con.sql(sql)
+            if result is None:
+                raise TypeError("A SQL node ends with a query: the rows it returns are the node's output.")
+            con.register("__exuvia_result", result)
+            fd, tmp = tempfile.mkstemp(dir=out_dir, suffix=".tmp")
+            os.close(fd)
+            tmp_path = Path(tmp)
+            try:
+                (rows,) = con.execute(
+                    f"copy (select * from __exuvia_result) to {_sql_literal(tmp_path.as_posix())} ({DUCKDB_PARQUET})"
+                ).fetchone()
+                described = con.execute(f"describe select * from read_parquet({_sql_literal(tmp_path.as_posix())})")
+                schema = [{"name": r[0], "type": r[1]} for r in described.fetchall()]
+                con.close()
+                return {"kind": "table", **_keep(tmp_path, out_dir, "parquet"), "rows": int(rows), "schema": schema}
+            finally:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+        finally:
+            con.close()
 
 
 class _FromSource(importlib.machinery.SourceFileLoader):
@@ -384,36 +493,9 @@ def execute(spec: dict[str, Any]) -> dict[str, Any]:
     have: list[str] = list(spec.get("partitions") or [])
     if partition_by:
         exuvia._runtime["partitions"] = have  # what exuvia.partitions() reads
-    sql_node = spec["kind"] != "python"
-    inputs = {
-        dep: None if sql_node and i.get("paths") is not None else load_artifact(i.get("path"), i.get("kind"), i.get("paths"))
-        for dep, i in spec["inputs"].items()
-    }
-    if spec["kind"] == "python":
-        fn = _load_python_node(root, root / spec["path"], spec["node"])
-        value = fn(**_typed_inputs(fn, inputs))
-    else:
-        import duckdb
-        import pandas as pd
-
-        con = duckdb.connect()
-        for dep, val in inputs.items():
-            paths = spec["inputs"][dep].get("paths")
-            if paths:  # a partitioned output: read its chunk files where they are
-                files = ", ".join("'" + p.replace("'", "''") + "'" for p in paths)
-                con.execute(f'create view "{dep}" as select * from read_parquet([{files}], union_by_name = true)')
-            elif paths is not None:
-                con.register(dep, pd.DataFrame())
-            elif isinstance(val, pd.DataFrame):
-                con.register(dep, val)
-            elif spec["inputs"][dep].get("kind") == "multi":
-                # Several outputs: each table is <dep>.<part>, in a schema named after the node.
-                con.execute(f'create schema if not exists "{dep}"')
-                for part, frame in val.items():
-                    if isinstance(frame, pd.DataFrame):
-                        tmp = f"__exuvia_{dep}__{part}"
-                        con.register(tmp, frame)
-                        con.execute(f'create view "{dep}"."{part}" as select * from "{tmp}"')
+    if spec["kind"] != "python":
+        # A SQL node runs entirely in DuckDB: it always returns one table,
+        # which is what a partitioned node must return too.
         sql = (root / spec["path"]).read_text(encoding="utf-8")
         # Declared parameters are bound as DuckDB named parameters: `$as_of`.
         # DuckDB rejects values the statement does not use, so bind only those.
@@ -421,7 +503,10 @@ def execute(spec: dict[str, Any]) -> dict[str, Any]:
         if partition_by:  # the newest partition already stored (null when there is none)
             bound["last_partition"] = have[-1] if have else None
         used = {name: bound[name] for name in bound if re.search(rf"\${name}\b", sql)}
-        value = con.execute(sql, used).df() if used else con.execute(sql).df()
+        return _run_sql(sql, used, spec["inputs"], Path(spec["out_dir"]))
+    inputs = {dep: load_artifact(i.get("path"), i.get("kind"), i.get("paths")) for dep, i in spec["inputs"].items()}
+    fn = _load_python_node(root, root / spec["path"], spec["node"])
+    value = fn(**_typed_inputs(fn, inputs))
     if partition_by:
         _check_partitioned(value, partition_by)
     return save_artifact(value, Path(spec["out_dir"]))
