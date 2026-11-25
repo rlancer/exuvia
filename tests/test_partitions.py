@@ -345,7 +345,7 @@ def test_bad_partitioned_returns_fail_the_run(tmp_path):
     ws.reload()
     finals = run(ws, ["nokey", "nulls", "notable", "nothing"])
     assert "no `date` column" in finals["nokey"]["error"]
-    assert "have no `date`" in finals["nulls"]["error"]
+    assert "1 row returned has no `date`" in finals["nulls"]["error"]
     assert "returns one table" in finals["notable"]["error"]
     assert finals["nothing"]["status"] == "success" and finals["nothing"]["rows"] == 0
     assert ws.preview("nothing")["rows"] == []
@@ -375,6 +375,21 @@ def test_data_routes_prune_and_list_partitions(tmp_path):
         assert c.get("/api/nodes/total/partitions").status_code == 404
         bad = c.post("/api/nodes/total/run", json={"full_refresh": True})
         assert bad.status_code == 400
+        # A late day for an earlier date: rows and files still come in partition order.
+        res = c.post("/api/nodes/prices/run", json={"wait": 120, "params": {"as_of": "2026-02-27"}})
+        assert res.json()["ok"], res.text
+        days = [r[0] for r in c.get("/api/nodes/prices/data").json()["rows"]]
+        assert days == sorted(days) and days[0] == "2026-02-27"
+        m = c.get("/api/nodes/prices/partitions").json()
+        assert [f["partitions"][0] for f in m["files"]] == ["2026-02-27", "2026-03-02", "2026-03-03", "2026-03-04"]
+        # A range with no partitions has no rows, but the output's columns.
+        out = c.get("/api/nodes/prices/data", params={"partitions": "2030-01-01.."}).json()
+        assert out["total"] == 0 and out["rows"] == [] and [col["name"] for col in out["columns"]] == ["date", "ticker", "px"]
+        csv = c.get("/api/nodes/prices/export", params={"format": "csv", "partitions": "2030-01-01.."})
+        assert csv.status_code == 200 and csv.text.strip() == '"date","ticker","px"'
+        # partitions= on a node that isn't partitioned is refused, not ignored.
+        assert c.get("/api/nodes/total/data", params={"partitions": "2026-03-02"}).status_code == 400
+        assert c.get("/api/nodes/total/export", params={"format": "csv", "partitions": "x"}).status_code == 400
         res = c.post("/api/nodes/prices/run", json={"wait": 120, "full_refresh": True, "params": {"as_of": "2026-03-09"}})
         assert res.json()["ok"], res.text
         assert [p["value"] for p in c.get("/api/nodes/prices/partitions").json()["partitions"]] == ["2026-03-09"]
