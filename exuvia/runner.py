@@ -28,7 +28,13 @@ from pathlib import Path
 from typing import Any
 
 
-def load_artifact(path: str | None, kind: str | None) -> Any:
+def load_artifact(path: str | None, kind: str | None, paths: list[str] | None = None) -> Any:
+    if paths is not None and kind == "table":  # a partitioned output: its chunk files
+        if not paths:
+            import pandas as pd
+
+            return pd.DataFrame()
+        return read_files(paths).df()
     if not path or kind in (None, "none"):
         return None
     if kind == "table":
@@ -45,6 +51,14 @@ def load_artifact(path: str | None, kind: str | None) -> Any:
         # an output as stale, which re-runs its node before anything reads it.
         raise ValueError("this upstream output was saved with pickle, which exuvia no longer reads; re-run it")
     raise ValueError(f"unknown artifact kind {kind!r}")
+
+
+def read_files(paths: list[str], con: Any = None) -> Any:
+    """A partitioned output's chunk files (at least one) as one DuckDB relation."""
+    import duckdb
+
+    con = con or duckdb.connect()
+    return con.read_parquet(list(paths), union_by_name=True)
 
 
 # Table outputs use the current Parquet format, not pyarrow's
@@ -366,7 +380,15 @@ def execute(spec: dict[str, Any]) -> dict[str, Any]:
     os.environ.update(spec.get("env") or {})
     params = spec.get("params") or {}
     exuvia._runtime = {"node": spec["node"], "params": params}  # what exuvia.param() reads
-    inputs = {dep: load_artifact(i.get("path"), i.get("kind")) for dep, i in spec["inputs"].items()}
+    partition_by = spec.get("partition_by")
+    have: list[str] = list(spec.get("partitions") or [])
+    if partition_by:
+        exuvia._runtime["partitions"] = have  # what exuvia.partitions() reads
+    sql_node = spec["kind"] != "python"
+    inputs = {
+        dep: None if sql_node and i.get("paths") is not None else load_artifact(i.get("path"), i.get("kind"), i.get("paths"))
+        for dep, i in spec["inputs"].items()
+    }
     if spec["kind"] == "python":
         fn = _load_python_node(root, root / spec["path"], spec["node"])
         value = fn(**_typed_inputs(fn, inputs))
@@ -376,7 +398,13 @@ def execute(spec: dict[str, Any]) -> dict[str, Any]:
 
         con = duckdb.connect()
         for dep, val in inputs.items():
-            if isinstance(val, pd.DataFrame):
+            paths = spec["inputs"][dep].get("paths")
+            if paths:  # a partitioned output: read its chunk files where they are
+                files = ", ".join("'" + p.replace("'", "''") + "'" for p in paths)
+                con.execute(f'create view "{dep}" as select * from read_parquet([{files}], union_by_name = true)')
+            elif paths is not None:
+                con.register(dep, pd.DataFrame())
+            elif isinstance(val, pd.DataFrame):
                 con.register(dep, val)
             elif spec["inputs"][dep].get("kind") == "multi":
                 # Several outputs: each table is <dep>.<part>, in a schema named after the node.
@@ -389,9 +417,25 @@ def execute(spec: dict[str, Any]) -> dict[str, Any]:
         sql = (root / spec["path"]).read_text(encoding="utf-8")
         # Declared parameters are bound as DuckDB named parameters: `$as_of`.
         # DuckDB rejects values the statement does not use, so bind only those.
-        used = {name: params[name] for name in params if re.search(rf"\${name}\b", sql)}
+        bound = dict(params)
+        if partition_by:  # the newest partition already stored (null when there is none)
+            bound["last_partition"] = have[-1] if have else None
+        used = {name: bound[name] for name in bound if re.search(rf"\${name}\b", sql)}
         value = con.execute(sql, used).df() if used else con.execute(sql).df()
+    if partition_by:
+        _check_partitioned(value, partition_by)
     return save_artifact(value, Path(spec["out_dir"]))
+
+
+def _check_partitioned(value: Any, column: str) -> None:
+    """A partitioned node returns one table holding its partition column, or None."""
+    if value is None:
+        return
+    if _parts_of(value) is not None or _as_frame(value) is None:
+        raise TypeError(
+            f"A node partitioned by `{column}` returns one table (a DataFrame) whose `{column}` column says "
+            f"which partition each row belongs to, or None for no new rows. This one returned {type(value).__name__}."
+        )
 
 
 def _typed_inputs(fn: Any, inputs: dict[str, Any]) -> dict[str, Any]:

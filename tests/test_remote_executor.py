@@ -195,3 +195,28 @@ def test_a_remote_run_gets_the_projects_variables(remote_ws):
     log = remote_ws.store.run(last["id"])["log"]
     assert "key is ***" in log and "remote-secret-42" not in log and "second-line-77" not in log
 
+
+
+def test_remote_run_reads_a_partitioned_input(tmp_path, executor_url, monkeypatch):
+    monkeypatch.setenv("EXUVIA_EXECUTOR_URL", executor_url)
+    monkeypatch.setenv("EXUVIA_EXECUTOR_TOKEN", TOKEN)
+    write(tmp_path, "nodes/daily.py", '''
+        import exuvia
+
+        @exuvia.node(partition_by="d")
+        def daily():
+            import pandas as pd
+            have = exuvia.partitions()
+            return pd.DataFrame({"d": [f"2026-01-0{len(have) + 1}"], "v": [len(have) + 1]})
+    ''')
+    write(tmp_path, "nodes/total.sql", "select sum(v) as s, count(*) as n from daily\n")
+    ws = Workspace(tmp_path)
+    try:
+        for _ in range(3):  # exuvia.partitions() reaches the remote node too
+            assert run(ws, ["daily"], force={"daily"})["daily"]["status"] == "success"
+        assert [p["value"] for p in ws.partitions_of("daily")["partitions"]] == ["2026-01-01", "2026-01-02", "2026-01-03"]
+        finals = run(ws, ["total"])
+        assert finals["total"]["status"] == "success", finals["total"]["error"]
+        assert ws.preview("total")["rows"] == [[6, 3]]
+    finally:
+        ws.executor.close()

@@ -76,6 +76,9 @@ class Node:
     chart: dict[str, Any] | None = None
     tags: list[str] = field(default_factory=list)
     params: list[str] = field(default_factory=list)  # run parameters this node reads
+    # The column its output is partitioned by (partitioned.py): each run's
+    # rows replace the partitions they hold, and every other one is kept.
+    partition_by: str | None = None
     # Its output is uploaded (``exuvia push``), never computed here: for data
     # only another machine can read, such as a Bloomberg Terminal's.
     push: bool = False
@@ -151,10 +154,15 @@ class Graph:
 
     def effective_params(self, name: str) -> list[str]:
         """Parameters that can change this node's output: its own plus every
-        ancestor's. A node's outputs and history are kept per value of these."""
-        names = set(self.nodes[name].params)
-        for a in self.ancestors(name):
-            names.update(self.nodes[a].params)
+        ancestor's. A node's outputs and history are kept per value of these.
+
+        A partitioned node's own parameters don't count: each run (one per
+        ``as_of``, say) adds its partitions to one output, which downstream
+        nodes read whole."""
+        names: set[str] = set()
+        for n in {name} | self.ancestors(name):
+            if not self.nodes[n].partition_by:
+                names.update(self.nodes[n].params)
         return sorted(names)
 
     def topo_order(self, subset: set[str] | None = None) -> list[str]:
@@ -708,6 +716,8 @@ def _parse_python(node: Node, text: str) -> None:
                 node.push = value
             elif kw.arg == "live":
                 node.live = _live_value(value)
+            elif kw.arg == "partition_by":
+                node.partition_by = _partition_column(value)
     if node.push:
         _check_push(node)
     if node.schedule:
@@ -734,6 +744,15 @@ def _check_push(node: Node) -> None:
 
 
 MAX_LIVE_SECONDS = 7 * 24 * 3600
+
+
+def _partition_column(value: Any) -> str | None:
+    """``partition_by``: the name of one column of the node's output table."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or not value.strip() or len(value) > 128 or "\0" in value:
+        raise ValueError(f"`partition_by` names one column of the output table, e.g. \"date\", not {value!r}.")
+    return value.strip()
 
 
 def _live_value(value: Any) -> float | None:
@@ -815,6 +834,8 @@ def _parse_sql(node: Node, text: str) -> None:
                 _set_run_option(node, key, val)
             elif key == "live":
                 node.live = _live_value(val)
+            elif key == "partition_by":
+                node.partition_by = _partition_column(val)
             else:
                 desc.append(line.strip()[2:].strip())
         else:

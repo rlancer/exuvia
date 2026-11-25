@@ -43,6 +43,8 @@ PACKAGES_REL = ".exuvia/packages/"
 SECRETS_KEY_REL = f".exuvia/{envvars.KEY_FILE}"
 # Parts extracted from multi-output artifacts (workspace.part_file): a cache.
 PARTS_REL = ".exuvia/parts/"
+# Rows a partitioned node's run returned, until they are committed (workspace._staging).
+STAGING_REL = ".exuvia/staging/"
 # The hub's user list (users.py), under the hub's directory beside the
 # projects, unless EXUVIA_DB holds it. Exports carry it at the same path.
 HUB_USERS_DB = ".exuvia/hub.db"
@@ -416,6 +418,8 @@ class Hub:
                         continue  # fetched npm modules: fetched again from package.json when a view needs them
                     if posix.startswith(PARTS_REL):
                         continue  # extracted from the artifacts on the next read
+                    if posix.startswith(STAGING_REL):
+                        continue  # a run in progress: its rows are committed, or dropped, when it ends
                     if posix == SECRETS_KEY_REL and own_key_stays:
                         continue  # the server's EXUVIA_SECRETS_KEY encrypts: the archive holds no key
                     if rel.name.endswith((".tmp", ".part")):

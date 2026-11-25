@@ -106,6 +106,9 @@ class NodeCreate(BaseModel):
 class RunReq(BaseModel):
     force: bool = True
     params: dict[str, Any] | None = None
+    # A partitioned node: rebuild it from an empty output, so what the run
+    # returns becomes the whole output.
+    full_refresh: bool = False
     # Seconds to wait for the run to finish and report on it (see report.py);
     # unset returns as soon as the run starts. The run continues past the wait.
     wait: float | None = None
@@ -316,6 +319,15 @@ def _stream_meta(stream: ArrowStream) -> dict[str, Any]:
     return json.loads(raw) if raw else {}
 
 
+def _partition_range(raw: str | None) -> tuple[str | None, str | None] | None:
+    """``?partitions=`` on a partitioned output's data and export routes:
+    ``lo..hi`` (either end may be left out) or a single value."""
+    if raw is None or raw == "":
+        return None
+    lo, sep, hi = raw.partition("..")
+    return (lo or None, hi or None) if sep else (raw, raw)
+
+
 def _export_output(
     ws: Workspace,
     name: str,
@@ -324,19 +336,26 @@ def _export_output(
     run_id: str | None,
     part: str | None,
     filename: str | None = None,
+    partitions: tuple[str | None, str | None] | None = None,
 ) -> Any:
     """A node's output as a download: a table in ``fmt``; a JSON output as
     .json; a node with several outputs as the stored zip of all of them
-    (``fmt`` zip) or, with ``part``, one of them like an output of its own."""
+    (``fmt`` zip) or, with ``part``, one of them like an output of its own.
+    ``partitions`` keeps a range of a partitioned output's partitions."""
     fmt = _export_format(fmt, allow_zip=True)
-    stream = None if fmt == "zip" else ws.preview_arrow(name, params=params, run_id=run_id, part=part)
+    stream = (
+        None if fmt == "zip"
+        else ws.preview_arrow(name, params=params, run_id=run_id, part=part, partitions=partitions)
+    )
     if stream is not None:
         return _table_export(stream, fmt, filename or file_stem(name, part, _stream_meta(stream).get("run_params")))
     try:
-        out = ws.preview(name, limit=0, params=params, run_id=run_id, part=part)
+        out = ws.preview(name, limit=0, params=params, run_id=run_id, part=part, partitions=partitions)
     except KeyError as e:
         raise HTTPException(404, str(e.args[0])) from e
     kind = out.get("kind")
+    if kind == "table" and out.get("partition_by") and fmt != "zip":
+        raise HTTPException(404, f"{name}'s output has no rows{' in those partitions' if partitions else ''} yet")
     stem = filename or file_stem(name, part, out.get("run_params"))
     if kind == "json":
         if fmt != "json":
@@ -749,6 +768,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         offset: int = 0,
         params: str | None = None,
         part: str | None = None,
+        partitions: str | None = None,
         ctx: Ctx = Depends(get_ctx),
     ) -> Any:
         """``GET /nodes/{node}/data`` for a view: 403 unless the view reads ``node``."""
@@ -758,7 +778,10 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
             raise HTTPException(404, f"no view {name}") from e
         except PermissionError as e:
             raise HTTPException(403, str(e)) from e
-        return data(request, node, limit=limit, offset=offset, params=params, run_id=None, part=part, ctx=ctx)
+        return data(
+            request, node, limit=limit, offset=offset, params=params, run_id=None, part=part,
+            partitions=partitions, ctx=ctx,
+        )
 
     @r.post("/views/{name}/query", response_model=None)
     def view_query(name: str, body: QueryReq, request: Request, ctx: Ctx = Depends(get_ctx)) -> Any:
@@ -803,6 +826,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         params: str | None = None,
         part: str | None = None,
         filename: str | None = None,
+        partitions: str | None = None,
         ctx: Ctx = Depends(get_ctx),
     ) -> Any:
         """``GET /nodes/{node}/export`` for a view: 403 unless the view reads ``node``."""
@@ -813,7 +837,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         except PermissionError as e:
             raise HTTPException(403, str(e)) from e
         resolved = _resolve(ctx.ws, _query_params(params))
-        return _export_output(ctx.ws, node, format, resolved, None, part, filename)
+        return _export_output(ctx.ws, node, format, resolved, None, part, filename, _partition_range(partitions))
 
     @r.post("/views/{name}/query/export", response_model=None)
     def view_query_export(name: str, body: QueryExport, ctx: Ctx = Depends(get_ctx)) -> Any:
@@ -833,8 +857,15 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         node = ctx.ws.graph.nodes.get(name)
         if node is not None and node.push:
             raise HTTPException(400, f"{name} is a push node: its output is uploaded with `exuvia push`, not run here")
+        if body.full_refresh and node is not None and not node.partition_by:
+            raise HTTPException(400, f"{name} is not partitioned: a full refresh is for nodes with partition_by")
         params = _resolve(ctx.ws, body.params)
-        task = asyncio.create_task(ctx.ws.run([name], params=params, force={name} if body.force else set()))
+        task = asyncio.create_task(
+            ctx.ws.run(
+                [name], params=params, force={name} if body.force else set(),
+                full_refresh={name} if body.full_refresh else None,
+            )
+        )
         if body.wait is None:
             return {"ok": True, "params": params}
         finals = await _await_run(task, body.wait)
@@ -991,6 +1022,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         params: str | None = None,
         run_id: str | None = None,
         part: str | None = None,
+        partitions: str | None = None,
         ctx: Ctx = Depends(get_ctx),
     ) -> Any:
         """A node's output. JSON: the first ``limit`` rows (200 unless given,
@@ -999,18 +1031,41 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         when given; an output that is not a table is still answered as JSON.
         A node with several outputs answers ``kind: multi`` and its
         ``parts``; ``part`` picks one, which is then answered like an output
-        of its own."""
+        of its own. For a partitioned output, ``partitions`` (``lo..hi``,
+        either end optional, or one value) keeps those partitions and reads
+        only the files that hold them."""
         _need(ctx.ws, name)
         resolved = _resolve(ctx.ws, _query_params(params))
+        rng = _partition_range(partitions)
         if wants_arrow(request.headers.get("accept")):
-            stream = ctx.ws.preview_arrow(name, limit=limit, offset=offset, params=resolved, run_id=run_id, part=part)
+            stream = ctx.ws.preview_arrow(
+                name, limit=limit, offset=offset, params=resolved, run_id=run_id, part=part, partitions=rng
+            )
             if stream is not None:
                 return _arrow(stream)
         rows = 200 if limit is None else min(limit, 5000)
         try:
-            return ctx.ws.preview(name, limit=rows, offset=offset, params=resolved, run_id=run_id, part=part)
+            return ctx.ws.preview(
+                name, limit=rows, offset=offset, params=resolved, run_id=run_id, part=part, partitions=rng
+            )
         except KeyError as e:
             raise HTTPException(404, str(e.args[0])) from e
+
+    @r.get("/nodes/{name}/partitions")
+    def partitions_of(
+        name: str, params: str | None = None, run_id: str | None = None, ctx: Ctx = Depends(get_ctx)
+    ) -> dict[str, Any]:
+        """A partitioned output's manifest: ``partitions`` (each value with
+        the digest of its rows and its row count) and ``files``, the Parquet
+        chunks that hold them, each readable at
+        ``/artifacts/{name}/{artifact_id}.parquet``. ``artifact_id`` is the
+        output's id, which changes only when its data does. 404 for an
+        output that isn't partitioned."""
+        _need(ctx.ws, name)
+        out = ctx.ws.partitions_of(name, _resolve(ctx.ws, _query_params(params)), run_id)
+        if out is None:
+            raise HTTPException(404, f"{name} has no partitioned output for these parameters")
+        return out
 
     @r.get("/nodes/{name}/export", response_model=None)
     def export_node(
@@ -1020,6 +1075,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         run_id: str | None = None,
         part: str | None = None,
         filename: str | None = None,
+        partitions: str | None = None,
         ctx: Ctx = Depends(get_ctx),
     ) -> Any:
         """A node's whole output as a file to save: ``format`` csv, xlsx,
@@ -1030,13 +1086,17 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         node's name and the run's parameter values. Excel takes at most one
         sheet's 1,048,575 rows: a bigger table is a 413."""
         _need(ctx.ws, name)
-        return _export_output(ctx.ws, name, format, _resolve(ctx.ws, _query_params(params)), run_id, part, filename)
+        return _export_output(
+            ctx.ws, name, format, _resolve(ctx.ws, _query_params(params)), run_id, part, filename,
+            _partition_range(partitions),
+        )
 
     @r.api_route("/artifacts/{node}/{filename}", methods=["GET", "HEAD"], response_model=None)
     def artifact(node: str, filename: str, ctx: Ctx = Depends(get_ctx)) -> FileResponse:
         """The stored file of one output, ``<artifact_id>.parquet``,
         ``<artifact_id>.json`` or ``<artifact_id>.zip`` (several outputs),
-        byte for byte. An artifact id names its
+        or one chunk of a partitioned output (``GET /nodes/{node}/partitions``
+        lists them), byte for byte. An artifact id names its
         content, so the answer never changes and can be cached for good;
         ``Range`` requests are honoured, which lets a client read part of a
         Parquet file."""
