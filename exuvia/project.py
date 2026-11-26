@@ -42,7 +42,11 @@ VIEW_DEFAULT_ENTRY = "App.tsx"
 VIEW_SUFFIXES = (".tsx", ".ts", ".jsx", ".js", ".css", ".json", ".html", ".md", ".svg")
 VIEW_ENTRY_SUFFIXES = (".tsx", ".ts", ".jsx", ".js")
 VIEW_FILE_MAX_BYTES = 512 * 1024
-VIEW_MANIFEST_KEYS = ("title", "description", "runtime", "entry", "reads")
+VIEW_MANIFEST_KEYS = ("title", "description", "runtime", "entry", "reads", "canvas")
+# A view pinned on the canvas (``"canvas": true`` or ``{"width", "height"}``)
+# renders live in a card of this size, in pixels, unless it names its own.
+VIEW_CANVAS_DEFAULT = {"width": 560, "height": 360}
+VIEW_CANVAS_LIMITS = {"width": (280, 1600), "height": (180, 1200)}
 _VIEW_PART = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")  # no leading dot: no `..`, no hidden files
 _VIEW_SKIP = {"node_modules", "__pycache__"}
 
@@ -99,6 +103,9 @@ class Node:
     # (0, from ``live=True``: every time).
     live: float | None = None
     schedule_source: str | None = None  # "code" | "config" (exuvia.json `schedules`)
+    # The stage it belongs to on the canvas (exuvia.json `groups`). Kept out
+    # of the node file so grouping nodes never changes their code hash.
+    group: str | None = None
     helpers: list[str] = field(default_factory=list)  # lib/ files it imports, directly or not
     code_hash: str = ""  # the node file plus every helper it imports
     parse_error: str | None = None
@@ -120,6 +127,9 @@ class View:
     runtime: str = "react"
     entry: str = VIEW_DEFAULT_ENTRY
     reads: list[str] = field(default_factory=list)  # nodes whose outputs it reads
+    # Pinned on the canvas: rendered live in a card of this size. None: the
+    # canvas shows it as a small card under the nodes it reads.
+    canvas: dict[str, int] | None = None
     files: list[str] = field(default_factory=list)
     hash: str = ""
     parse_error: str | None = None
@@ -129,9 +139,27 @@ class View:
 
 
 @dataclass
+class Group:
+    """A stage of the graph on the canvas: a name, what it is for and the
+    nodes in it (``exuvia.json`` ``groups``). ``missing`` lists nodes it
+    names that do not exist (any more); ``problem`` says what else is wrong."""
+
+    name: str
+    title: str = ""
+    description: str = ""
+    nodes: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+    problem: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class Graph:
     nodes: dict[str, Node]
     views: dict[str, View] = field(default_factory=dict)
+    groups: dict[str, Group] = field(default_factory=dict)
 
     def readers(self, name: str) -> list[str]:
         """Views that read node ``name``'s output."""
@@ -364,8 +392,40 @@ class Project:
                         _validate_cron(n.schedule)
                     except ValueError as e:
                         n.parse_error = str(e)
+        graph.groups = self.parse_groups(graph.nodes)
         graph.views = {v.name: v for v in (self.parse_view(name, names) for name in self.view_names())}
         return graph
+
+    def parse_groups(self, nodes: dict[str, Node]) -> dict[str, Group]:
+        """The canvas's stages from ``exuvia.json`` ``groups``, in the order
+        written, and each node's ``group``. A node named by two groups is in
+        the first; the second reports it. A group that is malformed is listed
+        with its ``problem`` and holds nothing."""
+        raw = self.config.get("groups")
+        out: dict[str, Group] = {}
+        if not isinstance(raw, dict):
+            return out
+        for name, spec in raw.items():
+            group = Group(name=str(name), title=str(name))
+            out[group.name] = group
+            clean, problem = check_group(name, spec)
+            if problem:
+                group.problem = problem
+                continue
+            group.title, group.description = clean["title"] or group.name, clean["description"]
+            taken: list[str] = []
+            for n in clean["nodes"]:
+                node = nodes.get(n)
+                if node is None:
+                    group.missing.append(n)
+                elif node.group is not None:
+                    taken.append(f"{n} (in {node.group})")
+                else:
+                    node.group = group.name
+                    group.nodes.append(n)
+            if taken:
+                group.problem = f"Already in another group: {', '.join(taken)}."
+        return out
 
     def path_for(self, name: str) -> Path | None:
         for suffix in NODE_SUFFIXES:
@@ -538,6 +598,7 @@ class Project:
             view.runtime = clean["runtime"]
             view.entry = clean["entry"]
             view.reads = clean["reads"]
+            view.canvas = clean["canvas"]
         if not errors and view.entry not in view.files:
             errors.append(f"Entry file {view.entry} does not exist.")
         unknown = [r for r in view.reads if r not in nodes]
@@ -579,6 +640,10 @@ class Project:
         if problems:
             raise ValueError(" ".join(problems))
         clean["title"] = clean["title"] or name
+        if clean["canvas"] is None:
+            del clean["canvas"]  # not pinned: leave the key out of the file
+        elif clean["canvas"] == VIEW_CANVAS_DEFAULT:
+            clean["canvas"] = True
         base.mkdir(parents=True, exist_ok=True)
         p = base / VIEW_MANIFEST
         p.write_text(json.dumps(clean, indent=2) + "\n", encoding="utf-8", newline="\n")
@@ -938,6 +1003,7 @@ def check_view_manifest(raw: Any) -> tuple[dict[str, Any], list[str]]:
         "runtime": VIEW_RUNTIMES[0],
         "entry": VIEW_DEFAULT_ENTRY,
         "reads": [],
+        "canvas": None,
     }
     if not isinstance(raw, dict):
         return clean, [f"{VIEW_MANIFEST} must be a JSON object."]
@@ -976,7 +1042,68 @@ def check_view_manifest(raw: Any) -> tuple[dict[str, Any], list[str]]:
             clean["reads"] = list(dict.fromkeys(reads))
         else:
             problems.append('`reads` must be a list of node names, e.g. ["prices", "rolling_vol"].')
+    canvas = raw.get("canvas")
+    if canvas is not None:
+        try:
+            clean["canvas"] = view_canvas(canvas)
+        except ValueError as e:
+            problems.append(str(e))
     return clean, problems
+
+
+def view_canvas(value: Any) -> dict[str, int] | None:
+    """A view's ``canvas`` setting: false (not pinned), true (pinned at the
+    default size) or ``{"width", "height"}`` in pixels."""
+    if value is False or value is None:
+        return None
+    if value is True:
+        return dict(VIEW_CANVAS_DEFAULT)
+    if isinstance(value, dict) and not set(value) - set(VIEW_CANVAS_DEFAULT):
+        out = dict(VIEW_CANVAS_DEFAULT)
+        for key, (lo, hi) in VIEW_CANVAS_LIMITS.items():
+            if key not in value:
+                continue
+            n = value[key]
+            if isinstance(n, bool) or not isinstance(n, (int, float)) or not lo <= n <= hi:
+                raise ValueError(f"`canvas.{key}` must be a number of pixels from {lo} to {hi}, not {n!r}.")
+            out[key] = int(n)
+        return out
+    raise ValueError(
+        '`canvas` pins the view on the canvas: true, false, or {"width": 560, "height": 360} in pixels.'
+    )
+
+
+GROUP_TITLE_MAX = 64
+GROUP_DESCRIPTION_MAX = 500
+
+
+def check_group(name: Any, spec: Any) -> tuple[dict[str, Any], str | None]:
+    """One entry of ``exuvia.json`` ``groups`` with defaults filled in, and
+    what is wrong with it. ``spec`` is ``{"title", "description", "nodes"}``,
+    or the list of nodes alone."""
+    clean: dict[str, Any] = {"title": "", "description": "", "nodes": []}
+    if not isinstance(name, str) or not NODE_NAME.match(name):
+        return clean, "Group names are snake_case identifiers, like node names (e.g. ingest)."
+    if isinstance(spec, list):
+        spec = {"nodes": spec}
+    if not isinstance(spec, dict):
+        return clean, 'A group is {"title", "description", "nodes"} or a list of node names.'
+    unknown = sorted(str(k) for k in spec if k not in clean)
+    if unknown:
+        return clean, f"Unknown key(s) in group {name}: {', '.join(unknown)} (allowed: title, description, nodes)."
+    for key, limit in (("title", GROUP_TITLE_MAX), ("description", GROUP_DESCRIPTION_MAX)):
+        value = spec.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or len(value) > limit:
+            return clean, f"`{key}` of group {name} must be text of at most {limit} characters."
+        clean[key] = value.strip()
+    nodes = spec.get("nodes")
+    if nodes is not None:
+        if not isinstance(nodes, list) or not all(isinstance(n, str) and NODE_NAME.match(n) for n in nodes):
+            return clean, f'`nodes` of group {name} must be a list of node names, e.g. ["prices", "returns"].'
+        clean["nodes"] = list(dict.fromkeys(nodes))
+    return clean, None
 
 
 RUN_OPTIONS = ("retries", "retry_delay", "overlap", "timeout")

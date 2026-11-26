@@ -183,6 +183,12 @@ class ScheduleReq(BaseModel):
     cron: str | None = None  # "" turns the schedule off; null drops the override
 
 
+class GroupReq(BaseModel):
+    nodes: list[str] = []
+    title: str | None = None
+    description: str | None = None
+
+
 class ParamReq(BaseModel):
     type: str = "string"
     default: Any = None
@@ -524,6 +530,25 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
     def param_delete(name: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         ctx.ws.set_param(name, None)
         return params_list(ctx)
+
+    # -- groups: the canvas's stages (exuvia.json `groups`) -------------------
+    @r.get("/groups")
+    def groups_list(ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        return {"groups": [g.to_dict() for g in ctx.ws.graph.groups.values()]}
+
+    @r.put("/groups/{name}")
+    def group_put(name: str, body: GroupReq, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """Create or change a group; its nodes move out of any other group."""
+        try:
+            return ctx.ws.set_group(name, body.nodes, body.title, body.description)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @r.delete("/groups/{name}")
+    def group_delete(name: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        if name not in ctx.ws.graph.groups:
+            raise HTTPException(404, f"no group named {name}")
+        return ctx.ws.set_group(name, None)
 
     # -- environment variables (envvars.py) -------------------------------------
     @r.get("/env")

@@ -252,6 +252,12 @@ TOOLS: list[dict[str, Any]] = [
                 "reads": {"type": "array", "items": {"type": "string"}, "description": "node names"},
                 "entry": {"type": "string", "description": "the component file, default App.tsx"},
                 "runtime": {"type": "string", "enum": ["react"]},
+                "canvas": {
+                    "description": (
+                        "pin the view on the graph's canvas, rendered live: true, or "
+                        '{"width": 560, "height": 360} in pixels; false unpins it'
+                    ),
+                },
             },
             "required": ["name"],
             "additionalProperties": False,
@@ -370,6 +376,37 @@ TOOLS: list[dict[str, Any]] = [
                 "description": {"type": "string"},
             },
             "required": ["name", "type"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "set_group",
+        "description": (
+            "Create or change a group: a stage of the graph (ingest, features, reports, ...) drawn as one "
+            "labelled region on the canvas, which the user can collapse into a single card with the stage's "
+            "combined state. Stored in exuvia.json; no node file changes, so nothing goes stale. `nodes` is the "
+            "whole list of the group's nodes (a node moves out of any other group); delete_group removes one. "
+            "Group a graph once it has more than about ten nodes, by what each step is for."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "snake_case group name, e.g. ingest"},
+                "nodes": {"type": "array", "items": {"type": "string"}, "description": "node names, in no order"},
+                "title": {"type": "string", "description": "the label on the canvas; default the name"},
+                "description": {"type": "string", "description": "what the stage does, one sentence"},
+            },
+            "required": ["name", "nodes"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "delete_group",
+        "description": "Remove a group from the canvas. Its nodes stay; they are just no longer grouped.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
             "additionalProperties": False,
         },
     },
@@ -765,7 +802,12 @@ def rolling_vol(returns):
 - A view's state follows the nodes it reads, for a parameter set: ready, missing (a read node has no output yet), stale (one is out of date), or error (broken manifest, missing entry file, unknown node).
 - The user sees views in the Views mode of the exuvia UI, rendered in a sandboxed iframe with no network access. The entry file's `export default` is a React component. Imports: the view's own files by relative path (`./Chart`, `./styles.css`, `./data.json`); the packages every view has: `react` (19), `react-dom`, `apache-arrow`, `vega-embed`, `exuvia`; and the npm packages in the project's `package.json`, {view_packages}. Add an npm package with add_view_packages rather than writing a chart or table library by hand. The frame fetches nothing at run time, so a package that loads tiles, fonts or data from the network will not work.
 - Data comes from `exuvia`: `useTable(node)` / `useJson(node)` (a read node's current output; `useTable("fit.coefs")` for one output of a node with several), `useQuery(sql)` (DuckDB over the read nodes only, `<node>__runs` for history), each `{data, error, loading}` and reloading when an output changes; `rows(table)` turns an Arrow table into plain objects; `useParams()` gives `[values, setParams, declared]` (setting parameters changes what is shown, it never runs nodes); `useDark()`; `useRefreshing(node?)` (true while a read node is being re-run, e.g. a live node refreshing as the view opened: show a small "updating" note rather than blanking the view); `download(node | {sql}, format)` saves a read node's output or a query's whole result as csv, xlsx, parquet or json (for a download button). Style with the page's CSS variables (`var(--text)`, `--muted`, `--line`, `--panel`, `--accent`, `--mono`), which follow light and dark mode.
+- The canvas draws every view as a small card under the nodes it reads. `canvas: true` in the manifest (write_view) pins the view on the canvas instead, rendered live in a card (`{"width": 560, "height": 360}` sets its size): for an overview of what the whole graph does, such as a status board or a summary of the latest results.
 - Only write views when the user asks for one.
+
+## Groups
+- A group is a stage of the graph (ingest, features, models, reports): one labelled region on the canvas that the user can collapse into a single card with the stage's combined state, so a large graph reads as a few steps. Groups are stored in exuvia.json and change no node file, so grouping never makes an output stale.
+- set_group sets a group's whole list of nodes (a node is in at most one group, and moves out of any other); delete_group removes the group and keeps its nodes. When a graph grows past about ten nodes, or the user asks to organise it, group the nodes by what each step is for, and put each new node in its stage.
 
 ## When exuvia itself is the problem
 - If a tool fails on valid input, exuvia contradicts this guide, this guide is wrong or unclear, or the user needs something exuvia cannot do, say so plainly and offer to report it with report_issue. The maintainers want these reports and the project is young, so do not stay quiet about a rough edge. Do not use it for errors in the user's own nodes or data: fix those.
@@ -870,7 +912,7 @@ class Agent:
                     k: n.get(k)
                     for k in (
                         "name", "kind", "deps", "helpers", "description", "schedule", "cascade", "params", "run_params",
-                        "state", "reason", "rows", "schema",
+                        "group", "state", "reason", "rows", "schema",
                     )
                     if n.get(k) not in (None, [], "")
                 }
@@ -1001,6 +1043,15 @@ class Agent:
                 return False, str(e), {}
             ws.set_param(args["name"], spec)
             return True, json.dumps({"defined": args["name"], **spec, "value_now": ws.resolve_params()[args["name"]]}), {}
+        if name in ("set_group", "delete_group"):
+            if name == "delete_group" and args["name"] not in ws.graph.groups:
+                return False, f"no group named {args['name']}", {}
+            try:
+                out = ws.set_group(args["name"], args.get("nodes") if name == "set_group" else None,
+                                   args.get("title"), args.get("description"))
+            except ValueError as e:
+                return False, str(e), {}
+            return True, json.dumps(out), {}
         if name == "delete_param":
             if args["name"] not in ws.project.params:
                 return False, f"no parameter named {args['name']}", {}
@@ -1177,7 +1228,7 @@ class Agent:
             if name == "delete_view":
                 return True, json.dumps(ws.delete_view(view)), {}
             if name == "write_view":
-                keys = ("title", "description", "reads", "entry", "runtime")
+                keys = ("title", "description", "reads", "entry", "runtime", "canvas")
                 info = ws.write_view_manifest(view, {k: args[k] for k in keys if k in args})
             elif name == "write_view_file":
                 info = ws.write_view_file(view, args["path"], args["source"])
