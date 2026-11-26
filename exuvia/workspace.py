@@ -69,7 +69,7 @@ from .packages import Packages, missing_package
 from .keys import KeyViolation, enforce_file
 from .partitioned import Manifest, PartitionError, Writer, commit, in_range, prune, sort_values
 from .pushing import save_pushed
-from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Project, View, _hash, _validate_cron, check_stage
+from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Project, View, _hash, _validate_cron, check_stage, same_code
 from . import outputs
 from .outputs import jsonable, lock_outputs, output_parts, outputs_connection  # noqa: F401 - lock_outputs, outputs_connection: re-exported
 from .runner import PART_EXT, PART_NAME, finite
@@ -724,7 +724,7 @@ class Workspace:
                 state, reason = "error", node.parse_error
             elif ls is None:
                 state, reason = "new", ("waiting for a push" if node.push else "never run")
-            elif ls["code_hash"] != node.code_hash and not node.push:
+            elif not node.push and not same_code(ls, node):
                 state, reason = "stale", "code changed"
             elif ls.get("kind") == "pickle":
                 # Never read (see runner.load_artifact): re-run before use.
@@ -1182,7 +1182,12 @@ class Workspace:
             prev = self.store.last_success(name, key)
             self._inflight[(name, key)] = run_id
             self.store.update_run(
-                run_id, status="running", code_hash=node.code_hash, inputs={}, started_at=time.time()
+                run_id,
+                status="running",
+                code_hash=node.code_hash,
+                logic_hash=node.logic_hash,
+                inputs={},
+                started_at=time.time(),
             )
             self._emit_run(run_id)
             by = f" by {started_by}" if started_by else ""
@@ -1551,7 +1556,9 @@ class Workspace:
         # A retry keeps the first attempt's start time, so the run's duration
         # covers every attempt.
         started = {"started_at": time.time()} if attempt == 1 else {}
-        self.store.update_run(run_id, status="running", code_hash=node.code_hash, inputs=input_ids, **started)
+        self.store.update_run(
+            run_id, status="running", code_hash=node.code_hash, logic_hash=node.logic_hash, inputs=input_ids, **started
+        )
         self._emit_run(run_id)
 
         # The project's variables, its group's and the hub's, read for each attempt so a
