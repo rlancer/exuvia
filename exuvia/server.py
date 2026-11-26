@@ -47,7 +47,7 @@ from .project import NODE_NAME, PARAM_TYPES, coerce_param
 from .pushing import format_of, max_bytes
 from .report import graph_report, node_report
 from .groups import open_groups
-from .sharing import GENERAL, GRANT_ROLES, LINK_COOKIE, MAX_LINK_DAYS, at_least, looks_like_link, open_sharing
+from .sharing import GRANT_ROLES, LINK_COOKIE, MAX_LINK_DAYS, at_least, looks_like_link, open_sharing
 from .store import clean_origin
 from .agent_mcp import CALLBACK_PATH, McpServers, finish_sign_in, open_mcp_servers, private_allowed, probe, sign_in
 from .agent_mcp import enabled as agent_mcp_enabled
