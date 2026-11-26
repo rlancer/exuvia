@@ -27,8 +27,9 @@ import type { GraphNode, NodeStage, Project, ProjectView } from "./api";
 import { ago, fmtNum, until } from "./util";
 import { IconClock, IconCollapse, IconLayers, IconUncollapse, IconWindow } from "./icons";
 import { StateDot, statusOf, statusText } from "./ui/state";
-import { countStates, lineage, STATE_ORDER, visible, worstState, type Item, type Visible } from "./canvasGraph";
+import { lineage, visible, worstState, type Item, type Visible } from "./canvasGraph";
 import { ActivityPanel } from "./CanvasActivity";
+import { nodeCard, StateCounts, stripeColor } from "./ui/nodeCard";
 
 const PinnedView = lazy(() => import("./PinnedView"));
 
@@ -50,8 +51,8 @@ const Card = memo(function Card({ data }: NodeProps<Node<CardData>>) {
   const busy = g.state === "running" || g.state === "queued";
   const status = statusOf(g.state);
   return (
-    <div key={flash} {...stylex.props(styles.card, selected && styles.selected, flash > 0 && styles.flash, dim && styles.dim)}>
-      <span {...stylex.props(styles.stripe, stripe[status])} />
+    <div key={flash} {...stylex.props(styles.card, selected && styles.selected, flash > 0 && nodeCard.flash, dim && styles.dim)}>
+      <span {...stylex.props(nodeCard.stripe, stripeColor[status])} />
       <Handle type="target" position={Position.Top} isConnectable={false} />
       <div {...stylex.props(styles.row1)}>
         <StateDot state={g.state} />
@@ -76,26 +77,11 @@ const Card = memo(function Card({ data }: NodeProps<Node<CardData>>) {
         )}
         {!g.schedule && g.finished_at && !busy && <span>{ago(g.finished_at)}</span>}
       </div>
-      {busy && <div {...stylex.props(styles.bar)} />}
+      {busy && <div {...stylex.props(nodeCard.busyBar)} />}
       <Handle type="source" position={Position.Bottom} isConnectable={false} />
     </div>
   );
 });
-
-/** The count of each state among a stage's nodes, worst first: a dot and a number each. */
-function StateCounts({ members }: { members: GraphNode[] }) {
-  const counts = countStates(members);
-  return (
-    <>
-      {STATE_ORDER.filter((s) => counts[s]).map((s) => (
-        <span key={s} {...stylex.props(styles.count)} title={`${counts[s]} ${s}`}>
-          <StateDot state={s} label={`${counts[s]} ${s}`} />
-          {counts[s]}
-        </span>
-      ))}
-    </>
-  );
-}
 
 type StageData = { stage: NodeStage; members: GraphNode[]; flash: number; dim: boolean; selected: boolean };
 
@@ -105,8 +91,8 @@ const Stage = memo(function Stage({ data }: NodeProps<Node<StageData>>) {
   const worst = worstState(members);
   const busy = members.some((m) => m.state === "running" || m.state === "queued");
   return (
-    <div key={flash} {...stylex.props(styles.card, styles.stage, selected && styles.selected, flash > 0 && styles.flash, dim && styles.dim)} title="Open the stage out">
-      <span {...stylex.props(styles.stripe, stripe[statusOf(worst)])} />
+    <div key={flash} {...stylex.props(styles.card, styles.stage, selected && styles.selected, flash > 0 && nodeCard.flash, dim && styles.dim)} title="Open the stage out">
+      <span {...stylex.props(nodeCard.stripe, stripeColor[statusOf(worst)])} />
       <Handle type="target" position={Position.Top} isConnectable={false} />
       <div {...stylex.props(styles.row1)}>
         <IconLayers />
@@ -119,7 +105,7 @@ const Stage = memo(function Stage({ data }: NodeProps<Node<StageData>>) {
       <div {...stylex.props(styles.meta)}>
         <StateCounts members={members} />
       </div>
-      {busy && <div {...stylex.props(styles.bar)} />}
+      {busy && <div {...stylex.props(nodeCard.busyBar)} />}
       <Handle type="source" position={Position.Bottom} isConnectable={false} />
     </div>
   );
@@ -478,20 +464,6 @@ export function Canvas(props: {
   );
 }
 
-const REDUCED = "@media (prefers-reduced-motion: reduce)";
-
-/** A node the agent or a run just touched: a ring that spreads from it and fades. */
-const flashRing = stylex.keyframes({
-  "0%": { boxShadow: `0 0 0 0 color-mix(in srgb, ${colorVars["--color-accent"]} 70%, transparent)` },
-  "100%": { boxShadow: "0 0 0 14px transparent" },
-});
-
-/** A running node's bar: a light that crosses it. */
-const slide = stylex.keyframes({
-  from: { backgroundPosition: "100% 0" },
-  to: { backgroundPosition: "-100% 0" },
-});
-
 const styles = stylex.create({
   // React Flow in the theme's colours, through its own custom properties: the
   // canvas is the page's ground, its edges and handles are the theme's rules,
@@ -542,11 +514,6 @@ const styles = stylex.create({
   },
   // Off the selected node's lineage: still there, out of the way.
   dim: { opacity: 0.38 },
-  flash: {
-    animationName: { default: flashRing, [REDUCED]: "none" },
-    animationDuration: "1.6s",
-    animationTimingFunction: "ease-out",
-  },
   // A folded stage reads as a stack of cards: a second edge under it.
   stage: {
     borderColor: colorVars["--color-border-emphasized"],
@@ -564,8 +531,6 @@ const styles = stylex.create({
   viewName: { fontFamily: "inherit", fontWeight: fontWeightVars["--font-weight-medium"] },
   pinnedWait: { cursor: "default" },
   size: (width: number, height: number) => ({ width, height }),
-  // The state's colour down the card's leading edge.
-  stripe: { position: "absolute", insetBlock: 0, insetInlineStart: 0, width: "3px", borderStartStartRadius: radiusVars["--radius-container"], borderEndStartRadius: radiusVars["--radius-container"] },
   row1: {
     display: "flex",
     alignItems: "center",
@@ -610,19 +575,9 @@ const styles = stylex.create({
     fontSize: textSizeVars["--font-size-sm"],
     whiteSpace: "nowrap",
   },
-  count: { display: "inline-flex", alignItems: "center", gap: spacingVars["--spacing-1"], fontVariantNumeric: "tabular-nums" },
   state: { fontWeight: fontWeightVars["--font-weight-semibold"] },
   sched: { display: "inline-flex", alignItems: "center", gap: spacingVars["--spacing-1"] },
   paused: { textDecorationLine: "line-through" },
-  bar: {
-    height: "2px",
-    backgroundImage: `linear-gradient(90deg, transparent, ${colorVars["--color-accent"]}, transparent)`,
-    backgroundSize: "200% 100%",
-    animationName: { default: slide, [REDUCED]: "none" },
-    animationDuration: "1.2s",
-    animationTimingFunction: "linear",
-    animationIterationCount: "infinite",
-  },
 
   // An open stage: a tinted region with its name, what it is for and its states along the top.
   frame: {
@@ -649,13 +604,4 @@ const styles = stylex.create({
   frameTitle: { color: colorVars["--color-text-primary"], fontWeight: fontWeightVars["--font-weight-semibold"], fontSize: textSizeVars["--font-size-base"] },
   frameDesc: { flexGrow: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" },
   frameCounts: { display: "inline-flex", alignItems: "center", gap: spacingVars["--spacing-2"] },
-});
-
-/** The stripe's colour per status (ui/state.tsx): a node that never ran has the rule's grey. */
-const stripe = stylex.create({
-  success: { backgroundColor: colorVars["--color-success"] },
-  warning: { backgroundColor: colorVars["--color-warning"] },
-  error: { backgroundColor: colorVars["--color-error"] },
-  accent: { backgroundColor: colorVars["--color-accent"] },
-  neutral: { backgroundColor: colorVars["--color-border-emphasized"] },
 });

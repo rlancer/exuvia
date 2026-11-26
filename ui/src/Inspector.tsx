@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { EditorView } from "@uiw/react-codemirror";
 import { python } from "@codemirror/lang-python";
 import { sql } from "@codemirror/lang-sql";
 import * as stylex from "@stylexjs/stylex";
-import { colorVars, fontWeightVars, radiusVars, spacingVars, textSizeVars, typeScaleVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
+import { colorVars, radiusVars, spacingVars, textSizeVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
@@ -14,14 +14,13 @@ import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { List, ListItem } from "@astryxdesign/core/List";
-import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Text } from "@astryxdesign/core/Text";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
-import { api, type Column, type GraphNode, type Preview, type RunRow } from "./api";
-import { ago, dur, fmtCell, fmtNum, until } from "./util";
+import { api, type Column, type GraphNode, type RunRow } from "./api";
+import { ago, dur, fmtNum, until } from "./util";
 import { IconClock, IconPlay, IconSpark, IconTrash, MOD } from "./icons";
 import { failed } from "./toast";
 import { HistoryBrowser } from "./History";
@@ -29,35 +28,9 @@ import { useAccess } from "./Access";
 import { codeGroup, DownloadMenu, outputGroups, tableItems } from "./Export";
 import { nodeExportUrl, saveQuery, saveUrl } from "./download";
 import { CodeEditor } from "./ui/CodeEditor";
+import { DataTable, NodeChart, OutputPicker, useNodePreview, useOutputPart } from "./NodeOutput";
 import { StateDot, statusOf, statusText } from "./ui/state";
 import { useColorMode } from "./theme/colorMode";
-
-/**
- * A chart's series colours: the accent first, then the states' hues and four
- * more, as the theme has them (its custom properties, so they follow the mode).
- */
-const SERIES = [
-  "--color-accent",
-  "--color-warning",
-  "--color-success",
-  "--color-error",
-  "--color-data-categorical-pink",
-  "--color-data-categorical-teal",
-  "--color-data-categorical-purple",
-  "--color-data-neutral",
-];
-
-/** What the theme's colours are at `host`, here and now, in a form a canvas can paint with. */
-function themeColors(host: HTMLElement, names: string[]): string[] {
-  const probe = document.createElement("span");
-  host.appendChild(probe);
-  const out = names.map((name) => {
-    probe.style.color = `var(${name})`;
-    return getComputedStyle(probe).color;
-  });
-  probe.remove();
-  return out;
-}
 
 type Tab = "code" | "data" | "chart" | "runs" | "history";
 
@@ -402,69 +375,14 @@ export function Inspector(props: {
   );
 }
 
-/**
- * A table of an output or a query's result: a plain table, in the mono, whose
- * header stays in view as its scroller (the element around it) scrolls. Each
- * column is as wide as what is in it, up to a width past which a cell is cut
- * short and shows whole when pointed at.
- */
-export function DataTable({ columns, rows }: { columns: Column[]; rows: unknown[][] }) {
-  const numeric = useMemo(
-    () => columns.map((c) => /int|float|double|decimal|numeric|bigint|real/i.test(c.type)),
-    [columns],
-  );
-  // Thousands of cells: their styles are worked out once, not per cell.
-  const row = stylex.props(grid.row);
-  const cell = stylex.props(grid.cell);
-  const num = stylex.props(grid.cell, grid.num);
-  return (
-    <table {...stylex.props(grid.table)}>
-      <thead>
-        <tr>
-          {columns.map((c, j) => (
-            <th key={c.name} {...stylex.props(grid.cell, grid.head, numeric[j] && grid.num)}>
-              {c.name}
-              <span {...stylex.props(grid.type)}>{c.type.toLowerCase()}</span>
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((r, i) => (
-          <tr key={i} {...row}>
-            {r.map((v, j) => (
-              <td key={j} {...(numeric[j] ? num : cell)} title={typeof v === "string" ? v : undefined}>
-                {fmtCell(v)}
-              </td>
-            ))}
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
 function DataTab({ node }: { node: GraphNode }) {
-  const [p, setP] = useState<Preview | null>(null);
-  // A node with several outputs shows one at a time; null picks the first.
-  const [part, setPart] = useState<string | null>(null);
+  // A node with several outputs shows one at a time.
+  const { parts, shown, pick } = useOutputPart(node);
   const multi = node.output_kind === "multi";
-  const parts = multi ? (node.schema ?? []).map((c) => c.name) : [];
-  const shown = multi ? (part !== null && parts.includes(part) ? part : (parts[0] ?? null)) : null;
-  useEffect(() => {
-    let live = true;
-    api.data(node.name, 300, shown ?? undefined).then((d) => live && setP(d));
-    return () => {
-      live = false;
-    };
-  }, [node.name, node.artifact_id, shown]);
-  const picker = multi && parts.length > 0 && shown !== null && (
+  const { preview: p } = useNodePreview(node, 300, shown);
+  const picker = shown !== null && (
     <div {...stylex.props(styles.strip)}>
-      <SegmentedControl size="sm" value={shown} onChange={setPart} label={`${node.name}: outputs`}>
-        {parts.map((name) => (
-          <SegmentedControlItem key={name} value={name} label={name} />
-        ))}
-      </SegmentedControl>
+      <OutputPicker node={node} parts={parts} shown={shown} onPick={pick} />
       {node.schema?.find((c) => c.name === shown)?.type === "table" ? (
         <Text type="supporting" color="secondary">
           SQL: <Code size="inherit">{`${node.name}.${shown}`}</Code>
@@ -544,67 +462,6 @@ function ChartTab({ node, dark }: { node: GraphNode; dark: boolean }) {
     <div {...stylex.props(styles.scroll, styles.chart)}>
       <NodeChart node={node} dark={dark} />
     </div>
-  );
-}
-
-/** A node's chart (`chart` in its decorator): its Vega-Lite spec over its output, in the theme's colours. The notebook draws it too. */
-export function NodeChart({ node, dark, height = 300 }: { node: GraphNode; dark: boolean; height?: number }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    let finalize: (() => void) | undefined;
-    // A node with several outputs charts its first table.
-    const firstTable = node.output_kind === "multi" ? (node.schema ?? []).find((c) => c.type === "table")?.name : undefined;
-    api.data(node.name, 5000, firstTable).then(async (d) => {
-      if (cancelled || !ref.current) return;
-      if (d.kind !== "table" || !d.columns || !d.rows) {
-        setError("Charts need a table output. Run the node first.");
-        return;
-      }
-      const cols = d.columns.map((c) => c.name);
-      const values = d.rows.map((r) => Object.fromEntries(r.map((v, i) => [cols[i], v])));
-      // The chart is drawn on a canvas: it takes the theme's colours as they are now.
-      const [label, rule, strong, ...series] = themeColors(ref.current, ["--color-text-secondary", "--color-border", "--color-border-emphasized", ...SERIES]);
-      const spec = {
-        $schema: "https://vega.github.io/schema/vega-lite/v5.json",
-        width: "container",
-        height,
-        autosize: { type: "fit", contains: "padding" },
-        ...node.chart,
-        data: { values },
-        config: {
-          background: "transparent",
-          font: getComputedStyle(ref.current).fontFamily || "sans-serif",
-          view: { stroke: null },
-          axis: { labelColor: label, titleColor: label, gridColor: rule, domainColor: strong, tickColor: strong },
-          legend: { labelColor: label, titleColor: label },
-          range: { category: series },
-          ...(node.chart?.config as object | undefined),
-        },
-      };
-      try {
-        setError(null);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        // Vega is as large as the rest of the app: it is fetched when a chart is first drawn.
-        const { default: embed } = await import("vega-embed");
-        if (!ref.current) return;
-        const res = await embed(ref.current, spec as any, { actions: { export: true, source: false, compiled: false, editor: false } });
-        finalize = () => res.finalize();
-      } catch (e) {
-        setError(`Chart spec error: ${(e as Error).message}`);
-      }
-    });
-    return () => {
-      cancelled = true;
-      finalize?.();
-    };
-  }, [node.name, node.artifact_id, node.chart, dark, height]);
-  return (
-    <>
-      {error && <Banner status="error" title={error} />}
-      <div ref={ref} {...stylex.props(styles.vega)} />
-    </>
   );
 }
 
@@ -902,8 +759,6 @@ const styles = stylex.create({
     backgroundColor: "var(--exuvia-code-background)",
   },
   chart: { display: "flex", flexDirection: "column", gap: spacingVars["--spacing-3"], padding: spacingVars["--spacing-4"] },
-  // vega-embed makes its element inline; as a flex item it is as wide as the pane, which the chart fits itself to.
-  vega: { width: "100%", flexShrink: 0 },
   // A row's own padding and this one put its dot on the title's line.
   runs: { flexShrink: 0, maxHeight: "45%", overflow: "auto", paddingInline: spacingVars["--spacing-2"], ...rule },
   // In the overview the rows reach into the pane's padding, so their dots are on the headings' line.
@@ -943,41 +798,4 @@ const styles = stylex.create({
     borderColor: colorVars["--color-border"],
     borderRadius: radiusVars["--radius-element"],
   },
-});
-
-/** The data table's parts (DataTable). */
-const grid = stylex.create({
-  table: {
-    width: "max-content",
-    minWidth: "100%",
-    borderCollapse: "separate",
-    borderSpacing: 0,
-    fontFamily: typographyVars["--font-family-code"],
-    fontSize: textSizeVars["--font-size-sm"],
-    lineHeight: typeScaleVars["--text-body-leading"],
-  },
-  row: { backgroundColor: { default: "transparent", ":hover": colorVars["--color-background-muted"] } },
-  cell: {
-    maxWidth: "320px",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-    textAlign: "start",
-    fontWeight: fontWeightVars["--font-weight-normal"],
-    paddingBlock: spacingVars["--spacing-1"],
-    // The first and the last column keep to the pane's own margin.
-    paddingInlineStart: { default: spacingVars["--spacing-3"], ":first-child": spacingVars["--spacing-4"] },
-    paddingInlineEnd: { default: spacingVars["--spacing-3"], ":last-child": spacingVars["--spacing-4"] },
-    ...rule,
-  },
-  head: {
-    position: "sticky",
-    top: 0,
-    zIndex: 1,
-    fontWeight: fontWeightVars["--font-weight-semibold"],
-    backgroundColor: colorVars["--color-background-muted"],
-  },
-  // A column's type, under its name.
-  type: { display: "block", color: colorVars["--color-text-secondary"], fontWeight: fontWeightVars["--font-weight-normal"] },
-  num: { textAlign: "end", fontVariantNumeric: "tabular-nums" },
 });
