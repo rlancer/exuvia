@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { EditorState } from "@uiw/react-codemirror";
 import { unifiedMergeView } from "@codemirror/merge";
@@ -19,6 +19,7 @@ import { language } from "./lang";
 import { ago } from "./util";
 import { useAccess } from "./Access";
 import { CodeEditor } from "./ui/CodeEditor";
+import { historyFrame, Note } from "./ui/historyFrame";
 import { TagRail } from "./Tags";
 
 /** What the selected version is compared with. */
@@ -158,14 +159,14 @@ export function HistoryBrowser(props: {
 
   if (!revs)
     return (
-      <div {...stylex.props(styles.frame, styles.alone)}>
+      <div {...stylex.props(historyFrame.frame, historyFrame.alone)}>
         {err ? <Banner status="error" container="section" title={err} /> : <Note>Loading history…</Note>}
       </div>
     );
   if (!all.length)
     return (
-      <div {...stylex.props(styles.frame, styles.alone)}>
-        <div {...stylex.props(styles.note)}>
+      <div {...stylex.props(historyFrame.frame, historyFrame.alone)}>
+        <div {...stylex.props(historyFrame.note)}>
           <EmptyState isCompact title="No saved versions yet" description="Every save of the code is kept here." />
         </div>
       </div>
@@ -175,12 +176,12 @@ export function HistoryBrowser(props: {
   const oneFile = !!path && files.includes(path) && !deletedOnly;
   const side = props.layout === "side";
   return (
-    <div {...stylex.props(styles.frame, styles.history, side ? styles.side : styles.stack)}>
-      <div {...stylex.props(styles.list)}>
+    <div {...stylex.props(historyFrame.frame, historyFrame.grid, side ? historyFrame.side : historyFrame.stack)}>
+      <div {...stylex.props(historyFrame.list)}>
         {(multi || props.deletedFilter) && (
-          <div {...stylex.props(styles.bar)}>
+          <div {...stylex.props(historyFrame.bar)}>
             {props.deletedFilter && (
-              <SegmentedControl size="sm" label="Which revisions" value={deletedOnly ? "deleted" : "all"} onChange={(v) => setDeletedOnly(v === "deleted")} xstyle={styles.fixed}>
+              <SegmentedControl size="sm" label="Which revisions" value={deletedOnly ? "deleted" : "all"} onChange={(v) => setDeletedOnly(v === "deleted")} xstyle={historyFrame.fixed}>
                 <SegmentedControlItem value="all" label="All" />
                 <SegmentedControlItem value="deleted" label={deleted.length ? `Deleted (${deleted.length})` : "Deleted"} />
               </SegmentedControl>
@@ -198,12 +199,12 @@ export function HistoryBrowser(props: {
                   { value: ALL_FILES, label: `All files (${files.length})` },
                   ...files.map((f) => ({ value: f, label: `${f}${isDeleted(all, f) ? " (deleted)" : ""}` })),
                 ]}
-                containerXstyle={styles.grow}
+                containerXstyle={historyFrame.grow}
               />
             )}
           </div>
         )}
-        <div {...stylex.props(styles.revs)}>
+        <div {...stylex.props(historyFrame.scroll)}>
           <List density="compact" hasDividers aria-label="Saved versions">
             {shown.map((r) => (
               <ListItem
@@ -231,11 +232,11 @@ export function HistoryBrowser(props: {
           {!shown.length && <Note>{deletedOnly ? "No deleted nodes, views or files." : "No saved versions."}</Note>}
         </div>
       </div>
-      <div {...stylex.props(styles.diff)}>
+      <div {...stylex.props(historyFrame.diff)}>
         {err && <Banner status="error" container="section" title={err} />}
         {sel && (
           // What the version is compared with, and the one thing done to it.
-          <div {...stylex.props(styles.bar)}>
+          <div {...stylex.props(historyFrame.bar)}>
             <Selector
               size="sm"
               label="Compare with"
@@ -248,7 +249,7 @@ export function HistoryBrowser(props: {
                 { value: "current", label: "vs current" },
               ]}
             />
-            <Text type="supporting" color="secondary" maxLines={1} xstyle={styles.grow}>
+            <Text type="supporting" color="secondary" maxLines={1} xstyle={historyFrame.grow}>
               {sel.hash === null ? "this revision deleted the file" : baseLabel}
             </Text>
             {target && canEdit ? (
@@ -288,7 +289,7 @@ export function HistoryBrowser(props: {
         )}
         {sel && (
           <div {...stylex.props(styles.status)}>
-            <span title={sel.hash ?? undefined} {...stylex.props(styles.grow)}>
+            <span title={sel.hash ?? undefined} {...stylex.props(historyFrame.grow)}>
               <Text type="code" size="sm" color="secondary" maxLines={1} hasTruncateTooltip={false}>
                 {sel.path}
               </Text>
@@ -363,7 +364,7 @@ export function HistoryRail(props: {
 
   return (
     <div {...stylex.props(styles.rail)}>
-      <div {...stylex.props(styles.bar)}>
+      <div {...stylex.props(historyFrame.bar)}>
         <SegmentedControl size="sm" layout="fill" label="Which revisions" value={which} onChange={(v) => setWhich(v === "deleted" || v === "tags" ? v : "latest")} xstyle={styles.switch}>
           <SegmentedControlItem value="latest" label="Latest saves" />
           <SegmentedControlItem value="deleted" label={deleted.length ? `Deleted (${deleted.length})` : "Deleted"} />
@@ -375,7 +376,7 @@ export function HistoryRail(props: {
       ) : (
       <>
       {err && <Banner status="error" container="section" title={err} />}
-      <div {...stylex.props(styles.revs)}>
+      <div {...stylex.props(historyFrame.scroll)}>
         <List density="compact" hasDividers aria-label={deletedOnly ? "Deleted files" : "Latest saves"}>
           {shown.map(({ rev: r, gone }) => (
             <ListItem
@@ -432,64 +433,10 @@ function Saved({ rev, quiet = false }: { rev: CodeRevision; quiet?: boolean }) {
   );
 }
 
-/** A line in place of a list or a diff: loading, or nothing to show. */
-function Note({ children }: { children: ReactNode }) {
-  return (
-    <div {...stylex.props(styles.note)}>
-      <Text color="secondary" justify="center">
-        {children}
-      </Text>
-    </div>
-  );
-}
-
-/**
- * The history's frame: the list of versions and the diff of the picked one.
- *
- *   side    list 300 | diff     (the main area)
- *   stack   list over diff      (a narrow pane: a node's or a view's History tab)
- *   <= 900px `side` stacks too
- *
- * The bar over the list and the bar over the diff are as tall as each other,
- * so side by side their rules meet in one line.
- */
-const COMPACT = "@media (max-width: 900px)";
-
 const styles = stylex.create({
-  // It fills what it is in, a column that grows or a box with a height.
-  frame: { flexGrow: 1, minWidth: 0, minHeight: 0, height: "100%" },
-  alone: { display: "flex", flexDirection: "column" },
-  // The rule between the list and the diff is the gap between them, in the
-  // rule's colour: it is there whichever way the two are laid out.
-  history: { display: "grid", gap: "1px", backgroundColor: colorVars["--color-border"] },
-  stack: { gridTemplateColumns: "minmax(0, 1fr)", gridTemplateRows: "fit-content(34%) minmax(0, 1fr)" },
-  side: {
-    gridTemplateColumns: { default: "300px minmax(0, 1fr)", [COMPACT]: "minmax(0, 1fr)" },
-    gridTemplateRows: { default: "minmax(0, 1fr)", [COMPACT]: "fit-content(36%) minmax(0, 1fr)" },
-  },
-  list: { display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, backgroundColor: colorVars["--color-background-surface"] },
-  bar: {
-    display: "flex",
-    alignItems: "center",
-    gap: spacingVars["--spacing-2"],
-    flexShrink: 0,
-    boxSizing: "border-box",
-    minHeight: "40px",
-    paddingBlock: spacingVars["--spacing-1-5"],
-    paddingInline: spacingVars["--spacing-2"],
-    borderBottomWidth: "1px",
-    borderBottomStyle: "solid",
-    borderBottomColor: colorVars["--color-border"],
-  },
-  grow: { flexGrow: 1, minWidth: 0 },
-  // The switch keeps its words; the file's name beside it is what gets cut.
-  fixed: { flexShrink: 0 },
-  revs: { flexGrow: 1, minHeight: 0, overflowY: "auto" },
   saved: { display: "flex", alignItems: "baseline", gap: spacingVars["--spacing-2"], minWidth: 0 },
   when: { flexShrink: 0 },
   origin: { minWidth: 0 },
-  diff: { display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, backgroundColor: colorVars["--color-background-surface"] },
-  note: { display: "grid", placeItems: "center", flexGrow: 1, minHeight: 0, padding: spacingVars["--spacing-6"] },
   status: {
     display: "flex",
     alignItems: "center",

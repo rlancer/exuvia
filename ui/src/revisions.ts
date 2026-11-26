@@ -47,7 +47,8 @@ export function paths(revs: CodeRevision[]): string[] {
 /** How a version can be made current again: a node's, a view file's, or not from the workbench. */
 export type RestoreTarget = { kind: "node"; name: string } | { kind: "view"; name: string; path: string };
 
-export function restoreTarget(rev: CodeRevision): RestoreTarget | null {
+/** For a saved version, or a file of a tag (anything that says its path and the node or view it is of). */
+export function restoreTarget(rev: Pick<CodeRevision, "node" | "view" | "path">): RestoreTarget | null {
   if (rev.node) return { kind: "node", name: rev.node };
   const prefix = `views/${rev.view}/`;
   if (rev.view && rev.path.startsWith(prefix)) return { kind: "view", name: rev.view, path: rev.path.slice(prefix.length) };

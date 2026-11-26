@@ -52,4 +52,11 @@ describe("reading code revisions", () => {
     expect(restoreTarget(rev("lib/util.py", "x"))).toBeNull();
     expect(restoreTarget(rev("AGENTS.md", "x"))).toBeNull();
   });
+
+  it("restores a tag's file the same way as a saved version", () => {
+    const file = { path: "views/board/App.tsx", node: null, view: "board", hash: "h", revision: "r", saved_at: 1, current_hash: "h2", status: "changed" as const };
+    expect(restoreTarget(file)).toEqual({ kind: "view", name: "board", path: "App.tsx" });
+    expect(restoreTarget({ path: "nodes/a.py", node: "a", view: null })).toEqual({ kind: "node", name: "a" });
+    expect(restoreTarget({ path: "lib/x.py", node: null, view: null })).toBeNull();
+  });
 });
