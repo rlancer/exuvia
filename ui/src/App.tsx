@@ -374,6 +374,8 @@ function Workbench() {
   const aiOn = !!cfg?.ai_enabled;
   // The bars give up their words before their controls.
   const compact = useMediaQuery("(max-width: 900px)");
+  // A phone: the bar keeps its tabs' words before anything that can be told another way.
+  const phone = useMediaQuery("(max-width: 560px)");
   const sheet = useMediaQuery("(max-width: 1100px)");
   const openNode = (name: string) => {
     setMode("graph");
@@ -438,16 +440,25 @@ function Workbench() {
               <div {...stylex.props(styles.bar, styles.workBar)}>
                 <TabList role="tablist" value={mode === "views" || mode === "graph" || mode === "schedule" ? mode : ""} onChange={(v) => setMode(v as Mode)} xstyle={styles.modes}>
                   <Tab value="graph" label="Graph" />
-                  <Tab value="views" label="Views" endContent={project?.views.length ? <Badge label={project.views.length} /> : undefined} />
-                  <Tab value="schedule" label="Schedule" endContent={scheduled ? <Badge label={scheduled} /> : undefined} />
+                  <Tab value="views" label="Views" endContent={project?.views.length && !phone ? <Badge label={project.views.length} /> : undefined} />
+                  <Tab value="schedule" label="Schedule" endContent={scheduled && !phone ? <Badge label={scheduled} /> : undefined} />
                 </TabList>
-                {/* Two ways to read the same graph: drawn, or top to bottom as a notebook. */}
-                {mode === "graph" && nodes.length > 0 && (
-                  <SegmentedControl size="sm" value={layout} onChange={(v) => setLayout(v as Layout)} label="Show the graph as">
-                    <SegmentedControlItem value="canvas" label="Canvas" icon={<IconGraph />} isLabelHidden={compact} />
-                    <SegmentedControlItem value="notebook" label="Notebook" icon={<IconNotebook />} isLabelHidden={compact} />
-                  </SegmentedControl>
-                )}
+                {/* Two ways to read the same graph: drawn, or top to bottom as a notebook. On a phone, one button that switches. */}
+                {mode === "graph" && nodes.length > 0 &&
+                  (phone ? (
+                    <IconButton
+                      variant="ghost"
+                      label={layout === "notebook" ? "Show as a canvas" : "Show as a notebook"}
+                      tooltip={layout === "notebook" ? "Show the graph as a canvas" : "Show the graph as a notebook"}
+                      icon={layout === "notebook" ? <IconGraph /> : <IconNotebook />}
+                      onClick={() => setLayout(layout === "notebook" ? "canvas" : "notebook")}
+                    />
+                  ) : (
+                    <SegmentedControl size="sm" value={layout} onChange={(v) => setLayout(v as Layout)} label="Show the graph as">
+                      <SegmentedControlItem value="canvas" label="Canvas" icon={<IconGraph />} isLabelHidden={compact} />
+                      <SegmentedControlItem value="notebook" label="Notebook" icon={<IconNotebook />} isLabelHidden={compact} />
+                    </SegmentedControl>
+                  ))}
                 <span {...stylex.props(styles.grow)} />
                 {!conn && <Badge variant="error" label="Reconnecting…" />}
                 {/* The graph's own state and actions: with the graph, not with the views. */}
@@ -688,9 +699,12 @@ function Workbench() {
  *   <= 1100px  one column: canvas over inspector; the side panel is a bar
  *              along the bottom that opens as a sheet over them
  *   <= 900px   the bars' buttons lose their words (`compact`)
+ *   <= 560px   the tabs lose their counts and Canvas | Notebook is one
+ *              button (`phone`); on the smallest phones the tabs scroll
  */
 const NARROW = "@media (max-width: 1100px)";
 const COMPACT = "@media (max-width: 900px)";
+const PHONE = "@media (max-width: 560px)";
 
 const styles = stylex.create({
   app: { display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", height: "100dvh" },
@@ -702,9 +716,9 @@ const styles = stylex.create({
   bar: {
     display: "flex",
     alignItems: "center",
-    gap: { default: spacingVars["--spacing-3"], [COMPACT]: spacingVars["--spacing-2"] },
+    gap: { default: spacingVars["--spacing-3"], [COMPACT]: spacingVars["--spacing-2"], [PHONE]: spacingVars["--spacing-1"] },
     minWidth: 0,
-    paddingInline: { default: spacingVars["--spacing-4"], [COMPACT]: spacingVars["--spacing-2"] },
+    paddingInline: { default: spacingVars["--spacing-4"], [COMPACT]: spacingVars["--spacing-2"], [PHONE]: spacingVars["--spacing-1"] },
     backgroundColor: colorVars["--color-background-surface"],
     borderBottomWidth: "1px",
     borderBottomStyle: "solid",
@@ -713,7 +727,8 @@ const styles = stylex.create({
   appBar: { paddingBlock: spacingVars["--spacing-2"] },
   // The tabs sit on the bar's bottom edge, so the bar itself has no padding there.
   workBar: { paddingBlock: 0, minHeight: "40px" },
-  modes: { alignSelf: "flex-end" },
+  // The tabs give way last, and scroll rather than be cut off.
+  modes: { alignSelf: "flex-end", minWidth: 0, overflowX: "auto", scrollbarWidth: "none" },
   grow: { flexGrow: 1 },
   rule: { alignSelf: "stretch", marginBlock: spacingVars["--spacing-1"] },
   // The state counts are on the canvas's nodes too: the first thing to go.
