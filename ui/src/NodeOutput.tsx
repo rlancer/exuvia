@@ -70,27 +70,30 @@ export function pct(part: number, whole: number): string {
 /**
  * The whole output in one line, as the footers have it and in Data Wrangler's
  * words: its shape, its missing values and the columns they are in, its size
- * on disk and how it is compressed (the rest in a tooltip).
+ * on disk and how it is compressed (the rest in a tooltip). With `shown`,
+ * it says so when the rows on screen are fewer than the output's; without
+ * `storage`, it leaves out how the output is stored (size, compression).
  */
-export function DatasetSummary({ stats: s }: { stats: TableStats }) {
+export function DatasetSummary({ stats: s, shown, storage = true }: { stats: TableStats; shown?: number; storage?: boolean }) {
   const known = s.columns.filter((c) => c.nulls != null);
   const missing = known.reduce((n, c) => n + (c.nulls ?? 0), 0);
   const withMissing = known.filter((c) => (c.nulls ?? 0) > 0).length;
   const cells = known.length * s.rows;
+  const line = (
+    <Text type="supporting" color="secondary" maxLines={2} hasTabularNumbers>
+      {shown != null && shown < s.rows ? `First ${fmtNum(shown)} shown · ` : ""}
+      {`Data shape ${fmtNum(s.rows)} rows × ${fmtNum(s.columns.length)} columns`}
+      {` · Missing values ${fmtNum(missing)} (${pct(missing, cells)}${withMissing ? `, in ${withMissing} column${withMissing === 1 ? "" : "s"}` : ""})`}
+      {storage && ` · ${fmtBytes(s.bytes)} ${s.compression.map((c) => c.toLowerCase()).join(", ") || "uncompressed"}`}
+    </Text>
+  );
+  if (!storage) return line;
   const detail = [
     `${fmtBytes(s.uncompressed_bytes)} uncompressed`,
     `${fmtNum(s.row_groups)} row group${s.row_groups === 1 ? "" : "s"}${s.files > 1 ? ` in ${fmtNum(s.files)} files` : ""}`,
     ...s.created_by.map((w) => `written by ${w}`),
   ];
-  return (
-    <Tooltip content={detail.join(" · ")}>
-      <Text type="supporting" color="secondary" maxLines={2} hasTabularNumbers>
-        {`Data shape ${fmtNum(s.rows)} rows × ${fmtNum(s.columns.length)} columns`}
-        {` · Missing values ${fmtNum(missing)} (${pct(missing, cells)}${withMissing ? `, in ${withMissing} column${withMissing === 1 ? "" : "s"}` : ""})`}
-        {` · ${fmtBytes(s.bytes)} ${s.compression.map((c) => c.toLowerCase()).join(", ") || "uncompressed"}`}
-      </Text>
-    </Tooltip>
-  );
+  return <Tooltip content={detail.join(" · ")}>{line}</Tooltip>;
 }
 
 /**
