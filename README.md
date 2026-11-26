@@ -1388,11 +1388,11 @@ also brings back a deleted node, file or view. Other files (`lib/`,
 `exuvia.json`, `AGENTS.md`, `pyproject.toml`) can be read and compared there
 but not restored from the workbench.
 
-### The history in git: `exuvia mirror`
+### The history in git: `exuvia mirror`, for code backups
 
 `exuvia mirror` copies that history into a git repository, one commit per
-save, so it can be cloned, diffed and blamed with ordinary tools, or kept on
-GitHub. It runs on your machine with your own `git`, and pushes with
+save, so it can be cloned, diffed and blamed with ordinary tools, kept on
+GitHub, or backed up off the server: a git backup of the project's code. It runs on your machine with your own `git`, and pushes with
 whatever git already uses there (SSH keys, a credential helper, `gh auth`):
 exuvia never holds a git credential, and nothing runs on the server.
 

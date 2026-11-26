@@ -111,3 +111,19 @@ def test_the_agent_has_the_tool_and_is_told_to_use_it(tmp_path):
     ok, text, _ = asyncio.run(agent.call_tool("docs", {"topic": 1}))
     assert not ok and text.startswith("INVALID_INPUT")
     assert "read `docs` before you answer" in SYSTEM
+
+
+def test_the_agent_is_pointed_at_exuvia_mirror_and_finds_it(tmp_path):
+    # Nothing in a project's tools makes a git copy of its history, so the
+    # guide and the tools that touch history name the command, and the
+    # words a user would use find its section.
+    from exuvia.agent import TOOLS
+
+    assert "`exuvia mirror`" in SYSTEM and "topic `The history in git`" in SYSTEM
+    described = {t["name"]: t["description"] for t in TOOLS}
+    assert "exuvia mirror" in described["docs"] and "exuvia mirror" in described["list_revisions"]
+    section, _ = docs.find("The history in git")
+    assert section is not None and "exuvia mirror" in section.text
+    for words in ("back up code to github", "git history", "push code to a github repository"):
+        best = re.search(r"^## (.+)$", docs.search(words) or "", re.M)
+        assert best and "The history in git" in best.group(1), (words, best and best.group(1))
