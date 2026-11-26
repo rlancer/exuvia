@@ -564,8 +564,12 @@ class RemoteBackend:
         headers = {"X-Exuvia-Origin": ORIGIN}
         if token:
             headers["Authorization"] = f"Bearer {token}"
+        from .nethttp import client_options
+
         self.api = url.rstrip("/") + "/api"
-        self.http = httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(REMOTE_TIMEOUT, connect=10.0))
+        self.http = httpx.AsyncClient(
+            headers=headers, timeout=httpx.Timeout(REMOTE_TIMEOUT, connect=10.0), **client_options(url)
+        )
         self._guide: dict[str, Any] | None = None
 
     async def start(self) -> None:
@@ -596,9 +600,14 @@ class RemoteBackend:
                 f"Start it in the background with `exuvia serve <project folder>{port}` "
                 "(or `uvx exuvia serve ...`), or ask the user to"
             )
+        from .nethttp import proxy_hint
+
+        hint = proxy_hint(base, e)
+        if hint:  # another machine, and the proxy or TLS may be what failed, not the workbench
+            return f"could not reach exuvia at {base} ({type(e).__name__}).{hint} If that is not it: {how}, then call the tool again."
         return (
-            f"could not reach exuvia at {base} ({type(e).__name__}): the workbench this MCP server "
-            f"relays to is not running. {how}, then call the tool again."
+            f"could not reach exuvia at {base} ({type(e).__name__}): the workbench these tools "
+            f"relay to is not running. {how}, then call the tool again."
         )
 
     async def stop(self) -> None:
@@ -669,8 +678,12 @@ class HubBackend:
         headers = {"X-Exuvia-Origin": ORIGIN}
         if token:
             headers["Authorization"] = f"Bearer {token}"
+        from .nethttp import client_options
+
         self.url = url.rstrip("/")
-        self.http = httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(REMOTE_TIMEOUT, connect=10.0))
+        self.http = httpx.AsyncClient(
+            headers=headers, timeout=httpx.Timeout(REMOTE_TIMEOUT, connect=10.0), **client_options(url)
+        )
         self._project_tools: list[dict[str, Any]] | None = None
 
     async def start(self) -> None:
@@ -688,6 +701,11 @@ class HubBackend:
 
     async def stop(self) -> None:
         await self.http.aclose()
+
+    def unreachable(self, e: Exception) -> str:
+        from .nethttp import proxy_hint
+
+        return f"could not reach the exuvia hub at {self.url} ({type(e).__name__}): ask the user whether it is running.{proxy_hint(self.url, e)}"
 
     async def _load_project_tools(self, projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """The project tools as the hub defines them (its version may differ
@@ -712,7 +730,7 @@ class HubBackend:
         try:
             r = await self.http.get(f"{self.url}/api/projects")
         except httpx.HTTPError as e:
-            return False, f"could not reach the exuvia hub at {self.url} ({type(e).__name__}): ask the user whether it is running"
+            return False, self.unreachable(e)
         if r.status_code != 200:
             return False, f"HTTP {r.status_code}: {r.text[:2000]}"
         return True, r.json()
@@ -779,7 +797,7 @@ class HubBackend:
                 return False, NO_PROJECT
             r = await self.http.post(f"{self.url}/p/{project}/api/tools/{name}", json=args)
         except httpx.HTTPError as e:
-            return False, f"could not reach the exuvia hub at {self.url} ({type(e).__name__}): ask the user whether it is running"
+            return False, self.unreachable(e)
         if r.status_code == 404 and "no project" in r.text:
             return False, f"no project {project} on this hub: list_projects shows them"
         if r.status_code != 200:
@@ -801,7 +819,9 @@ async def remote_backend(url: str, token: str | None) -> RemoteBackend | HubBack
 
     if not urlsplit(url).path.strip("/"):
         try:
-            async with httpx.AsyncClient(timeout=10.0) as http:
+            from .nethttp import client_options
+
+            async with httpx.AsyncClient(timeout=10.0, **client_options(url)) as http:
                 r = await http.get(url.rstrip("/") + "/healthz")
             if r.status_code == 200 and r.json().get("mode") == "hub":
                 return HubBackend(url, token)

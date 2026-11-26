@@ -2746,6 +2746,54 @@ agent's instructions ask it to offer this whenever exuvia is at fault, and to
 leave secrets and your data out. Issues from anyone are welcome, with or
 without an agent.
 
+### When MCP doesn't connect
+
+Some setups never get an MCP connection working: a client without MCP, a
+remote MCP connector that a corporate network blocks, a proxy that inspects
+HTTPS and breaks the client's own connection. Any agent that can run shell
+commands can still use every tool, one command per call, with `exuvia tool`:
+
+```bash
+export EXUVIA_URL=https://hub.example.com/p/research   # or http://127.0.0.1:7420, or a whole hub
+export EXUVIA_API_TOKEN_FILE=~/.exuvia-token          # or EXUVIA_API_TOKEN=exv_...
+exuvia tool                                           # list the tools
+exuvia tool guide                                     # how to work in this project: read it first
+exuvia tool run_node --schema                         # a tool's description and input schema
+exuvia tool run_node -a name=prices -a wait_seconds=120
+echo '{"name": "x", "kind": "sql", "source": "select 1"}' | exuvia tool write_node -
+```
+
+The input is a JSON object (an argument, or `-` for stdin), and each
+`-a KEY=VALUE` sets one field: `VALUE` is read as JSON when it is JSON (`42`,
+`true`, `{"as_of": "2026-03-02"}`) and as text otherwise. The tool's answer
+goes to stdout. A tool that fails prints its error to stderr and exits 1;
+an exuvia that cannot be reached exits 2, with what to check. `--json`
+prints `{"ok", "text"}` instead. `--url` can stand in for `EXUVIA_URL`;
+with neither, `exuvia tool` opens the project in the current folder (or
+`--project DIR`) itself, as `exuvia mcp DIR` does. On a whole hub, each
+project tool takes `-a project=<id>`, as over MCP. Calls are recorded with
+the origin `mcp`.
+
+Each call is an ordinary HTTPS request (`POST …/api/tools/{name}`, the same
+route the relay uses), so it works wherever `curl` does. `exuvia tool`,
+`exuvia mcp --url` and the other commands that call a server (`push`,
+`cancel`, `mirror`, `env --url`) work behind a corporate proxy:
+
+- They use `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and `NO_PROXY` as set.
+- An exuvia on this machine (`localhost`, `127.0.0.1`, `::1`) is reached
+  directly, never through the proxy, even when `NO_PROXY` leaves it out.
+- TLS is checked against the operating system's trust store, which is where
+  IT installs the certificate of a proxy that inspects HTTPS. Set
+  `SSL_CERT_FILE` to a PEM bundle to use that instead.
+- When a server cannot be reached, the error names the proxy in use (without
+  its password), or says that the certificate was not trusted.
+
+To tell an agent about it, add a line like this to its instructions
+(`AGENTS.md`, `CLAUDE.md`): *"exuvia's tools: run `uvx exuvia@latest tool
+guide` first, then `uvx exuvia@latest tool <name> -a key=value`;
+`uvx exuvia@latest tool` lists them. EXUVIA_URL and EXUVIA_API_TOKEN_FILE
+are set."*
+
 ## Command line
 
 Every `exuvia` command, with or without an install (`uvx exuvia …` runs the
@@ -2760,6 +2808,7 @@ section named after each one has the details.
 | `exuvia run [DIR] [NODE…]` | run stale nodes (or the named ones and their stale upstream) without the UI; non-zero exit when one fails. `--force`, `--param NAME=VALUE` | below |
 | `exuvia status [DIR]` | each node's freshness. `--json`, `--param NAME=VALUE` | below |
 | `exuvia mcp [DIR]` | the agent's tools over MCP on stdio: the project in `DIR`, or `--url URL` to relay to a running server or hub | MCP |
+| `exuvia tool [NAME] [INPUT]` | call one of the agent's tools and print its answer, for agents without a working MCP connection: `--url URL` (or `EXUVIA_URL`) or the project in `.`; no `NAME` lists them. `-a KEY=VALUE`, `--schema`, `--json` | When MCP doesn't connect |
 | `exuvia push NODE FILE --url URL` | upload a push node's output (`.parquet`, `.csv`, `.json`) from the machine that has the data. `--param`, `--note`, `--allow-http` | Push nodes |
 | `exuvia cancel RUN_ID --url URL` | stop a queued or running run of a running exuvia (a hub project or `exuvia serve`); sends `EXUVIA_API_TOKEN`. `--allow-http` | Stopping a run |
 | `exuvia mirror DEST` | the project's code history as git commits on branch `exuvia` in `DEST`, from `--url URL` or `--project DIR` (default `.`); `--remote REMOTE` or `--github OWNER/NAME` pushes it. `--branch`, `--allow-http` | The history in git |

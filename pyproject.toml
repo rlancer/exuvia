@@ -19,6 +19,7 @@ dependencies = [
     "anthropic>=1.0",
     "openai>=1.40",
     "httpx>=0.27",
+    "truststore>=0.9",  # TLS against the system trust store, where a corporate proxy's CA lives (exuvia/nethttp.py)
     "mcp>=2.3,<3",  # `exuvia mcp`: the 2.x server API (exuvia/mcp_server.py)
     "uv>=0.9.10",  # installs the packages a project lists in its pyproject.toml (exuvia/packages.py)
     "xlsxwriter>=3.1",

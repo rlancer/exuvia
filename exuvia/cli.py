@@ -7,6 +7,7 @@
                                  --param as_of=2026-03-02 replays a parameter set
     exuvia status [dir]          print node freshness
     exuvia mcp [dir | --url URL] the agent's tools for MCP clients (Claude Code, Cursor, ...)
+    exuvia tool [name] [--url URL] the same tools from a terminal, one call per command (no MCP needed)
     exuvia mirror <dest>         the project's code history as git commits; --remote / --github push them
     exuvia executor              run nodes for a remote control plane (HTTP service)
     exuvia env list|set|rm       a project's environment variables (a secret is asked for, never an argument)
@@ -390,6 +391,10 @@ def main() -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8080)
     p.set_defaults(fn=cmd_executor)
+
+    from .toolcli import add_parser as add_tool_parser
+
+    add_tool_parser(sub)
 
     from .envcli import add_parser as add_env_parser
 
