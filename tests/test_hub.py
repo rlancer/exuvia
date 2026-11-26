@@ -515,3 +515,58 @@ def test_the_admin_page_and_its_settings(tmp_path, monkeypatch):
 
     assert shown_url("postgresql://u:pw@db.example:5432/exuvia?sslmode=require") == "postgresql://db.example:5432/exuvia"
     assert shown_url("nope") == "(not a URL)"
+
+
+def test_every_hub_store_round_trips_through_one_hub_db(tmp_path):
+    """Each hub record store declares only its tables (db.HubRecordStore
+    does the rest), and dump_to / replace_from carry every row of every
+    store in HUB_STORES through one hub.db into another hub's database."""
+    from exuvia.auth import Identity
+    from exuvia.datakeys import DataKeyStore
+    from exuvia.db import HUB_STORES, HubRecordStore, SQLiteDatabase
+    from exuvia.groups import GroupStore
+    from exuvia.sharing import SharingStore
+    from exuvia.users import UserStore
+
+    def stores(path):
+        db = SQLiteDatabase(path)
+        users = UserStore(db, scope="h/")
+        return db, {
+            "users": users,
+            "sharing": SharingStore(db, scope="h/", users=users),
+            "groups": GroupStore(db, scope="h/", users=users),
+            "data_keys": DataKeyStore(db, scope="h/"),
+        }
+
+    def rows(found):
+        return {
+            name: {t: sorted(map(repr, s._q(f"select * from {t} where scope=?", (s.scope,)))) for t in s.TABLES}
+            for name, s in found.items()
+        }
+
+    db, here = stores(tmp_path / "a.db")
+    assert set(here) == set(HUB_STORES)
+    for s in here.values():
+        assert isinstance(s, HubRecordStore) and s.TABLES and all(t in s.TABLES[t] for t in s.TABLES)
+    ann = here["users"].sign_in(Identity(user="ann", email="ann@example.com", method="headers"))
+    bob = here["users"].sign_in(Identity(user="bob", email="bob@example.com", method="headers"))
+    here["users"].create_token(ann.id, "laptop")
+    here["sharing"].grant("sales", "editor", user_id=bob.id, by=ann.id)
+    here["sharing"].create_link("sales", "board", by=ann.id)
+    gid = here["groups"].create("Research", ann.id)
+    here["groups"].grant(gid, "viewer", user_id=bob.id, by=ann.id)
+    here["data_keys"].create(ann.id, "dashboard", ["sales"])
+    before = rows(here)
+    assert all(any(tables.values()) for tables in before.values())  # something of each store to carry
+
+    archive = tmp_path / "hub.db"
+    for name in HUB_STORES:
+        here[name].dump_to(archive)
+    db2, there = stores(tmp_path / "b.db")
+    there["users"].sign_in(Identity(user="someone-else", email=None, method="headers"))  # replaced by the archive's
+    assert there["users"].replace_from(archive) == 2
+    for name in HUB_STORES[1:]:
+        there[name].replace_from(archive)
+    assert rows(there) == before
+    db.close()
+    db2.close()

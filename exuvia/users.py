@@ -33,18 +33,15 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
-import sqlite3
 import threading
 import time
 import uuid
-import weakref
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .auth import Identity
-from .db import Database, database_url, scope_prefix, shared_database
-from .store import SCHEMA_LOCK_KEY
+from .db import Database, HubRecordStore, database_url, scope_prefix, shared_database
 
 ROLES = ("admin", "member")
 # How long a sign-in is answered from memory before the database is read
@@ -99,26 +96,6 @@ INDEXES = (
 TOKEN_COLS = "id, name, hint, created_at, last_used"
 USER_COLS = "id, name, email, role, disabled, created_at, last_seen"
 
-_prepared: "weakref.WeakSet[Any]" = weakref.WeakSet()
-
-
-def _prepare(db: Database) -> None:
-    """Create the tables once per database. In Postgres even ``create ...
-    if not exists`` locks the table, which can deadlock against a sign-in on
-    another replica, so once the tables exist no DDL runs at all. Creating
-    them takes the schema lock store.py uses, so replicas starting together
-    on a new database wait for the first one."""
-    if db in _prepared:
-        return
-    if not all(db.columns(t) for t in TABLES):
-        with db.transaction():
-            if db.dialect == "postgres":
-                db.query(f"select pg_advisory_xact_lock({SCHEMA_LOCK_KEY})")
-            for ddl in (*TABLES.values(), *INDEXES):
-                db.query(ddl)
-    _prepared.add(db)
-
-
 def pinned_admins() -> set[str]:
     """``EXUVIA_ADMINS``, lower case."""
     return {a.strip().lower() for a in os.environ.get("EXUVIA_ADMINS", "").split(",") if a.strip()}
@@ -169,23 +146,24 @@ def looks_like_token(value: str) -> bool:
     return value.startswith(TOKEN_PREFIX) and 20 < len(value) <= 200
 
 
-class UserStore:
+class UserStore(HubRecordStore):
+    TABLES, INDEXES = TABLES, INDEXES
+    ARCHIVE_WHAT = "user list"
+    OPTIONAL = frozenset({"user_tokens"})  # an archive from before agent tokens: nobody has one
+
     def __init__(self, db: Database, scope: str = "", owns_db: bool = False):
-        self.db = db
-        self.scope = scope
-        self._owns_db = owns_db
-        _prepare(db)
+        super().__init__(db, scope, owns_db)
         self._lock = threading.Lock()
         self._seen: dict[tuple[str, str], tuple[User, float]] = {}
         # Agent tokens answered from memory: token hash -> (user, when read).
         self._tokens: dict[str, tuple[User, float]] = {}
 
-    def close(self) -> None:
-        if self._owns_db:
-            self.db.close()
-
-    def _q(self, sql: str, args: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-        return self.db.query(sql, args)
+    def _replaced(self, data: dict[str, list[dict[str, Any]]]) -> int:
+        """After a hub import: forget the users read before it. Returns how many users there are now."""
+        with self._lock:
+            self._seen.clear()
+            self._tokens.clear()
+        return len(data["users"])
 
     # -- signing in ----------------------------------------------------------
     def recent(self, ident: Identity, now: float | None = None) -> User | None:
@@ -385,47 +363,9 @@ class UserStore:
             self._tokens[h] = (user, now)
         return user
 
-    # -- hub export / import ------------------------------------------------------
-    def dump_to(self, target: Path) -> None:
-        """This scope's users and identities as a SQLite file (hub export)."""
-        con = sqlite3.connect(target)
-        try:
-            for ddl in (*TABLES.values(), *INDEXES):
-                con.execute(ddl)
-            for table in TABLES:
-                rows = self._q(f"select * from {table} where scope=?", (self.scope,))
-                for r in rows:
-                    cols = ", ".join(r)
-                    con.execute(f"insert into {table} ({cols}) values ({', '.join('?' * len(r))})", tuple(r.values()))
-            con.commit()
-        finally:
-            con.close()
 
-    def replace_from(self, source: Path) -> int:
-        """Replace this scope's users with the ones in a file ``dump_to``
-        wrote (hub import). Returns how many users there are now."""
-        con = sqlite3.connect(source)
-        con.row_factory = sqlite3.Row
-        try:
-            present = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
-            # An archive from before agent tokens has no user_tokens: nobody has one.
-            data = {t: [dict(r) for r in con.execute(f"select * from {t}")] if t in present or t != "user_tokens" else []
-                    for t in TABLES}
-        except sqlite3.OperationalError as e:
-            raise ValueError(f"the archive's user list is unreadable: {e}") from e
-        finally:
-            con.close()
-        with self.db.transaction():
-            for table, rows in data.items():
-                self._q(f"delete from {table} where scope=?", (self.scope,))
-                for r in rows:
-                    r["scope"] = self.scope
-                    cols = ", ".join(r)
-                    self._q(f"insert into {table} ({cols}) values ({', '.join('?' * len(r))})", tuple(r.values()))
-        with self._lock:
-            self._seen.clear()
-            self._tokens.clear()
-        return len(data["users"])
+# Create the user list's tables once per database (HubRecordStore.prepare).
+_prepare = UserStore.prepare
 
 
 def open_users(local: Path | Database) -> UserStore:

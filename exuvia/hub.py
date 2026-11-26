@@ -31,7 +31,7 @@ from typing import Any
 
 from . import envvars
 from .artifacts import artifact_store
-from .db import database_url, shared_database
+from .db import HUB_STORES, database_url, shared_database
 from .project import VIEW_DIR, Project
 from .store import Store, project_scope, stored_paths_at
 
@@ -438,7 +438,7 @@ class Hub:
                     tar.add(copy, arcname=f"{pid}/{DB_REL}")
             # The user list, the projects' sharing, the groups and the data keys, unless a
             # shared database holds them.
-            stores = [s for s in (self.users, self.sharing, self.groups, self.data_keys) if s is not None]
+            stores = [s for s in (getattr(self, name) for name in HUB_STORES) if s is not None]
             if stores and not database_url():
                 users = Path(scratch) / "hub.db"
                 for s in stores:
@@ -472,14 +472,12 @@ class Hub:
             # disabled users and who can open what included), unless a shared
             # database holds them.
             if users.is_file() and not database_url():
-                if self.users is not None and "users" in _sqlite_tables(users):
-                    self.users.replace_from(users)
-                if self.sharing is not None:
-                    self.sharing.replace_from(users)
-                if self.groups is not None:
-                    self.groups.replace_from(users)
-                if self.data_keys is not None:
-                    self.data_keys.replace_from(users)
+                has_users = "users" in _sqlite_tables(users)
+                for name in HUB_STORES:
+                    store = getattr(self, name)
+                    # An archive without a user list keeps this hub's people (and so their names).
+                    if store is not None and (name != "users" or has_users):
+                        store.replace_from(users)
             # The hub's key comes along with the groups it encrypts; with a
             # shared database (whose groups the archive does not replace) it
             # only fills in a key this hub does not have yet.

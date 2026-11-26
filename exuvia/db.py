@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+import weakref
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Protocol, Sequence
@@ -222,3 +223,109 @@ def close_shared() -> None:
         for db in _shared.values():
             db.close()
         _shared.clear()
+
+
+# Postgres advisory lock key that serializes schema creation and upgrades
+# across processes. Any fixed 64-bit value works; this one is "exuvia" in hex.
+SCHEMA_LOCK_KEY = 0x657875766961
+
+
+class HubRecordStore:
+    """What a hub's record stores (users, sharing, groups, data keys) share:
+    their tables in a database under one ``scope``, created once per
+    database, and copied to and from a hub export's ``hub.db``.
+
+    A store declares ``TABLES`` (name -> ``create table``), ``INDEXES``,
+    ``ARCHIVE_WHAT`` (what its tables hold, for errors) and ``OPTIONAL``,
+    the tables an archive from an older hub may lack (None: any of them,
+    which then reads as empty). ``_replaced`` runs after an import."""
+
+    TABLES: dict[str, str] = {}
+    INDEXES: tuple[str, ...] = ()
+    ARCHIVE_WHAT = "records"
+    OPTIONAL: frozenset[str] | None = None
+    _prepared: weakref.WeakSet[Any]
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        cls._prepared = weakref.WeakSet()
+
+    def __init__(self, db: Database, scope: str = "", owns_db: bool = False):
+        self.db = db
+        self.scope = scope
+        self._owns_db = owns_db
+        self.prepare(db)
+
+    @classmethod
+    def prepare(cls, db: Database) -> None:
+        """Create the tables once per database. In Postgres even ``create ...
+        if not exists`` locks the table, which can deadlock against a sign-in
+        on another replica, so once the tables exist no DDL runs at all.
+        Creating them takes the schema lock store.py uses, so replicas
+        starting together on a new database wait for the first one."""
+        if db in cls._prepared:
+            return
+        if not all(db.columns(t) for t in cls.TABLES):
+            with db.transaction():
+                if db.dialect == "postgres":
+                    db.query(f"select pg_advisory_xact_lock({SCHEMA_LOCK_KEY})")
+                for ddl in (*cls.TABLES.values(), *cls.INDEXES):
+                    db.query(ddl)
+        cls._prepared.add(db)
+
+    def close(self) -> None:
+        if self._owns_db:
+            self.db.close()
+
+    def _q(self, sql: str, args: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+        return self.db.query(sql, args)
+
+    # -- hub export / import --------------------------------------------------------
+    def dump_to(self, target: Path) -> None:
+        """This scope's rows as tables in a SQLite file (the hub export's
+        ``hub.db``, which every store writes its own tables into)."""
+        con = sqlite3.connect(target)
+        try:
+            for ddl in (*self.TABLES.values(), *self.INDEXES):
+                con.execute(ddl)
+            for table in self.TABLES:
+                con.execute(f"delete from {table}")
+                for r in self._q(f"select * from {table} where scope=?", (self.scope,)):
+                    con.execute(f"insert into {table} ({', '.join(r)}) values ({', '.join('?' * len(r))})", tuple(r.values()))
+            con.commit()
+        finally:
+            con.close()
+
+    def replace_from(self, source: Path) -> Any:
+        """Replace this scope's rows with those in a file ``dump_to`` wrote
+        (hub import). ValueError when the file cannot be read. Returns what
+        ``_replaced`` does."""
+        con = sqlite3.connect(source)
+        con.row_factory = sqlite3.Row
+        try:
+            present = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+            optional = self.TABLES.keys() if self.OPTIONAL is None else self.OPTIONAL
+            data = {
+                t: [dict(r) for r in con.execute(f"select * from {t}")] if t in present or t not in optional else []
+                for t in self.TABLES
+            }
+        except sqlite3.OperationalError as e:
+            raise ValueError(f"the archive's {self.ARCHIVE_WHAT} are unreadable: {e}") from e
+        finally:
+            con.close()
+        with self.db.transaction():
+            for table, rows in data.items():
+                self._q(f"delete from {table} where scope=?", (self.scope,))
+                for r in rows:
+                    r["scope"] = self.scope
+                    self._q(f"insert into {table} ({', '.join(r)}) values ({', '.join('?' * len(r))})", tuple(r.values()))
+        return self._replaced(data)
+
+    def _replaced(self, data: dict[str, list[dict[str, Any]]]) -> Any:
+        """After an import: drop what the store keeps in memory."""
+        return None
+
+
+# Every store a hub export carries in its hub.db (Hub.export / Hub.restore),
+# by the attribute that holds it on the hub, in the order they are written.
+HUB_STORES = ("users", "sharing", "groups", "data_keys")
