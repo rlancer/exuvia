@@ -34,6 +34,15 @@ import { IconClock, IconClose, IconGraph, IconKey, IconNotebook, IconTag, IconMo
 import { StateDot } from "./ui/state";
 import { failed, Toasts } from "./toast";
 import { appViewOf } from "./appMode";
+import { format, landing, parse, routeOf, type Layout, type Mode, type Route } from "./route";
+import { oneOf, usePersisted } from "./ui/usePersisted";
+
+/** `#env` opens the Environment dialog; `#env=<NAME>` on that variable (the
+ * link request_secret gives, so a person sets a secret the agent asked for). */
+function envOf(hash: string): { name?: string } | null {
+  const r = parse(hash);
+  return r.page === "env" ? (r.name ? { name: r.name } : {}) : null;
+}
 
 // What is not on the first screen is fetched when it is opened: the Views
 // mode and the dialogs.
@@ -49,88 +58,17 @@ const embed = new URLSearchParams(location.search).has("embed");
 /** `?app=<view>`: that one view as an app, without the workbench (AppView.tsx). */
 const appView = appViewOf(location.search);
 
-/** What the main area shows: the graph, the views, the schedule, a shared helper, or the code's history. */
-type Mode = "graph" | "views" | "schedule" | "helper" | "history";
-/** How Graph mode shows the graph: drawn on the canvas, or read as a notebook (Notebook.tsx). */
-type Layout = "canvas" | "notebook";
-
-/**
- * Where the address points on load. `#files/<path>` opens a file where it
- * lives: a node on the graph, a view file in its Code tab, a helper in the
- * editor; `#views/<name>` a view, rendered; `#history` the code's history;
- * `#schedule` when the graph runs by itself; `#notebook` the graph as a
- * notebook, and `#notebook/<node>` on that node's cell.
- */
-function fromHash(): { mode: Mode; node?: string; view?: OpenView; helper?: string; layout?: Layout } {
-  const h = location.hash;
-  const nb = /^#notebook(?:\/([a-z_][a-z0-9_]*))?$/.exec(h);
-  if (nb) return { mode: "graph", layout: "notebook", node: nb[1] };
-  if (h === "#views") return { mode: "views" };
-  const shown = /^#views\/([a-z_][a-z0-9_]*)$/.exec(h);
-  if (shown) return { mode: "views", view: { view: shown[1], seq: 1 } };
-  if (h === "#history") return { mode: "history" };
-  if (h === "#schedule") return { mode: "schedule" };
-  let path = "";
-  try {
-    path = decodeURI(/^#files\/(.+)$/.exec(h)?.[1] ?? "");
-  } catch {
-    /* a malformed address */
-  }
-  const node = /^nodes\/([^/]+)\.(py|sql)$/.exec(path);
-  if (node) return { mode: "graph", node: node[1] };
-  const view = /^views\/([^/]+)\/(.+)$/.exec(path);
-  if (view) return { mode: "views", view: { view: view[1], file: view[2], seq: 1 } };
-  if (path.startsWith("lib/")) return { mode: "helper", helper: path };
-  return { mode: "graph" };
-}
-const start = fromHash();
-
-/** `#env` opens the Environment dialog; `#env=<NAME>` on that variable (the
- * link request_secret gives, so a person sets a secret the agent asked for). */
-function envFromHash(): { name?: string } | null {
-  const m = /^#env(?:=([A-Za-z_][A-Za-z0-9_]{0,127}))?$/.exec(location.hash);
-  return m ? { name: m[1] } : null;
-}
-const hashFor = (m: Mode, helper: string | null) =>
-  m === "views" ? "#views" : m === "history" ? "#history" : m === "schedule" ? "#schedule" : m === "helper" && helper ? `#files/${encodeURI(helper)}` : location.pathname + location.search;
-
-/** `#notebook` (and the cell picked), the address of the graph read as a notebook. */
-const notebookHash = (node: string | null) => (node ? `#notebook/${node}` : "#notebook");
-
-/** The graph's layout as this browser last left it for a project. */
-function keptLayout(project: string): Layout | null {
-  try {
-    const v = localStorage.getItem(`exuvia-graph-layout:${project}`);
-    return v === "canvas" || v === "notebook" ? v : null;
-  } catch {
-    return null;
-  }
-}
+/** Where the address points on load (route.ts). */
+const start = landing(parse(location.hash));
+/** Leave the address at a route; the graph's is the page's own, with no `#`. */
+const goTo = (r: Route) => history.replaceState(null, "", format(r) || location.pathname + location.search);
 
 /** A narrow window, where the side panel is a sheet over the main area. */
 const narrow = () => window.matchMedia("(max-width: 1100px)").matches;
 
-/** The side panel's tab, as it was left. */
-function sideStartsOn(): SideTab {
-  try {
-    const kept = localStorage.getItem("exuvia-side");
-    if (kept === "files" || kept === "history") return kept;
-  } catch {
-    /* private mode */
-  }
-  return "agent";
-}
-
-/** Whether the agent panel starts open: as it was left, else open where there is room beside the graph. */
-function agentStartsOpen(): boolean {
-  try {
-    const kept = localStorage.getItem("exuvia-agent");
-    if (kept) return kept === "open";
-  } catch {
-    /* private mode */
-  }
-  return window.matchMedia("(min-width: 1101px)").matches;
-}
+const sideTabs = oneOf<SideTab>("agent", "files", "history");
+const openClosed = oneOf("open", "closed");
+const layouts = oneOf<Layout>("canvas", "notebook");
 
 /**
  * A project's workbench. On a hub it first asks what this page may do there
@@ -169,15 +107,10 @@ function Workbench() {
   const [logs, setLogs] = useState<Record<string, string>>({});
   const [flash, setFlash] = useState<Record<string, number>>({});
   const [newOpen, setNewOpen] = useState(false);
-  const [agentOpen, setAgentOpenState] = useState(agentStartsOpen);
-  const setAgentOpen = useCallback((open: boolean) => {
-    setAgentOpenState(open);
-    try {
-      localStorage.setItem("exuvia-agent", open ? "open" : "closed");
-    } catch {
-      /* private mode */
-    }
-  }, []);
+  // The agent panel: as it was left, else open where there is room beside the graph.
+  const [agentKept, setAgentKept] = usePersisted("exuvia-agent", () => (window.matchMedia("(min-width: 1101px)").matches ? "open" : "closed"), openClosed);
+  const agentOpen = agentKept === "open";
+  const setAgentOpen = useCallback((open: boolean) => setAgentKept(open ? "open" : "closed"), [setAgentKept]);
   const [conn, setConn] = useState(true);
   const [mode, setModeState] = useState<Mode>(start.mode);
   // The graph's layout: as the address says, else as this browser left it for the project, else the canvas.
@@ -188,10 +121,10 @@ function Workbench() {
   const setMode = useCallback((m: Mode, helperPath?: string) => {
     if (helperPath) setHelper((helperRef.current = helperPath));
     setModeState(m);
-    history.replaceState(null, "", hashFor(m, helperRef.current));
+    goTo(routeOf(m, helperRef.current));
   }, []);
   // What the side panel's Files and History tabs opened last.
-  const [viewOpen, setViewOpen] = useState<OpenView | null>(start.view ?? null);
+  const [viewOpen, setViewOpen] = useState<OpenView | null>(start.view ? { ...start.view, seq: 1 } : null);
   // The view Views mode shows: what Share offers as an app first.
   const shownView = useRef<string | null>(null);
   const onShown = useCallback((v: string | null) => void (shownView.current = v), []);
@@ -202,33 +135,25 @@ function Workbench() {
   const [tag, setTag] = useState<string | null>(null);
   // Counts tags made or deleted (here or by anyone else): the Tags list is read again.
   const [tagTick, setTagTick] = useState(0);
-  const [sideTabKept, setSideTabState] = useState<SideTab>(sideStartsOn);
+  const [sideTabKept, setSideTab] = usePersisted<SideTab>("exuvia-side", "agent", sideTabs);
   // A viewer has no agent (it changes the project): the panel opens on Files.
   const sideTab: SideTab = !canEdit && sideTabKept === "agent" ? "files" : sideTabKept;
-  const setSideTab = useCallback((t: SideTab) => {
-    setSideTabState(t);
-    try {
-      localStorage.setItem("exuvia-side", t);
-    } catch {
-      /* private mode */
-    }
-  }, []);
   const [dark, toggleTheme] = useColorMode();
   const agent = useRef<AgentHandle>(null);
   const [pkgs, setPkgs] = useState<PackagesState | null>(null);
   const [pkgOpen, setPkgOpen] = useState(false);
   // The Environment dialog: closed (null), or open, on a variable when a link named one.
-  const [envOpen, setEnvOpen] = useState<{ name?: string } | null>(() => envFromHash());
+  const [envOpen, setEnvOpen] = useState<{ name?: string } | null>(() => envOf(location.hash));
   // Requests to set a secret (the agent's request_secret), for the button's count.
   const [envRequests, setEnvRequests] = useState(0);
   const refreshEnv = useCallback(() => api.env().then((s) => setEnvRequests(s.requests.length)).catch(() => {}), []);
   useEffect(() => {
-    if (envFromHash()) history.replaceState(null, "", location.pathname + location.search);
+    if (envOf(location.hash)) goTo({ page: "graph" });
     const onHash = () => {
-      const e = envFromHash();
+      const e = envOf(location.hash);
       if (!e) return;
       setEnvOpen(e);
-      history.replaceState(null, "", location.pathname + location.search);
+      goTo({ page: "graph" });
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -287,23 +212,20 @@ function Workbench() {
 
   const nodes = useMemo(() => project?.nodes ?? [], [project]);
   const projectName = project?.name ?? null;
-  const layout: Layout = layoutPicked ?? (projectName ? keptLayout(projectName) : null) ?? "canvas";
+  const [layoutKept, setLayoutKept] = usePersisted<Layout | null>(projectName ? `exuvia-graph-layout:${projectName}` : null, null, layouts);
+  const layout: Layout = layoutPicked ?? layoutKept ?? "canvas";
   const setLayout = useCallback(
     (l: Layout) => {
       setLayoutPicked(l);
-      try {
-        if (projectName) localStorage.setItem(`exuvia-graph-layout:${projectName}`, l);
-      } catch {
-        /* private mode */
-      }
+      setLayoutKept(l);
     },
-    [projectName],
+    [setLayoutKept],
   );
   // The notebook has an address, with the cell picked; the canvas keeps the plain one.
   useEffect(() => {
     if (mode !== "graph") return;
-    if (layout === "notebook") history.replaceState(null, "", notebookHash(selected));
-    else if (location.hash.startsWith("#notebook")) history.replaceState(null, "", location.pathname + location.search);
+    if (layout === "notebook") goTo({ page: "notebook", node: selected });
+    else if (parse(location.hash).page === "notebook") goTo({ page: "graph" });
   }, [mode, layout, selected]);
   useEffect(() => {
     if (project?.name) document.title = `${project.name} · exuvia`;

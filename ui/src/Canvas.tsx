@@ -23,6 +23,7 @@ import { colorVars, durationVars, fontWeightVars, radiusVars, shadowVars, spacin
 import { Badge } from "@astryxdesign/core/Badge";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
+import { usePersisted } from "./ui/usePersisted";
 import type { GraphNode, NodeStage, Project, ProjectView } from "./api";
 import { ago, fmtNum, summary, until } from "./util";
 import { IconClock, IconCollapse, IconLayers, IconUncollapse, IconWindow } from "./icons";
@@ -209,31 +210,13 @@ function layout(v: Visible): Record<string, { x: number; y: number }> {
 /** What the canvas remembers per project in this browser: folded stages, whether views show, whether Activity is open. */
 type Prefs = { collapsed: string[]; views: boolean; activity: boolean | null };
 
+const NO_PREFS: Prefs = { collapsed: [], views: true, activity: null };
+/** What is stored, over the defaults: an older version may have stored fewer of them. */
+const acceptPrefs = (v: unknown): Prefs | undefined => (v && typeof v === "object" && !Array.isArray(v) ? { ...NO_PREFS, ...(v as Partial<Prefs>) } : undefined);
+
 function usePrefs(project: string): [Prefs, (p: Partial<Prefs>) => void] {
-  const key = `exuvia-canvas:${project}`;
-  const read = useCallback((): Prefs => {
-    const empty: Prefs = { collapsed: [], views: true, activity: null };
-    try {
-      return { ...empty, ...(JSON.parse(localStorage.getItem(key) ?? "{}") as Partial<Prefs>) };
-    } catch {
-      return empty;
-    }
-  }, [key]);
-  const [prefs, setPrefs] = useState<Prefs>(read);
-  useEffect(() => setPrefs(read()), [read]);
-  const update = useCallback(
-    (p: Partial<Prefs>) =>
-      setPrefs((old) => {
-        const next = { ...old, ...p };
-        try {
-          localStorage.setItem(key, JSON.stringify(next));
-        } catch {
-          /* private mode */
-        }
-        return next;
-      }),
-    [key],
-  );
+  const [prefs, setPrefs] = usePersisted(`exuvia-canvas:${project}`, NO_PREFS, acceptPrefs);
+  const update = useCallback((p: Partial<Prefs>) => setPrefs((old) => ({ ...old, ...p })), [setPrefs]);
   return [prefs, update];
 }
 
