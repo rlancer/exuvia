@@ -91,7 +91,7 @@ class ActivityStore:
                 "edited_at=coalesce(excluded.edited_at, project_activity.edited_at)",
                 (self.scope, project, user, now, now if edited else None),
             )
-        except Exception as e:  # recency is worth less than the request it rides on
+        except Exception as e:  # noqa: BLE001 - recency is worth less than the request it rides on
             with self._lock:
                 self._written.pop(key, None)
             print(f"exuvia: could not note activity on {project}: {e}", file=sys.stderr)

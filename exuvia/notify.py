@@ -103,7 +103,7 @@ def _post(url: str, body: dict[str, Any]) -> None:
                 f"exuvia: failure webhook for {body['node']} answered {resp.status_code}: {resp.text[:200]}",
                 file=sys.stderr,
             )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - a webhook that fails must never fail the run it reports
         print(f"exuvia: could not deliver failure webhook for {body['node']}: {e}", file=sys.stderr)
     finally:
         with _lock:

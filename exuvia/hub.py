@@ -324,7 +324,7 @@ class Hub:
         if store is not None:
             try:
                 await asyncio.to_thread(store.delete_under, f"{project_id}/")
-            except Exception as e:  # the project is gone either way; say what was left behind
+            except Exception as e:  # noqa: BLE001 - the project is gone either way; say what was left behind
                 print(f"exuvia: could not delete {project_id}'s outputs from {store.describe()}: {e}", file=sys.stderr)
 
     async def close(self) -> None:
@@ -353,7 +353,7 @@ class Hub:
                 ctx = await self.get(pid)
                 due = await ctx.ws.tick()
                 nxt = ctx.ws.next_fire_at()
-            except Exception as e:  # one broken project must not stall the hub
+            except Exception as e:  # noqa: BLE001 - one broken project must not stall the hub
                 errors[pid] = f"{type(e).__name__}: {e}"[:500]
                 print(f"exuvia: schedule tick failed for {pid}: {errors[pid]}", file=sys.stderr)
                 continue

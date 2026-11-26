@@ -553,7 +553,7 @@ def _typed_inputs(fn: Any, inputs: dict[str, Any]) -> dict[str, Any]:
 
     try:
         hints = typing.get_type_hints(fn)
-    except Exception:  # an annotation that does not resolve: leave every input untyped
+    except Exception:  # noqa: BLE001 - an annotation that does not resolve: leave every input untyped
         hints = {}
     out = dict(inputs)
     for dep, value in inputs.items():
