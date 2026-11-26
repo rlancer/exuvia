@@ -46,7 +46,7 @@ export function HistoryBrowser(props: {
   /** Open with the list narrowed to this file. */
   path?: string;
   /** Open with this revision selected. */
-  rev?: number;
+  rev?: string;
   /** Offer a "Deleted" filter: files whose newest revision deleted them. */
   deletedFilter?: boolean;
   /** A note for the restore confirmation, e.g. that unsaved edits will be replaced. */
@@ -57,7 +57,7 @@ export function HistoryBrowser(props: {
   const { canEdit } = useAccess();
   const [revs, setRevs] = useState<CodeRevision[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [selId, setSelId] = useState<number | null>(props.rev ?? null);
+  const [selId, setSelId] = useState<string | null>(props.rev ?? null);
   const [against, setAgainst] = useState<Against>("previous");
   const [path, setPath] = useState<string>(props.path ?? "");
   const [deletedOnly, setDeletedOnly] = useState(false);
@@ -334,7 +334,7 @@ export function HistoryRail(props: {
   /** Changes when a tag is made or deleted, here or elsewhere. */
   tagTick: unknown;
   /** The revision open in the main area, highlighted. */
-  current: number | null;
+  current: string | null;
   onOpen: (rev: CodeRevision) => void;
   /** The tag open in the main area, highlighted. */
   currentTag: string | null;

@@ -3,8 +3,9 @@ import type { CodeRevision } from "./api";
 import { currentVersion, deletedFiles, isDeleted, paths, previousVersion, restoreTarget } from "./revisions";
 
 let id = 0;
+// Ids as the server sends them: 32 hex characters.
 const rev = (path: string, hash: string | null, extra: Partial<CodeRevision> = {}): CodeRevision => ({
-  id: ++id,
+  id: (++id).toString(16).padStart(32, "0"),
   path,
   node: null,
   view: null,
