@@ -40,56 +40,6 @@ export function fmtCell(v: unknown): string {
   return String(v);
 }
 
-/** Minimal, safe markdown: fences, inline code, bold, bullet/numbered lists, paragraphs. */
-export function renderMarkdown(src: string): string {
-  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const inline = (s: string) =>
-    esc(s)
-      .replace(/`([^`]+)`/g, "<code>$1</code>")
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  const out: string[] = [];
-  const parts = src.split(/```/);
-  parts.forEach((part, i) => {
-    if (i % 2 === 1) {
-      out.push(`<pre><code>${esc(part.replace(/^[a-z]*\n/, ""))}</code></pre>`);
-      return;
-    }
-    let list: "ul" | "ol" | null = null;
-    let para: string[] = [];
-    const flush = () => {
-      if (para.length) out.push(`<p>${para.map(inline).join("<br>")}</p>`);
-      para = [];
-    };
-    const close = () => {
-      if (list) out.push(`</${list}>`);
-      list = null;
-    };
-    for (const line of part.split("\n")) {
-      const ul = line.match(/^\s*[-*]\s+(.*)/);
-      const ol = line.match(/^\s*\d+[.)]\s+(.*)/);
-      if (ul || ol) {
-        flush();
-        const want = ul ? "ul" : "ol";
-        if (list !== want) {
-          close();
-          out.push(`<${want}>`);
-          list = want;
-        }
-        out.push(`<li>${inline((ul || ol)![1])}</li>`);
-      } else if (!line.trim()) {
-        flush();
-        close();
-      } else {
-        close();
-        para.push(line.replace(/^#+\s*/, ""));
-      }
-    }
-    flush();
-    close();
-  });
-  return out.join("");
-}
-
 /** Props that make a row act as a button: it takes the focus, and Enter or Space press it. */
 export function pressable(fn: () => void) {
   return {
