@@ -85,6 +85,12 @@ class ViewRestore(BaseModel):
     hash: str
 
 
+class TagCreate(BaseModel):
+    name: str
+    message: str | None = None
+    revision: str | None = None  # a revision id; the code now when left out
+
+
 async def _origin(request: Request) -> Any:
     """Code changed by this request is recorded as ``X-Exuvia-Origin``'s
     (a host can say ``ui`` or ``mcp``), or as ``api``."""
@@ -1186,6 +1192,44 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         if source is None:
             raise HTTPException(404, "no saved version with that hash")
         return {"hash": digest, "source": source}
+
+    # -- code tags -------------------------------------------------------------
+    @r.get("/code/tags")
+    def code_tags(ctx: Ctx = Depends(get_ctx)) -> list[dict[str, Any]]:
+        """Every tag, newest first, with how many files it holds and how many
+        of them differ from the code now."""
+        return ctx.ws.code_tags()
+
+    @r.post("/code/tags")
+    def create_tag(body: TagCreate, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """Name the whole project's code as it is now, or as of ``revision``."""
+        try:
+            return ctx.ws.create_tag(body.name, body.message, body.revision)
+        except ValueError as e:
+            raise HTTPException(409 if "already" in str(e) else 400, str(e)) from e
+        except KeyError as e:
+            raise HTTPException(404, str(e.args[0])) from e
+
+    @r.get("/code/tags/{name}")
+    def code_tag(name: str, path: str | None = None, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """A tag and every file it holds beside the file now (``status``:
+        same, changed, deleted or added since); with ``path``, that file's
+        text as the tag holds it."""
+        try:
+            if path is not None:
+                return {"name": name, "path": path, "source": ctx.ws.tag_source(name, path)}
+            return ctx.ws.code_tag(name)
+        except KeyError as e:
+            raise HTTPException(404, str(e.args[0])) from e
+
+    @r.delete("/code/tags/{name}")
+    def delete_tag(name: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """Remove a tag; the code it named stays in the history."""
+        try:
+            ctx.ws.delete_tag(name)
+        except KeyError as e:
+            raise HTTPException(404, str(e.args[0])) from e
+        return {"ok": True, "deleted": name}
 
     @r.get("/code/archive", response_model=None)
     def code_zip(node: str | None = None, view: str | None = None, ctx: Ctx = Depends(get_ctx)) -> Any:

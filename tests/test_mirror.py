@@ -93,7 +93,7 @@ def test_each_save_is_a_commit_and_a_rerun_carries_on(tmp_path):
 
     tip = done["tip"]
     again = mirror(LocalSource(tmp_path / "p"), dest)
-    assert again == {"commits": 0, "tip": tip, "pushed": False, "remote": None}
+    assert again == {"commits": 0, "tip": tip, "pushed": False, "remote": None, "tags": 0, "tags_pushed": 0}
 
     save(ws, "nums", V1, origin="restore")
     more = mirror(LocalSource(tmp_path / "p"), dest)
@@ -133,7 +133,7 @@ def test_pushing_to_a_remote_and_picking_up_from_it(tmp_path):
     assert git(remote, "rev-parse", "exuvia~1") == first["tip"]
     # The first folder is behind the remote: it fast-forwards and sends nothing new.
     assert mirror(LocalSource(tmp_path / "p"), tmp_path / "a", remote=str(remote)) == {
-        "commits": 0, "tip": second["tip"], "pushed": False, "remote": str(remote),
+        "commits": 0, "tip": second["tip"], "pushed": False, "remote": str(remote), "tags": 0, "tags_pushed": 0,
     }
 
     # Someone commits to the branch by hand: the mirror stops rather than overwrite it.
@@ -151,6 +151,41 @@ def test_pushing_to_a_remote_and_picking_up_from_it(tmp_path):
     git(a, "-c", "user.name=x", "-c", "user.email=x@example.com", "commit", "-q", "--allow-empty", "-m", "local edit")
     with pytest.raises(MirrorError, match="different ways"):
         mirror(LocalSource(tmp_path / "p"), a, remote=str(remote))
+
+
+def test_code_tags_become_annotated_git_tags(tmp_path):
+    ws = project(tmp_path / "p")
+    ws.create_tag("v1", "first cut")
+    save(ws, "nums", V2)
+    save(ws, "more", V1)
+    ws.create_tag("v2")
+    remote = tmp_path / "remote.git"
+    git(tmp_path, "init", "-q", "--bare", str(remote))
+
+    done = mirror(LocalSource(tmp_path / "p"), tmp_path / "m", remote=str(remote))
+    m = tmp_path / "m"
+    assert (done["tags"], done["tags_pushed"]) == (2, 2)
+    # v1 is on the load's commit, v2 on the latest save's.
+    assert git(m, "rev-parse", "v1^{commit}") == git(m, "rev-parse", "exuvia~2")
+    assert git(m, "rev-parse", "v2^{commit}") == done["tip"]
+    assert git(m, "cat-file", "-t", "v1") == "tag"
+    assert git(m, "show", "v1:nodes/nums.py") + "\n" == V1
+    body = git(m, "tag", "-l", "--format=%(contents)", "v1")
+    assert body.startswith("first cut") and f"Exuvia-Revision: {ws.store.code_tag('v1')['revision']}" in body
+    assert git(remote, "rev-parse", "v1^{commit}") == git(m, "rev-parse", "v1^{commit}")
+
+    # Again: nothing new. From scratch elsewhere: the very same tag objects.
+    assert mirror(LocalSource(tmp_path / "p"), m, remote=str(remote))["tags"] == 0
+    again = mirror(LocalSource(tmp_path / "p"), tmp_path / "n")
+    assert again["tags"] == 2 and git(tmp_path / "n", "rev-parse", "v1") == git(m, "rev-parse", "v1")
+
+    # A tag deleted and made again elsewhere is left alone in git, with a line saying so.
+    ws.delete_tag("v1")
+    ws.create_tag("v1")
+    lines: list[str] = []
+    out = mirror(LocalSource(tmp_path / "p"), m, remote=str(remote), log=lines.append)
+    assert out["tags"] == 0 and any("tag v1" in line for line in lines)
+    assert git(m, "rev-parse", "v1^{commit}") == git(m, "rev-parse", "exuvia~2")
 
 
 def test_refusals(tmp_path):

@@ -421,3 +421,109 @@ def test_agent_sessions_are_listed_latest_first_per_project(backend, tmp_path):
         assert b.store.agent_sessions() == []
     a.store.close()
     b.store.close()
+
+
+def test_a_tag_names_the_whole_projects_code_at_one_save(backend, tmp_path):
+    ws = Workspace(tmp_path / "p")
+    write(ws, "nums", V1)
+    write(ws, "other", V1)
+    tag = ws.create_tag("v1", "  before the change  ")
+    assert tag["name"] == "v1" and tag["message"] == "before the change"
+    write(ws, "nums", V2)
+    with acting_as("api"):
+        ws.project.delete_node("other")
+        ws.reload()
+    write(ws, "fresh", V1)
+
+    got = ws.code_tag("v1")
+    status = {f["path"]: f["status"] for f in got["files"]}
+    assert status["nodes/nums.py"] == "changed"
+    assert status["nodes/other.py"] == "deleted"
+    assert status["nodes/fresh.py"] == "added"
+    assert ws.tag_source("v1", "nodes/nums.py") == V1
+    assert ws.tag_source("v1", "nodes/other.py") == V1  # gone now, kept by the tag
+    with pytest.raises(KeyError):
+        ws.tag_source("v1", "nodes/fresh.py")
+    [listed] = ws.code_tags()
+    assert listed["name"] == "v1" and listed["changed_since"] == 3 and listed["files"] == 2
+
+    # A tag's version of a node restores like any other.
+    deleted = next(f for f in got["files"] if f["path"] == "nodes/other.py")
+    ws.restore_node("other", deleted["hash"])
+    assert ws.project.source("other") == V1
+
+    # A name is never moved: delete it to use it again.
+    with pytest.raises(ValueError, match="already a tag v1"):
+        ws.create_tag("v1")
+    for bad in ("", "-x", "a b", "x/y", "a..b", "v1.lock", "x" * 65, "end."):
+        with pytest.raises(ValueError, match="not a tag name"):
+            ws.create_tag(bad)
+    ws.delete_tag("v1")
+    assert ws.code_tags() == []
+    with pytest.raises(KeyError):
+        ws.delete_tag("v1")
+    with pytest.raises(KeyError):
+        ws.code_tag("v1")
+
+
+def test_a_tag_at_a_revision_takes_its_whole_save(backend, tmp_path):
+    ws = Workspace(tmp_path / "p")
+    from exuvia.project import _hash
+
+    ws.store.record_code(
+        [("nodes/a.py", "a", None, _hash(V1), V1), ("nodes/b.py", "b", None, _hash(V1), V1)], "template", now=100.0
+    )
+    ws.store.record_code([("nodes/a.py", "a", None, _hash(V2), V2)], "api", now=200.0)
+    first = ws.store.code_revisions_after(None)[0]  # a.py, the first file of the template's save
+    tag = ws.create_tag("start", revision=first["id"])
+    assert set(ws.store.code_at(tag["revision"])) == {"nodes/a.py", "nodes/b.py"}
+    assert ws.tag_source("start", "nodes/a.py") == V1
+    with pytest.raises(KeyError, match="no revision"):
+        ws.create_tag("nope", revision="0" * 32)
+
+
+def test_tag_tools_and_routes(backend, tmp_path):
+    with TestClient(create_app(tmp_path / "p")) as client:
+        assert client.post("/api/code/tags", json={"name": "v0"}).status_code == 404  # no code yet
+        client.put("/api/nodes/nums", json={"source": V1, "kind": "python"})
+        r = client.post("/api/code/tags", json={"name": "v1", "message": "shipped"})
+        assert r.status_code == 200 and r.json()["message"] == "shipped"
+        assert client.post("/api/code/tags", json={"name": "v1"}).status_code == 409
+        assert client.post("/api/code/tags", json={"name": "a b"}).status_code == 400
+        client.put("/api/nodes/nums", json={"source": V2})
+
+        [tag] = client.get("/api/code/tags").json()
+        assert tag["name"] == "v1" and tag["changed_since"] == 1
+        files = client.get("/api/code/tags/v1").json()["files"]
+        assert [(f["path"], f["status"]) for f in files] == [("nodes/nums.py", "changed")]
+        src = client.get("/api/code/tags/v1", params={"path": "nodes/nums.py"}).json()["source"]
+        assert src == V1
+        assert client.get("/api/code/tags/v1", params={"path": "nodes/x.py"}).status_code == 404
+        assert client.get("/api/code/tags/nope").status_code == 404
+        assert client.delete("/api/code/tags/v1").json() == {"ok": True, "deleted": "v1"}
+        assert client.delete("/api/code/tags/v1").status_code == 404
+
+    agent = Agent(Workspace(tmp_path / "q"))
+
+    async def go():
+        agent.ws.bus.bind(asyncio.get_running_loop())
+        ok, text, _ = await agent._call("list_tags", {})
+        assert ok and "no tags yet" in text
+        with acting_as("api"):
+            await agent._call("write_node", {"name": "nums", "kind": "python", "source": V1})
+        ok, text, _ = await agent._call("create_tag", {"name": "v1", "message": "first"})
+        assert ok and json.loads(text)["name"] == "v1"
+        ok, text, _ = await agent._call("create_tag", {"name": "v1"})
+        assert not ok and "already" in text
+        ok, text, _ = await agent._call("list_tags", {})
+        assert ok and json.loads(text)[0]["message"] == "first"
+        ok, text, _ = await agent._call("read_tag", {"name": "v1"})
+        assert ok and json.loads(text)["files"][0]["status"] == "same"
+        ok, text, _ = await agent._call("read_tag", {"name": "v1", "path": "nodes/nums.py"})
+        assert ok and text == V1
+        ok, text, _ = await agent._call("delete_tag", {"name": "v1"})
+        assert ok
+        ok, text, _ = await agent._call("read_tag", {"name": "v1"})
+        assert not ok and "no tag v1" in text
+
+    asyncio.run(go())

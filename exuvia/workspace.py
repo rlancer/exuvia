@@ -90,6 +90,10 @@ RETRY = "retry"
 OK = ("success", "cached")
 # Project files besides nodes/ whose versions are kept as code revisions.
 VERSIONED_FILES = ("exuvia.json", "AGENTS.md", "pyproject.toml", "package.json")
+# A code tag's name: what git takes as a tag (`exuvia mirror` makes one of
+# each), kept short and plain: v1, v1.2.0, q3-review, before_refactor.
+TAG_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9_])?")
+TAG_MESSAGE_CHARS = 2000
 
 # Who is changing the code right now (the agent, an API caller, ...). Code
 # revisions record it; a change nobody claimed came from editing the files.
@@ -314,6 +318,96 @@ class Workspace:
                 digest and (n := self.graph.nodes.get(run["node"])) is not None and n.code_hash == digest
             ),
         }
+
+    # -- code tags ---------------------------------------------------------
+    def _current_hashes(self) -> dict[str, str]:
+        out = {}
+        for rel, (_, _, p) in self._code_files().items():
+            try:
+                out[rel] = _hash(p.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError):
+                continue
+        return out
+
+    def create_tag(self, name: str, message: str | None = None, revision: str | None = None) -> dict[str, Any]:
+        """Name the whole project's code as it is now, or as of ``revision``
+        (the save it belongs to, whole). ValueError for a bad or taken name,
+        KeyError when there is no such revision (or no code at all yet)."""
+        name = (name or "").strip()
+        if not TAG_NAME.fullmatch(name) or ".." in name or name.endswith(".lock"):
+            raise ValueError(
+                f"not a tag name: {name!r}. Use letters, digits, '.', '_' and '-' (up to 64, starting and ending "
+                "with a letter or digit), e.g. v1, v1.2.0 or q3-review"
+            )
+        message = (message or "").strip()
+        if len(message) > TAG_MESSAGE_CHARS:
+            raise ValueError(f"the message is {len(message)} characters: keep it under {TAG_MESSAGE_CHARS}")
+        with self._edit_lock:
+            if not revision:
+                # Edits on disk nobody recorded yet are part of "now".
+                self.record_code("file")
+            end = self.store.save_end(revision or "")
+            if end is None:
+                raise KeyError(f"no revision {revision}" if revision else "there is no saved code to tag yet")
+            tag = self.store.create_tag(name, end, message, author=auth.current_id(), author_user=auth.current_uid())
+        self.bus.publish({"type": "tags"})
+        return tag
+
+    def code_tags(self) -> list[dict[str, Any]]:
+        """Every tag, newest first, each with how many files it holds and how
+        many of them differ from the code now (changed, deleted or added since)."""
+        current = self._current_hashes()
+        out = []
+        for t in self.store.code_tags():
+            files = self.store.code_at(t["revision"])
+            changed = sum(1 for p, r in files.items() if current.get(p) != r["hash"])
+            changed += sum(1 for p in current if p not in files)
+            out.append({**t, "files": len(files), "changed_since": changed})
+        return out
+
+    def code_tag(self, name: str) -> dict[str, Any]:
+        """One tag and every file it holds, each beside the file now:
+        ``status`` is ``same``, ``changed``, ``deleted`` (gone since) or
+        ``added`` (new since; ``hash`` is null). KeyError when there is no such tag."""
+        tag = self.store.code_tag(name)
+        if tag is None:
+            raise KeyError(f"no tag {name}")
+        files = self.store.code_at(tag["revision"])
+        current = self._current_hashes()
+        rows = []
+        for path in sorted(set(files) | set(current)):
+            r = files.get(path)
+            now = current.get(path)
+            status = "added" if r is None else "deleted" if now is None else "same" if now == r["hash"] else "changed"
+            rows.append({
+                "path": path,
+                "node": r["node"] if r else _node_of(path),
+                "view": r["view"] if r else _view_of(path),
+                "hash": r["hash"] if r else None,
+                "revision": r["id"] if r else None,
+                "saved_at": r["saved_at"] if r else None,
+                "current_hash": now,
+                "status": status,
+            })
+        return {**tag, "files": rows}
+
+    def tag_source(self, name: str, path: str) -> str:
+        """The text of ``path`` as tag ``name`` holds it. KeyError when there
+        is no such tag, or the tag holds no such file."""
+        tag = self.store.code_tag(name)
+        if tag is None:
+            raise KeyError(f"no tag {name}")
+        r = self.store.code_at(tag["revision"]).get(path)
+        source = self.store.code_source(r["hash"]) if r else None
+        if source is None:
+            raise KeyError(f"tag {name} holds no file {path}")
+        return source
+
+    def delete_tag(self, name: str) -> None:
+        """Remove a tag (the code it named stays in the history). KeyError when there is none."""
+        if not self.store.delete_tag(name):
+            raise KeyError(f"no tag {name}")
+        self.bus.publish({"type": "tags"})
 
     def restore_node(self, name: str, digest: str) -> None:
         """Write a recorded version of node ``name`` back as its current

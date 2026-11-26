@@ -19,6 +19,7 @@ import { language } from "./lang";
 import { ago } from "./util";
 import { useAccess } from "./Access";
 import { CodeEditor } from "./ui/CodeEditor";
+import { TagRail } from "./Tags";
 
 /** What the selected version is compared with. */
 type Against = "current" | "previous";
@@ -330,13 +331,19 @@ export function HistoryBrowser(props: {
 export function HistoryRail(props: {
   /** Changes when the files change (a code or view hash): the list is read again. */
   tick: unknown;
+  /** Changes when a tag is made or deleted, here or elsewhere. */
+  tagTick: unknown;
   /** The revision open in the main area, highlighted. */
   current: number | null;
   onOpen: (rev: CodeRevision) => void;
+  /** The tag open in the main area, highlighted. */
+  currentTag: string | null;
+  onOpenTag: (name: string) => void;
 }) {
   const [revs, setRevs] = useState<CodeRevision[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [deletedOnly, setDeletedOnly] = useState(false);
+  const [which, setWhich] = useState<"latest" | "deleted" | "tags">(props.currentTag ? "tags" : "latest");
+  const deletedOnly = which === "deleted";
 
   useEffect(() => {
     let live = true;
@@ -357,11 +364,16 @@ export function HistoryRail(props: {
   return (
     <div {...stylex.props(styles.rail)}>
       <div {...stylex.props(styles.bar)}>
-        <SegmentedControl size="sm" layout="fill" label="Which revisions" value={deletedOnly ? "deleted" : "latest"} onChange={(v) => setDeletedOnly(v === "deleted")} xstyle={styles.switch}>
+        <SegmentedControl size="sm" layout="fill" label="Which revisions" value={which} onChange={(v) => setWhich(v === "deleted" || v === "tags" ? v : "latest")} xstyle={styles.switch}>
           <SegmentedControlItem value="latest" label="Latest saves" />
           <SegmentedControlItem value="deleted" label={deleted.length ? `Deleted (${deleted.length})` : "Deleted"} />
+          <SegmentedControlItem value="tags" label="Tags" />
         </SegmentedControl>
       </div>
+      {which === "tags" ? (
+        <TagRail tick={`${String(props.tick)}|${String(props.tagTick)}`} current={props.currentTag} onOpen={props.onOpenTag} />
+      ) : (
+      <>
       {err && <Banner status="error" container="section" title={err} />}
       <div {...stylex.props(styles.revs)}>
         <List density="compact" hasDividers aria-label={deletedOnly ? "Deleted files" : "Latest saves"}>
@@ -388,6 +400,8 @@ export function HistoryRail(props: {
         {revs && !shown.length && <Note>{deletedOnly ? "No deleted nodes, views or files." : "No saved versions yet. Every save of the code is kept here."}</Note>}
         {!revs && !err && <Note>Loading…</Note>}
       </div>
+      </>
+      )}
     </div>
   );
 }

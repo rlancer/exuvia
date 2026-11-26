@@ -288,6 +288,10 @@ def cmd_mirror(args: argparse.Namespace) -> None:
     )
     if done["pushed"]:
         line += f", pushed to {done['remote']}"
+    if done.get("tags"):
+        line += f"; {done['tags']} new tag{'s' * (done['tags'] != 1)}"
+    if done.get("tags_pushed"):
+        line += f" ({done['tags_pushed']} pushed)" if done.get("tags") else f"; {done['tags_pushed']} tag{'s' * (done['tags_pushed'] != 1)} pushed"
     print(f"{line} ({done['tip'][:12]})")
 
 

@@ -27,6 +27,10 @@ The revisions stay the record; the repository is derived from them, one way:
 - It writes one branch (``exuvia`` unless ``--branch``) and never
   force-pushes. A commit on that branch that this command did not make stops
   it, rather than being overwritten: edit the code in exuvia, not here.
+- Each code tag becomes an annotated git tag of the same name on the commit
+  of the save it was made at (tagger and date from the tag, so these are
+  the same every run too). A git tag of that name that points elsewhere is
+  left as it is, here and on the remote, with a line saying so.
 """
 
 from __future__ import annotations
@@ -120,6 +124,12 @@ class RemoteSource:
         except _NotFound:
             return None
 
+    def tags(self) -> list[dict[str, Any]]:
+        try:
+            return list(self._get("/code/tags"))
+        except _NotFound:
+            return []  # an exuvia from before tags
+
 
 class _NotFound(Exception):
     """A 404 from the server, with its detail."""
@@ -150,6 +160,9 @@ class LocalSource:
 
     def source(self, digest: str) -> str | None:
         return self.store.code_source(digest)
+
+    def tags(self) -> list[dict[str, Any]]:
+        return self.store.code_tags()
 
 
 # -- revisions -> a git fast-import stream ---------------------------------------------
@@ -241,8 +254,14 @@ class Git:
     exe: str
     cwd: Path
 
-    def run(self, *args: str, input: bytes | None = None, check: bool = True) -> subprocess.CompletedProcess[bytes]:
-        p = subprocess.run([self.exe, *args], cwd=self.cwd, input=input, capture_output=True)
+    def run(
+        self, *args: str, input: bytes | None = None, check: bool = True, env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess[bytes]:
+        import os
+
+        p = subprocess.run(
+            [self.exe, *args], cwd=self.cwd, input=input, capture_output=True, env={**os.environ, **env} if env else None
+        )
         if check and p.returncode != 0:
             err = (p.stderr or p.stdout).decode("utf-8", "replace").strip()
             raise MirrorError(f"git {args[0]} failed: {err}")
@@ -329,6 +348,73 @@ def cursor(git: Git, tip: str) -> str:
     return found[-1]
 
 
+def tag_message(tag: dict[str, Any]) -> str:
+    return f"{(tag.get('message') or tag['name']).strip()}\n\n{TRAILER}: {tag['revision']}\n"
+
+
+def commits_by_revision(git: Git, tip: str) -> dict[str, str]:
+    """Every revision the branch up to ``tip`` mirrored -> its commit."""
+    out: dict[str, str] = {}
+    log = git.run("log", "--format=%H%x1f%B%x1e", tip).stdout.decode("utf-8", "replace")
+    for entry in log.split("\x1e"):
+        sha, _, body = entry.strip().partition("\x1f")
+        for rid in re.findall(rf"^{TRAILER}: (\S+)\s*$", body, re.M):
+            out[rid] = sha
+    return out
+
+
+def mirror_tags(
+    git: Git, source: RemoteSource | LocalSource, tip: str, remote: str | None, log: Callable[[str], None]
+) -> tuple[int, int]:
+    """An annotated git tag for each of ``source``'s code tags on the commit
+    of its revision, pushed to ``remote`` when given. Returns (made here,
+    pushed); a git tag of the same name on another commit is left alone."""
+    tags = source.tags()
+    if not tags:
+        return 0, 0
+    commits = commits_by_revision(git, tip)
+    made, ready = 0, []
+    for tag in sorted(tags, key=lambda t: (t["created_at"], t["name"])):
+        name, commit = tag["name"], commits.get(tag["revision"])
+        if commit is None or git.run("check-ref-format", f"refs/tags/{name}", check=False).returncode != 0:
+            log(f"tag {name}: its revision {tag['revision']} is not on this branch; left out")
+            continue
+        have = git.sha(f"refs/tags/{name}")
+        if have is None:
+            who = _clean(tag.get("author") or "exuvia")
+            email = re.sub(r"[^A-Za-z0-9._-]", "-", tag.get("author_user") or "exuvia").strip("-.") or "exuvia"
+            env = {
+                "GIT_COMMITTER_NAME": who,
+                "GIT_COMMITTER_EMAIL": f"{email}@exuvia.invalid",
+                "GIT_COMMITTER_DATE": f"{int(tag['created_at'])} +0000",
+            }
+            git.run("-c", "tag.gpgSign=false", "tag", "-a", "-F", "-", name, commit, input=tag_message(tag).encode("utf-8"), env=env)
+            made += 1
+        elif have != commit:
+            log(f"tag {name}: a git tag of that name is on another commit here; left as it is")
+            continue
+        ready.append((name, commit))
+    if not remote or not ready:
+        return made, 0
+    theirs: dict[str, str] = {}
+    for line in git.out("ls-remote", "--tags", remote).splitlines():
+        sha, _, ref = line.partition("\t")
+        ref = ref.removeprefix("refs/tags/")
+        if ref.endswith("^{}"):
+            theirs[ref[:-3]] = sha  # an annotated tag, peeled to its commit
+        else:
+            theirs.setdefault(ref, sha)
+    push = []
+    for name, commit in ready:
+        if name not in theirs:
+            push.append(f"refs/tags/{name}")
+        elif theirs[name] != commit:
+            log(f"tag {name}: {remote} has a tag of that name on another commit; left as it is")
+    if push:
+        git.run("push", "-q", remote, *push)
+    return made, len(push)
+
+
 def remote_tip(git: Git, remote: str, branch: str) -> str | None:
     """Fetch ``branch`` from ``remote``; its tip, or None when it has none yet."""
     listed = git.run("ls-remote", "--heads", remote, f"refs/heads/{branch}")
@@ -351,7 +437,8 @@ def mirror(
     """Add a commit to ``branch`` in the repository at ``dest`` for each
     save of ``source`` not mirrored yet, then push the branch to ``remote``
     (a remote's name or URL) or ``github`` (``owner/name``, through ``gh``)
-    when given. Returns ``{commits, tip, pushed}``; raises MirrorError."""
+    when given, with a git tag for each code tag. Returns ``{commits, tip,
+    pushed, tags, tags_pushed}``; raises MirrorError."""
     if remote and github:
         raise MirrorError("give --remote or --github, not both")
     if not re.fullmatch(r"[A-Za-z0-9._/-]+", branch) or branch.startswith(("-", "/")) or ".." in branch:
@@ -405,4 +492,5 @@ def mirror(
     if remote and tip and tip != theirs:
         git.run("push", "-q", remote, f"{tip}:refs/heads/{branch}")
         pushed = True
-    return {"commits": len(groups), "tip": tip, "pushed": pushed, "remote": remote}
+    tags, tags_pushed = mirror_tags(git, source, tip, remote, log) if tip else (0, 0)
+    return {"commits": len(groups), "tip": tip, "pushed": pushed, "remote": remote, "tags": tags, "tags_pushed": tags_pushed}
