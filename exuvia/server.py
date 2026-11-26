@@ -183,6 +183,12 @@ class ScheduleReq(BaseModel):
     cron: str | None = None  # "" turns the schedule off; null drops the override
 
 
+class StageReq(BaseModel):
+    nodes: list[str] = []
+    title: str | None = None
+    description: str | None = None
+
+
 class ParamReq(BaseModel):
     type: str = "string"
     default: Any = None
@@ -524,6 +530,25 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
     def param_delete(name: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         ctx.ws.set_param(name, None)
         return params_list(ctx)
+
+    # -- stages: steps of the graph on the canvas (exuvia.json `stages`) -------
+    @r.get("/stages")
+    def stages_list(ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        return {"stages": [g.to_dict() for g in ctx.ws.graph.stages.values()]}
+
+    @r.put("/stages/{name}")
+    def stage_put(name: str, body: StageReq, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """Create or change a stage; its nodes move out of any other stage."""
+        try:
+            return ctx.ws.set_stage(name, body.nodes, body.title, body.description)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @r.delete("/stages/{name}")
+    def stage_delete(name: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        if name not in ctx.ws.graph.stages:
+            raise HTTPException(404, f"no stage named {name}")
+        return ctx.ws.set_stage(name, None)
 
     # -- environment variables (envvars.py) -------------------------------------
     @r.get("/env")

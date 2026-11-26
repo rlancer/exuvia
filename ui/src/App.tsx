@@ -338,6 +338,14 @@ function Workbench() {
     setMode("graph");
     setSelected(name);
   };
+  /** A view picked on the canvas: rendered in Views mode. */
+  const openView = useCallback(
+    (name: string) => {
+      setMode("views");
+      setViewOpen((o) => ({ view: name, seq: (o?.seq ?? 1) + 1 }));
+    },
+    [setMode],
+  );
 
   return (
     <div {...stylex.props(styles.app, embed && styles.appEmbed)}>
@@ -486,7 +494,7 @@ function Workbench() {
                 <div {...stylex.props(styles.graph, !agentOpen && styles.graphRail)}>
                   <div {...stylex.props(styles.canvas)}>
                     <ReactFlowProvider>
-                      <Canvas nodes={nodes} selected={selected} flash={flash} onSelect={setSelected} />
+                      {project && <Canvas project={project} selected={selected} flash={flash} dark={dark} onSelect={setSelected} onOpenView={openView} />}
                     </ReactFlowProvider>
                     {project && nodes.length === 0 && (
                       <div {...stylex.props(styles.emptyCanvas)}>

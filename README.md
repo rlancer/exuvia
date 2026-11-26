@@ -554,7 +554,8 @@ code managed there, is planned: see
 
 ## Views
 
-A **view** is custom UI over node outputs, kept apart from the graph. In a
+A **view** is custom UI over node outputs, kept apart from the graph's
+code (the canvas still draws each one under the nodes it reads). In a
 notebook the UI lives in each cell and is built from Python: widget calls, or
 HTML and JavaScript held in strings. Here the nodes compute outputs in Python
 and SQL, and a view is front-end code that only reads them: TypeScript, React
@@ -615,6 +616,10 @@ views/vol_board/
 - `runtime` is `react` (the default and, for now, the only one) and `entry`
   is the component file (`App.tsx` by default; `.tsx`, `.ts`, `.jsx` or
   `.js`). `title` defaults to the folder name.
+- `canvas` pins the view on the graph's canvas, rendered live: `true` (a
+  card 560 by 360 pixels) or `{"width": 800, "height": 400}` (280 to 1600
+  wide, 180 to 1200 high). Without it the canvas shows the view as a small
+  card under the nodes it reads (see [The canvas](#the-canvas-stages-views-and-activity)).
 - View names follow the node-name rule (snake_case). Files are text with one
   of `.tsx .ts .jsx .js .css .json .html .md .svg`, at most 512 KB each, in
   plain relative paths (up to 8 levels); other files in the folder are not
@@ -831,6 +836,68 @@ select * from orders where status = 'open'
   nodes), `started` and `skipped` (node → why not: already running, or
   refreshed within its seconds).
 - A push node can't be live: nothing on the hub runs it.
+
+## The canvas: stages, views and activity
+
+The graph is the interface, so the canvas says more than which node feeds
+which. As a graph grows past what fits on a screen, three things keep it
+readable: stages, the views drawn with the nodes they read, and Activity.
+
+**Stages.** A stage is one step of the graph (ingest, features, models,
+reports), drawn as a labelled region around its nodes with their states
+along its top. Fold a stage and it becomes one card that stands for all its
+nodes: coloured by the one that most needs attention, with the count in
+each state, and the edges in and out of it rerouted to the card. A
+forty-node graph folds into a handful of steps you can read at a glance;
+open the one you're working on. The canvas's controls fold or open every
+stage at once, and the browser remembers which are folded, per project.
+
+Stages live in `exuvia.json`, not in the node files, so arranging nodes in
+stages never changes a node's code and never makes an output stale:
+
+```json
+{
+  "stages": {
+    "ingest": {"title": "Ingest", "description": "The tickers and their daily closes", "nodes": ["universe", "prices"]},
+    "features": {"title": "Features", "nodes": ["returns", "rolling_vol"]},
+    "reports": ["sector_summary"]
+  }
+}
+```
+
+- A stage's name is snake_case; `title` (the label, default the name) and
+  `description` are optional, and a list of nodes alone is the short form.
+  Stages are drawn in the order written.
+- A node is in at most one stage. A node named by two is in the first, and
+  the second reports it (`problem`). Nodes a stage names that do not exist
+  are listed as `missing` and otherwise ignored; nodes in no stage are drawn
+  on their own.
+- The agent has `set_stage` (a stage's whole list of nodes; a node moves out
+  of any other stage) and `delete_stage` (the nodes stay). Over HTTP:
+  `GET /api/stages`, `PUT /api/stages/{name}` with
+  `{"nodes", "title", "description"}`, `DELETE /api/stages/{name}`.
+  `GET /api/project` lists `stages`, and each node's `stage`.
+
+**Views on the canvas.** Each view is a card under the nodes it reads, with
+a dashed edge from each: what the view shows, and whether it is current
+(`ready`, `missing`, `stale` or `error`). Click it to open the view. A view
+whose manifest sets `canvas` is drawn as the view itself, rendered live in
+a card of that size, so the graph carries its own overview: a status board,
+the latest numbers, a chart of what the pipeline produces. It behaves as it
+does in Views mode: it only reads, it refreshes its live nodes when the
+canvas shows it, and its header opens it in Views. A control on the canvas
+hides the plain view cards; pinned views always show.
+
+**Lineage.** Select a node and the canvas lights up what flows into it and
+everything it flows on to, views included, and dims the rest: what a change
+to it touches, and where its data comes from.
+
+**Activity.** A panel over the canvas says what the graph is doing now: the
+nodes running (and for how long) and queued, those that failed and why,
+what the schedule runs next and what finished in the last hour. A row brings
+its node into view, opening its stage if it is folded. It is open by default
+on a graph of more than eight nodes on a wide screen; closed, it is one
+button that counts what is running and what failed.
 
 ## Downloads
 
@@ -2486,7 +2553,7 @@ The agent runs a tool loop over the live workspace: `list_nodes`, `read_node`,
 `write_node`, `delete_node`, `list_files` / `read_file` / `write_file` /
 `delete_file` (shared helpers under `lib/`), `list_views` / `read_view` /
 `write_view` / `write_view_file` / `delete_view_file` / `delete_view` (see
-"Views"), `run_node` (waits up to `wait_seconds`, default 240, then returns
+"Views"), `set_stage` / `delete_stage` (see "The canvas"), `run_node` (waits up to `wait_seconds`, default 240, then returns
 the run id of a run still going), `list_runs`, `read_run` (run history: what
 a schedule or a cascade ran, with each run's error and log, or the log so far
 of one still going) and `cancel_run`, `define_param` /
@@ -3204,6 +3271,7 @@ headlessly or iframe the UI:
 | `GET /api/views/{name}/packages` | the npm modules a view imports, for the page to post into its frame: `entries` (import to module id), `modules` (module id to source), `errors` (import to why it could not be fetched) and `declared` |
 | `GET/PUT/DELETE /api/nodes/{name}` | read / write / delete a node file |
 | `GET /api/files`, `GET/PUT/DELETE /api/files/lib/{path}.py` | list / read / write (`{"source"}`) / delete shared helper modules; each answer names the nodes that import the file (`used_by`). Paths outside `lib/`, other extensions and `..` are rejected (400) |
+| `GET /api/stages`, `PUT/DELETE /api/stages/{name}` | the graph's stages (see "The canvas") / create or change one (`{"nodes", "title", "description"}`; its nodes move out of any other stage) / remove one, keeping its nodes |
 | `GET /api/views` | every view with its state (`?params=`), as in `/api/project` |
 | `GET/PUT/DELETE /api/views/{name}` | one view with its parsed manifest and every file's source / create it or replace its `view.json` (body: the manifest) / delete the folder |
 | `GET/PUT/DELETE /api/views/{name}/files/{path}` | read / write (`{"source"}`) / delete one file of a view (`App.tsx`, `components/Chart.tsx`). Paths outside the view folder, `..`, absolute paths and other extensions are rejected (400); writes return the view |

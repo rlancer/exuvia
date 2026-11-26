@@ -69,7 +69,7 @@ from .packages import Packages, missing_package
 from .keys import KeyViolation, enforce_file
 from .partitioned import Manifest, PartitionError, Writer, commit, in_range, prune, sort_values
 from .pushing import save_pushed
-from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Project, View, _hash, _validate_cron
+from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Project, View, _hash, _validate_cron, check_stage
 from .runner import PART_EXT, PART_NAME
 from .store import CodeChange, clean_origin, open_store
 
@@ -498,6 +498,56 @@ class Workspace:
             self.project.update_config(mutate)
             self.reload()
 
+    # -- stages: steps of the graph on the canvas (exuvia.json `stages`) --------
+    def set_stage(
+        self, name: str, nodes: list[str] | None, title: str | None = None, description: str | None = None
+    ) -> dict[str, Any]:
+        """Create or change a stage, or (``nodes=None``) remove it. A node
+        moves into it from any other stage it was in. Stages only arrange the
+        canvas: no node file changes, so no output goes stale."""
+        spec: dict[str, Any] = {"nodes": nodes or []}
+        if title is not None:
+            spec["title"] = title
+        if description is not None:
+            spec["description"] = description
+        clean, problem = check_stage(name, spec)
+        if problem:
+            raise ValueError(problem)
+        unknown = [n for n in clean["nodes"] if n not in self.graph.nodes]
+        if nodes is not None and unknown:
+            raise ValueError(f"no node named {', '.join(unknown)}")
+
+        def mutate(cfg: dict[str, Any]) -> None:
+            stages = cfg.get("stages") if isinstance(cfg.get("stages"), dict) else {}
+            if nodes is None:
+                stages.pop(name, None)
+            else:
+                moved = set(clean["nodes"])
+                for other, ospec in stages.items():
+                    if other == name:
+                        continue
+                    if isinstance(ospec, list):
+                        stages[other] = [n for n in ospec if n not in moved]
+                    elif isinstance(ospec, dict) and isinstance(ospec.get("nodes"), list):
+                        ospec["nodes"] = [n for n in ospec["nodes"] if n not in moved]
+                old = stages.get(name) if isinstance(stages.get(name), dict) else {}
+                entry: dict[str, Any] = {}
+                for key in ("title", "description"):
+                    value = clean[key] if key in spec else old.get(key)
+                    if value:
+                        entry[key] = value
+                entry["nodes"] = clean["nodes"]
+                stages[name] = entry
+            if stages:
+                cfg["stages"] = stages
+            else:
+                cfg.pop("stages", None)
+
+        with self.editing():
+            self.project.update_config(mutate)
+            self.reload()
+        return {"stages": [g.to_dict() for g in self.graph.stages.values()]}
+
     # -- environment variables (envvars.py) ----------------------------------------
     def _env_rows(self) -> list[dict[str, Any]]:
         """Every variable with its value decrypted, for runs and nothing else."""
@@ -745,6 +795,7 @@ class Workspace:
             "backfill": self.backfill_status(),
             "nodes": [{**n.to_dict(), **st.get(n.name, {})} for n in self.graph.nodes.values()],
             "views": [self._view_dict(v, st) for v in self.graph.views.values()],
+            "stages": [g.to_dict() for g in self.graph.stages.values()],
         }
 
     # -- views ---------------------------------------------------------------
