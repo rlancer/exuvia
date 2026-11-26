@@ -114,7 +114,7 @@ const PAGES: PageSpec[] = [
     group: "Build",
     source: { heading: "The canvas: stages, views and activity" },
     title: "The canvas",
-    summary: "Reading a big graph: stages that fold into one card, views drawn with what they read, lineage and what is running now.",
+    summary: "Reading a big graph: stages that fold into one card, views drawn with what they read, lineage, what is running now, and a Notebook layout that reads the graph top to bottom.",
   },
   {
     slug: "downloads",
@@ -126,13 +126,13 @@ const PAGES: PageSpec[] = [
     slug: "agent",
     group: "Build",
     source: { heading: "The agent" },
-    summary: "The agent's tools, model providers, project notes and sessions.",
+    summary: "The agent's tools, model providers, project notes, sessions, and outside MCP servers for it to use.",
   },
   {
     slug: "execution-model",
     group: "Run",
     source: { heading: "Execution model" },
-    summary: "Content-addressed outputs, derived freshness, schedules, cascade and revisions.",
+    summary: "Content-addressed outputs, derived freshness, schedules, cascade, every version of the code, tags, and the history mirrored to git.",
   },
   {
     slug: "command-line",
@@ -165,7 +165,7 @@ const PAGES: PageSpec[] = [
     group: "Run",
     source: { heading: "Hub: many projects from one process" },
     title: "Hub",
-    summary: "Serve every project under one directory from a single process, shared with people and grouped into folders that share access and secrets.",
+    summary: "Serve every project under one directory from a single process, shared with people, grouped into folders that share access and secrets, and read from your own apps with data API keys.",
   },
   {
     slug: "http-api",
@@ -179,7 +179,7 @@ const PAGES: PageSpec[] = [
     group: "Integrate",
     source: { heading: "MCP: the agent's tools in your own agent" },
     title: "MCP",
-    summary: "Give Claude Code, Cursor or any MCP client the agent's tools: list, write and run nodes from your own agent.",
+    summary: "Give Claude Code, Cursor or any MCP client the agent's tools: list, write and run nodes from your own agent, or call them with exuvia tool when MCP won't connect.",
   },
   {
     slug: "status",
