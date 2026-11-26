@@ -40,8 +40,10 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 from urllib.parse import quote
+
+from .store import saves
 
 BRANCH = "exuvia"
 TRAILER = "Exuvia-Revision"
@@ -157,19 +159,6 @@ class LocalSource:
 
 
 # -- revisions -> a git fast-import stream ---------------------------------------------
-def saves(revisions: Iterable[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-    """Revisions (oldest first) grouped by the save that wrote them: one save
-    records all its files at one time, by one person, through one route."""
-    out: list[list[dict[str, Any]]] = []
-    for r in revisions:
-        key = (r["saved_at"], r["origin"], r.get("author"), r.get("author_user"))
-        if out and (out[-1][0]["saved_at"], out[-1][0]["origin"], out[-1][0].get("author"), out[-1][0].get("author_user")) == key:
-            out[-1].append(r)
-        else:
-            out.append([r])
-    return out
-
-
 def _clean(text: str) -> str:
     """A name git takes in an ident: no angle brackets or line breaks."""
     return re.sub(r"[<>\n\r]", "", text).strip() or "exuvia"

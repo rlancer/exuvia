@@ -527,3 +527,33 @@ def test_tag_tools_and_routes(backend, tmp_path):
         assert not ok and "no tag v1" in text
 
     asyncio.run(go())
+
+
+def test_the_mirror_and_save_end_agree_on_what_one_save_is(backend, tmp_path):
+    """A git tag (exuvia mirror: one commit per save) and an exuvia tag
+    (Store.save_end) must land on the same save, even when two saves share
+    a time and their revisions interleave."""
+    from exuvia.mirror import saves
+
+    (tmp_path / "nodes").mkdir()
+    ws = Workspace(tmp_path)
+    rec = ws.store.record_code
+    rec([("nodes/a.py", "a", None, "a1", "a1"), ("nodes/b.py", "b", None, "b1", "b1")], "api", now=10.0, author="Ann")
+    rec([("nodes/c.py", "c", None, "c1", "c1")], "agent", now=10.0, author="Ann")  # same time, another route
+    rec([("nodes/a.py", "a", None, "a2", "a2")], "api", now=10.0, author="Bob")  # same time, another person
+    rec([("nodes/a.py", "a", None, "a3", "a3")], "api", now=11.0)
+    rec([("nodes/b.py", "b", None, "b2", "b2")], "api", now=11.0, author="")  # no author is the same as ""
+    # Two saves alike in time, route and author, with another between them: three saves.
+    rec([("nodes/a.py", "a", None, "a4", "a4")], "api", now=12.0, author="Ann")
+    rec([("nodes/c.py", "c", None, "c2", "c2")], "agent", now=12.0, author="Ann")
+    rec([("nodes/b.py", "b", None, "b3", "b3")], "api", now=12.0, author="Ann")
+    revs = ws.store.code_revisions_after(None)
+    groups = saves(revs)
+    assert [[r["hash"] for r in g] for g in groups] == [
+        ["a1", "b1"], ["c1"], ["a2"], ["a3", "b2"], ["a4"], ["c2"], ["b3"],
+    ]
+    for g in groups:
+        for r in g:
+            assert ws.store.save_end(r["id"]) == g[-1]["id"]
+    assert ws.store.save_end("") == groups[-1][-1]["id"] and ws.store.save_end("nope") is None
+    ws.store.close()

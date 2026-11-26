@@ -225,6 +225,34 @@ _revision_lock = threading.Lock()
 _last_revision_ns = 0
 
 
+# The columns a code revision is read with; _revision names view_name "view".
+REVISION_COLUMNS = "id, path, node, view_name, hash, origin, author, author_user, saved_at"
+
+
+def _revision(row: dict[str, Any]) -> dict[str, Any]:
+    row["view"] = row.pop("view_name")
+    return row
+
+
+def save_key(r: dict[str, Any]) -> tuple[Any, ...]:
+    """What the revisions one save recorded share: its time, route and author."""
+    return (r["saved_at"], r["origin"], r.get("author") or "", r.get("author_user") or "")
+
+
+def saves(revisions: Iterable[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Revisions (oldest first) grouped by the save that wrote them: one save
+    records all its files at one time, by one person, through one route.
+    The one definition of a save: ``exuvia mirror`` makes each group one git
+    commit, and Store.save_end (where an exuvia tag points) uses it too."""
+    out: list[list[dict[str, Any]]] = []
+    for r in revisions:
+        if out and save_key(out[-1][0]) == save_key(r):
+            out[-1].append(r)
+        else:
+            out.append([r])
+    return out
+
+
 def revision_id() -> str:
     """A unique id that sorts after every id this process made before it.
 
@@ -770,13 +798,21 @@ class Store:
                 where += f" and {column}=?"
                 args.append(value)
         rows = self._q(
-            f"select id, path, node, view_name, hash, origin, author, author_user, saved_at from code_revisions where {where} "
-            "order by saved_at desc, id desc limit ?",
+            f"select {REVISION_COLUMNS} from code_revisions where {where} order by saved_at desc, id desc limit ?",
             (*args, limit),
         )
-        for r in rows:
-            r["view"] = r.pop("view_name")
-        return rows
+        return [_revision(r) for r in rows]
+
+    def code_revision_of(self, digest: str, *, node: str | None = None, path: str | None = None) -> dict[str, Any] | None:
+        """The newest revision of node ``node`` (or of file ``path``) that
+        recorded the content ``digest``; None when none did."""
+        column, value = ("node", node) if node is not None else ("path", path)
+        rows = self._q(
+            f"select {REVISION_COLUMNS} from code_revisions where project=? and {column}=? and hash=? "
+            "order by saved_at desc, id desc limit 1",
+            (self.scope, value, digest),
+        )
+        return _revision(rows[0]) if rows else None
 
     def code_revisions_after(self, after: str | None, limit: int = 1000) -> list[dict[str, Any]]:
         """Revisions saved after revision ``after`` (from the first when it
@@ -791,13 +827,10 @@ class Store:
             where += " and (saved_at > ? or (saved_at = ? and id > ?))"
             args += [t, t, after]
         rows = self._q(
-            f"select id, path, node, view_name, hash, origin, author, author_user, saved_at from code_revisions where {where} "
-            "order by saved_at, id limit ?",
+            f"select {REVISION_COLUMNS} from code_revisions where {where} order by saved_at, id limit ?",
             (*args, limit),
         )
-        for r in rows:
-            r["view"] = r.pop("view_name")
-        return rows
+        return [_revision(r) for r in rows]
 
     def code_source(self, digest: str) -> str | None:
         """The text with this content hash, if any revision recorded it."""
@@ -805,21 +838,14 @@ class Store:
         return rows[0]["source"] if rows else None
 
     def code_revision(self, rid: str) -> dict[str, Any] | None:
-        rows = self._q(
-            "select id, path, node, view_name, hash, origin, author, author_user, saved_at from code_revisions "
-            "where project=? and id=?",
-            (self.scope, rid),
-        )
-        if not rows:
-            return None
-        rows[0]["view"] = rows[0].pop("view_name")
-        return rows[0]
+        rows = self._q(f"select {REVISION_COLUMNS} from code_revisions where project=? and id=?", (self.scope, rid))
+        return _revision(rows[0]) if rows else None
 
     def save_end(self, rid: str) -> str | None:
-        """The last revision of the save revision ``rid`` belongs to (the
-        files one save recorded share its time, origin and author, as
-        ``exuvia mirror`` groups them into one commit); None when there is no
-        revision ``rid``. With no ``rid``, the project's latest revision."""
+        """The last revision of the save revision ``rid`` belongs to, as
+        :func:`saves` groups them (and ``exuvia mirror`` makes each group one
+        commit, so a tag lands on the same commit in git); None when there is
+        no revision ``rid``. With no ``rid``, the project's latest revision."""
         if not rid:
             rows = self._q(
                 "select id from code_revisions where project=? order by saved_at desc, id desc limit 1", (self.scope,)
@@ -828,12 +854,12 @@ class Store:
         r = self.code_revision(rid)
         if r is None:
             return None
+        # A save's revisions share their time, so its group is among that time's revisions.
         rows = self._q(
-            "select id from code_revisions where project=? and saved_at=? and origin=? "
-            "and coalesce(author, '')=? and coalesce(author_user, '')=? order by id desc limit 1",
-            (self.scope, r["saved_at"], r["origin"], r["author"] or "", r["author_user"] or ""),
+            f"select {REVISION_COLUMNS} from code_revisions where project=? and saved_at=? order by id",
+            (self.scope, r["saved_at"]),
         )
-        return rows[0]["id"]
+        return next(save[-1]["id"] for save in saves(_revision(x) for x in rows) if any(x["id"] == rid for x in save))
 
     def code_at(self, rid: str) -> dict[str, dict[str, Any]]:
         """The project's code as of revision ``rid``: each file's latest
@@ -844,16 +870,12 @@ class Store:
             return {}
         t = r["saved_at"]
         rows = self._q(
-            "select id, path, node, view_name, hash, origin, author, author_user, saved_at from (select *, row_number() "
+            f"select {REVISION_COLUMNS} from (select *, row_number() "
             "over (partition by path order by saved_at desc, id desc) rn from code_revisions where project=? "
             "and (saved_at < ? or (saved_at = ? and id <= ?))) upto where rn=1 and hash is not null order by path",
             (self.scope, t, t, rid),
         )
-        out = {}
-        for row in rows:
-            row["view"] = row.pop("view_name")
-            out[row["path"]] = row
-        return out
+        return {row["path"]: row for row in map(_revision, rows)}
 
     # -- code tags ----------------------------------------------------------
     def create_tag(
