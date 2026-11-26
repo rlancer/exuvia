@@ -3037,6 +3037,56 @@ them. The API: `GET /api/hub/env` (anyone on the hub), `PUT` / `DELETE
 /api/hub/env/{name}` `{value, secret}` (admins). `exuvia env ... --url
 <hub> --hub` does the same from a terminal.
 
+### Data API: read-only keys for your own apps
+
+Views show a project's data inside exuvia. An app of your own (a dashboard
+elsewhere, a notebook, a service) can read the same outputs, from as many
+projects as it needs, with a **data API key**: **Data API keys** in the
+account menu (or **Data API** on the home page of a hub nobody signs in to)
+makes one and picks the projects it reads.
+
+- **Read-only.** A key lists its projects' tables, reads node outputs and
+  runs SQL. It can't change code, run a node or touch a setting, and it
+  works only under `/api/data/`: everywhere else it is turned away.
+- **Never more than its maker.** Each request checks the key's projects
+  against what the person who made it can still open, so unsharing a
+  project with them, or disabling their account, takes it off their keys
+  too. A key made with the hub's API token (or on a hub nobody signs in to)
+  reads the projects it names. Deleting a project takes it off every key.
+- **One query across projects.** Each project is a DuckDB catalog named
+  after it, with the tables a project's own `/api/query` has:
+  `"sales".orders`, `"sales".orders__runs`, `"sales".prices.close` for one
+  output of a node with several. Only one `SELECT` (or `EXPLAIN`) runs per
+  request, in the same sandbox as `/api/query` (no other file, no network).
+- **Fast.** The query's connection is kept between requests and reused
+  until one of its projects changes (a run finishes, code is saved), so a
+  join across two projects answers in a few milliseconds. On a hub with
+  several replicas a change made on another one shows within 5 seconds.
+  Only the projects whose id the SQL mentions are attached, unless the
+  request names its `projects`. Send `Accept:
+  application/vnd.apache.arrow.stream` for typed columns and every row (see
+  [Binary data](#binary-data-arrow-and-parquet)).
+
+```bash
+curl -s https://hub.example.com/api/data/query \
+  -H "Authorization: Bearer exd_..." -H "Content-Type: application/json" \
+  -d '{"sql": "select a.name, sum(o.amount) from \"sales\".orders o join crm.accounts a using (account) group by 1"}'
+```
+
+| Route | |
+|---|---|
+| `GET /api/data/projects` | the projects the key reads, each with its nodes: `kind` (`table`, `multi`, `json`, or null before a run), `rows`, `columns`, `parts`, `partitioned`, `history` (whether `<node>__runs` exists) and the current `run_id` / `artifact_id` |
+| `GET /api/data/projects/{project}` | one of them |
+| `GET /api/data/projects/{project}/nodes/{node}` | a node's output, as `/api/nodes/{name}/data` answers it (`limit`, `offset`, `params`, `part`, `partitions`; JSON or Arrow) |
+| `POST /api/data/query` | `{sql, limit, projects}`: one SELECT across the key's projects. JSON: the first `limit` rows (500 unless given, 5000 at most) and the `projects` attached; Arrow: every row unless `limit` |
+| `GET /api/data-keys`, `POST /api/data-keys` | your keys (`?all=true`: every key, for an admin) / make one (`{name, projects}`; each a project you can open). `key` is in the answer once: only a hash is kept |
+| `PATCH /api/data-keys/{id}`, `DELETE /api/data-keys/{id}` | rename it or replace its `projects` / revoke it (its maker, or an admin) |
+
+Keys are managed by a signed-in person (not with an agent token or a share
+link) or the operator. They live beside the groups (the hub's
+`.exuvia/hub.db`, or the shared `EXUVIA_DB`) and a hub export carries them.
+For a browser app on another origin, add it to `EXUVIA_CORS_ORIGINS`.
+
 ## Embedding / using it inside another app
 
 Everything the UI does is a plain HTTP call, so a host app can drive exuvia

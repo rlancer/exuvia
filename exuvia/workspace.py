@@ -2091,15 +2091,27 @@ class Workspace:
         ``only`` it has just those nodes' views (a view's ``reads``), and
         ``read_parquet`` of another node's output fails too.
         """
+        con = outputs_connection()
+        files = self.add_output_views(con, params, only=only)
+        lock_outputs(con, files)
+        return con
+
+    def add_output_views(
+        self, con: Any, params: dict[str, Any] | None, only: list[str] | None = None, catalog: str | None = None
+    ) -> list[str]:
+        """Create ``_outputs_db``'s views on ``con``, in the attached
+        in-memory database ``catalog`` when given (the data API puts each
+        project in a catalog named after it: ``"<project>".<node>``).
+        Returns the files the views read, for ``lock_outputs``. Blocking:
+        it may download outputs from the remote artifact store."""
         import duckdb
 
         resolved = self.resolve_params(params)
-        con = duckdb.connect(config={"autoinstall_known_extensions": False, "autoload_known_extensions": False})
         names = [n for n in self.graph.nodes if only is None or n in only]
-        # (view name, select, a select to try when the first one fails)
-        views: list[tuple[str, str, str | None]] = []
-        # ("<node>.<part>" as one quoted name, the view it shows)
-        aliases: list[tuple[str, str]] = []
+        # ((schema or None, table), select, a select to try when the first one fails)
+        views: list[tuple[tuple[str | None, str], str, str | None]] = []
+        # ("<node>.<part>" as one table name, the (schema, table) it shows)
+        aliases: list[tuple[str, tuple[str | None, str]]] = []
         files: list[str] = []
 
         def read(path: str | None, cols: str = "") -> str:
@@ -2124,57 +2136,66 @@ class Workspace:
                 # Exactly the manifest's files: no chunk of another version is readable.
                 paths = self.table_files(ls)  # type: ignore[arg-type]
                 if paths:
-                    views.append((f'"{name}"', read_all(paths), None))
+                    views.append(((None, name), read_all(paths), None))
             elif ls and ls["kind"] == "table":
-                views.append((f'"{name}"', read(self.artifact_path(ls)), None))
+                views.append(((None, name), read(self.artifact_path(ls)), None))
             elif ls and ls["kind"] == "multi":
                 # Several outputs: each table is <node>.<part>, in a schema named after the node.
                 schemas.add(name)
                 for part in table_parts(ls):
-                    views.append((f'"{name}"."{part}"', read(part_path(ls, part)), None))
-                    aliases.append((f'"{name}.{part}"', f'"{name}"."{part}"'))
+                    views.append(((name, part), read(part_path(ls, part)), None))
+                    aliases.append((f"{name}.{part}", (name, part)))
             if not self.graph.effective_params(name):
                 continue
             history = self.store.history(name, HISTORY_VIEW_LIMIT)
-            outputs: dict[str, list[tuple[str, dict[str, Any]]]] = {}  # view name -> [(file, run params)]
+            outputs: dict[tuple[str | None, str], list[tuple[str, dict[str, Any]]]] = {}  # view -> [(file, run params)]
             for run in history:
                 params = run.get("params") or {}
                 if run["kind"] == "table":
                     for path in self.table_files(run):
-                        outputs.setdefault(f'"{name}__runs"', []).append((path, params))
+                        outputs.setdefault((None, f"{name}__runs"), []).append((path, params))
                 elif run["kind"] == "multi":
                     schemas.add(name)
                     for part in table_parts(run):
                         path = part_path(run, part)
                         if path:
-                            outputs.setdefault(f'"{name}"."{part}__runs"', []).append((path, params))
-                            aliases.append((f'"{name}.{part}__runs"', f'"{name}"."{part}__runs"'))
+                            outputs.setdefault((name, f"{part}__runs"), []).append((path, params))
+                            aliases.append((f"{name}.{part}__runs", (name, f"{part}__runs")))
             for view, runs in outputs.items():
                 files.extend(path for path, _ in runs)
                 views.append((view, _history_select(runs), _history_union(runs)))
-        # Only the files behind these views stay readable once external
-        # access is off; the lock makes every setting final.
-        con.execute("set allowed_paths = ?", [sorted({f for f in files if f})])
+        # The views read their files only once external access is off and
+        # the files are allowed (lock_outputs), but creating a view over a
+        # file reads its schema, so the files must be allowed first.
+        con.execute("set allowed_paths = ?", [sorted({*_allowed_paths(con), *(f for f in files if f)})])
+        db = f"{_ident(catalog)}." if catalog else ""
+        if catalog:
+            con.execute(f"attach ':memory:' as {_ident(catalog)}")
+
+        def qualified(view: tuple[str | None, str]) -> str:
+            schema, table = view
+            if schema is None:
+                return f"{db}main.{_ident(table)}" if catalog else _ident(table)
+            return f"{db}{_ident(schema)}.{_ident(table)}"
+
         for schema in sorted(schemas):
-            con.execute(f'create schema if not exists "{schema}"')
-        made: set[str] = set()
+            con.execute(f"create schema if not exists {db}{_ident(schema)}")
+        made: set[tuple[str | None, str]] = set()
         for view, select, fallback in views:
             try:
-                con.execute(f"create view {view} as {select}")
+                con.execute(f"create view {qualified(view)} as {select}")
             except duckdb.Error:
                 if fallback is None:
                     raise
                 try:
-                    con.execute(f"create view {view} as {fallback}")
+                    con.execute(f"create view {qualified(view)} as {fallback}")
                 except duckdb.Error:
                     continue  # incompatible schemas across runs: leave the history view out
             made.add(view)
         for alias, view in dict(aliases).items():
             if view in made:
-                con.execute(f"create view {alias} as select * from {view}")
-        con.execute("set enable_external_access = false")
-        con.execute("set lock_configuration = true")
-        return con
+                con.execute(f"create view {qualified((None, alias))} as select * from {qualified(view)}")
+        return [f for f in files if f]
 
     def _view_reads(self, view: str) -> list[str]:
         """The nodes a view may read: those in its manifest's ``reads`` that
@@ -2307,6 +2328,33 @@ def _history_union(runs: list[tuple[str, dict[str, Any]]]) -> str:
         cols = ", ".join(f'{_lit(v)} as "_{k}"' for k, v in sorted(params.items()))
         selects.append(f"select {cols + ', ' if cols else ''}* from read_parquet({_lit(path)})")
     return " union all by name ".join(selects)
+
+
+def outputs_connection() -> Any:
+    """A DuckDB connection for SQL over outputs: no extension installs or
+    loads itself (see ``Workspace._outputs_db``)."""
+    import duckdb
+
+    return duckdb.connect(config={"autoinstall_known_extensions": False, "autoload_known_extensions": False})
+
+
+def lock_outputs(con: Any, files: list[str]) -> None:
+    """Lock an outputs connection: only ``files`` (the files behind its
+    views) stay readable, nothing reaches the network or another file, and
+    no setting can change again."""
+    con.execute("set allowed_paths = ?", [sorted({f for f in files if f})])
+    con.execute("set enable_external_access = false")
+    con.execute("set lock_configuration = true")
+
+
+def _allowed_paths(con: Any) -> list[str]:
+    row = con.execute("select current_setting('allowed_paths')").fetchone()
+    value = row[0] if row else None
+    return [str(v) for v in value] if isinstance(value, (list, tuple)) else []
+
+
+def _ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
 
 
 def _lit(value: Any) -> str:

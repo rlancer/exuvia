@@ -18,22 +18,23 @@ import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
 import { HUB_PROJECT, usersApi, type UserRow } from "./api";
 import { ConnectDialog } from "./Connect";
+import { DataKeysDialog } from "./DataKeys";
 import { ago } from "./util";
 import { AppDialog } from "./ui/AppDialog";
-import { IconSliders, IconSpark, IconUser } from "./icons";
+import { IconKey, IconSliders, IconSpark, IconUser } from "./icons";
 import { useMe } from "./useMe";
 
 /**
  * The signed-in person's account menu (EXUVIA_AUTH=headers), at the end of
  * the top bar: a profile icon that opens who they are and what they can do
  * from here. Connect an agent (on a hub: their own agent token, with the MCP
- * setup around it) and, for an admin, the hub's admin page (`/admin`), or
+ * setup around it), Data API keys (on a hub: read-only keys for their apps) and, for an admin, the hub's admin page (`/admin`), or
  * Users, which manages the user list, on a server with no hub.
  * `hub`: this page is one of the hub's own; a hub project's workbench is one too.
  */
 export function SignedInAs(props: { hub?: boolean }) {
   const who = useMe()?.user ?? null;
-  const [dialog, setDialog] = useState<"users" | "connect" | null>(null);
+  const [dialog, setDialog] = useState<"users" | "connect" | "data" | null>(null);
 
   if (!who) return null;
   // The connect setup is for a whole hub; someone in by agent token is an agent.
@@ -41,7 +42,10 @@ export function SignedInAs(props: { hub?: boolean }) {
   const email = who.email && who.email !== who.id ? who.email : null;
   const items: DropdownMenuOption[] = [
     ...(canConnect
-      ? [{ label: "Connect an agent…", description: "Your agent token and the MCP setup", icon: <IconSpark />, onClick: () => setDialog("connect") }]
+      ? [
+          { label: "Connect an agent…", description: "Your agent token and the MCP setup", icon: <IconSpark />, onClick: () => setDialog("connect") },
+          { label: "Data API keys…", description: "Read-only access for apps of your own", icon: <IconKey />, onClick: () => setDialog("data") },
+        ]
       : []),
     ...(who.role === "admin"
       ? [
@@ -84,6 +88,7 @@ export function SignedInAs(props: { hub?: boolean }) {
       />
       {dialog === "users" && <UsersDialog self={who.uid} onClose={() => setDialog(null)} />}
       {dialog === "connect" && <ConnectDialog onClose={() => setDialog(null)} />}
+      {dialog === "data" && <DataKeysDialog onClose={() => setDialog(null)} />}
     </>
   );
 }

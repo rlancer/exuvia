@@ -34,8 +34,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import _STARTED, __version__, about as about_mod, auth, mcp_http
+from . import _STARTED, __version__, about as about_mod, auth, dataapi, mcp_http
 from .activity import ActivityStore
+from .datakeys import DataKeyStore
 from .agent import READ_TOOLS, TOOLS, Agent
 from .arrowstream import MEDIA_TYPE as ARROW_STREAM, ArrowStream, wants_arrow
 from .envvars import EnvError, public as envvars_public
@@ -1706,6 +1707,8 @@ def _install_common(app: FastAPI, users: UserStore | None, command: str = "serve
         path = request.url.path
         if path == "/healthz":  # liveness: no auth
             return await call_next(request)
+        if path.startswith(dataapi.PREFIX):  # a data key, which the data API checks itself (dataapi.py)
+            return await call_next(request)
         if auth.IN_PROCESS in request.scope:  # this process calling its own API, signed in already
             with auth.signed_in(request.scope[auth.IN_PROCESS]):
                 return await call_next(request)
@@ -2201,6 +2204,7 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
         hub.sharing.groups = hub.groups
     hub.seal_group_env()
     hub.activity = ActivityStore(hub.groups.db, scope=hub.groups.scope)
+    hub.data_keys = DataKeyStore(hub.groups.db, scope=hub.groups.scope)
 
     def note_use(project: str, need: str) -> None:
         """Who opened (and, needing edit access, changed) the project: the
@@ -2280,6 +2284,7 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
     hub.app = app  # the hub's MCP calls its API in process (mcp_http.HubLocalBackend)
     hub.mcp =_open_agent_mcp(hub.root / HUB_USERS_DB, hub.users)
     _agent_mcp_routes(app, hub.mcp, is_admin)
+    dataapi.install(app, hub, role_on, is_admin)
 
     async def get_ctx(project: str, request: Request) -> Ctx:
         # The rules may need a database read: off the event loop (the thread
