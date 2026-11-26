@@ -289,12 +289,7 @@ class Workspace:
         self, node: str | None = None, limit: int = 200, *, view: str | None = None
     ) -> list[dict[str, Any]]:
         """Saved versions newest first (one node's, one view's files, or every file's)."""
-        current = {}
-        for rel, (_, _, p) in self._code_files().items():
-            try:
-                current[rel] = _hash(p.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError):
-                continue
+        current = self._current_hashes()
         return [
             {**r, "current": r["hash"] is not None and current.get(r["path"]) == r["hash"]}
             for r in self.store.code_revisions(node=node, view=view, limit=limit)
@@ -319,8 +314,8 @@ class Workspace:
             ),
         }
 
-    # -- code tags ---------------------------------------------------------
     def _current_hashes(self) -> dict[str, str]:
+        """Each code file's content hash as it is on disk now, by path."""
         out = {}
         for rel, (_, _, p) in self._code_files().items():
             try:
@@ -329,6 +324,7 @@ class Workspace:
                 continue
         return out
 
+    # -- code tags ---------------------------------------------------------
     def create_tag(self, name: str, message: str | None = None, revision: str | None = None) -> dict[str, Any]:
         """Name the whole project's code as it is now, or as of ``revision``
         (the save it belongs to, whole). ValueError for a bad or taken name,
@@ -412,11 +408,11 @@ class Workspace:
     def restore_node(self, name: str, digest: str) -> None:
         """Write a recorded version of node ``name`` back as its current
         code. A restore is itself a new revision; history only grows."""
-        revs = [r for r in self.store.code_revisions(node=name, limit=100000) if r["hash"] == digest]
+        rev = self.store.code_revision_of(digest, node=name)
         source = self.store.code_source(digest)
-        if not revs or source is None:
+        if rev is None or source is None:
             raise KeyError(f"no saved version {digest} of {name}")
-        kind = NODE_SUFFIXES.get(Path(revs[0]["path"]).suffix, "python")
+        kind = NODE_SUFFIXES.get(Path(rev["path"]).suffix, "python")
         with acting_as("restore"):
             with self.editing():
                 self.project.write_node(name, source, kind)
@@ -429,7 +425,7 @@ class Workspace:
         self.project.view_file_path(name, rel)
         path = f"{VIEW_DIR}/{name}/{rel}"
         source = self.store.code_source(digest)
-        if source is None or not any(r["hash"] == digest for r in self.store.code_revisions(path=path, limit=100000)):
+        if source is None or self.store.code_revision_of(digest, path=path) is None:
             raise KeyError(f"no saved version {digest} of {path}")
         with acting_as("restore"):
             with self.editing():
