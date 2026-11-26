@@ -5,21 +5,15 @@ import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
-import type { ISODateString } from "@astryxdesign/core/Calendar";
 import { Code } from "@astryxdesign/core/Code";
-import { DateInput } from "@astryxdesign/core/DateInput";
 import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Link } from "@astryxdesign/core/Link";
 import { List, ListItem } from "@astryxdesign/core/List";
-import { NumberInput } from "@astryxdesign/core/NumberInput";
-import { Spinner } from "@astryxdesign/core/Spinner";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
-import { Switch } from "@astryxdesign/core/Switch";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Text } from "@astryxdesign/core/Text";
-import { TextInput, type TextInputProps } from "@astryxdesign/core/TextInput";
 import { Token } from "@astryxdesign/core/Token";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
@@ -27,9 +21,11 @@ import { useMediaQuery } from "@astryxdesign/core/hooks";
 import { api, HUB_PROJECT, type GraphNode, type Project, type ProjectParam, type ProjectView } from "./api";
 import { appUrl } from "./appMode";
 import { fileOrder, missingNpmPackage } from "./views/files";
-import { ViewBridge, frameDocument, type FrameStatus } from "./views/host";
+import type { FrameError, FrameStatus } from "./views/host";
+import { busy, Refreshing, useLiveRefresh, ViewFrame } from "./views/frame";
+import { ParamBar, paramsState, useParamChange } from "./views/params";
 import type { Params, ParamsState } from "./views/protocol";
-import { IconChevronRight, IconClose, IconExpand, IconPlay, MOD } from "./icons";
+import { IconChevronRight, IconExpand, IconPlay, MOD } from "./icons";
 import { language } from "./lang";
 import { HistoryBrowser } from "./History";
 import { useAccess } from "./Access";
@@ -54,11 +50,6 @@ export interface OpenView {
   view: string;
   file?: string;
   seq: number;
-}
-
-/** Overrides → the parameter set a view sees (resolved values + declarations). */
-export function paramsState(params: ProjectParam[]): ParamsState {
-  return { params: Object.fromEntries(params.map((p) => [p.name, p.value])), specs: params };
 }
 
 const VIEW_STATE_LABEL: Record<ProjectView["state"], string> = {
@@ -143,18 +134,11 @@ export function Views(props: {
   const refreshing = useLiveRefresh(at ? view : null, overrides);
 
   /** Change parameters (from the bar or from a view); throws on a bad value. */
-  const changeParams = useCallback(
-    async (patch: Params): Promise<ParamsState> => {
-      const next = { ...overrides, ...patch };
-      for (const k of Object.keys(next)) if (next[k] === null || next[k] === "") delete next[k];
-      const p = await api.project(next); // validates: unknown or bad values are a 400
-      setOverrides(next);
-      setAt(p);
-      setParamErr(null);
-      return paramsState(p.params);
-    },
-    [overrides],
-  );
+  const changeParams = useParamChange(overrides, (next, p) => {
+    setOverrides(next);
+    setAt(p);
+    setParamErr(null);
+  });
 
   const narrow = useMediaQuery("(max-width: 1100px)");
   // Nothing to list: the main area has the whole width (and says what a view is).
@@ -521,7 +505,6 @@ function ViewPane(props: {
   );
 }
 
-export type FrameError = Extract<FrameStatus, { error: string }>;
 // An error keeps its row (and whether its stack is open) as newer ones arrive above it.
 const errorIds = new WeakMap<FrameError, number>();
 let lastErrorId = 0;
@@ -769,186 +752,6 @@ function ViewCode(props: {
   );
 }
 
-/** The run parameters, one control each. A value other than the default is marked, and has a way back to it. */
-export function ParamBar(props: { specs: ProjectParam[]; overrides: Params; onChange: (p: Params) => Promise<ParamsState> }) {
-  return (
-    <div {...stylex.props(styles.params)}>
-      {props.specs.map((p) => (
-        <Param key={p.name} spec={p} custom={Object.prototype.hasOwnProperty.call(props.overrides, p.name)} onChange={props.onChange} />
-      ))}
-    </div>
-  );
-}
-
-function Param(props: { spec: ProjectParam; custom: boolean; onChange: (p: Params) => Promise<ParamsState> }) {
-  const { spec: p, custom } = props;
-  const v = p.value;
-  const set = (value: unknown) => props.onChange({ [p.name]: value }).catch(() => {});
-  const field = { label: p.name, isLabelHidden: true, size: "sm", controlXstyle: custom && styles.custom } as const;
-  return (
-    <span {...stylex.props(styles.param)}>
-      <Tooltip content={p.description} isEnabled={!!p.description}>
-        <Text type="code" color={custom ? "accent" : "secondary"}>
-          {p.name}
-        </Text>
-      </Tooltip>
-      {p.type === "boolean" ? (
-        <Switch size="sm" label={p.name} isLabelHidden value={!!v} onChange={(on) => set(on)} />
-      ) : p.type === "date" ? (
-        <DateInput
-          {...field}
-          format="system_date"
-          width={184}
-          value={typeof v === "string" && v ? (v as ISODateString) : undefined}
-          onChange={(d) => d !== v && set(d ?? null)}
-        />
-      ) : p.type === "number" ? (
-        <NumberInput {...field} width={96} isWheelEnabled={false} value={v == null ? null : Number(v)} onChange={(n) => n !== v && set(n)} />
-      ) : (
-        <TextParam key={String(v)} field={field} value={v == null ? "" : String(v)} onCommit={set} />
-      )}
-      {custom && (
-        <IconButton
-          size="sm"
-          variant="ghost"
-          icon={<IconClose />}
-          label={`Reset ${p.name} to its default`}
-          tooltip={`Back to the default (${String(p.default)})`}
-          onClick={() => set(null)}
-        />
-      )}
-    </span>
-  );
-}
-
-/** A text parameter: typed freely, and set when the field is left or Enter is pressed. */
-function TextParam(props: { field: Pick<TextInputProps, "label" | "isLabelHidden" | "size" | "controlXstyle">; value: string; onCommit: (text: string) => void }) {
-  const [text, setText] = useState(props.value);
-  return (
-    <span {...stylex.props(styles.contents)} onBlur={() => text !== props.value && props.onCommit(text)}>
-      <TextInput {...props.field} width={150} value={text} onChange={setText} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
-    </span>
-  );
-}
-
-/**
- * Live nodes (`live=True`): opening a view, or showing it at other
- * parameters, re-runs the live nodes it depends on. The view renders what is
- * stored at once and updates when the new outputs land. Returns the read
- * nodes being re-run (by that or by any other run), for the indicator and
- * the view's `useRefreshing()`; empty when nothing is on its way.
- * `params` null: not known yet, ask nothing.
- */
-export function useLiveRefresh(view: ProjectView | null, params: Params | null): string[] {
-  const name = view?.name ?? null;
-  const live = (view?.live?.length ?? 0) > 0;
-  const key = params === null ? null : JSON.stringify(params);
-  // "asking": the request is out. A view: the answer came while that
-  // snapshot was shown, which predates the runs; the next one shows them.
-  const [waiting, setWaiting] = useState<"asking" | ProjectView | null>(null);
-  const shown = useRef(view);
-  shown.current = view;
-  useEffect(() => {
-    if (!name || !live || key === null) return;
-    let on = true;
-    setWaiting("asking");
-    api.refreshView(name, JSON.parse(key) as Params).then(
-      (r) => on && setWaiting(r.started.length ? shown.current : null),
-      (e: Error) => {
-        if (!on) return;
-        setWaiting(null);
-        console.warn(`Could not refresh the live nodes of ${name}: ${e.message}`);
-      },
-    );
-    return () => {
-      on = false;
-      setWaiting(null);
-    };
-  }, [name, live, key]);
-  useEffect(() => {
-    if (waiting !== null && waiting !== "asking" && waiting !== view) setWaiting(null);
-  }, [view, waiting]);
-  return useMemo(() => {
-    if (!view) return [];
-    if (waiting === "asking" || waiting === view) return view.reads;
-    return view.outputs.filter((o) => busy(o.state)).map((o) => o.node);
-  }, [view, waiting]);
-}
-
-/** A read node being re-run: its output is on its way. */
-export const busy = (state: string) => state === "running" || state === "queued";
-
-/** "Refreshing", while what a view reads is being re-run and it shows the last output. */
-export function Refreshing(props: { view: ProjectView; nodes: string[]; xstyle?: stylex.StyleXStyles }) {
-  if (!props.nodes.length) return null;
-  const live = props.view.live ?? [];
-  const tip = live.length
-    ? `Showing the last output while the live data is refreshed (${live.join(", ")}); the view updates when it lands`
-    : `Showing the last output while ${props.nodes.join(", ")} re-run${props.nodes.length === 1 ? "s" : ""}; the view updates when it lands`;
-  return (
-    <Tooltip content={tip}>
-      <HStack gap={1.5} vAlign="center" xstyle={props.xstyle}>
-        <Spinner size="sm" aria-label="Refreshing" />
-        <Text type="supporting" color="secondary">
-          Refreshing
-        </Text>
-      </HStack>
-    </Tooltip>
-  );
-}
-
-/** The sandboxed iframe and its bridge. Remounted when the view's files change. */
-export function ViewFrame(props: {
-  view: ProjectView;
-  params: ParamsState;
-  dark: boolean;
-  /** Kept running but not shown (while the Code pane is open). */
-  hidden: boolean;
-  /** Read nodes being re-run, for the view's `useRefreshing()`. */
-  refreshing?: string[];
-  onParams: (p: Params) => Promise<ParamsState>;
-  onStatus: (s: FrameStatus) => void;
-}) {
-  const ref = useRef<HTMLIFrameElement>(null);
-  const bridge = useRef<ViewBridge | null>(null);
-  const latest = useRef(props);
-  latest.current = props;
-
-  useEffect(() => {
-    const p = latest.current;
-    const b = new ViewBridge(ref.current!, p.view, p.params, p.dark, {
-      setParams: (x) => latest.current.onParams(x),
-      onStatus: (s) => latest.current.onStatus(s),
-    });
-    bridge.current = b;
-    b.setRefreshing(p.refreshing ?? []);
-    const stop = b.start();
-    // Only now load the document: its bootstrap's first message must find
-    // the bridge listening.
-    ref.current!.srcdoc = frameDocument();
-    return () => {
-      stop();
-      bridge.current = null;
-    };
-  }, []);
-
-  useEffect(() => bridge.current?.update(props.view, props.params), [props.view, props.params]);
-  useEffect(() => bridge.current?.setTheme(props.dark), [props.dark]);
-  const refreshing = (props.refreshing ?? []).join();
-  useEffect(() => bridge.current?.setRefreshing(refreshing ? refreshing.split(",") : []), [refreshing]);
-
-  return (
-    <iframe
-      ref={ref}
-      {...stylex.props(styles.frame, props.hidden && styles.hidden)}
-      title={props.view.title || props.view.name}
-      sandbox="allow-scripts"
-      referrerPolicy="no-referrer"
-      hidden={props.hidden}
-    />
-  );
-}
-
 /**
  * Views mode fills the cell under the project's bar.
  *
@@ -1019,22 +822,7 @@ const styles = stylex.create({
   tabs: { minWidth: 0, marginInlineStart: `calc(${spacingVars["--spacing-3"]} * -1)` },
   panel: { display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0, minHeight: 0 },
   history: { display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 },
-  frame: {
-    display: "block",
-    flexGrow: 1,
-    minHeight: 0,
-    width: "100%",
-    borderWidth: 0,
-    backgroundColor: colorVars["--color-background-body"],
-  },
-  hidden: { display: "none" },
 
-  params: { display: "flex", flexWrap: "wrap", alignItems: "center", columnGap: spacingVars["--spacing-4"], rowGap: spacingVars["--spacing-2"] },
-  // A parameter's name, its control and the way back to its default stay together when the row wraps.
-  param: { display: "inline-flex", alignItems: "center", gap: spacingVars["--spacing-1-5"], flexShrink: 0, whiteSpace: "nowrap" },
-  // A parameter set to something other than its default.
-  custom: { backgroundColor: colorVars["--color-accent-muted"], borderColor: colorVars["--color-accent"] },
-  contents: { display: "contents" },
 
   code: {
     display: "grid",

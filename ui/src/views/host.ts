@@ -97,6 +97,9 @@ export type FrameStatus =
   | { phase: "loading" | "compiled" | "rendered" }
   | { phase: ErrorPhase; error: string; file?: string; stack?: string };
 
+/** A frame's status when something went wrong: what the view's error list shows. */
+export type FrameError = Extract<FrameStatus, { error: string }>;
+
 export interface BridgeOptions {
   /** Change the parameter set the view shows; resolves with the new state. */
   setParams: (params: Params) => Promise<ParamsState>;
