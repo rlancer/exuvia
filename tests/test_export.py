@@ -334,3 +334,43 @@ def test_types_no_format_has_natively_still_export(client, fmt):
         assert pq.read_table(io.BytesIO(res.content)).column("dur").to_pylist() == ["01:30:00"]
     if fmt == "json":
         assert res.json()[0]["i"] == "1 month 2 days"
+
+
+@pytest.mark.parametrize("path", [
+    "/api/nodes/prices/data",
+    "/api/nodes/prices/data?limit=1&offset=1",
+    "/api/nodes/fit/data",
+    "/api/nodes/fit/data?part=preds",
+    "/api/nodes/fit/data?part=metrics",
+    "/api/nodes/meta/data",
+    '/api/nodes/day/data?params={"as_of":"2026-03-03"}',
+    "/api/nodes/never/data",
+])
+def test_data_answers_are_the_same_bytes_as_jsonable_encoder(client, path):
+    """The data and query routes write their answers with FastJSON (fast,
+    no jsonable_encoder walk): the bytes must be what FastAPI's own
+    encoding would have sent."""
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.responses import JSONResponse
+    from urllib.parse import parse_qsl, urlsplit
+
+    ws = client.app.state.ws
+    url = urlsplit(path)
+    q = dict(parse_qsl(url.query))
+    name = url.path.split("/")[3]
+    params = ws.resolve_params(json.loads(q["params"]) if "params" in q else None)
+    want = ws.preview(name, limit=int(q.get("limit", 200)), offset=int(q.get("offset", 0)), params=params, part=q.get("part"))
+    r = client.get(path)
+    assert r.status_code == 200, r.text
+    assert r.content == JSONResponse(jsonable_encoder(want)).body
+
+
+@pytest.mark.parametrize("sql", ["select * from prices", "select * from day__runs order by all", "select 1.5 as x, null as y, 'é' as z"])
+def test_query_answers_are_the_same_bytes_as_jsonable_encoder(client, sql):
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.responses import JSONResponse
+
+    want = client.app.state.ws.query(sql, limit=500)
+    r = client.post("/api/query", json={"sql": sql})
+    assert r.status_code == 200, r.text
+    assert r.content == JSONResponse(jsonable_encoder(want)).body
