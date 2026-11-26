@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode, type Ref } from "react";
 import * as stylex from "@stylexjs/stylex";
-import { colorVars, fontWeightVars, spacingVars, textSizeVars, typeScaleVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
+import { colorVars, fontWeightVars, radiusVars, spacingVars, textSizeVars, typeScaleVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { HStack } from "@astryxdesign/core/HStack";
@@ -9,7 +9,8 @@ import { Text } from "@astryxdesign/core/Text";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { api, type Column, type ColumnStats, type GraphNode, type Preview, type TableStats } from "./api";
 import { columnChars, MAX_ROWS_HEIGHT, PAGE_ROWS, pagesFor, pagesToDrop, rowWindow } from "./rowWindow";
-import { fmtBytes, fmtCell, fmtNum } from "./util";
+import { asks, baseQuery, countQuery, ident, pageQuery, type Sort, type TableAsk } from "./tableQuery";
+import { fmtBytes, fmtCell, fmtNum, pressable } from "./util";
 
 /*
  * What a node made, shown wherever it is shown: the inspector's Data tab (its
@@ -156,29 +157,66 @@ const CHARS_PAD = 4;
 /** How many characters of a cell count towards its column's width. */
 const CHARS_CAP = CELL_CHARS - CHARS_PAD;
 
-/** The header of a table: each column's name, its type and, with `stats`, its quick insights. */
-function Head({ columns, numeric, stats, chars, ref }: { columns: Column[]; numeric: boolean[]; stats?: TableStats | null; chars?: number[]; ref?: Ref<HTMLTableSectionElement> }) {
+/**
+ * The header of a table: each column's name, its type and, with `stats`,
+ * its quick insights. With `onSort`, a column's name is pressed to sort by
+ * it (`sort` is the column sorted by now, and which way).
+ */
+function Head({
+  columns,
+  numeric,
+  stats,
+  chars,
+  sort,
+  onSort,
+  ref,
+}: {
+  columns: Column[];
+  numeric: boolean[];
+  stats?: TableStats | null;
+  chars?: number[];
+  sort?: Sort | null;
+  onSort?: (column: string) => void;
+  ref?: Ref<HTMLTableSectionElement>;
+}) {
   // Each column's quick insights (its missing values and range), from the footers.
   const insights = useMemo(() => new Map((stats?.columns ?? []).map((c) => [c.name, c])), [stats]);
   return (
     <thead ref={ref}>
       <tr>
-        {columns.map((c, j) => (
+        {columns.map((c, j) => {
+          const sorted = sort?.column === c.name ? sort : null;
+          const how = sorted ? (sorted.desc ? "largest first" : "smallest first") : null;
+          return (
           <th
             key={c.name}
+            aria-sort={sorted ? (sorted.desc ? "descending" : "ascending") : undefined}
             {...stylex.props(
               grid.cell,
               grid.head,
               numeric[j] && grid.num,
               stats && grid.withInsights,
-              chars && (stats ? grid.charsWithInsights : grid.chars)(Math.min(chars[j] ?? 0, CHARS_CAP) + CHARS_PAD),
+              // Room for the arrow a sorted column gets, so sorting does not widen it.
+              chars && (stats ? grid.charsWithInsights : grid.chars)(Math.min(chars[j] ?? 0, CHARS_CAP) + CHARS_PAD + (onSort ? 2 : 0)),
             )}
           >
-            {c.name}
+            {onSort ? (
+              <span
+                {...pressable(() => onSort(c.name))}
+                title={`Sort by ${c.name}${how ? ` (now ${how}: press for ${sorted!.desc ? "the order stored" : "largest first"})` : ""}`}
+                {...stylex.props(grid.sorter, sorted && grid.sorted)}
+              >
+                {c.name}
+                {sorted && <span aria-hidden>{sorted.desc ? " ↓" : " ↑"}</span>}
+              </span>
+            ) : (
+              c.name
+            )}
             <span {...stylex.props(grid.type)}>{c.type.toLowerCase()}</span>
             {stats && <Insights col={insights.get(c.name)} rows={stats.rows} />}
           </th>
-        ))}
+          );
+        })}
       </tr>
     </thead>
   );
@@ -234,28 +272,39 @@ export function rowsSource(columns: Column[], rows: unknown[][]): RowSource {
 
 const headChars = (columns: Column[]) => columns.map((c) => Math.max(c.name.length, c.type.length));
 
-/** Pages of an output held at once: 20,000 rows, the ones nearest the rows in view. */
-const HELD_PAGES = 40;
+/** Rows held at once, in pages: the ones nearest the rows in view. */
+const HELD_ROWS = 20_000;
 
 /**
- * Every row of a table output (or of one output, `part`), a page at a time:
- * `first` is its first page (useNodePreview with PAGE_ROWS), and the others
- * are read as the rows they hold are asked for (`want`), each from the same
- * run as the first so the pages agree. The pages furthest from the rows in
- * view are let go, so any number of rows can be scrolled through. Null until
- * `first` is a table.
+ * A table read a page at a time: `of` names it (other rows: another `of`),
+ * `first` is its first page, already here, and `load` reads `limit` rows
+ * from row `offset` on.
  */
-export function useRowPages(node: GraphNode, part: string | null | undefined, first: Preview | null): RowSource | null {
+interface Paged {
+  of: string;
+  columns: Column[];
+  first: unknown[][];
+  total: number;
+  pageRows: number;
+  load: (offset: number, limit: number) => Promise<unknown[][]>;
+}
+
+/**
+ * The rows of a paged table as a RowSource: its first page at once, the
+ * others read as the rows they hold are asked for (`want`). The pages
+ * furthest from the rows in view are let go, so any number of rows can be
+ * scrolled through. Null without a table.
+ */
+function usePages(paged: Paged | null): RowSource | null {
   const [, redraw] = useReducer((n: number) => n + 1, 0);
-  const table = first?.kind === "table" && first.columns && first.rows ? first : null;
-  const of = table ? `${node.name}/${part ?? ""}/${table.run_id ?? ""}/${table.total ?? ""}` : null;
-  // The pages of one output of one run; another output starts with nothing but its first page.
+  const of = paged?.of ?? null;
+  // The pages of one table; another starts with nothing but its first page.
   const store = useMemo(
     () =>
-      table && {
-        pages: new Map<number, unknown[][]>([[0, table.rows!]]),
+      paged && {
+        pages: new Map<number, unknown[][]>([[0, paged.first]]),
         asked: new Set<number>(),
-        chars: columnChars(table.rows!, fmtCell, headChars(table.columns!), CHARS_CAP),
+        chars: columnChars(paged.first, fmtCell, headChars(paged.columns), CHARS_CAP),
         inView: [0, 0] as [number, number],
         live: true,
       },
@@ -269,24 +318,27 @@ export function useRowPages(node: GraphNode, part: string | null | undefined, fi
       store.live = false;
     };
   }, [store]);
-  const name = node.name;
-  const runId = table?.run_id;
+  // The latest `load`: it reads the same table for as long as `of` is the same.
+  const load = useRef(paged?.load);
+  load.current = paged?.load;
+  const size = paged?.pageRows ?? PAGE_ROWS;
   const want = useCallback(
     (start: number, end: number) => {
       if (!store) return;
-      const pages = pagesFor(start, end);
+      const pages = pagesFor(start, end, size);
       if (!pages.length) return;
       store.inView = [pages[0], pages[pages.length - 1]];
       for (const page of pages) {
-        if (store.pages.has(page) || store.asked.has(page)) continue;
+        if (store.pages.has(page) || store.asked.has(page) || !load.current) continue;
         store.asked.add(page);
-        api.rows(name, { offset: page * PAGE_ROWS, limit: PAGE_ROWS, part: part ?? undefined, runId }).then(
+        load.current(page * size, size).then(
           (rows) => {
             store.asked.delete(page);
             if (!store.live) return;
             store.pages.set(page, rows);
             store.chars = columnChars(rows, fmtCell, store.chars, CHARS_CAP);
-            for (const far of pagesToDrop([...store.pages.keys()], ...store.inView, HELD_PAGES)) store.pages.delete(far);
+            const keep = Math.max(2, Math.ceil(HELD_ROWS / size));
+            for (const far of pagesToDrop([...store.pages.keys()], ...store.inView, keep)) store.pages.delete(far);
             redraw();
           },
           // Not read (the run's output is gone, the server is away): asked for again when its rows next come into view.
@@ -294,14 +346,120 @@ export function useRowPages(node: GraphNode, part: string | null | undefined, fi
         );
       }
     },
-    [store, name, part, runId],
+    [store, size],
   );
-  if (!store || !table) return null;
+  if (!store || !paged) return null;
   return {
-    total: table.total ?? table.rows!.length,
-    row: (i) => store.pages.get(Math.floor(i / PAGE_ROWS))?.[i % PAGE_ROWS],
+    total: paged.total,
+    row: (i) => store.pages.get(Math.floor(i / size))?.[i % size],
     chars: store.chars,
     want,
+  };
+}
+
+/**
+ * Every row of a table output (or of one output, `part`), a page at a time:
+ * `first` is its first page (useNodePreview with PAGE_ROWS), and the others
+ * are read as they scroll into view, each from the same run as the first so
+ * the pages agree. Null until `first` is a table.
+ */
+export function useRowPages(node: GraphNode, part: string | null | undefined, first: Preview | null): RowSource | null {
+  const table = first?.kind === "table" && first.columns && first.rows ? first : null;
+  const name = node.name;
+  const runId = table?.run_id;
+  return usePages(
+    table && {
+      of: `${name}/${part ?? ""}/${runId ?? ""}/${table.total ?? ""}`,
+      columns: table.columns!,
+      first: table.rows!,
+      total: table.total ?? table.rows!.length,
+      pageRows: PAGE_ROWS,
+      load: (offset, limit) => api.rows(name, { offset, limit, part: part ?? undefined, runId }),
+    },
+  );
+}
+
+/** Rows of a query of the user's own read at once: a result this size is one read, so its rows are as one run gave them. */
+export const QUERY_PAGE_ROWS = 10_000;
+/** How long what is asked of a table stays the same before it is read, in ms: a brush moves many times a second. */
+const ASK_AFTER = 250;
+
+/** What a table shows of an output when something is asked of it (tableQuery.ts), as it stands now. */
+export interface AskedRows {
+  /** The rows asked for, once read; the last ones read stay while others are on their way. */
+  table: { columns: Column[]; source: RowSource; total: number; sql: string } | null;
+  /** Whether `table` is what is asked for now (not what was asked before). */
+  current: boolean;
+  loading: boolean;
+  /** Why the rows could not be read: the query's error, as DuckDB words it. */
+  error: string | null;
+}
+
+/**
+ * The rows of an output that `ask` asks for (a filter, a chart's selection,
+ * a sort, a query of the user's own), a page at a time: how many there are
+ * and the first page, read once the ask has stopped changing, then the
+ * other pages as they scroll into view. `tick` changes when the output does
+ * (the node ran): the rows are read again. `enabled` false, or nothing
+ * asked: nothing is read.
+ */
+export function useAskedRows(table: string, ask: TableAsk, tick: unknown, enabled = true): AskedRows {
+  const on = enabled && asks(ask);
+  // What is asked, as text: the same ask is not read twice.
+  const key = on ? JSON.stringify([table, ask.sql?.trim() || null, ask.sql?.trim() ? [] : ask.where, ask.sort, tick]) : null;
+  // The last rows read, and the last read that failed: a query that fails leaves the rows before it on screen.
+  const [ok, setOk] = useState<{ key: string; columns: Column[]; first: unknown[][]; total: number; sql: string; pageRows: number } | null>(null);
+  const [failed, setFailed] = useState<{ key: string; error: string } | null>(null);
+  // The columns of the last result of the same rows, unsorted or not: a sort orders by all of them.
+  const base = on ? JSON.stringify([table, ask.sql?.trim() || null, ask.where, tick]) : null;
+  const known = useRef<{ base: string; columns: string[] } | null>(null);
+  useEffect(() => {
+    if (!key) return;
+    let live = true;
+    const pageRows = ask.sql?.trim() ? QUERY_PAGE_ROWS : PAGE_ROWS;
+    const timer = setTimeout(async () => {
+      try {
+        let columns = known.current?.base === base ? known.current.columns : null;
+        if (ask.sort && !columns) {
+          // A first read to learn the columns, of no rows.
+          columns = (await api.query(baseQuery(table, ask), 0)).columns.map((c) => c.name);
+          known.current = { base: base!, columns };
+        }
+        const sql = pageQuery(table, ask, columns ?? []);
+        const [count, page] = await Promise.all([api.query(countQuery(table, ask), 1), api.query(sql, pageRows)]);
+        if (!live) return;
+        known.current = { base: base!, columns: page.columns.map((c) => c.name) };
+        setOk({ key, columns: page.columns, first: page.rows, total: Number(count.rows[0]?.[0] ?? page.rows.length), sql, pageRows });
+      } catch (e) {
+        if (live) setFailed({ key, error: (e as Error).message });
+      }
+    }, ASK_AFTER);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  const source = usePages(
+    on && ok
+      ? {
+          of: ok.key,
+          columns: ok.columns,
+          first: ok.first,
+          total: ok.total,
+          pageRows: ok.pageRows,
+          load: async (offset, limit) => (await api.query(ok.sql, limit, offset)).rows,
+        }
+      : null,
+  );
+  if (!on) return { table: null, current: false, loading: false, error: null };
+  const error = failed?.key === key ? failed.error : null;
+  const current = ok?.key === key;
+  return {
+    table: ok && source ? { columns: ok.columns, source, total: ok.total, sql: ok.sql } : null,
+    current,
+    loading: !current && error === null,
+    error,
   };
 }
 
@@ -316,9 +474,24 @@ const FETCH_AFTER = 80;
  * `source` is told which rows those are so it can fetch them. A row that is
  * not here yet shows as a line of `…`. A column never narrows as rows scroll
  * through it (`source.chars`). `resetKey` changes when other rows are shown:
- * the table goes back to its top.
+ * the table goes back to its top. With `onSort`, a column's name is pressed
+ * to sort by it.
  */
-export function RowsTable({ columns, source, stats, resetKey }: { columns: Column[]; source: RowSource; stats?: TableStats | null; resetKey?: unknown }) {
+export function RowsTable({
+  columns,
+  source,
+  stats,
+  resetKey,
+  sort,
+  onSort,
+}: {
+  columns: Column[];
+  source: RowSource;
+  stats?: TableStats | null;
+  resetKey?: unknown;
+  sort?: Sort | null;
+  onSort?: (column: string) => void;
+}) {
   const scroller = useRef<HTMLDivElement>(null);
   const head = useRef<HTMLTableSectionElement>(null);
   const firstRow = useRef<HTMLTableRowElement>(null);
@@ -399,7 +572,7 @@ export function RowsTable({ columns, source, stats, resetKey }: { columns: Colum
   return (
     <div ref={scroller} onScroll={onScroll} {...stylex.props(grid.scroller)}>
       <table aria-rowcount={total + 1} {...stylex.props(grid.table)}>
-        <Head ref={head} columns={columns} numeric={numeric} stats={stats} chars={source.chars} />
+        <Head ref={head} columns={columns} numeric={numeric} stats={stats} chars={source.chars} sort={sort} onSort={onSort} />
         <tbody>
           {win.padTop > 0 && (
             <tr aria-hidden {...stylex.props(grid.space(win.padTop))}>
@@ -550,7 +723,6 @@ export function selectedRows(
   return rows.filter((r) => tests.every((t) => t(r)));
 }
 
-const ident = (name: string) => `"${name.replace(/"/g, '""')}"`;
 const literal = (v: unknown) => `'${String(v).replace(/'/g, "''")}'`;
 
 /**
@@ -870,4 +1042,12 @@ const grid = stylex.create({
   pad: { padding: 0, borderStyle: "none" },
   // A row that is on its way.
   waiting: { color: colorVars["--color-text-secondary"] },
+  // A column's name, pressed to sort by it.
+  sorter: {
+    cursor: "pointer",
+    borderRadius: radiusVars["--radius-inner"],
+    textDecorationLine: { default: "none", ":hover": "underline" },
+    outlineOffset: "2px",
+  },
+  sorted: { color: colorVars["--color-accent"] },
 });

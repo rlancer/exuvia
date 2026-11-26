@@ -210,6 +210,7 @@ class SettingsReq(BaseModel):
 class QueryReq(BaseModel):
     sql: str
     limit: int | None = Field(None, ge=0)
+    offset: int = Field(0, ge=0)
     params: dict[str, Any] | None = None
 
 
@@ -1280,12 +1281,17 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         """DuckDB SQL over every node's output. JSON: the first ``limit`` rows
         (500 unless given, 5000 at most). With
         ``Accept: application/vnd.apache.arrow.stream``: an Arrow stream of
-        every row, or of ``limit`` rows when given."""
+        every row, or of ``limit`` rows when given. ``offset`` skips rows
+        first, to read a result a page at a time: each page runs the query
+        again, so pages only agree when its order is fixed (an ORDER BY that
+        leaves no ties, or none at all over one table)."""
         try:
             if wants_arrow(request.headers.get("accept")):
-                return arrow_response(ctx.ws.query_arrow(body.sql, limit=body.limit, params=body.params))
+                return arrow_response(
+                    ctx.ws.query_arrow(body.sql, limit=body.limit, params=body.params, offset=body.offset)
+                )
             rows = 500 if body.limit is None else min(body.limit, 5000)
-            return FastJSON(ctx.ws.query(body.sql, limit=rows, params=body.params))
+            return FastJSON(ctx.ws.query(body.sql, limit=rows, params=body.params, offset=body.offset))
         except Exception as e:
             raise HTTPException(400, f"{type(e).__name__}: {e}") from e
 

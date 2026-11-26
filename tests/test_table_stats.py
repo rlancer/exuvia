@@ -107,6 +107,11 @@ def test_rows_are_read_a_page_at_a_time(tmp_path):
         page = client.get("/api/nodes/seq/data", params={"limit": 500, "offset": 1000, "run_id": first["run_id"]}).json()
         assert [r[0] for r in page["rows"]] == list(range(1000, 1200))
         assert client.get("/api/nodes/seq/data", params={"limit": 500, "offset": 5000}).json()["rows"] == []
+        # A query's result is read the same way: sorted, filtered, a page at a time.
+        q = {"sql": "select i from seq where i % 2 = 0 order by i desc", "limit": 3, "offset": 100}
+        assert client.post("/api/query", json=q).json()["rows"] == [[998], [996], [994]]
+        assert client.post("/api/query", json={"sql": "select 1", "offset": -1}).status_code == 422
+        assert client.post("/api/query", json={"sql": "select 1", "limit": -1}).status_code == 422
         for bad in ({"offset": -1}, {"limit": -5}):
             assert client.get("/api/nodes/seq/data", params=bad).status_code == 422
             assert client.get("/api/nodes/seq/data", params=bad, headers={"accept": "application/vnd.apache.arrow.stream"}).status_code == 422

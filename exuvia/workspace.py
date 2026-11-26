@@ -2314,13 +2314,18 @@ class Workspace:
     ) -> ArrowStream:
         return outputs.query_arrow(self._outputs_db(params, only=self._view_reads(view)), sql, limit)
 
-    def query(self, sql: str, limit: int = 500, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Ad-hoc DuckDB SQL over node outputs (the views of ``_outputs_db``)."""
-        return outputs.query_json(self._outputs_db(params), sql, limit)
+    def query(
+        self, sql: str, limit: int = 500, params: dict[str, Any] | None = None, offset: int = 0
+    ) -> dict[str, Any]:
+        """Ad-hoc DuckDB SQL over node outputs (the views of ``_outputs_db``):
+        ``limit`` rows of the result from row ``offset`` on."""
+        return outputs.query_json(self._outputs_db(params), sql, limit, offset)
 
-    def query_arrow(self, sql: str, limit: int | None = None, params: dict[str, Any] | None = None) -> ArrowStream:
+    def query_arrow(
+        self, sql: str, limit: int | None = None, params: dict[str, Any] | None = None, offset: int = 0
+    ) -> ArrowStream:
         """``query`` as an Arrow stream: every row unless ``limit`` is given."""
-        return outputs.query_arrow(self._outputs_db(params), sql, limit)
+        return outputs.query_arrow(self._outputs_db(params), sql, limit, offset)
 
 
 def _view_of(rel: str) -> str | None:

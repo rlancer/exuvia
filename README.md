@@ -248,6 +248,24 @@ largest, and a line gives the output's shape and size: these come from the
 output's Parquet footers, so they cost the same for any number of rows. A
 notebook cell shows the first rows only.
 
+The rows can be asked for another way, and each way reads the whole output
+with SQL, a page at a time like the rest:
+
+- **Filter.** The box over the rows takes a SQL condition
+  (`ticker = 'AAPL' and close > 100`), applied with Enter. What is picked
+  on the chart narrows the rows the same way, and the two add up.
+- **Sort.** Press a column's name: smallest first, then largest first, then
+  the order stored. Rows that tie are ordered by every other column, so the
+  pages agree with each other.
+- **SQL.** The SQL button turns the box into an editor with the query the
+  table is showing, to rewrite as any DuckDB query over this output and
+  every other table node (`select ticker, avg(close) from prices group by
+  1`). Its result is the table, sortable like any other. Up to 10,000 rows
+  are one read; a longer result whose order is not fixed should be sorted,
+  by an `order by` of its own or by a column's name.
+
+Download then saves the rows shown, all of them, not the output.
+
 **The description** is the node function's docstring (the module
 docstring when the function has none), or a SQL node's first `--` lines
 other than settings such as `-- schedule:`. It is Markdown: the notebook
@@ -3414,7 +3432,7 @@ headlessly or iframe the UI:
 | `GET /api/code/archive` | the project's code as a .zip (nodes, `lib/` helpers, views, `exuvia.json`, `pyproject.toml`, `uv.lock`, `package.json`; never `.env` or outputs); `?node=` for one node and the helpers it imports, `?view=` for one view |
 | `POST /api/nodes/{name}/restore` | make a saved version (`{hash}`) current again; brings back a deleted node |
 | `GET /api/runs/{run_id}/source` | the exact code a run executed |
-| `POST /api/query` | DuckDB SQL over all outputs (`{sql, limit, params}`): JSON rows, or an Arrow stream (see "Binary data"). It cannot open other files or the network (see "Execution model") |
+| `POST /api/query` | DuckDB SQL over all outputs (`{sql, limit, offset, params}`): JSON rows, or an Arrow stream (see "Binary data"). `offset` skips rows first, to read a result a page at a time; each page runs the query again, so give it an order that leaves no ties. It cannot open other files or the network (see "Execution model") |
 | `POST /api/query/export` | the whole result of `{sql, params, format, filename}` as a file to save, in `csv`, `xlsx`, `parquet` or `json` |
 | `POST /api/nodes/{name}/schedule` | set, clear, pause or resume a schedule |
 | `POST /api/schedule/tick` | evaluate schedules now (for external schedulers) |

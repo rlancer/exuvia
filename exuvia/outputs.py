@@ -152,26 +152,27 @@ def add_output_views(
     return [f for f in files if f]
 
 
-def query_json(con: Any, sql: str, limit: int) -> dict[str, Any]:
-    """The first ``limit`` rows of ``sql`` on ``con``, as JSON-ready columns and rows."""
+def query_json(con: Any, sql: str, limit: int, offset: int = 0) -> dict[str, Any]:
+    """``limit`` rows of ``sql`` on ``con`` from row ``offset`` on, as JSON-ready columns and rows."""
     rel = _sql(con, sql)
     if rel is None:
         return {"columns": [], "rows": []}
-    rows = rel.limit(limit).fetchall()
+    rows = rel.limit(limit, offset).fetchall()
     return {
         "columns": [{"name": c, "type": str(t)} for c, t in zip(rel.columns, rel.types, strict=True)],
         "rows": jsonable([list(r) for r in rows]),
     }
 
 
-def query_arrow(con: Any, sql: str, limit: int | None) -> ArrowStream:
-    """``sql`` on ``con`` as an Arrow stream: every row unless ``limit``."""
+def query_arrow(con: Any, sql: str, limit: int | None, offset: int = 0) -> ArrowStream:
+    """``sql`` on ``con`` as an Arrow stream: every row unless ``limit``, from row ``offset`` on."""
     rel = _sql(con, sql)
-    if rel is not None and limit is not None:
-        rel = rel.limit(int(limit))
+    if rel is not None and (limit is not None or offset):
+        rel = rel.limit(_ALL_ROWS if limit is None else int(limit), int(offset))
     return ArrowStream(rel, owner=con)
 
 
+_ALL_ROWS = 2**62  # the limit of an offset-only read
 _MISSING_TABLE = re.compile(r'Table with name "?([^"\s!]+)"? does not exist')
 
 

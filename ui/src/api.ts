@@ -443,9 +443,9 @@ async function nodeData(name: string, limit: number, part?: string, offset = 0, 
   return { kind: "table", total: meta.total ?? table.numRows, run_id: meta.run_id, ...toGrid(table) };
 }
 
-/** DuckDB SQL over every output; the first `limit` rows of the result (read as Arrow). */
-async function queryRows(sql: string, limit = 500): Promise<{ columns: Column[]; rows: unknown[][] }> {
-  return toGrid(await readArrow(await send("POST", "/api/query", { sql, limit }, ARROW_STREAM)));
+/** DuckDB SQL over every output; `limit` rows of the result from row `offset` on (read as Arrow). */
+async function queryRows(sql: string, limit = 500, offset = 0): Promise<{ columns: Column[]; rows: unknown[][] }> {
+  return toGrid(await readArrow(await send("POST", "/api/query", { sql, limit, offset }, ARROW_STREAM)));
 }
 
 const paramsQuery = (params?: Record<string, unknown>) =>
@@ -516,7 +516,8 @@ export const api = {
   recentRuns: () => req<RunRow[]>("GET", "/api/runs"),
   runDetail: (id: string) => req<RunRow>("GET", `/api/runs/${id}`),
   cancel: (id: string) => req("POST", `/api/runs/${id}/cancel`),
-  query: (sql: string, limit?: number) => queryRows(sql, limit),
+  /** `limit` rows of a query's result (500 unless given), from row `offset` on. */
+  query: (sql: string, limit?: number, offset?: number) => queryRows(sql, limit, offset),
   resetAgent: (id: string) => req("DELETE", `/api/agent/${id}`),
   /** The saved conversations, the latest first (a signed-in person's own). */
   agentChats: (limit = 50) => req<{ sessions: AgentChat[] }>("GET", `/api/agent?limit=${limit}`).then((r) => r.sessions),
