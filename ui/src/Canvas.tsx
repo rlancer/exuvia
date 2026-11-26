@@ -277,7 +277,8 @@ export function Canvas(props: {
   const { fitView } = useReactFlow();
   const dragged = useRef<Record<string, { x: number; y: number }>>({});
   const [moved, setMoved] = useState(0);
-  const focusing = useRef<string | null>(null);
+  // The node to bring into view at the next fit: at first the one selected, so coming back from the notebook keeps it in view.
+  const focusing = useRef<string | null>(selected);
   // Open by default on a graph big enough to lose track of, where there is room for it.
   const narrow = useMediaQuery("(max-width: 1100px)");
   const activityOpen = prefs.activity ?? (nodes.length > 8 && !narrow);
@@ -288,6 +289,8 @@ export function Canvas(props: {
   focusPadding.current = activityOpen && !narrow ? { top: "25%", right: "360px", bottom: "25%", left: "25%" } : 0.8;
 
   const shown = useMemo(() => visible(nodes, views, stages, { collapsed, showViews: prefs.views }), [nodes, views, stages, collapsed, prefs.views]);
+  const at = useRef(shown.at);
+  at.current = shown.at;
 
   // Re-layout only when what is drawn changes shape, so live status updates
   // don't make nodes jump around.
@@ -387,7 +390,8 @@ export function Canvas(props: {
   useEffect(() => {
     if (!initialized) return;
     const t = setTimeout(() => {
-      const target = focusing.current;
+      // A node in a folded stage is brought into view as its stage's card.
+      const target = focusing.current ? (at.current[focusing.current] ?? null) : null;
       focusing.current = null;
       if (target) fitView({ nodes: [{ id: target }], padding: focusPadding.current, duration: 300, maxZoom: 1.1 });
       else fitView({ padding: fitPadding.current, duration: 250, maxZoom: 1.1 });

@@ -9,6 +9,7 @@ import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
 import { IconButton } from "@astryxdesign/core/IconButton";
+import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Text } from "@astryxdesign/core/Text";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
@@ -29,7 +30,7 @@ import { HelpMenu } from "./Help";
 import { HubNav } from "./HubNav";
 import { useColorMode } from "./theme/colorMode";
 import { Brand, Mark } from "./Brand";
-import { IconClock, IconClose, IconKey, IconTag, IconMoon, IconPackage, IconPlay, IconPlus, IconShare, IconSun } from "./icons";
+import { IconClock, IconClose, IconGraph, IconKey, IconNotebook, IconTag, IconMoon, IconPackage, IconPlay, IconPlus, IconShare, IconSun } from "./icons";
 import { StateDot } from "./ui/state";
 import { failed, Toasts } from "./toast";
 import { appViewOf } from "./appMode";
@@ -42,6 +43,7 @@ const NewNodeDialog = lazy(() => import("./NewNodeDialog").then((m) => ({ defaul
 const PackagesDialog = lazy(() => import("./PackagesDialog").then((m) => ({ default: m.PackagesDialog })));
 const EnvDialog = lazy(() => import("./EnvDialog").then((m) => ({ default: m.EnvDialog })));
 const AppView = lazy(() => import("./AppView"));
+const Notebook = lazy(() => import("./Notebook").then((m) => ({ default: m.Notebook })));
 
 const embed = new URLSearchParams(location.search).has("embed");
 /** `?app=<view>`: that one view as an app, without the workbench (AppView.tsx). */
@@ -49,15 +51,20 @@ const appView = appViewOf(location.search);
 
 /** What the main area shows: the graph, the views, the schedule, a shared helper, or the code's history. */
 type Mode = "graph" | "views" | "schedule" | "helper" | "history";
+/** How Graph mode shows the graph: drawn on the canvas, or read as a notebook (Notebook.tsx). */
+type Layout = "canvas" | "notebook";
 
 /**
  * Where the address points on load. `#files/<path>` opens a file where it
  * lives: a node on the graph, a view file in its Code tab, a helper in the
  * editor; `#views/<name>` a view, rendered; `#history` the code's history;
- * `#schedule` when the graph runs by itself.
+ * `#schedule` when the graph runs by itself; `#notebook` the graph as a
+ * notebook, and `#notebook/<node>` on that node's cell.
  */
-function fromHash(): { mode: Mode; node?: string; view?: OpenView; helper?: string } {
+function fromHash(): { mode: Mode; node?: string; view?: OpenView; helper?: string; layout?: Layout } {
   const h = location.hash;
+  const nb = /^#notebook(?:\/([a-z_][a-z0-9_]*))?$/.exec(h);
+  if (nb) return { mode: "graph", layout: "notebook", node: nb[1] };
   if (h === "#views") return { mode: "views" };
   const shown = /^#views\/([a-z_][a-z0-9_]*)$/.exec(h);
   if (shown) return { mode: "views", view: { view: shown[1], seq: 1 } };
@@ -86,6 +93,19 @@ function envFromHash(): { name?: string } | null {
 }
 const hashFor = (m: Mode, helper: string | null) =>
   m === "views" ? "#views" : m === "history" ? "#history" : m === "schedule" ? "#schedule" : m === "helper" && helper ? `#files/${encodeURI(helper)}` : location.pathname + location.search;
+
+/** `#notebook` (and the cell picked), the address of the graph read as a notebook. */
+const notebookHash = (node: string | null) => (node ? `#notebook/${node}` : "#notebook");
+
+/** The graph's layout as this browser last left it for a project. */
+function keptLayout(project: string): Layout | null {
+  try {
+    const v = localStorage.getItem(`exuvia-graph-layout:${project}`);
+    return v === "canvas" || v === "notebook" ? v : null;
+  } catch {
+    return null;
+  }
+}
 
 /** A narrow window, where the side panel is a sheet over the main area. */
 const narrow = () => window.matchMedia("(max-width: 1100px)").matches;
@@ -160,6 +180,8 @@ function Workbench() {
   }, []);
   const [conn, setConn] = useState(true);
   const [mode, setModeState] = useState<Mode>(start.mode);
+  // The graph's layout: as the address says, else as this browser left it for the project, else the canvas.
+  const [layoutPicked, setLayoutPicked] = useState<Layout | null>(start.layout ?? null);
   const [helper, setHelper] = useState<string | null>(start.helper ?? null);
   const helperRef = useRef(helper);
   helperRef.current = helper;
@@ -264,6 +286,25 @@ function Workbench() {
   };
 
   const nodes = useMemo(() => project?.nodes ?? [], [project]);
+  const projectName = project?.name ?? null;
+  const layout: Layout = layoutPicked ?? (projectName ? keptLayout(projectName) : null) ?? "canvas";
+  const setLayout = useCallback(
+    (l: Layout) => {
+      setLayoutPicked(l);
+      try {
+        if (projectName) localStorage.setItem(`exuvia-graph-layout:${projectName}`, l);
+      } catch {
+        /* private mode */
+      }
+    },
+    [projectName],
+  );
+  // The notebook has an address, with the cell picked; the canvas keeps the plain one.
+  useEffect(() => {
+    if (mode !== "graph") return;
+    if (layout === "notebook") history.replaceState(null, "", notebookHash(selected));
+    else if (location.hash.startsWith("#notebook")) history.replaceState(null, "", location.pathname + location.search);
+  }, [mode, layout, selected]);
   useEffect(() => {
     if (project?.name) document.title = `${project.name} · exuvia`;
   }, [project?.name]);
@@ -338,6 +379,11 @@ function Workbench() {
     setMode("graph");
     setSelected(name);
   };
+  /** A node's code, to change it: the node in the inspector, on its Code tab. */
+  const editNode = useCallback((name: string) => {
+    setSelected(name);
+    setShowCode((n) => n + 1);
+  }, []);
   /** A view picked on the canvas: rendered in Views mode. */
   const openView = useCallback(
     (name: string) => {
@@ -395,6 +441,13 @@ function Workbench() {
                   <Tab value="views" label="Views" endContent={project?.views.length ? <Badge label={project.views.length} /> : undefined} />
                   <Tab value="schedule" label="Schedule" endContent={scheduled ? <Badge label={scheduled} /> : undefined} />
                 </TabList>
+                {/* Two ways to read the same graph: drawn, or top to bottom as a notebook. */}
+                {mode === "graph" && nodes.length > 0 && (
+                  <SegmentedControl size="sm" value={layout} onChange={(v) => setLayout(v as Layout)} label="Show the graph as">
+                    <SegmentedControlItem value="canvas" label="Canvas" icon={<IconGraph />} isLabelHidden={compact} />
+                    <SegmentedControlItem value="notebook" label="Notebook" icon={<IconNotebook />} isLabelHidden={compact} />
+                  </SegmentedControl>
+                )}
                 <span {...stylex.props(styles.grow)} />
                 {!conn && <Badge variant="error" label="Reconnecting…" />}
                 {/* The graph's own state and actions: with the graph, not with the views. */}
@@ -491,11 +544,27 @@ function Workbench() {
                   <Views project={project} nodes={nodes} dark={dark} open={viewOpen} onOpenNode={openNode} onShown={onShown} />
                 </Suspense>
               ) : (
-                <div {...stylex.props(styles.graph, !agentOpen && styles.graphRail)}>
+                <div {...stylex.props(styles.graph, !agentOpen && styles.graphRail, layout === "notebook" && styles.graphNotebook)}>
                   <div {...stylex.props(styles.canvas)}>
-                    <ReactFlowProvider>
-                      {project && <Canvas project={project} selected={selected} flash={flash} dark={dark} onSelect={setSelected} onOpenView={openView} />}
-                    </ReactFlowProvider>
+                    {layout === "notebook" ? (
+                      <Suspense fallback={null}>
+                        {project && (
+                          <Notebook
+                            project={project}
+                            selected={selected}
+                            flash={flash}
+                            dark={dark}
+                            onSelect={setSelected}
+                            onOpenView={openView}
+                            onEdit={editNode}
+                          />
+                        )}
+                      </Suspense>
+                    ) : (
+                      <ReactFlowProvider>
+                        {project && <Canvas project={project} selected={selected} flash={flash} dark={dark} onSelect={setSelected} onOpenView={openView} />}
+                      </ReactFlowProvider>
+                    )}
                     {project && nodes.length === 0 && (
                       <div {...stylex.props(styles.emptyCanvas)}>
                         <EmptyState
@@ -665,6 +734,10 @@ const styles = stylex.create({
     gridTemplateColumns: { default: "minmax(0, 1fr) clamp(380px, 32vw, 600px)", [NARROW]: "minmax(0, 1fr)" },
     gridTemplateRows: { default: "minmax(0, 1fr)", [NARROW]: "minmax(180px, 42%) minmax(0, 1fr)" },
     minHeight: 0,
+  },
+  // The notebook is read more than the inspector at a narrow width: it gets the larger share.
+  graphNotebook: {
+    gridTemplateRows: { default: "minmax(0, 1fr)", [NARROW]: "minmax(0, 3fr) minmax(0, 2fr)" },
   },
   graphRail: {
     gridTemplateColumns: { default: "minmax(0, 1fr) clamp(400px, 38vw, 680px)", [NARROW]: "minmax(0, 1fr)" },

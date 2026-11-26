@@ -899,6 +899,36 @@ its node into view, opening its stage if it is folded. It is open by default
 on a graph of more than eight nodes on a wide screen; closed, it is one
 button that counts what is running and what failed.
 
+### Notebook: the same graph, read top to bottom
+
+Graph mode has two layouts, switched in the project's bar: **Canvas** draws
+the graph, **Notebook** reads it as a document, top to bottom. It is the
+same graph and the same selection: pick a cell and the inspector shows that
+node; switch layouts and the node stays selected and in view. The browser
+remembers the layout per project, and `#notebook/<node>` is the address of a
+node's cell.
+
+- **Sections** are the stages, in the order written: each a heading with
+  its description and how many of its nodes are in each state. Nodes in no
+  stage come in an untitled section, placed by what they read.
+- **Each node is a cell**: its state, what it is for (its docstring or
+  description), what it reads (each a link to that cell), its code (folded;
+  a click opens it in the inspector's editor), the first rows of its output
+  or its chart, and Run.
+- **Views** come right after the last node they read: a pinned view
+  (`canvas` in its view.json) rendered live, as on the canvas; any other
+  view a line that opens it.
+- **Reading order is not run order.** A node still runs when what it reads
+  changes, wherever its cell is; there is no "run everything above". The
+  order follows four rules: a node comes after what it reads; within a stage
+  its nodes keep the stage's order, and a stage that reads a later one comes
+  after it; chains of nodes in no stage are followed depth first, so
+  `prices → returns → rolling_vol` read together instead of interleaving with
+  unrelated branches; and a new node goes after its last upstream (or where
+  its stage lists it) without moving any other.
+- Cells load as they scroll into view, each output's preview with them.
+  A viewer of a shared project reads the notebook without Run and Edit.
+
 ## Downloads
 
 Anything you can see in the workbench you can save as a file. Every table
