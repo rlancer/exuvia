@@ -440,7 +440,7 @@ function DataTab({ node, dark }: { node: GraphNode; dark: boolean }) {
             {brush && (
               <ChartPick
                 kind={brush.kind}
-                sel={sel}
+                selected={sel ? `${fmtNum(sel.rows.length)} of ${fmtNum(sel.of)} charted rows selected` : null}
                 onClear={() => {
                   setSel(null);
                   setCleared((n) => n + 1);

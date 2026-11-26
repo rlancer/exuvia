@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type Ref } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode, type Ref } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { colorVars, fontWeightVars, spacingVars, textSizeVars, typeScaleVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { Banner } from "@astryxdesign/core/Banner";
@@ -485,8 +485,14 @@ export function themeColors(host: HTMLElement, names: string[]): string[] {
   return out;
 }
 
-/** The rows a chart's selection holds, out of the rows it charts; null while nothing is selected. */
-export type ChartSelection = { columns: Column[]; rows: unknown[][]; of: number } | null;
+/**
+ * What is selected on a chart: the charted rows inside it (`rows`, of the
+ * `of` charted), the same selection as a SQL condition over the whole
+ * output (`where`), and whether the charted rows are the whole output
+ * (`complete`: then `rows` is the answer and no query is needed). Null while
+ * nothing is selected.
+ */
+export type ChartSelection = { columns: Column[]; rows: unknown[][]; of: number; where: string; complete: boolean } | null;
 
 type Enc = { field?: unknown; type?: unknown; aggregate?: unknown; bin?: unknown; timeUnit?: unknown } | undefined;
 
@@ -544,21 +550,145 @@ export function selectedRows(
   return rows.filter((r) => tests.every((t) => t(r)));
 }
 
-/** How many rows of an output its chart draws: its first ones. */
-const CHART_ROWS = 5000;
+const ident = (name: string) => `"${name.replace(/"/g, '""')}"`;
+const literal = (v: unknown) => `'${String(v).replace(/'/g, "''")}'`;
+
+/**
+ * A selection's value (as `selectedRows` reads it) as a SQL condition on the
+ * output's columns, keeping what `selectedRows` keeps. A time on the chart is
+ * the instant the browser read a cell's text as: a date is midnight UTC, a
+ * time without a zone is local time, one with a zone is that instant. Null
+ * for an empty selection.
+ */
+export function selectionWhere(brush: { kind: "interval" | "point"; fields: string[] }, value: Record<string, unknown> | null | undefined, columns: Column[]): string | null {
+  if (!value) return null;
+  const parts: string[] = [];
+  for (const f of brush.fields) {
+    const got = value[f];
+    const col = columns.find((c) => c.name === f);
+    if (!Array.isArray(got) || !col) continue;
+    const c = ident(f);
+    if (brush.kind === "point") {
+      parts.push(`cast(${c} as varchar) in (${got.map(literal).join(", ")})`);
+      continue;
+    }
+    const [lo, hi] = [asNumber(got[0]), asNumber(got[1])].sort((a, b) => a - b);
+    const type = col.type.toUpperCase();
+    if (/WITH TIME ZONE|TIMESTAMPTZ/.test(type)) parts.push(`${c} between to_timestamp(${lo / 1000}) and to_timestamp(${hi / 1000})`);
+    else if (type === "DATE") parts.push(`cast(${c} as timestamp) between make_timestamp(${Math.round(lo * 1000)}) and make_timestamp(${Math.round(hi * 1000)})`);
+    else if (/TIMESTAMP|DATETIME/.test(type)) {
+      // A local instant back to the wall-clock time the cell holds.
+      const wall = (ms: number) => Math.round((ms - new Date(ms).getTimezoneOffset() * 60_000) * 1000);
+      parts.push(`${c} between make_timestamp(${wall(lo)}) and make_timestamp(${wall(hi)})`);
+    } else parts.push(`${c} between ${lo} and ${hi}`);
+  }
+  return parts.length ? parts.join(" and ") : null;
+}
+
+/** What a selection holds, in words: in the whole output once that is read, of the charted rows until then. */
+export function SelectionText({ sel, picked }: { sel: NonNullable<ChartSelection>; picked: NonNullable<ReturnType<typeof useSelectedRows>> }) {
+  if (picked.whole && picked.total != null)
+    return (
+      <>
+        {picked.rows.length < picked.total ? `First ${fmtNum(picked.rows.length)} of ` : ""}
+        {fmtNum(picked.total)} selected row{picked.total === 1 ? "" : "s"}
+      </>
+    );
+  return (
+    <>
+      {fmtNum(sel.rows.length)} of {fmtNum(sel.of)} charted rows selected
+      {picked.failed ? " (the rest could not be read)" : ", counting all…"}
+    </>
+  );
+}
+
+/** How many of a selection's rows are read from the whole output, to show. */
+export const SELECTED_ROWS = 1000;
+
+/**
+ * The rows a chart's selection holds in the whole output, not only in the
+ * rows charted: the charted ones at once, then (once the selection has
+ * stopped moving) the first `SELECTED_ROWS` of the whole output's and how
+ * many there are, read with SQL. `total` is null while that count is on its
+ * way; `failed` says it could not be read (the charted rows stay).
+ */
+export function useSelectedRows(
+  node: GraphNode,
+  part: string | null,
+  sel: ChartSelection,
+): { columns: Column[]; rows: unknown[][]; total: number | null; whole: boolean; failed: boolean } | null {
+  const [got, setGot] = useState<{ where: string; columns: Column[]; rows: unknown[][]; total: number } | { where: string; failed: true } | null>(null);
+  useEffect(() => {
+    if (!sel || sel.complete) return;
+    let live = true;
+    const from = ident(part ? `${node.name}.${part}` : node.name);
+    const where = sel.where;
+    // A drag moves the selection many times a second: the whole output is read once it rests.
+    const timer = setTimeout(() => {
+      Promise.all([api.query(`select count(*) as n from ${from} where ${where}`, 1), api.query(`select * from ${from} where ${where}`, SELECTED_ROWS)]).then(
+        ([count, page]) => live && setGot({ where, columns: page.columns, rows: page.rows, total: Number(count.rows[0]?.[0] ?? 0) }),
+        () => live && setGot({ where, failed: true }),
+      );
+    }, 300);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [node.name, node.artifact_id, part, sel?.where, sel?.complete]);
+  if (!sel) return null;
+  if (sel.complete) return { columns: sel.columns, rows: sel.rows.slice(0, SELECTED_ROWS), total: sel.rows.length, whole: true, failed: false };
+  if (got && got.where === sel.where) {
+    if ("failed" in got) return { columns: sel.columns, rows: sel.rows.slice(0, SELECTED_ROWS), total: null, whole: false, failed: true };
+    return { columns: got.columns, rows: got.rows, total: got.total, whole: true, failed: false };
+  }
+  return { columns: sel.columns, rows: sel.rows.slice(0, SELECTED_ROWS), total: null, whole: false, failed: false };
+}
+
+/** How many rows a chart draws: every row of an output up to this many, else a sample this size of all of them. */
+export const CHART_ROWS = 50_000;
+
+/**
+ * The rows a chart draws: every row of the output (or of `part`) when it
+ * has at most CHART_ROWS, else a random sample of CHART_ROWS from all of
+ * them (the same one each time), not its first rows. `sampled` says which.
+ */
+function useChartData(node: GraphNode, part: string | null): { data: Preview | null; sampled: boolean } {
+  // A node with one output says how many rows it has: one that big is sampled from the start.
+  const big = part === null && (node.rows ?? 0) > CHART_ROWS;
+  const { preview } = useNodePreview(node, CHART_ROWS, part, !big);
+  const sampled = big || (preview?.kind === "table" && (preview.total ?? 0) > (preview.rows?.length ?? 0));
+  const [sample, setSample] = useState<{ key: string; data: Preview } | null>(null);
+  const key = `${node.name}:${node.artifact_id}:${part}`;
+  useEffect(() => {
+    if (!sampled) return;
+    let live = true;
+    const from = ident(part ? `${node.name}.${part}` : node.name);
+    const total = big ? node.rows : preview?.total;
+    api.query(`select * from ${from} using sample ${CHART_ROWS} rows (reservoir, 1)`, CHART_ROWS).then(
+      (r) => live && setSample({ key, data: { kind: "table", columns: r.columns, rows: r.rows, total } }),
+      () => live && setSample({ key, data: { kind: null } }),
+    );
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, sampled]);
+  if (!sampled) return { data: preview, sampled: false };
+  return { data: sample?.key === key ? sample.data : null, sampled: true };
+}
 
 /**
  * Under a chart linked to a table (`chartBrush`): how rows are picked on it,
- * or how many are picked, and Clear. Always the same height, so picking does
+ * or what is picked (`selected`), and Clear. Always the same height, so picking does
  * not move the table under it.
  */
-export function ChartPick({ kind, sel, onClear }: { kind: "interval" | "point"; sel: ChartSelection; onClear: () => void }) {
+export function ChartPick({ kind, selected, onClear }: { kind: "interval" | "point"; selected: ReactNode | null; onClear: () => void }) {
   return (
     <HStack gap={2} vAlign="center">
       <Text type="supporting" color="secondary" maxLines={1} hasTabularNumbers>
-        {sel ? `${fmtNum(sel.rows.length)} selected of ${fmtNum(sel.of)} charted rows` : `${kind === "interval" ? "Drag across" : "Click"} the chart to pick rows`}
+        {selected ?? `${kind === "interval" ? "Drag across" : "Click"} the chart to pick rows`}
       </Text>
-      <Button size="sm" variant="ghost" label="Clear" isDisabled={!sel} onClick={onClear} />
+      <Button size="sm" variant="ghost" label="Clear" isDisabled={selected == null} onClick={onClear} />
     </HStack>
   );
 }
@@ -576,7 +706,7 @@ export function NodeChart({ node, dark, height = 300, onSelect, reset = 0 }: { n
   const ref = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   // A node with several outputs charts its first table.
-  const { preview: d } = useNodePreview(node, CHART_ROWS, chartedPart(node));
+  const { data: d, sampled } = useChartData(node, chartedPart(node));
   // The spec as text: the graph is read again whenever anything in it runs,
   // and the same chart must not be drawn again (and lose its selection) for that.
   const chartText = JSON.stringify(node.chart ?? null);
@@ -635,8 +765,11 @@ export function NodeChart({ node, dark, height = 300, onSelect, reset = 0 }: { n
           res.view.addSignalListener("brush", (_name: string, value: unknown) => {
             cancelAnimationFrame(frame);
             frame = requestAnimationFrame(() => {
-              const rows = selectedRows(brush, value as Record<string, unknown>, d.columns!, d.rows!);
-              select.current?.(rows ? { columns: d.columns!, rows, of: d.rows!.length } : null);
+              const v = value as Record<string, unknown>;
+              const rows = selectedRows(brush, v, d.columns!, d.rows!);
+              const where = selectionWhere(brush, v, d.columns!);
+              const complete = !sampled && d.rows!.length >= (d.total ?? d.rows!.length);
+              select.current?.(rows && where ? { columns: d.columns!, rows, of: d.rows!.length, where, complete } : null);
             });
           });
         }
@@ -649,15 +782,15 @@ export function NodeChart({ node, dark, height = 300, onSelect, reset = 0 }: { n
       cancelAnimationFrame(frame);
       finalize?.();
     };
-  }, [d, chartText, dark, height, linked, reset]);
-  const charted = d?.kind === "table" ? (d.rows?.length ?? 0) : 0;
+  }, [d, sampled, chartText, dark, height, linked, reset]);
   return (
     <>
       {error && <Banner status="error" title={error} />}
       <div ref={ref} {...stylex.props(styles.vega)} />
-      {d?.kind === "table" && (d.total ?? 0) > charted && (
+      {sampled && d?.rows && (
         <Text type="supporting" color="secondary" hasTabularNumbers>
-          {`The chart draws the first ${fmtNum(charted)} of ${fmtNum(d.total)} rows`}
+          A random sample of {fmtNum(d.rows.length)} of {fmtNum(d.total)} rows
+          {linked ? "; a selection holds every row in it" : ""}
         </Text>
       )}
     </>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GraphNode } from "./api";
-import { chartBrush, isNumeric, outputPart, pct, rowsSource, selectedRows } from "./NodeOutput";
+import { chartBrush, isNumeric, outputPart, pct, rowsSource, selectedRows, selectionWhere } from "./NodeOutput";
 
 const node = (kind: GraphNode["output_kind"], parts: string[] = []): GraphNode =>
   ({ name: "n", output_kind: kind, schema: parts.map((name) => ({ name, type: "table" })) }) as GraphNode;
@@ -106,5 +106,37 @@ describe("selectedRows", () => {
   it("is null for an empty selection", () => {
     expect(selectedRows({ kind: "interval", fields: ["v"] }, {}, columns, rows)).toBeNull();
     expect(selectedRows({ kind: "interval", fields: ["v"] }, null, columns, rows)).toBeNull();
+  });
+});
+
+describe("selectionWhere", () => {
+  const columns = [
+    { name: "n", type: "DOUBLE" },
+    { name: "t", type: "VARCHAR" },
+    { name: "day", type: "DATE" },
+    { name: "at", type: "TIMESTAMP" },
+    { name: "utc", type: "TIMESTAMP WITH TIME ZONE" },
+  ];
+  it("is a range on numbers and a list on categories", () => {
+    expect(selectionWhere({ kind: "interval", fields: ["n"] }, { n: [5, 1] }, columns)).toBe(`"n" between 1 and 5`);
+    expect(selectionWhere({ kind: "point", fields: ["t"] }, { t: ["A", "O'Neil"] }, columns)).toBe(`cast("t" as varchar) in ('A', 'O''Neil')`);
+  });
+  it("reads times as the browser read the cells: dates in UTC, zoned instants as they are, the rest in local time", () => {
+    const lo = Date.parse("2024-01-01T00:00:00Z"), hi = Date.parse("2024-02-01T00:00:00Z");
+    expect(selectionWhere({ kind: "interval", fields: ["day"] }, { day: [lo, hi] }, columns)).toBe(
+      `cast("day" as timestamp) between make_timestamp(${lo * 1000}) and make_timestamp(${hi * 1000})`,
+    );
+    expect(selectionWhere({ kind: "interval", fields: ["utc"] }, { utc: [new Date(lo), new Date(hi)] }, columns)).toBe(
+      `"utc" between to_timestamp(${lo / 1000}) and to_timestamp(${hi / 1000})`,
+    );
+    // A local midnight is the wall-clock midnight the cell holds, whatever the zone.
+    const local = Date.parse("2024-01-01T00:00:00");
+    expect(selectionWhere({ kind: "interval", fields: ["at"] }, { at: [local, local] }, columns)).toBe(
+      `"at" between make_timestamp(${lo * 1000}) and make_timestamp(${lo * 1000})`,
+    );
+  });
+  it("joins the fields of a two-way brush, and is null for an empty one", () => {
+    expect(selectionWhere({ kind: "interval", fields: ["n", "day"] }, { n: [0, 1] }, columns)).toBe(`"n" between 0 and 1`);
+    expect(selectionWhere({ kind: "interval", fields: ["n"] }, {}, columns)).toBeNull();
   });
 });

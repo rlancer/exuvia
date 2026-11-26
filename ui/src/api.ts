@@ -516,7 +516,7 @@ export const api = {
   recentRuns: () => req<RunRow[]>("GET", "/api/runs"),
   runDetail: (id: string) => req<RunRow>("GET", `/api/runs/${id}`),
   cancel: (id: string) => req("POST", `/api/runs/${id}/cancel`),
-  query: (sql: string) => queryRows(sql),
+  query: (sql: string, limit?: number) => queryRows(sql, limit),
   resetAgent: (id: string) => req("DELETE", `/api/agent/${id}`),
   /** The saved conversations, the latest first (a signed-in person's own). */
   agentChats: (limit = 50) => req<{ sessions: AgentChat[] }>("GET", `/api/agent?limit=${limit}`).then((r) => r.sessions),
