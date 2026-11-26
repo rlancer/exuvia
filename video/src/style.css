@@ -125,24 +125,17 @@ body {
 #hook-lobster {
   width: 900px;
 }
-#entry {
+#outgrow {
   position: absolute;
   left: 150px;
-  top: 690px;
-}
-#entry .word {
-  font: 650 108px/1 var(--mono);
+  top: 770px;
+  font: 600 84px/1.1 var(--sans);
   letter-spacing: -2px;
 }
-#entry .pron {
-  margin-top: 18px;
-  font: 400 34px/1.2 var(--sans);
+#outgrow em,
+#end-line em {
+  font-style: normal;
   color: var(--accent-hover);
-}
-#entry .meaning {
-  margin-top: 14px;
-  font: 400 44px/1.25 var(--sans);
-  color: var(--text);
 }
 
 /* ---- the lockup and the big lines --------------------------------------- */
@@ -188,6 +181,53 @@ body {
 #title-line em {
   font-style: normal;
   color: var(--accent-hover);
+}
+
+#title-split {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 740px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 40px;
+}
+#title-split .half {
+  width: 520px;
+  padding: 26px 34px 30px;
+  border-radius: 18px;
+  background: rgb(10 13 20 / 0.72);
+  box-shadow: 0 0 0 1.5px var(--line-strong);
+}
+#title-split small {
+  display: block;
+  font: 500 24px/1 var(--mono);
+  color: var(--accent);
+}
+#title-split b {
+  display: block;
+  margin-top: 14px;
+  font: 650 54px/1 var(--sans);
+  letter-spacing: -1px;
+}
+#title-split span {
+  display: block;
+  margin-top: 12px;
+  font: 400 28px/1.2 var(--sans);
+  color: var(--muted);
+}
+#title-split > i {
+  width: 3px;
+  height: 120px;
+  background: var(--accent);
+  box-shadow: 0 0 24px var(--accent);
+}
+#title .lockup {
+  top: 180px;
+}
+#title-line {
+  top: 450px;
 }
 
 /* ---- captions ----------------------------------------------------------- */
@@ -710,6 +750,46 @@ mark {
   color: var(--accent);
 }
 .terminal .outp {
+  color: var(--fresh);
+}
+
+/* ---- history: no git ---------------------------------------------------- */
+#git-term {
+  left: 96px;
+  top: 110px;
+  width: 820px;
+}
+#git-term pre {
+  padding: 26px 34px 30px;
+  min-height: 300px;
+  line-height: 1.75;
+}
+#git-cmds .gone {
+  text-decoration: line-through;
+  text-decoration-color: #e5707a;
+  text-decoration-thickness: 3px;
+  color: var(--faint);
+}
+#git-cmds .gone .dollar {
+  color: var(--faint);
+}
+#saves {
+  left: 1000px;
+  width: 824px;
+}
+.artifact .who {
+  font: 600 20px/1 var(--sans);
+  padding: 8px 14px;
+  border-radius: 999px;
+  color: #0a1230;
+  background: var(--accent);
+}
+.artifact .who.you {
+  color: var(--text);
+  background: var(--panel-2);
+}
+.artifact .path small {
+  font: inherit;
   color: var(--fresh);
 }
 

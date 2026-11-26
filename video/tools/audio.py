@@ -10,7 +10,7 @@ audio/timings.json (each segment's length, which sets the length of its
 scene: src/main.js reads it), audio/mix.wav (what tools/render.mjs puts under
 the picture) and out/exuvia-overview.srt (captions to upload with the video).
 
-EXUVIA_VIDEO_VOICE picks one of the voice model's voices (default "george").
+EXUVIA_VIDEO_VOICE picks one of the voice model's voices (default "matilda").
 Standard library and ffmpeg only.
 """
 import base64
@@ -26,7 +26,7 @@ VIDEO = Path(__file__).resolve().parent.parent
 AUDIO = VIDEO / "audio"
 OUT = VIDEO / "out"
 API = "https://openrouter.ai/api/v1"
-VOICE = os.environ.get("EXUVIA_VIDEO_VOICE", "george")
+VOICE = os.environ.get("EXUVIA_VIDEO_VOICE", "matilda")
 VOICE_MODEL = os.environ.get("EXUVIA_VIDEO_VOICE_MODEL", "elevenlabs/eleven-v4")
 MUSIC_MODEL = os.environ.get("EXUVIA_VIDEO_MUSIC_MODEL", "google/lyria-3-pro-preview")
 MUSIC_PROMPT = (
@@ -161,12 +161,12 @@ def mix(rows, total):
     graph = ";".join(chains) + f";{voices}amix=inputs={n}:normalize=0,apad=whole_dur={total:.3f},asplit=2[voice][key]"
     if music_file():
         inputs += ["-i", str(music_file())]
-        # Slowed by a few percent at most, so that its last chord rings out as the picture fades.
-        tempo = max(0.94, min(1.0, seconds(music_file()) / (total + 1.5)))
+        # Slowed or sped up by a few percent at most, so that its last chord rings out as the picture fades.
+        tempo = max(0.94, min(1.06, seconds(music_file()) / (total + 1.5)))
         # The music sits under the voice and ducks while it speaks; it fades out with the picture.
         graph += (
             f";[{n}]aresample=48000,aformat=channel_layouts=stereo,atempo={tempo:.4f},atrim=0:{total:.3f},volume=0.42,"
-            f"afade=t=in:d=1.2,afade=t=out:st={total - 1.5:.3f}:d=1.5[bed]"
+            f"afade=t=in:d=1.2,afade=t=out:st={total - 2.5:.3f}:d=2.5[bed]"
             ";[bed][key]sidechaincompress=threshold=0.02:ratio=8:attack=40:release=700[ducked]"
             ";[voice][ducked]amix=inputs=2:normalize=0[sum]"
         )
