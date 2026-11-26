@@ -57,6 +57,19 @@ class ExecRequest:
     # the node reads with exuvia.partitions().
     partition_by: str | None = None
     partitions: list[str] = field(default_factory=list)
+    # Seconds the attempt may take (the node's ``timeout``); None: RUN_TIMEOUT_S.
+    timeout: float | None = None
+    # Whether the run was cancelled before its process started (the control
+    # plane's view): checked before starting it, so a cancel that arrives
+    # while inputs are read or packages install is not lost.
+    cancelled: Callable[[], bool] | None = None
+
+    @property
+    def time_limit(self) -> float:
+        return self.timeout or RUN_TIMEOUT_S
+
+    def is_cancelled(self) -> bool:
+        return bool(self.cancelled and self.cancelled())
 
 
 @dataclass
@@ -104,7 +117,9 @@ class LocalExecutor:
         # Workspace): installs through it show up in the workbench.
         self.packages: packages.Packages | None = None
         self._procs: dict[str, Any] = {}
+        self._starting: set[str] = set()  # runs in execute() whose process has not started yet
         self._cancelled: set[str] = set()
+        self._lock = threading.Lock()
 
     def start(self) -> None:
         self.pool.start()
@@ -115,6 +130,16 @@ class LocalExecutor:
         self.pool.close()
 
     def execute(self, req: ExecRequest, on_log: LogFn) -> ExecResult:
+        with self._lock:
+            self._starting.add(req.run_id)
+        try:
+            return self._execute(req, on_log)
+        finally:
+            with self._lock:
+                self._starting.discard(req.run_id)
+                self._cancelled.discard(req.run_id)
+
+    def _execute(self, req: ExecRequest, on_log: LogFn) -> ExecResult:
         try:
             if self.packages is not None:
                 site = self.packages.ensure_for_run(on_log)
@@ -150,12 +175,21 @@ class LocalExecutor:
             spec_path = Path(tmp) / "spec.json"
             spec_path.write_text(json.dumps(spec), encoding="utf-8")
 
-            proc = self.pool.take()
+            with self._lock:
+                if req.run_id in self._cancelled or req.is_cancelled():  # before it could start
+                    return ExecResult(ok=False, error="cancelled")
+                proc = self.pool.take()
+                self._procs[req.run_id] = proc
             assert proc.stdin and proc.stdout
             proc.stdin.write(f"{spec_path}\n".encode())
             proc.stdin.close()
-            self._procs[req.run_id] = proc
-            timer = threading.Timer(RUN_TIMEOUT_S, proc.kill)
+            timed_out = threading.Event()
+
+            def time_up() -> None:
+                timed_out.set()
+                proc.kill()
+
+            timer = threading.Timer(req.time_limit, time_up)
             timer.start()
             try:
                 for raw in iter(proc.stdout.readline, b""):
@@ -163,22 +197,51 @@ class LocalExecutor:
                 code = proc.wait()
             finally:
                 timer.cancel()
-                self._procs.pop(req.run_id, None)
+                with self._lock:
+                    self._procs.pop(req.run_id, None)
 
             if req.run_id in self._cancelled:
-                self._cancelled.discard(req.run_id)
                 return ExecResult(ok=False, error="cancelled")
+            if timed_out.is_set():
+                why = "the node's timeout" if req.timeout else "EXUVIA_RUN_TIMEOUT; set timeout= on the node to change it"
+                error = f"timed out after {req.time_limit:g}s ({why})"
+                on_log(f"\nexuvia: {error}: the attempt was stopped\n")
+                return ExecResult(ok=False, error=error)
             if not result_path.exists():
-                return ExecResult(ok=False, error=f"runner exited with code {code}")
+                return ExecResult(ok=False, error=exit_reason(code))
             return ExecResult.from_runner(json.loads(result_path.read_text(encoding="utf-8")))
 
     def cancel(self, run_id: str) -> bool:
-        proc = self._procs.get(run_id)
-        if proc is None:
-            return False
-        self._cancelled.add(run_id)
-        proc.kill()
+        """Stop a run: kill its process, or keep it from starting while its
+        packages are still installing. False when it is not running here."""
+        with self._lock:
+            proc = self._procs.get(run_id)
+            if proc is None and run_id not in self._starting:
+                return False
+            self._cancelled.add(run_id)
+        if proc is not None:
+            proc.kill()
         return True
+
+
+def exit_reason(code: int) -> str:
+    """Why a runner ended without a result, for the run's error. A negative
+    code is the signal that killed it (POSIX); a SIGKILL exuvia did not send
+    is nearly always the kernel's out-of-memory killer."""
+    if code >= 0:
+        return f"runner exited with code {code}"
+    import signal
+
+    try:
+        name = "SIGKILL" if -code == 9 else signal.Signals(-code).name
+    except ValueError:
+        name = f"signal {-code}"
+    if -code == 9:
+        return (
+            f"runner was killed ({name}, exit code {code}): most likely it ran out of memory and the system's "
+            "out-of-memory killer stopped it, or something outside exuvia killed it"
+        )
+    return f"runner was killed ({name}, exit code {code})"
 
 
 def _summary(text: str) -> str:
@@ -347,9 +410,15 @@ class RemoteExecutor:
                 "env": req.env,
                 "partition_by": req.partition_by,
                 "partitions": req.partitions,
+                "timeout": req.timeout,
             }
             result: dict[str, Any] | None = None
-            with self.http.stream("POST", f"/v1/runs/{req.run_id}", json=spec) as resp:
+            if req.is_cancelled():
+                return ExecResult(ok=False, error="cancelled")
+            import httpx
+
+            wait = httpx.Timeout(60.0, read=req.time_limit + 60)
+            with self.http.stream("POST", f"/v1/runs/{req.run_id}", json=spec, timeout=wait) as resp:
                 if resp.status_code != 200:
                     resp.read()
                     return ExecResult(ok=False, error=f"executor HTTP {resp.status_code}: {resp.text[:300]}")

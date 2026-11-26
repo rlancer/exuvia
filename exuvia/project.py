@@ -75,6 +75,7 @@ class Node:
     retries: int = 0  # extra attempts after a failed run
     retry_delay: float = 30.0  # seconds before the first retry; doubles each time
     overlap: str = "queue"  # a fire while the node runs: "queue" it or "skip" it
+    timeout: float | None = None  # seconds an attempt may take; None: EXUVIA_RUN_TIMEOUT
     chart: dict[str, Any] | None = None
     tags: list[str] = field(default_factory=list)
     params: list[str] = field(default_factory=list)  # run parameters this node reads
@@ -976,14 +977,15 @@ def check_view_manifest(raw: Any) -> tuple[dict[str, Any], list[str]]:
     return clean, problems
 
 
-RUN_OPTIONS = ("retries", "retry_delay", "overlap")
+RUN_OPTIONS = ("retries", "retry_delay", "overlap", "timeout")
 MAX_RETRIES = 10
+MAX_TIMEOUT = 86400
 OVERLAP_POLICIES = ("queue", "skip")
 
 
 def _set_run_option(node: Node, key: str, value: Any) -> None:
     """Validate one of a node's run options (``retries``, ``retry_delay``,
-    ``overlap``) and set it. ``value`` is a Python literal or, from a SQL
+    ``overlap``, ``timeout``) and set it. ``value`` is a Python literal or, from a SQL
     header, its text."""
     if key == "retries":
         try:
@@ -1006,6 +1008,17 @@ def _set_run_option(node: Node, key: str, value: Any) -> None:
         if policy not in OVERLAP_POLICIES:
             raise ValueError(f'`overlap` must be "queue" or "skip", not {value!r}.')
         node.overlap = policy
+    elif key == "timeout":
+        if value is None or str(value).strip().lower() == "none":
+            node.timeout = None
+            return
+        try:
+            secs = float(str(value).strip()) if not isinstance(value, bool) else 0.0
+        except ValueError:
+            secs = 0.0
+        if not 1 <= secs <= MAX_TIMEOUT:
+            raise ValueError(f"`timeout` must be a number of seconds from 1 to {MAX_TIMEOUT}, not {value!r}.")
+        node.timeout = secs
 
 
 def _validate_cron(expr: str) -> None:

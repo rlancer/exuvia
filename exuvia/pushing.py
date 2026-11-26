@@ -194,3 +194,30 @@ def push(
             detail = f"no exuvia project at {base}, or one too old to take pushes ({detail})"
         raise PushError(f"{base}: {detail}")
     return r.json()["run"]
+
+
+def cancel_run(url: str, run_id: str, *, token: str | None = None, allow_http: bool = False) -> None:
+    """Stop run ``run_id`` of the exuvia project at ``url`` (as for
+    :func:`push`). Raises PushError when it could not be stopped."""
+    import httpx
+
+    from .envcli import check_url
+
+    try:
+        base = check_url(url, allow_http)
+    except SystemExit as e:
+        raise PushError(str(e)) from None
+    headers = {"X-Exuvia-Origin": "cli"}
+    tok = _token(token)
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    try:
+        r = httpx.post(f"{base}/api/runs/{quote(run_id, safe='')}/cancel", headers=headers, timeout=30.0)
+    except httpx.HTTPError as e:
+        raise PushError(f"could not reach exuvia at {base} ({type(e).__name__}): is it running?") from e
+    if r.status_code == 401:
+        raise PushError(f"{base} needs a token: set EXUVIA_API_TOKEN (or EXUVIA_API_TOKEN_FILE)")
+    if r.status_code >= 400:
+        raise PushError(f"{base}: HTTP {r.status_code}: {r.text[:300]}")
+    if not r.json().get("ok"):
+        raise PushError(f"run {run_id} is not queued or running at {base}, so there is nothing to stop")

@@ -51,6 +51,7 @@ def node(
     retries: int = 0,
     retry_delay: float = 30,
     overlap: str = "queue",
+    timeout: float | None = None,
     push: bool = False,
     live: bool | float = False,
     partition_by: str | None = None,
@@ -78,6 +79,11 @@ def node(
         overlap: what a scheduled fire does while the node is still
             running: ``"queue"`` (default) runs it once that run ends,
             ``"skip"`` drops it.
+        timeout: seconds an attempt may take before it is stopped and fails
+            (1 to 86400); by default the server's ``EXUVIA_RUN_TIMEOUT``
+            (1800). Set it on a node that reads from something that can
+            hang, so a stuck attempt fails fast (and is retried, with
+            ``retries``) instead of holding the node's queue.
         push: the node's output is uploaded from another machine
             (``exuvia push``, or :func:`exuvia.push` in a script there) and
             never computed by exuvia: for data only that machine can read,

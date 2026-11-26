@@ -50,7 +50,11 @@ GUIDE_TOOL = {
     ),
     "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
 }
-REMOTE_TIMEOUT = 900.0  # a run_node call waits for the run to finish
+REMOTE_TIMEOUT = 900.0  # a run_node call waits for the run to finish (wait_seconds, at most 900)
+# While a tool call is still going, a progress notification this often (when
+# the client asked for progress), so a client that times out idle calls
+# does not give up on a long run_node.
+HEARTBEAT_S = 15.0
 
 # A hub's own tools (HubBackend), besides every project tool with a `project` argument.
 PROJECT_ARG = {
@@ -590,6 +594,27 @@ async def _elicit_secret(ctx: Any, params: Any, text: str) -> Any:
     return _with_answer(text, answer.action)
 
 
+async def _with_heartbeat(ctx: Any, call: Any) -> Any:
+    """Await ``call``, reporting progress every HEARTBEAT_S seconds while it
+    is still going. Reporting is a no-op when the client sent no progress
+    token, and a failure to report never fails the call."""
+    task = asyncio.ensure_future(call)
+    beats = 0
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=HEARTBEAT_S)
+            if done:
+                return task.result()
+            beats += 1
+            try:
+                await ctx.session.report_progress(beats, None, f"still working ({beats * HEARTBEAT_S:g}s)")
+            except Exception:  # noqa: BLE001 — a heartbeat is best effort
+                pass
+    finally:
+        if not task.done():
+            task.cancel()
+
+
 def build_server(backend: Backend, instructions: str | Callable[[], str], *, elicit: bool = True) -> Any:
     """The MCP server for ``backend``: its tools plus ``guide``. Given a
     function, the instructions are worked out again at each ``initialize``
@@ -632,7 +657,7 @@ def build_server(backend: Backend, instructions: str | Callable[[], str], *, eli
             guide = getattr(backend, "guide", None)
             ok, text = await guide(params.arguments or {}) if guide else (True, await backend.instructions())
         else:
-            ok, text = await backend.call(params.name, params.arguments or {})
+            ok, text = await _with_heartbeat(ctx, backend.call(params.name, params.arguments or {}))
             if ok and params.name == "request_secret" and elicit:
                 asked = await _elicit_secret(ctx, params, text)
                 if not isinstance(asked, str):

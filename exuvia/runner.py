@@ -548,6 +548,19 @@ def _typed_inputs(fn: Any, inputs: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _node_traceback(e: BaseException) -> str:
+    """The traceback of a failed run without this module's own frames at its
+    top (``main`` and ``execute`` calling the node): it starts at the node's
+    code, so a run's log keeps more of what the node printed. A failure in
+    this module itself keeps them all."""
+    tb = e.__traceback__
+    while tb is not None and tb.tb_next is not None and tb.tb_frame.f_code.co_filename == __file__:
+        tb = tb.tb_next
+    if tb is None or tb.tb_frame.f_code.co_filename == __file__:
+        tb = e.__traceback__
+    return "".join(traceback.format_exception(type(e), e, tb))
+
+
 WARM_IMPORTS = ("pandas", "pyarrow", "duckdb", "numpy")
 
 
@@ -572,7 +585,8 @@ def main() -> None:
     try:
         result = {"ok": True, **execute(spec)}
     except BaseException as e:  # noqa: BLE001 — report everything to the parent
-        tb = traceback.format_exc()
+        tb = _node_traceback(e)
+        sys.stdout.flush()  # what the node printed comes first in the log
         sys.stderr.write(tb)
         result = {"ok": False, "error": f"{type(e).__name__}: {e}", "traceback": tb}
     Path(spec["result_path"]).write_text(json.dumps(result), encoding="utf-8")
