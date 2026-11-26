@@ -30,11 +30,13 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from .mcp_server import (
+    HUB_API_TOOLS,
     HUB_GUIDE_TOOL,
     NO_PROJECT,
     ORIGIN,
     PROJECT_FREE,
     build_server,
+    hub_api_call,
     hub_instructions,
     hub_tool_list,
     project_free,
@@ -115,6 +117,29 @@ class HubLocalBackend:
     async def tools(self) -> list[dict[str, Any]]:
         return hub_tool_list(_tool_defs())
 
+    async def _api(self, method: str, path: str, body: Any, query: dict[str, Any] | None) -> tuple[int, Any]:
+        """A request to this hub's own HTTP API, served in this process as
+        the person this MCP request signed in as (auth.IN_PROCESS), so the
+        hub tools get the API's checks and answers (mcp_server.hub_api_call)."""
+        import httpx
+
+        from . import auth
+
+        app, ident = self.hub.app, auth.current()
+
+        async def as_caller(scope: dict[str, Any], receive: Any, send: Any) -> None:
+            scope[auth.IN_PROCESS] = ident
+            await app(scope, receive, send)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=as_caller), base_url="http://hub", headers={"X-Exuvia-Origin": ORIGIN},
+        ) as http:
+            r = await http.request(method, path, json=body, params=query)
+        try:
+            return r.status_code, r.json()
+        except ValueError:
+            return r.status_code, r.text
+
     async def _project(self, project: Any) -> tuple[Any, str | None]:
         from .hub import PROJECT_ID
 
@@ -137,18 +162,8 @@ class HubLocalBackend:
             return True, json.dumps({"projects": self.hub.visible(), "templates": self.hub.templates()}, indent=1)
         if name in PROJECT_FREE:
             return await project_free(name, args, "hub")
-        if name == "create_project":
-            pid, display, template = args.get("id"), args.get("name"), args.get("template")
-            if not isinstance(pid, str) or not all(v is None or isinstance(v, str) for v in (display, template)):
-                return False, "INVALID_INPUT: `id` is required, and `id`, `name` and `template` are strings"
-            try:
-                await self.hub.create(pid, display, template)
-            except FileExistsError:
-                return False, f"project {pid} already exists"
-            except ValueError as e:
-                return False, str(e)
-            made = await self.hub.get(pid)
-            return True, json.dumps({"id": pid, "name": made.ws.project.name, "workbench": f"{_base_url.get()}/p/{pid}/"})
+        if name in HUB_API_TOOLS:
+            return await hub_api_call(name, args, self._api, _base_url.get())
         args = dict(args)
         project = args.pop("project", None)
         ctx, problem = await self._project(project)

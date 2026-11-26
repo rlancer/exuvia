@@ -35,9 +35,10 @@ clients that only run commands, and for reading the token from a file.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -93,12 +94,156 @@ HUB_TOOLS: list[dict[str, Any]] = [
                 "id": {"type": "string", "description": "1-64 letters, digits, `-` or `_`, starting with a letter or digit; it is in the project's URL."},
                 "name": {"type": "string", "description": "A display name (defaults to the id)."},
                 "template": {"type": "string", "description": "A template from list_projects to start from."},
+                "group": {"type": "string", "description": "A group id (list_groups) to start it in; needs editor on the group."},
+                "access": {
+                    "type": "string", "enum": ["private", "view", "edit"],
+                    "description": "On a hub with sharing: what everyone else signed in gets (default: the hub's).",
+                },
             },
             "required": ["id"],
             "additionalProperties": False,
         },
     },
 ]
+
+# Organizing a hub: groups and who can open what. Both hub backends answer
+# these through the hub's own HTTP API (HubBackend over the network,
+# mcp_http.HubLocalBackend in process), so the API's permission checks and
+# answers are the tools' too.
+_GROUP_ARG = {"type": "string", "description": "The group's id, as list_groups shows it."}
+_WHO = {
+    "user": {"type": "string", "description": "A user id (list_people finds it)."},
+    "email": {"type": "string", "description": "Or an email, for someone who may not have signed in yet."},
+}
+_SHARE_ROLE = {
+    "type": "string", "enum": ["viewer", "editor", "none"],
+    "description": "viewer: can open; editor: can change and run; none: take them off.",
+}
+ORGANIZE_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "list_people",
+        "description": "People who sign in to this hub whose name or email contains `query`: their user ids, for sharing.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Part of a name or email (empty: anyone)."},
+                "limit": {"type": "integer", "description": "At most this many (default 20, at most 100)."},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_groups",
+        "description": (
+            "The groups you have a role on. A group is a folder of projects: its people get their group role "
+            "(viewer or editor) on every project in it, and its projects share its environment variables."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "get_group",
+        "description": "A group: its owner, its people and their roles, its projects, and its variables' names.",
+        "input_schema": {"type": "object", "properties": {"group": _GROUP_ARG}, "required": ["group"], "additionalProperties": False},
+    },
+    {
+        "name": "create_group",
+        "description": "Create a group, owned by you, and return it. Ask the user before creating one they did not ask for.",
+        "input_schema": {
+            "type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"], "additionalProperties": False,
+        },
+    },
+    {
+        "name": "update_group",
+        "description": "Rename a group, or hand it to another owner (who must be a user; you stay on as an editor). Owner only.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "group": _GROUP_ARG,
+                "name": {"type": "string", "description": "The new name."},
+                "owner": {"type": "string", "description": "The new owner's user id. Confirm with the user first."},
+            },
+            "required": ["group"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "delete_group",
+        "description": (
+            "Delete a group and its variables (secrets included); its projects stay, outside any group, and its "
+            "people lose the access the group gave them. It can't be undone: confirm with the user first. Owner only."
+        ),
+        "input_schema": {"type": "object", "properties": {"group": _GROUP_ARG}, "required": ["group"], "additionalProperties": False},
+    },
+    {
+        "name": "set_group_member",
+        "description": (
+            "Add someone to a group, change their role, or (role `none`) take them off; their group role applies "
+            "to every project in the group. Give `user` or `email`. Owner only (anyone may take themselves off)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"group": _GROUP_ARG, **_WHO, "role": _SHARE_ROLE},
+            "required": ["group", "role"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "set_project_group",
+        "description": (
+            "Put a project in a group, move it to another, or (`group`: null) take it out. Adding needs ownership "
+            "of the project and editor on the group. The group's people get their role on the project, and "
+            "everyone who can edit the project can read the group's secrets: say so to the user first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": PROJECT_ARG,
+                "group": {"type": ["string", "null"], "description": "A group id, or null to take the project out of its group."},
+            },
+            "required": ["project", "group"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_project_sharing",
+        "description": (
+            "Who can open a project: its owner, general access (what everyone else signed in gets), the people it "
+            "is shared with, and its group. On a hub with sharing."
+        ),
+        "input_schema": {"type": "object", "properties": {"project": PROJECT_ARG}, "required": ["project"], "additionalProperties": False},
+    },
+    {
+        "name": "set_project_member",
+        "description": "Share a project with someone, change their role, or (role `none`) stop sharing with them. Give `user` or `email`. Owner only.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"project": PROJECT_ARG, **_WHO, "role": _SHARE_ROLE},
+            "required": ["project", "role"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "set_project_access",
+        "description": (
+            "Change a project's general access (`private`: only people it is shared with; `view` or `edit`: "
+            "everyone signed in), or hand it to another owner (you stay on as an editor; confirm with the user "
+            "first). Owner only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project": PROJECT_ARG,
+                "access": {"type": "string", "enum": ["private", "view", "edit"]},
+                "owner": {"type": "string", "description": "The new owner's user id."},
+            },
+            "required": ["project"],
+            "additionalProperties": False,
+        },
+    },
+]
+HUB_TOOLS += ORGANIZE_TOOLS
+# The hub tools answered through the hub's HTTP API (hub_api_call).
+HUB_API_TOOLS = {"create_project", *(t["name"] for t in ORGANIZE_TOOLS)}
 HUB_GUIDE_TOOL = {
     "name": "guide",
     "description": (
@@ -170,6 +315,122 @@ async def relay_version(server: tuple[bool, str], url: str, args: dict[str, Any]
             "on the user's machine; after updating it, the MCP client has to restart it."
         ),
     })
+
+
+# A request to the hub's HTTP API: (method, path, JSON body, query) ->
+# (status, the answer's JSON, or its text when it is not JSON).
+HubRequest = Callable[[str, str, Any, "dict[str, Any] | None"], Awaitable[tuple[int, Any]]]
+
+
+def _api_error(status: int, body: Any) -> str:
+    detail = body.get("detail", body) if isinstance(body, dict) else body
+    if not isinstance(detail, str):
+        detail = json.dumps(detail)
+    if status == 404 and detail.startswith("Not Found"):
+        detail += " (this hub's exuvia may be too old for this tool: ask whoever runs it to upgrade)"
+    return f"HTTP {status}: {detail[:2000]}"
+
+
+async def hub_api_call(name: str, args: dict[str, Any], request: HubRequest, base_url: str) -> tuple[bool, str]:
+    """A HUB_API_TOOLS tool, as the request to the hub's HTTP API that the
+    hub's own UI makes (``base_url``: the hub's address, for links)."""
+    from urllib.parse import quote
+
+    from .hub import PROJECT_ID
+    from .sharing import email_principal, user_principal
+
+    def arg(key: str, required: bool = False) -> str | None:
+        v = args.get(key)
+        if v is None and not required:
+            return None
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError(f"`{key}` is {'required and ' if required else ''}a non-empty string")
+        return v.strip()
+
+    # Ids go in the request's path, which the server routes after decoding
+    # it, so quoting alone would let a `/` through: check them instead.
+    def seg(key: str) -> str:
+        v = arg(key, True) or ""
+        if not PROJECT_ID.match(v):
+            raise ValueError(f"no {key} {v}: list_groups shows them")
+        return v
+
+    def project() -> str:
+        p = arg("project", True) or ""
+        if not PROJECT_ID.match(p):
+            raise ValueError(f"no project {p} on this hub: list_projects shows them")
+        return p
+
+    def member(base: str) -> tuple[str, str, Any]:
+        user, email, role = arg("user"), arg("email"), arg("role", True)
+        if (user is None) == (email is None):
+            raise ValueError("give one of `user` (a user id: list_people) or `email`")
+        if "/" in (user or email or ""):
+            raise ValueError(f"no user {user or email}")
+        if role == "none":
+            principal = user_principal(user) if user else email_principal(email or "")
+            return "DELETE", f"{base}/people/{quote(principal, safe='')}", None
+        return "PUT", f"{base}/people", {"user": user, "email": email, "role": role}
+
+    try:
+        query: dict[str, Any] | None = None
+        body: Any = None
+        if name == "create_project":
+            method, path = "POST", "/api/projects"
+            body = {k: arg(k, k == "id") for k in ("id", "name", "template", "group", "access") if args.get(k) is not None or k == "id"}
+        elif name == "list_people":
+            limit = args.get("limit", 20)
+            if isinstance(limit, bool) or not isinstance(limit, int):
+                raise ValueError("`limit` is a whole number")
+            method, path, query = "GET", "/api/people", {"q": args.get("query") or "", "limit": limit}
+        elif name == "list_groups":
+            method, path = "GET", "/api/groups"
+        elif name == "get_group":
+            method, path = "GET", f"/api/groups/{seg('group')}"
+        elif name == "create_group":
+            method, path, body = "POST", "/api/groups", {"name": arg("name", True)}
+        elif name == "update_group":
+            body = {k: arg(k) for k in ("name", "owner") if args.get(k) is not None}
+            if not body:
+                raise ValueError("give `name`, `owner` or both")
+            method, path = "PATCH", f"/api/groups/{seg('group')}"
+        elif name == "delete_group":
+            method, path = "DELETE", f"/api/groups/{seg('group')}"
+        elif name == "set_group_member":
+            method, path, body = member(f"/api/groups/{seg('group')}")
+        elif name == "set_project_group":
+            if "group" not in args:
+                raise ValueError("`group` is required: a group id, or null to take the project out of its group")
+            method, path, body = "PUT", f"/api/projects/{project()}/group", {"group": arg("group")}
+        elif name == "get_project_sharing":
+            method, path = "GET", f"/api/projects/{project()}/sharing"
+        elif name == "set_project_member":
+            method, path, body = member(f"/api/projects/{project()}/sharing")
+        elif name == "set_project_access":
+            pid = project()
+            body = {"general": arg("access"), "owner": arg("owner")}
+            body = {k: v for k, v in body.items() if v is not None}
+            if not body:
+                raise ValueError("give `access`, `owner` or both")
+            method, path = "PATCH", f"/api/projects/{pid}/sharing"
+        else:
+            raise ValueError(f"unknown tool {name}")
+    except ValueError as e:
+        return False, f"INVALID_INPUT: {e}"
+    status, answer = await request(method, path, body, query)
+    email = args.get("email")
+    if status == 404 and method == "DELETE" and name in ("set_group_member", "set_project_member") and email:
+        # Shared by the email of someone in the user list: stored as that user.
+        s, people = await request("GET", "/api/people", None, {"q": email.strip(), "limit": 100})
+        uid = next((p["id"] for p in (people.get("people", []) if s == 200 and isinstance(people, dict) else [])
+                    if (p.get("email") or "").lower() == email.strip().lower()), None)
+        if uid is not None:
+            status, answer = await request(method, path.rsplit("/", 1)[0] + "/" + quote(user_principal(uid), safe=""), None, None)
+    if not 200 <= status < 300:
+        return False, _api_error(status, answer)
+    if name == "create_project" and isinstance(answer, dict) and "id" in answer:
+        answer = {**answer, "workbench": f"{base_url}/p/{answer['id']}/"}
+    return True, json.dumps(answer, indent=1)
 
 
 def hub_tool_list(project_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -468,6 +729,13 @@ class HubBackend:
             return False, f"HTTP {r.status_code}: {r.text[:300]}"
         return True, r.text
 
+    async def _api(self, method: str, path: str, body: Any, query: dict[str, Any] | None) -> tuple[int, Any]:
+        r = await self.http.request(method, self.url + path, json=body, params=query)
+        try:
+            return r.status_code, r.json()
+        except ValueError:
+            return r.status_code, r.text
+
     async def instructions(self) -> str:
         ok, listing = await self._projects()
         return hub_instructions(self.url, listing["projects"] if ok else str(listing))  # type: ignore[index]
@@ -503,12 +771,8 @@ class HubBackend:
                 return await relay_version(await self._hub_about(), self.url, args)
             if name in PROJECT_FREE:  # the docs of this install, which may be a different version than the hub
                 return await project_free(name, args, "mcp", f"--url {self.url}")
-            if name == "create_project":
-                r = await self.http.post(f"{self.url}/api/projects", json={k: v for k, v in args.items() if k in ("id", "name", "template")})
-                if r.status_code != 200:
-                    return False, f"HTTP {r.status_code}: {r.json().get('detail', r.text[:2000]) if r.headers.get('content-type', '').startswith('application/json') else r.text[:2000]}"
-                made = r.json()
-                return True, json.dumps({**made, "workbench": f"{self.url}/p/{made['id']}/"})
+            if name in HUB_API_TOOLS:
+                return await hub_api_call(name, args, self._api, self.url)
             args = dict(args)
             project = args.pop("project", None)
             if not isinstance(project, str) or not PROJECT_ID.match(project):

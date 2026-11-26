@@ -95,6 +95,9 @@ class Hub:
         self.keyring = envvars.Keyring(self.root / ".exuvia")
         # The projects a request may see (create_hub_app filters by sharing).
         self.visible: Any = self.list
+        # The hub's ASGI app (set by create_hub_app): its MCP endpoint calls
+        # the hub's API in process (mcp_http.HubLocalBackend).
+        self.app: Any = None
 
     # -- projects ------------------------------------------------------------
     def exists(self, project_id: str) -> bool:

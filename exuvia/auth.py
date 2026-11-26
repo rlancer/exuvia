@@ -133,6 +133,12 @@ def header_auth() -> HeaderAuth | None:
 
 _IDENTITY: ContextVar[Identity | None] = ContextVar("exuvia_identity", default=None)
 
+# The ASGI scope key of a request this process makes to its own API, as the
+# Identity it holds (None: the operator), for the hub's MCP endpoint
+# (mcp_http.HubLocalBackend). Only code in this process can put a key in a
+# request's scope: a client can't send it.
+IN_PROCESS = "exuvia.in_process_as"
+
 
 def current() -> Identity | None:
     """Who the request being served is from (None: nobody signed in)."""

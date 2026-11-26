@@ -387,6 +387,74 @@ def test_a_hub_without_auth_has_no_sharing(tmp_path, monkeypatch):
 # -- MCP --------------------------------------------------------------------------
 
 
+def test_mcp_organizes_groups_and_sharing_as_its_person(tmp_path):
+    """<hub>/mcp's group and sharing tools act as the agent token's person,
+    with the API's checks: Alice puts a project in her group and adds Bob,
+    who then can edit it but not manage the group."""
+    import httpx
+
+    from tests.test_mcp import _serve, http_client, text
+
+    url, server, thread = _serve(create_hub_app(tmp_path / "hub"))
+    try:
+        for who in (ALICE, BOB):
+            httpx.get(f"{url}/api/me", headers=who)
+        alice = httpx.post(f"{url}/api/me/tokens", json={"name": "a"}, headers=ALICE).json()["token"]
+        bob = httpx.post(f"{url}/api/me/tokens", json={"name": "b"}, headers=BOB).json()["token"]
+
+        async def call(client, name, args):
+            r = await client.call_tool(name, args)
+            return r.is_error, text(r)
+
+        async def as_alice():
+            async with http_client(f"{url}/mcp", alice) as c:
+                _, people = await call(c, "list_people", {"query": "bob"})
+                bob_uid = json.loads(people)["people"][0]["id"]
+                _, made = await call(c, "create_group", {"name": "Team"})
+                gid = json.loads(made)["id"]
+                await call(c, "create_project", {"id": "a", "access": "private"})
+                await call(c, "create_project", {"id": "solo", "access": "private"})
+                moved = await call(c, "set_project_group", {"project": "a", "group": gid})
+                added = await call(c, "set_group_member", {"group": gid, "user": bob_uid, "role": "editor"})
+                shared = await call(c, "set_project_member", {"project": "solo", "email": "Bob@Example.com", "role": "viewer"})
+                opened = await call(c, "set_project_access", {"project": "solo", "access": "view"})
+                sharing = await call(c, "get_project_sharing", {"project": "solo"})
+                unshared = await call(c, "set_project_member", {"project": "solo", "email": "bob@example.com", "role": "none"})
+            return locals()
+
+        a = asyncio.run(as_alice())
+        assert not a["moved"][0] and not a["added"][0]
+        assert [(p["user"]["name"], p["role"]) for p in json.loads(a["added"][1])["people"]] == [("bob", "editor")]
+        assert not a["shared"][0] and not a["opened"][0]
+        assert json.loads(a["sharing"][1])["general"] == "view"
+        assert not a["unshared"][0]
+
+        async def as_bob():
+            async with http_client(f"{url}/mcp", bob) as c:
+                listing = json.loads(text(await c.call_tool("list_projects", {})))
+                wrote = await call(c, "write_node", {"project": "a", "name": "nums", "kind": "python", "source": NODE})
+                rename = await call(c, "update_group", {"group": a["gid"], "name": "Mine"})
+                delete = await call(c, "delete_group", {"group": a["gid"]})
+                take = await call(c, "set_project_group", {"project": "solo", "group": a["gid"]})
+                share = await call(c, "set_project_member", {"project": "a", "email": "eve@example.com", "role": "editor"})
+                left = await call(c, "set_group_member", {"group": a["gid"], "user": a["bob_uid"], "role": "none"})
+                after = await call(c, "get_group", {"group": a["gid"]})
+            return locals()
+
+        b = asyncio.run(as_bob())
+        assert {p["id"] for p in b["listing"]["projects"]} == {"a", "solo"}  # a by the group, solo by general access
+        assert not b["wrote"][0]
+        assert b["rename"][0] and "HTTP 403" in b["rename"][1] and "owner" in b["rename"][1]
+        assert b["delete"][0] and "HTTP 403" in b["delete"][1]
+        assert b["take"][0] and "only the owner of project solo" in b["take"][1]
+        assert b["share"][0] and "HTTP 403" in b["share"][1]
+        assert not b["left"][0] and json.loads(b["left"][1]) == {"ok": True, "left": True}  # anyone can leave
+        assert b["after"][0] and "HTTP 404" in b["after"][1]
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+
 def test_mcp_shows_a_viewer_only_what_they_may_do(tmp_path):
     import httpx
 

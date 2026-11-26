@@ -1706,6 +1706,9 @@ def _install_common(app: FastAPI, users: UserStore | None, command: str = "serve
         path = request.url.path
         if path == "/healthz":  # liveness: no auth
             return await call_next(request)
+        if auth.IN_PROCESS in request.scope:  # this process calling its own API, signed in already
+            with auth.signed_in(request.scope[auth.IN_PROCESS]):
+                return await call_next(request)
         # A hub with share links: the UI's static bundle (the same files the
         # package ships) and /s/<token>, which checks the link itself, are
         # open, so someone with a link and no sign-in can load the page.
@@ -2274,7 +2277,8 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
     app = FastAPI(title="exuvia hub", lifespan=lifespan)
     _install_common(app, hub.users, "hub", hub.sharing)
     app.state.hub = hub
-    hub.mcp = _open_agent_mcp(hub.root / HUB_USERS_DB, hub.users)
+    hub.app = app  # the hub's MCP calls its API in process (mcp_http.HubLocalBackend)
+    hub.mcp =_open_agent_mcp(hub.root / HUB_USERS_DB, hub.users)
     _agent_mcp_routes(app, hub.mcp, is_admin)
 
     async def get_ctx(project: str, request: Request) -> Ctx:
