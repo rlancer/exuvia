@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GraphNode } from "./api";
-import { outputPart, pct } from "./NodeOutput";
+import { chartBrush, outputPart, pct, selectedRows } from "./NodeOutput";
 
 const node = (kind: GraphNode["output_kind"], parts: string[] = []): GraphNode =>
   ({ name: "n", output_kind: kind, schema: parts.map((name) => ({ name, type: "table" })) }) as GraphNode;
@@ -28,5 +28,48 @@ describe("pct", () => {
     expect(pct(999, 1000)).toBe(">99%");
     expect(pct(5000, 250000)).toBe("2%");
     expect(pct(1, 0)).toBe("");
+  });
+});
+
+describe("chartBrush", () => {
+  const enc = (x: object, y: object = { field: "v", type: "quantitative" }) => ({ x, y });
+  it("brushes a continuous x, and y too for points", () => {
+    expect(chartBrush({ mark: "line", encoding: enc({ field: "d", type: "temporal" }) })).toMatchObject({ kind: "interval", fields: ["d"] });
+    expect(chartBrush({ mark: { type: "point" }, encoding: enc({ field: "a", type: "quantitative" }) })).toMatchObject({ kind: "interval", fields: ["a", "v"] });
+  });
+  it("picks a category by clicking", () => {
+    expect(chartBrush({ mark: "bar", encoding: enc({ field: "t", type: "nominal" }) })).toMatchObject({ kind: "point", fields: ["t"] });
+  });
+  it("leaves alone what a mark is not a row of, or what has params of its own", () => {
+    expect(chartBrush({ mark: "bar", encoding: enc({ field: "d", type: "temporal", timeUnit: "month" }) })).toBeNull();
+    expect(chartBrush({ mark: "bar", encoding: enc({ field: "t", type: "nominal", aggregate: "count" }) })).toBeNull();
+    expect(chartBrush({ layer: [], encoding: enc({ field: "d", type: "temporal" }) })).toBeNull();
+    expect(chartBrush({ mark: "line", params: [], encoding: enc({ field: "d", type: "temporal" }) })).toBeNull();
+    expect(chartBrush(null)).toBeNull();
+  });
+});
+
+describe("selectedRows", () => {
+  const columns = [
+    { name: "d", type: "TIMESTAMP" },
+    { name: "t", type: "VARCHAR" },
+    { name: "v", type: "DOUBLE" },
+  ];
+  const rows = [
+    ["2024-01-01T00:00:00", "A", 1],
+    ["2024-02-01T00:00:00", "B", 5],
+    ["2024-03-01T00:00:00", "A", 9],
+  ];
+  it("keeps the rows inside an interval, times included", () => {
+    const brush = { kind: "interval" as const, fields: ["d", "v"] };
+    const lo = new Date("2024-01-15T00:00:00"), hi = new Date("2024-03-15T00:00:00");
+    expect(selectedRows(brush, { d: [hi, lo], v: [0, 6] }, columns, rows)).toEqual([rows[1]]);
+  });
+  it("keeps the rows of the picked categories", () => {
+    expect(selectedRows({ kind: "point", fields: ["t"] }, { t: ["A"] }, columns, rows)).toEqual([rows[0], rows[2]]);
+  });
+  it("is null for an empty selection", () => {
+    expect(selectedRows({ kind: "interval", fields: ["v"] }, {}, columns, rows)).toBeNull();
+    expect(selectedRows({ kind: "interval", fields: ["v"] }, null, columns, rows)).toBeNull();
   });
 });

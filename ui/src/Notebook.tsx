@@ -12,7 +12,7 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { api, type GraphNode, type Preview, type Project, type ProjectView } from "./api";
 import { useAccess } from "./Access";
-import { DatasetSummary, DataTable, NodeChart, OutputPicker, useNodePreview, useOutputPart, useTableStats } from "./NodeOutput";
+import { DatasetSummary, DataTable, NodeChart, OutputPicker, useNodePreview, useOutputPart, useTableStats, type ChartSelection } from "./NodeOutput";
 import { notebook, type Cell, type Section } from "./notebookOrder";
 import { ago, fmtNum } from "./util";
 import { failed } from "./toast";
@@ -25,6 +25,8 @@ const PinnedView = lazy(() => import("./PinnedView"));
 
 /** Rows an output's preview shows: enough to see its shape. */
 const PREVIEW_ROWS = 8;
+/** How many of a chart's selected rows a cell shows. */
+const SELECTED_ROWS = 200;
 /** A pinned view's header, above the height its manifest names (as on the canvas). */
 const PIN_HEAD = 38;
 
@@ -281,28 +283,37 @@ function Source({ node, onOpen }: { node: GraphNode; onOpen: () => void }) {
   );
 }
 
-/** The first rows of a node's output, or its chart when it has one; loaded when the cell comes into view. */
+/**
+ * The first rows of a node's output, under its chart when it has one (what
+ * is selected on the chart is what the rows show); loaded when the cell
+ * comes into view.
+ */
 function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
   const { parts, shown, pick } = useOutputPart(node);
-  const chart = !!node.chart && !!node.artifact_id;
-  const { preview, failed } = useNodePreview(node, PREVIEW_ROWS, shown, !chart);
+  // A node with several outputs charts its first table: the chart shows over that one.
+  const charted = node.output_kind === "multi" ? (node.schema ?? []).find((c) => c.type === "table")?.name ?? null : null;
+  const chart = !!node.chart && !!node.artifact_id && shown === charted;
+  const [sel, setSel] = useState<ChartSelection>(null);
+  // Clear draws the chart again (`chartKey`), with nothing selected.
+  const [chartKey, setChartKey] = useState(0);
+  useEffect(() => setSel(null), [node.name, shown]);
+  const { preview, failed } = useNodePreview(node, PREVIEW_ROWS, shown);
   // A read that failed shows as no output.
   const p: Preview | null = failed ? { kind: null } : preview;
   // The quick insights and the summary line, from the output's Parquet footers.
   const stats = useTableStats(node, shown, p?.kind === "table");
 
-  if (chart)
-    return (
-      <div {...stylex.props(styles.output, styles.chart)}>
-        <NodeChart node={node} dark={dark} height={220} />
-      </div>
-    );
+  const chartBox = chart && (
+    <div {...stylex.props(styles.output, styles.chart)} onClick={(e) => e.stopPropagation()}>
+      <NodeChart key={chartKey} node={node} dark={dark} height={220} onSelect={setSel} />
+    </div>
+  );
   const picker = parts.length > 1 && shown !== null && (
     <div onClick={(e) => e.stopPropagation()}>
       <OutputPicker node={node} parts={parts} shown={shown} onPick={pick} />
     </div>
   );
-  if (!p) return <div {...stylex.props(styles.waiting)} />;
+  if (!p) return chartBox || <div {...stylex.props(styles.waiting)} />;
   if (!p.kind || p.kind === "none")
     return (
       <Text type="supporting" color="secondary">
@@ -313,10 +324,32 @@ function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
     return (
       <>
         {picker}
+        {chartBox}
         <div {...stylex.props(styles.output, styles.table)}>
-          <DataTable columns={p.columns} rows={p.rows} stats={stats} />
+          {sel ? (
+            <DataTable columns={sel.columns} rows={sel.rows.slice(0, SELECTED_ROWS)} stats={stats} />
+          ) : (
+            <DataTable columns={p.columns} rows={p.rows} stats={stats} />
+          )}
         </div>
-        {stats ? (
+        {sel ? (
+          <HStack gap={2} vAlign="center">
+            <Text type="supporting" color="secondary" hasTabularNumbers>
+              {sel.rows.length > SELECTED_ROWS ? `First ${fmtNum(SELECTED_ROWS)} of ` : ""}
+              {fmtNum(sel.rows.length)} selected of {fmtNum(sel.of)} charted rows
+            </Text>
+            <Button
+              size="sm"
+              variant="ghost"
+              label="Clear"
+              onClick={(e) => {
+                e.stopPropagation();
+                setSel(null);
+                setChartKey((k) => k + 1);
+              }}
+            />
+          </HStack>
+        ) : stats ? (
           <DatasetSummary stats={stats} shown={p.rows.length} storage={false} />
         ) : (
           <Text type="supporting" color="secondary" hasTabularNumbers>

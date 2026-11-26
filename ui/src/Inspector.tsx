@@ -28,16 +28,17 @@ import { useAccess } from "./Access";
 import { codeGroup, DownloadMenu, outputGroups, tableItems } from "./Export";
 import { nodeExportUrl, saveQuery, saveUrl } from "./download";
 import { CodeEditor } from "./ui/CodeEditor";
-import { DatasetSummary, DataTable, NodeChart, OutputPicker, useNodePreview, useOutputPart, useTableStats } from "./NodeOutput";
+import { chartBrush, DatasetSummary, DataTable, NodeChart, OutputPicker, useNodePreview, useOutputPart, useTableStats, type ChartSelection } from "./NodeOutput";
 import { StateDot, statusOf, statusText } from "./ui/state";
 import { useColorMode } from "./theme/colorMode";
 
-type Tab = "code" | "data" | "chart" | "runs" | "history";
+type Tab = "code" | "data" | "runs" | "history";
 
 /**
  * The pane of the selected node. From the top: what it is (its name and
  * kind) and what can be done to it (Run, download, delete); its state and
- * what it depends on; then its code, data, chart, runs and history, a tab each.
+ * what it depends on; then its code, data (with its chart over it), runs and
+ * history, a tab each.
  */
 export function Inspector(props: {
   node: GraphNode;
@@ -88,7 +89,6 @@ export function Inspector(props: {
 
   useEffect(() => {
     setErr(null);
-    if (tab === "chart" && !node.chart) setTab("code");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [node.name]);
 
@@ -250,7 +250,6 @@ export function Inspector(props: {
             endContent={dirty ? <StatusDot variant="accent" label="Unsaved changes" tooltip="Unsaved changes" /> : undefined}
           />
           <Tab value="data" label="Data" panelId={panelId} endContent={node.rows != null ? <Badge label={fmtNum(node.rows)} /> : undefined} />
-          {node.chart && <Tab value="chart" label="Chart" panelId={panelId} />}
           <Tab value="runs" label="Runs" panelId={panelId} />
           <Tab value="history" label="History" panelId={panelId} />
         </TabList>
@@ -323,8 +322,7 @@ export function Inspector(props: {
             </div>
           </div>
         )}
-        {tab === "data" && <DataTab node={node} />}
-        {tab === "chart" && node.chart && <ChartTab node={node} dark={dark} />}
+        {tab === "data" && <DataTab node={node} dark={dark} />}
         {tab === "runs" && <RunsTab node={node} logs={logs} />}
         {tab === "history" && (
           <HistoryBrowser
@@ -375,9 +373,22 @@ export function Inspector(props: {
   );
 }
 
-function DataTab({ node }: { node: GraphNode }) {
+/** How many of a chart's selected rows the table shows. */
+const SELECTED_ROWS = 1000;
+
+function DataTab({ node, dark }: { node: GraphNode; dark: boolean }) {
   // A node with several outputs shows one at a time.
   const { parts, shown, pick } = useOutputPart(node);
+  // The chart, over the rows, when the output shown is the one it charts
+  // (a node with several outputs charts its first table); what is selected
+  // on it is what the table shows. `chartKey` draws it again, unselected.
+  const charted = node.output_kind === "multi" ? (node.schema ?? []).find((c) => c.type === "table")?.name ?? null : null;
+  const hasChart = !!node.chart && !!node.artifact_id && shown === charted;
+  const [sel, setSel] = useState<ChartSelection>(null);
+  const [chartKey, setChartKey] = useState(0);
+  // Another output, or another node: nothing is selected.
+  useEffect(() => setSel(null), [node.name, shown]);
+  const brush = hasChart ? chartBrush(node.chart) : null;
   const multi = node.output_kind === "multi";
   const { preview: p } = useNodePreview(node, 300, shown);
   const isTable = p?.kind === "table";
@@ -419,14 +430,42 @@ function DataTab({ node }: { node: GraphNode }) {
     return (
       <div {...stylex.props(styles.fill)}>
         {picker}
+        {hasChart && (
+          <div {...stylex.props(styles.chart)}>
+            <NodeChart key={chartKey} node={node} dark={dark} height={200} onSelect={setSel} />
+          </div>
+        )}
         <div {...stylex.props(styles.scroll)}>
-          <DataTable columns={p.columns} rows={p.rows} stats={stats} />
+          {sel ? (
+            <DataTable columns={sel.columns} rows={sel.rows.slice(0, SELECTED_ROWS)} stats={stats} />
+          ) : (
+            <DataTable columns={p.columns} rows={p.rows} stats={stats} />
+          )}
         </div>
         <div {...stylex.props(styles.foot)}>
-          <Text type="supporting" color="secondary" maxLines={1} hasTabularNumbers xstyle={styles.footText}>
-            {p.rows.length < (p.total ?? 0) ? `first ${p.rows.length} of ` : ""}
-            {fmtNum(p.total)} rows · {p.columns.length} columns · {ago(node.finished_at)}
-          </Text>
+          {sel ? (
+            <>
+              <Text type="supporting" color="secondary" maxLines={1} hasTabularNumbers xstyle={styles.footText}>
+                {sel.rows.length > SELECTED_ROWS ? `first ${fmtNum(SELECTED_ROWS)} of ` : ""}
+                {fmtNum(sel.rows.length)} selected of {fmtNum(sel.of)} charted rows
+              </Text>
+              <Button
+                size="sm"
+                variant="ghost"
+                label="Clear"
+                onClick={() => {
+                  setSel(null);
+                  setChartKey((k) => k + 1);
+                }}
+              />
+            </>
+          ) : (
+            <Text type="supporting" color="secondary" maxLines={1} hasTabularNumbers xstyle={styles.footText}>
+              {p.rows.length < (p.total ?? 0) ? `first ${p.rows.length} of ` : ""}
+              {fmtNum(p.total)} rows · {p.columns.length} columns · {ago(node.finished_at)}
+              {brush ? ` · ${brush.kind === "interval" ? "drag across" : "click"} the chart to pick rows` : ""}
+            </Text>
+          )}
           <DownloadMenu
             small
             up
@@ -458,14 +497,6 @@ function DataTab({ node }: { node: GraphNode }) {
           ]}
         />
       </div>
-    </div>
-  );
-}
-
-function ChartTab({ node, dark }: { node: GraphNode; dark: boolean }) {
-  return (
-    <div {...stylex.props(styles.scroll, styles.chart)}>
-      <NodeChart node={node} dark={dark} />
     </div>
   );
 }
@@ -763,7 +794,16 @@ const styles = stylex.create({
     paddingInline: spacingVars["--spacing-4"],
     backgroundColor: "var(--exuvia-code-background)",
   },
-  chart: { display: "flex", flexDirection: "column", gap: spacingVars["--spacing-3"], padding: spacingVars["--spacing-4"] },
+  // The Data tab's chart, over its rows: as tall as it draws, the rows scroll under it.
+  chart: {
+    display: "flex",
+    flexDirection: "column",
+    gap: spacingVars["--spacing-3"],
+    flexShrink: 0,
+    paddingBlock: spacingVars["--spacing-3"],
+    paddingInline: spacingVars["--spacing-4"],
+    ...rule,
+  },
   // A row's own padding and this one put its dot on the title's line.
   runs: { flexShrink: 0, maxHeight: "45%", overflow: "auto", paddingInline: spacingVars["--spacing-2"], ...rule },
   // In the overview the rows reach into the pane's padding, so their dots are on the headings' line.
