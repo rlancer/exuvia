@@ -103,10 +103,13 @@ async def _backend(url: str | None, project: str | None, allow_http: bool = Fals
     from .mcp_server import HubBackend, LocalBackend, RemoteBackend, remote_backend
 
     if url:
-        from .envcli import check_url
+        from . import remote
 
-        url = check_url(url, allow_http)  # plain http only to this machine, unless --allow-http
-        backend: Any = await remote_backend(url, os.environ.get("EXUVIA_API_TOKEN"))
+        try:
+            url = remote.check_url(url, allow_http)  # plain http only to this machine, unless --allow-http
+            backend: Any = await remote_backend(url, remote.token())
+        except ValueError as e:
+            raise SystemExit(f"exuvia tool: {e}") from None
         if isinstance(backend, HubBackend):
             await backend.start()  # says plainly when the token is missing or wrong
         assert isinstance(backend, (HubBackend, RemoteBackend))
@@ -140,14 +143,13 @@ class _quiet:
 
 
 async def _tool_list(backend: Any) -> list[dict[str, Any]]:
-    import httpx
-
     from .mcp_server import GUIDE_TOOL, RemoteBackend
+    from .remote import Unreachable
 
     if isinstance(backend, RemoteBackend):
         try:
             await backend._load_guide()  # not this install's list when the server is down
-        except httpx.HTTPError as e:
+        except Unreachable as e:
             raise _Unreachable(backend.offline_message(e)) from None
     return [getattr(backend, "guide_tool", GUIDE_TOOL), *await backend.tools()]
 
@@ -158,17 +160,10 @@ class _Unreachable(Exception):
 
 async def _run(url: str | None, project: str | None, name: str | None, tool_input: dict[str, Any],
                *, schema: bool, raw: bool, allow_http: bool = False) -> int:
-    import httpx
-
-    from .nethttp import proxy_hint
-
     try:
         backend = await _backend(url, project, allow_http)
-    except RuntimeError as e:  # a hub that turned the token away, an older server
+    except RuntimeError as e:  # a hub that is not answering or turned the token away, an older server
         print(f"exuvia tool: {e}", file=sys.stderr)
-        return 2
-    except httpx.HTTPError as e:  # a hub that is not answering
-        print(f"exuvia tool: could not reach exuvia at {url} ({type(e).__name__}).{proxy_hint(url or '', e)}", file=sys.stderr)
         return 2
     try:
         if name is None or schema:

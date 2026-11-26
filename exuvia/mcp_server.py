@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -554,22 +553,51 @@ class LocalBackend:
         return ok, text
 
 
-class RemoteBackend:
+class _Relay:
+    """What RemoteBackend and HubBackend share: one client for the running
+    exuvia (remote.connect) and one way to ask it something."""
+
+    def __init__(self, url: str, token: str | None):
+        import httpx
+
+        from .remote import connect
+
+        # Plain http to another machine is the caller's choice here: `exuvia mcp --url` has always allowed it.
+        self.http = connect(url, allow_http=True, origin=ORIGIN, token=token, asynchronous=True,
+                            timeout=httpx.Timeout(REMOTE_TIMEOUT, connect=10.0))
+        self.url = self.http.where
+
+    def unreachable(self, e: Exception) -> str:
+        """What a tool answers when the server did not (each backend words its own advice)."""
+        from .remote import unreachable
+
+        return unreachable(self.url, e)
+
+    async def stop(self) -> None:
+        await self.http.aclose()
+
+    async def _request(self, method: str, url: str, *, json: Any = None, also: tuple[int, ...] = ()) -> tuple[bool, Any]:
+        """``(True, response)`` when the server answered 200 (or a status in
+        ``also``); ``(False, why)`` when it did not answer or answered
+        another status."""
+        from .remote import Unreachable
+
+        try:
+            r = await self.http.request(method, url, json=json)
+        except Unreachable as e:
+            return False, self.unreachable(e)
+        if r.status_code != 200 and r.status_code not in also:
+            return False, f"HTTP {r.status_code}: {r.text[:2000]}"
+        return True, r
+
+
+class RemoteBackend(_Relay):
     """A project served by a running exuvia: ``<url>/api/guide`` and
     ``<url>/api/tools/{name}``."""
 
     def __init__(self, url: str, token: str | None = None):
-        import httpx
-
-        headers = {"X-Exuvia-Origin": ORIGIN}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        from .nethttp import client_options
-
-        self.api = url.rstrip("/") + "/api"
-        self.http = httpx.AsyncClient(
-            headers=headers, timeout=httpx.Timeout(REMOTE_TIMEOUT, connect=10.0), **client_options(url)
-        )
+        super().__init__(url, token)
+        self.api = self.url + "/api"
         self._guide: dict[str, Any] | None = None
 
     async def start(self) -> None:
@@ -577,11 +605,11 @@ class RemoteBackend:
         relay starts anyway, with this package's own tool list, and every
         call says how to start the workbench until one answers. A server
         that answers wrongly (an HTTP error, an old exuvia) is fatal."""
-        import httpx
+        from .remote import Unreachable
 
         try:
             await self._load_guide()
-        except httpx.HTTPError as e:
+        except Unreachable as e:
             print(f"exuvia mcp: {self.offline_message(e)}", file=sys.stderr)
         except RuntimeError:
             await self.http.aclose()
@@ -590,29 +618,25 @@ class RemoteBackend:
     def offline_message(self, e: Exception) -> str:
         from urllib.parse import urlsplit
 
-        from .nethttp import loopback, proxy_hint
+        from .nethttp import loopback
+        from .remote import unreachable
 
-        base = self.api.removesuffix("/api")
-        url = urlsplit(base)
+        url = urlsplit(self.url)
         if loopback(url.hostname) and not url.path.strip("/"):  # a workbench on this machine: say how to start it
             port = f" --port {url.port}" if url.port else ""
-            how = (
-                f"Start it in the background with `exuvia serve <project folder>{port}` "
-                "(or `uvx exuvia serve ...`), or ask the user to, then call the tool again."
+            advice = (
+                "the workbench these tools relay to is not running. Start it in the background with "
+                f"`exuvia serve <project folder>{port}` (or `uvx exuvia serve ...`), or ask the user to, "
+                "then call the tool again."
             )
-            return (
-                f"could not reach exuvia at {base} ({type(e).__name__}): the workbench these tools "
-                f"relay to is not running. {how}"
+        else:  # another machine, or a hub project: it cannot be started from here
+            advice = (
+                "the server at that address is unreachable. Ask the user to check that the exuvia server at that "
+                "address is up and reachable, then call the tool again."
             )
-        # Another machine, or a hub project: it cannot be started from here.
-        how = "Ask the user to check that the exuvia server at that address is up and reachable, then call the tool again."
-        hint = proxy_hint(base, e)
-        if hint:  # the proxy or TLS may be what failed, not the server
-            return f"could not reach exuvia at {base} ({type(e).__name__}).{hint} If that is not it: {how[0].lower()}{how[1:]}"
-        return f"could not reach exuvia at {base} ({type(e).__name__}): the server at that address is unreachable. {how}"
+        return unreachable(self.url, e, advice=advice)
 
-    async def stop(self) -> None:
-        await self.http.aclose()
+    unreachable = offline_message
 
     async def _load_guide(self) -> dict[str, Any]:
         r = await self.http.get(f"{self.api}/guide")
@@ -625,21 +649,21 @@ class RemoteBackend:
         return guide
 
     async def instructions(self) -> str:
-        import httpx
+        from .remote import Unreachable
 
         try:
             return (await self._load_guide())["instructions"]
-        except httpx.HTTPError as e:
+        except Unreachable as e:
             return self.offline_message(e)
 
     async def tools(self) -> list[dict[str, Any]]:
-        import httpx
+        from .remote import Unreachable
 
         if self._guide:
             return with_local_tools(self._guide["tools"])
         try:
             return with_local_tools((await self._load_guide())["tools"])
-        except httpx.HTTPError:
+        except Unreachable:
             from .agent import TOOLS  # the same tools, from this install
 
             return TOOLS
@@ -654,19 +678,14 @@ class RemoteBackend:
         return ok, text
 
     async def _post(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
-        import httpx
-
-        try:
-            r = await self.http.post(f"{self.api}/tools/{name}", json=args)
-        except httpx.HTTPError as e:
-            return False, self.offline_message(e)
-        if r.status_code != 200:
-            return False, f"HTTP {r.status_code}: {r.text[:2000]}"
+        ok, r = await self._request("POST", f"{self.api}/tools/{name}", json=args)
+        if not ok:
+            return False, r
         body = r.json()
         return bool(body.get("ok")), str(body.get("text", ""))
 
 
-class HubBackend:
+class HubBackend(_Relay):
     """Every project on a running hub: the hub's own tools (list and create
     projects) and each project tool with a ``project`` argument, relayed to
     ``<hub>/p/<project>/api/tools/{name}``."""
@@ -674,21 +693,17 @@ class HubBackend:
     guide_tool = HUB_GUIDE_TOOL
 
     def __init__(self, url: str, token: str | None = None):
-        import httpx
-
-        headers = {"X-Exuvia-Origin": ORIGIN}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        from .nethttp import client_options
-
-        self.url = url.rstrip("/")
-        self.http = httpx.AsyncClient(
-            headers=headers, timeout=httpx.Timeout(REMOTE_TIMEOUT, connect=10.0), **client_options(url)
-        )
+        super().__init__(url, token)
         self._project_tools: list[dict[str, Any]] | None = None
 
     async def start(self) -> None:
-        r = await self.http.get(f"{self.url}/api/projects")
+        from .remote import Unreachable
+
+        try:
+            r = await self.http.get(f"{self.url}/api/projects")
+        except Unreachable as e:
+            await self.http.aclose()
+            raise RuntimeError(self.unreachable(e)) from None
         if r.status_code == 401:
             await self.http.aclose()
             raise RuntimeError(
@@ -700,13 +715,10 @@ class HubBackend:
             raise RuntimeError(f"GET {self.url}/api/projects: HTTP {r.status_code} {r.text[:300]}")
         self._project_tools = await self._load_project_tools(r.json().get("projects", []))
 
-    async def stop(self) -> None:
-        await self.http.aclose()
-
     def unreachable(self, e: Exception) -> str:
-        from .nethttp import proxy_hint
+        from .remote import unreachable
 
-        return f"could not reach the exuvia hub at {self.url} ({type(e).__name__}): ask the user whether it is running.{proxy_hint(self.url, e)}"
+        return unreachable(self.url, e, what="the exuvia hub", advice="ask the user whether it is running.")
 
     async def _load_project_tools(self, projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """The project tools as the hub defines them (its version may differ
@@ -726,27 +738,13 @@ class HubBackend:
         return hub_tool_list(with_local_tools(self._project_tools or []))
 
     async def _projects(self) -> tuple[bool, dict[str, Any] | str]:
-        import httpx
-
-        try:
-            r = await self.http.get(f"{self.url}/api/projects")
-        except httpx.HTTPError as e:
-            return False, self.unreachable(e)
-        if r.status_code != 200:
-            return False, f"HTTP {r.status_code}: {r.text[:2000]}"
-        return True, r.json()
+        ok, r = await self._request("GET", f"{self.url}/api/projects")
+        return (True, r.json()) if ok else (False, r)
 
     async def _hub_about(self) -> tuple[bool, str]:
         """The hub's own version, as its help menu shows it (``GET /api/about``)."""
-        import httpx
-
-        try:
-            r = await self.http.get(f"{self.url}/api/about")
-        except httpx.HTTPError as e:
-            return False, f"could not reach the exuvia hub at {self.url} ({type(e).__name__})"
-        if r.status_code != 200:
-            return False, f"HTTP {r.status_code}: {r.text[:300]}"
-        return True, r.text
+        ok, r = await self._request("GET", f"{self.url}/api/about")
+        return (True, r.text) if ok else (False, r)
 
     async def _api(self, method: str, path: str, body: Any, query: dict[str, Any] | None) -> tuple[int, Any]:
         r = await self.http.request(method, self.url + path, json=body, params=query)
@@ -760,27 +758,21 @@ class HubBackend:
         return hub_instructions(self.url, listing["projects"] if ok else str(listing))  # type: ignore[index]
 
     async def guide(self, args: dict[str, Any]) -> tuple[bool, str]:
-        import httpx
-
         project = args.get("project")
         if not project:
             return True, await self.instructions()
-        try:
-            r = await self.http.get(f"{self.url}/p/{project}/api/guide")
-        except httpx.HTTPError as e:
-            return False, f"could not reach the exuvia hub at {self.url} ({type(e).__name__})"
+        ok, r = await self._request("GET", f"{self.url}/p/{project}/api/guide", also=(404,))
+        if not ok:
+            return False, r
         if r.status_code == 404:
             return False, f"no project {project} on this hub: list_projects shows them"
-        if r.status_code != 200:
-            return False, f"HTTP {r.status_code}: {r.text[:2000]}"
         return True, r.json()["instructions"]
 
     async def call(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
         import json
 
-        import httpx
-
         from .hub import PROJECT_ID
+        from .remote import Unreachable
 
         try:
             if name == "list_projects":
@@ -796,12 +788,14 @@ class HubBackend:
             project = args.pop("project", None)
             if not isinstance(project, str) or not PROJECT_ID.match(project):
                 return False, NO_PROJECT
-            r = await self.http.post(f"{self.url}/p/{project}/api/tools/{name}", json=args)
-        except httpx.HTTPError as e:
+            ok, r = await self._request("POST", f"{self.url}/p/{project}/api/tools/{name}", json=args, also=(404,))
+        except Unreachable as e:  # from hub_api_call
             return False, self.unreachable(e)
-        if r.status_code == 404 and "no project" in r.text:
-            return False, f"no project {project} on this hub: list_projects shows them"
-        if r.status_code != 200:
+        if not ok:
+            return False, r
+        if r.status_code == 404:
+            if "no project" in r.text:
+                return False, f"no project {project} on this hub: list_projects shows them"
             return False, f"HTTP {r.status_code}: {r.text[:2000]}"
         body = r.json()
         ok, text = bool(body.get("ok")), str(body.get("text", ""))
@@ -816,17 +810,15 @@ async def remote_backend(url: str, token: str | None) -> RemoteBackend | HubBack
     ``exuvia serve``, a hub project, or nothing answering yet) to one."""
     from urllib.parse import urlsplit
 
-    import httpx
+    from .remote import Unreachable, connect
 
     if not urlsplit(url).path.strip("/"):
         try:
-            from .nethttp import client_options
-
-            async with httpx.AsyncClient(timeout=10.0, **client_options(url)) as http:
-                r = await http.get(url.rstrip("/") + "/healthz")
+            async with connect(url, allow_http=True, origin=ORIGIN, token=None, timeout=10.0, asynchronous=True) as http:
+                r = await http.get("/healthz")
             if r.status_code == 200 and r.json().get("mode") == "hub":
                 return HubBackend(url, token)
-        except (httpx.HTTPError, ValueError):
+        except (Unreachable, ValueError):
             pass
     return RemoteBackend(url, token)
 
@@ -988,7 +980,12 @@ def main(directory: str | None, url: str | None) -> None:
     if url:
         if directory:
             sys.exit("exuvia mcp: give a project directory or --url, not both")
-        backend: LocalBackend | RemoteBackend | HubBackend = asyncio.run(remote_backend(url, os.environ.get("EXUVIA_API_TOKEN")))
+        from . import remote
+
+        try:
+            backend: LocalBackend | RemoteBackend | HubBackend = asyncio.run(remote_backend(url, remote.token()))
+        except ValueError as e:  # not an http(s) address, or EXUVIA_API_TOKEN_FILE unreadable
+            sys.exit(f"exuvia mcp: {e}")
         where = f"the hub at {url} (every project)" if isinstance(backend, HubBackend) else url
     else:
         root = Path(directory or ".").resolve()

@@ -62,30 +62,21 @@ class RemoteSource:
     ``exuvia serve`` address, read with ``EXUVIA_API_TOKEN``."""
 
     def __init__(self, url: str, token: str | None = None, allow_http: bool = False):
-        import httpx
-
-        from .envcli import check_url
-        from .pushing import PushError, _token
+        from .remote import FROM_ENV, connect
 
         try:
-            self.where = check_url(url, allow_http)
-            tok = _token(token)
-        except (SystemExit, PushError) as e:
+            self.http = connect(url, allow_http, origin="mirror", token=token or FROM_ENV, timeout=60.0)
+        except ValueError as e:
             raise MirrorError(str(e)) from None
-        headers = {"X-Exuvia-Origin": "mirror"}
-        if tok:
-            headers["Authorization"] = f"Bearer {tok}"
-        from .nethttp import client_options
-
-        self.http = httpx.Client(base_url=f"{self.where}/api", headers=headers, timeout=60.0, **client_options(self.where))
+        self.where = self.http.where
 
     def _get(self, path: str, **params: Any) -> Any:
-        import httpx
+        from .remote import Unreachable
 
         try:
-            r = self.http.get(path, params=params)
-        except httpx.HTTPError as e:
-            raise MirrorError(f"could not reach exuvia at {self.where} ({type(e).__name__}): is it running?") from e
+            r = self.http.get(f"/api{path}", params=params)
+        except Unreachable as e:
+            raise MirrorError(str(e)) from e
         if r.status_code == 401:
             raise MirrorError(
                 f"{self.where} needs a token: set EXUVIA_API_TOKEN (or EXUVIA_API_TOKEN_FILE) to your own agent "
