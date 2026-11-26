@@ -25,9 +25,10 @@ import { useColorMode } from "./theme/colorMode";
 import { failed, Toasts } from "./toast";
 import { StateDot, statusOf, statusText } from "./ui/state";
 import { useCopy } from "./ui/useCopy";
-import type { FrameStatus } from "./views/host";
-import type { Params, ParamsState } from "./views/protocol";
-import { busy, ParamBar, paramsState, Refreshing, useLiveRefresh, ViewFrame, type FrameError } from "./Views";
+import type { FrameError, FrameStatus } from "./views/host";
+import type { Params } from "./views/protocol";
+import { busy, Refreshing, useLiveRefresh, ViewFrame } from "./views/frame";
+import { ParamBar, paramsState, useParamChange } from "./views/params";
 
 const ShareDialog = lazy(() => import("./Share").then((m) => ({ default: m.ShareDialog })));
 
@@ -119,18 +120,11 @@ export default function AppView(props: { view: string }) {
     if (project) document.title = `${view ? view.title || view.name : name} · ${project.name}`;
   }, [project, view, name]);
 
-  const changeParams = useCallback(
-    async (patch: Params): Promise<ParamsState> => {
-      const next = { ...overrides, ...patch };
-      for (const k of Object.keys(next)) if (next[k] === null || next[k] === "") delete next[k];
-      const p = await api.project(next); // validates: unknown or bad values are a 400
-      setOverrides(next);
-      setProject(p);
-      setBadAddress(null);
-      return paramsState(p.params);
-    },
-    [overrides],
-  );
+  const changeParams = useParamChange(overrides, (next, p) => {
+    setOverrides(next);
+    setProject(p);
+    setBadAddress(null);
+  });
 
   const onStatus = useCallback((s: FrameStatus) => {
     setStatus(s);

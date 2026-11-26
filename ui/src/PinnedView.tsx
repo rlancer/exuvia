@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { colorVars, fontWeightVars, radiusVars, shadowVars, spacingVars, textSizeVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Text } from "@astryxdesign/core/Text";
 import { api, type Project, type ProjectView } from "./api";
-import { paramsState, Refreshing, useLiveRefresh, ViewFrame } from "./Views";
-import type { Params, ParamsState } from "./views/protocol";
+import { Refreshing, useLiveRefresh, ViewFrame } from "./views/frame";
+import { paramsState, useParamChange } from "./views/params";
+import type { Params } from "./views/protocol";
 import type { FrameStatus } from "./views/host";
 import { IconExpand, IconWindow } from "./icons";
 import { StateDot } from "./ui/state";
@@ -49,17 +50,10 @@ export default function PinnedView(props: {
   const [status, setStatus] = useState<FrameStatus>({ phase: "loading" });
   useEffect(() => setStatus({ phase: "loading" }), [view.hash]);
 
-  const changeParams = useCallback(
-    async (patch: Params): Promise<ParamsState> => {
-      const next = { ...overrides, ...patch };
-      for (const k of Object.keys(next)) if (next[k] === null || next[k] === "") delete next[k];
-      const p = await api.project(next);
-      setOverrides(next);
-      setAt(p);
-      return paramsState(p.params);
-    },
-    [overrides],
-  );
+  const changeParams = useParamChange(overrides, (next, p) => {
+    setOverrides(next);
+    setAt(p);
+  });
 
   const title = view.title || view.name;
   const problem = view.parse_error ?? ("error" in status ? status.error : null);
