@@ -2,8 +2,9 @@
 themselves, so a client needs only the address (README "MCP"):
 
 * ``exuvia hub``: ``<hub>/mcp`` serves every project, with the same tools as
-  ``exuvia mcp --url <hub>`` (``list_projects``, ``create_project`` and each
-  project tool with a ``project`` argument), and ``<hub>/p/<project>/mcp``
+  ``exuvia mcp --url <hub>`` (``list_projects``, ``create_project``, the
+  tools that organize groups and sharing, and each project tool with a
+  ``project`` argument), and ``<hub>/p/<project>/mcp``
   serves that one project.
 * ``exuvia serve``: ``<server>/mcp`` serves its project.
 

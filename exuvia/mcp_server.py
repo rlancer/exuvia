@@ -1,8 +1,10 @@
 """exuvia as an MCP server (``exuvia mcp``).
 
 Gives any MCP client (Claude Code, Claude Desktop, Cursor, ...) the same tools
-the built-in agent has: list, read and write nodes, helpers and views, run a
-node, query outputs, define parameters, browse and restore revisions. The
+the built-in agent has (agent.TOOL_SPECS): list, read and write nodes, helpers
+and views, arrange nodes in stages, run a node and follow or cancel its runs,
+query outputs, define parameters, browse and restore revisions, tag the
+project's code, see packages and secrets by name, and read exuvia's docs. The
 agent's instructions (how exuvia works, this project's parameters and notes)
 are the server's ``instructions``, and the ``guide`` tool returns them too,
 for clients that do not pass instructions to their model.
@@ -19,7 +21,9 @@ Three ways to reach projects:
   workbench.
 * ``exuvia mcp --url HUB``: a hub's address (its ``/healthz`` says ``"mode":
   "hub"``) relays to every project on it: ``list_projects`` and
-  ``create_project``, and each project tool takes a ``project`` argument.
+  ``create_project``, the tools that organize the hub (groups, moving a
+  project between groups, sharing; ORGANIZE_TOOLS), and each project tool
+  takes a ``project`` argument.
 
 ``EXUVIA_API_TOKEN`` is sent as a bearer token when set: the server's shared
 API token, or a person's agent token (``exv_...``, made in the hub's Connect
@@ -469,6 +473,11 @@ def hub_instructions(url: str, projects: list[dict[str, Any]] | str) -> str:
         "works in. When neither says which project and the hub has more than one, ask the user which one "
         "(list its projects for them) before you call any project tool: never pick one yourself, and "
         "never the first one listed just because it is first. With exactly one project, use it. "
+        "You can also organize the hub as the person you sign in as, when they ask: groups (list_groups, "
+        "create_group, set_group_member, ...), which group a project is in (set_project_group) and who a project "
+        "is shared with (get_project_sharing, set_project_member, set_project_access; list_people finds someone). "
+        "For an app or notebook of the user's own that should read outputs from several projects, the hub has "
+        "read-only data API keys, which the person makes in the workbench: see `docs` topic `Data API`. "
         f"{listing}"
     )
 

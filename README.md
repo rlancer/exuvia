@@ -247,6 +247,14 @@ The graph is read **statically** (`ast` for Python, identifier matching for
 SQL), so a broken node still shows up in the graph with its error, and nothing
 runs until you ask.
 
+**JSON outputs.** A dict, list or scalar is stored as JSON. numpy values,
+pandas missing values, dates and times, decimals, sets, dataclasses and
+pydantic models are converted; any other object (a fitted model, a class of
+your own) fails the run, so return the numbers you need from it. NaN and
+±Infinity, which JSON cannot write, are stored as `null`, and a JSON output
+an older exuvia stored with them reads the same way. A DataFrame keeps its
+NaN, since Parquet can hold it.
+
 **Several outputs from one node.** When one step yields several results of
 different shapes (a model fit's predictions, coefficients and metrics, or one
 API call that returns two tables), return them together instead of redoing
@@ -1474,7 +1482,7 @@ it at start.
   and a failure is reported (webhook, downstream skipped) only once the last
   attempt fails. Cancelling the run ends its wait and stops the retries.
 - **Run history** lives in a database: status, trigger (manual / schedule /
-  cascade / agent / cli / push), timings, logs, schema. Schedule state (last fire
+  cascade / backfill / live / agent / mcp / cli / push), timings, logs, schema. Schedule state (last fire
   per node) is persisted too, so restarts neither drop nor double-fire
   schedules. By default that is `.exuvia/exuvia.db` (SQLite) inside the
   project; see "Records: SQLite, Postgres, or your own adapter".
@@ -2609,7 +2617,11 @@ The agent runs a tool loop over the live workspace: `list_nodes`, `read_node`,
 `write_node`, `delete_node`, `list_files` / `read_file` / `write_file` /
 `delete_file` (shared helpers under `lib/`), `list_views` / `read_view` /
 `write_view` / `write_view_file` / `delete_view_file` / `delete_view` (see
-"Views"), `set_stage` / `delete_stage` (see "The canvas"), `run_node` (waits up to `wait_seconds`, default 240, then returns
+"Views"), `set_stage` / `delete_stage` (see "The canvas"),
+`list_revisions` / `read_revision` / `restore_node` / `restore_view_file`
+(every saved version of a node's or a view's code) and `list_tags` /
+`read_tag` / `create_tag` / `delete_tag` (see [Tags](#tags-a-name-for-one-version-of-the-whole-project)),
+`run_node` (waits up to `wait_seconds`, default 240, then returns
 the run id of a run still going), `list_runs`, `read_run` (run history: what
 a schedule or a cascade ran, with each run's error and log, or the log so far
 of one still going) and `cancel_run`, `define_param` /
@@ -2764,9 +2776,10 @@ Things to ask it:
 `exuvia mcp` serves a project's agent tools over the Model Context Protocol,
 so Claude Code, Claude Desktop, Cursor or any other MCP client can build and
 run pipelines with the model you already use; exuvia needs no API key of its
-own. The client gets the same tools as the built-in agent (see "The agent",
-plus `list_revisions`, `read_revision`, `restore_node` and
-`restore_view_file`) and a `guide` tool. The agent's instructions (how exuvia
+own. The client gets exactly the tools the built-in agent has (listed under
+[The agent](#the-agent): nodes, helpers, views, stages, runs, revisions and
+tags, parameters, packages, secrets, `docs`, `version` and `report_issue`)
+and a `guide` tool. The agent's instructions (how exuvia
 works, this project's parameters and `AGENTS.md`) are the server's
 instructions, and `guide` returns them for clients that don't pass those on.
 
@@ -3646,8 +3659,8 @@ the package to public once (package settings → Change visibility).
 ## Status
 
 Prototype. Not yet: SSO in exuvia itself (people are identified only by a sign-in
-proxy's headers, or share a token), sharing a project with groups
-rather than one person at a time, notifications when someone asks for access, executor autoscaling, merging rows on a key finer than a partition, non-Python runtimes, reading secrets from an external secret manager (Vault, a cloud's).
+proxy's headers, or share a token), sharing one project with several
+groups (a project is in at most one), notifications when someone asks for access, executor autoscaling, merging rows on a key finer than a partition, non-Python runtimes, reading secrets from an external secret manager (Vault, a cloud's).
 
 Found a bug, or something missing? Open an issue at
 [github.com/rlancer/exuvia/issues](https://github.com/rlancer/exuvia/issues). Your agent can draft one

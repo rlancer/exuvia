@@ -127,3 +127,33 @@ def test_the_agent_is_pointed_at_exuvia_mirror_and_finds_it(tmp_path):
     for words in ("back up code to github", "git history", "push code to a github repository"):
         best = re.search(r"^## (.+)$", docs.search(words) or "", re.M)
         assert best and "The history in git" in best.group(1), (words, best and best.group(1))
+
+
+def test_every_tool_is_documented_in_the_readme():
+    # The README is the docs site, PyPI's page and the `docs` tool, so a tool
+    # added to the agent or to a hub's MCP server is named there too: under
+    # "The agent" for a project tool, under "MCP" for a hub's own.
+    from exuvia.agent import TOOLS
+    from exuvia.mcp_server import HUB_TOOLS
+
+    def section(title: str) -> str:
+        found, _ = docs.find(title)
+        assert found is not None, title
+        return docs._full(found)
+
+    agent, mcp = section("The agent"), section("MCP: the agent's tools in your own agent")
+    missing = [t["name"] for t in TOOLS if f"`{t['name']}`" not in agent]
+    assert not missing, f"tools not named under 'The agent': {missing}"
+    missing = [t["name"] for t in HUB_TOOLS if f"`{t['name']}`" not in mcp]
+    assert not missing, f"hub tools not named under 'MCP': {missing}"
+
+
+def test_the_guide_covers_code_history_and_the_hub_its_organizing_tools():
+    from exuvia.mcp_server import ORGANIZE_TOOLS, hub_instructions
+
+    for tool in ("list_revisions", "restore_node", "list_tags", "read_tag"):
+        assert tool in SYSTEM, tool
+    text = hub_instructions("https://hub.example.com", [])
+    assert "Data API" in text
+    named = [t["name"] for t in ORGANIZE_TOOLS if t["name"] in text]
+    assert len(named) >= 5 and "set_project_group" in named, named
