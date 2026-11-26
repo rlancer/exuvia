@@ -8,6 +8,7 @@ streamed to the UI so the analyst sees exactly what changed.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import time
 import uuid
@@ -30,14 +31,23 @@ from .workspace import Workspace, acting_as
 
 MAX_TURNS = 30
 
-TOOLS: list[dict[str, Any]] = [
+# Every tool of the agent, one entry each: its schema, whether it changes
+# nothing in the project (``read_only``: all a viewer of a shared hub project
+# may call, sharing.py; every other tool needs an editor), and the Agent
+# method that answers it (``handler``, called with name, args, origin).
+# TOOLS, READ_TOOLS, VIEW_TOOLS and the dispatch all derive from this list.
+TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "list_nodes",
+        "read_only": True,
+        "handler": "_tool_list_nodes",
         "description": "List every node in the graph with its kind, upstream deps, description, schedule, freshness state, and output schema (columns + dtypes) and row count when it has run.",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
         "name": "read_node",
+        "read_only": True,
+        "handler": "_tool_read_node",
         "description": "Return the full source code of one node file.",
         "input_schema": {
             "type": "object",
@@ -48,6 +58,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "write_node",
+        "read_only": False,
+        "handler": "_tool_write_node",
         "description": (
             "Create or overwrite a node file. `source` is the complete file contents. "
             "Returns the parsed deps or a parse error. Writing does not run the node; call run_node after."
@@ -65,6 +77,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "delete_node",
+        "read_only": False,
+        "handler": "_tool_delete_node",
         "description": "Delete a node file. Only do this when the user asked for it.",
         "input_schema": {
             "type": "object",
@@ -75,6 +89,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "list_files",
+        "read_only": True,
+        "handler": "_tool_list_files",
         "description": (
             "List the project's shared helper modules (`lib/**/*.py`) with their size and the nodes that import each."
         ),
@@ -82,6 +98,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "read_file",
+        "read_only": True,
+        "handler": "_file_tool",
         "description": "Return the source of one helper module, e.g. `lib/stats.py`, and the nodes that import it.",
         "input_schema": {
             "type": "object",
@@ -92,6 +110,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "write_file",
+        "read_only": False,
+        "handler": "_file_tool",
         "description": (
             "Create or overwrite a helper module under `lib/` (Python only; nodes import it as "
             "`from lib.stats import weighted_corr`). `source` is the complete file. Returns the nodes that "
@@ -110,6 +130,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "delete_file",
+        "read_only": False,
+        "handler": "_file_tool",
         "description": "Delete a helper module under `lib/`. Only when the user asked for it or no node imports it any more.",
         "input_schema": {
             "type": "object",
@@ -120,6 +142,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "list_revisions",
+        "read_only": True,
+        "handler": "_tool_list_revisions",
         "description": (
             "List the saved versions of one node's code (`name`), or of every file of one view (`view`), newest "
             "first: path, hash, who saved it (agent, api, file, template, restore, ...), when, and whether it is "
@@ -139,6 +163,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "read_revision",
+        "read_only": True,
+        "handler": "_tool_read_revision",
         "description": "Return the full source of a saved version, by the hash list_revisions gave.",
         "input_schema": {
             "type": "object",
@@ -149,6 +175,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "restore_node",
+        "read_only": False,
+        "handler": "_tool_restore_node",
         "description": (
             "Make a saved version of a node its current code again (also brings back a deleted node). "
             "The restore is itself saved as a new version, so it can be undone the same way."
@@ -162,6 +190,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "list_tags",
+        "read_only": True,
+        "handler": "_tag_tool",
         "description": (
             "List the project's tags, newest first: each names the whole project's code (every node, view, lib/ "
             "file and config file) as it was at one save, like a git tag. Each gives its name, message, who made "
@@ -171,6 +201,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "read_tag",
+        "read_only": True,
+        "handler": "_tag_tool",
         "description": (
             "Without `path`: every file tag `name` holds beside the file now, with `status` same, changed, "
             "deleted (gone since the tag) or added (new since), and the `hash` of its version at the tag "
@@ -189,6 +221,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "create_tag",
+        "read_only": False,
+        "handler": "_tag_tool",
         "description": (
             "Tag the whole project's code as it is now (or as of `revision`, an id from list_revisions), so this "
             "version can be found, compared and mirrored to git by name later: e.g. before a big change, or for "
@@ -209,6 +243,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "delete_tag",
+        "read_only": False,
+        "handler": "_tag_tool",
         "description": "Remove a tag. The code it named stays in the history. Only when the user asked for it.",
         "input_schema": {
             "type": "object",
@@ -219,6 +255,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "list_views",
+        "read_only": True,
+        "handler": "_view_tool",
         "description": (
             "List the project's views (custom UI under `views/<name>/`) with their title, the nodes each reads, "
             "its files, and its state for the default parameters: ready, missing (a read node has no output), "
@@ -228,6 +266,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "read_view",
+        "read_only": True,
+        "handler": "_view_tool",
         "description": "Return one view's state and the full source of each of its files, view.json first.",
         "input_schema": {
             "type": "object",
@@ -238,6 +278,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "write_view",
+        "read_only": False,
+        "handler": "_view_tool",
         "description": (
             "Create a view or replace its manifest (`views/<name>/view.json`). `reads` lists the nodes whose "
             "outputs the view may read, and nothing else is readable from it. The entry file (default App.tsx) "
@@ -265,6 +307,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "write_view_file",
+        "read_only": False,
+        "handler": "_view_tool",
         "description": (
             "Create or overwrite one file of a view, e.g. `App.tsx` or `components/Chart.tsx` (paths are "
             "relative to the view folder; .tsx .ts .jsx .js .css .json .html .md .svg, at most 512 KB). "
@@ -283,6 +327,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "delete_view_file",
+        "read_only": False,
+        "handler": "_view_tool",
         "description": "Delete one file of a view.",
         "input_schema": {
             "type": "object",
@@ -293,6 +339,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "delete_view",
+        "read_only": False,
+        "handler": "_view_tool",
         "description": "Delete a whole view folder. Only when the user asked for it.",
         "input_schema": {
             "type": "object",
@@ -303,6 +351,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "restore_view_file",
+        "read_only": False,
+        "handler": "_view_tool",
         "description": (
             "Make a saved version of one view file its current content again (also brings back a deleted file "
             "or view). `path` is relative to the view folder; the hash comes from list_revisions with `view`."
@@ -316,6 +366,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "run_node",
+        "read_only": False,
+        "handler": "_tool_run_node",
         "description": (
             "Run a node (and any stale upstream nodes). Returns status, error + log tail on failure, "
             "and on success the output schema, row count, and the first rows (`parts`, by name, for a node with "
@@ -345,6 +397,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "query_data",
+        "read_only": True,
+        "handler": "_tool_query_data",
         "description": (
             "Run read-only DuckDB SQL over the current outputs of all table nodes; each node is a view "
             "named after the node, and each table of a node with several outputs is `<node>.<name>` (or `\"<node>.<name>\"`, one quoted name). Use it to inspect data before writing or after running nodes. Max 50 rows returned. "
@@ -362,6 +416,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "define_param",
+        "read_only": False,
+        "handler": "_tool_define_param",
         "description": (
             "Declare or change a project run parameter (stored in exuvia.json). Nodes that list it in `params` "
             "get one output per value. Use a `date` parameter named `as_of` with default `today` when results "
@@ -381,6 +437,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "set_stage",
+        "read_only": False,
+        "handler": "_stage_tool",
         "description": (
             "Create or change a stage: one step of the graph (ingest, features, reports, ...) drawn as one "
             "labelled region on the canvas, which the user can collapse into a single card with the stage's "
@@ -402,6 +460,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "delete_stage",
+        "read_only": False,
+        "handler": "_stage_tool",
         "description": "Remove a stage from the canvas. Its nodes stay; they are just no longer in a stage.",
         "input_schema": {
             "type": "object",
@@ -412,6 +472,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "delete_param",
+        "read_only": False,
+        "handler": "_tool_delete_param",
         "description": (
             "Remove a project run parameter from exuvia.json. Only when the user asked for it: nodes that still "
             "read it fail until they stop declaring it."
@@ -425,6 +487,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "list_runs",
+        "read_only": True,
+        "handler": "_tool_list_runs",
         "description": (
             "Recent runs, newest first: of one node (`name`) or of every node. Each has its id, node, status "
             "(queued, running, success, cached, failed, skipped; a stopped run is failed with error `cancelled`), trigger (schedule, cascade, agent, mcp, api, "
@@ -442,6 +506,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "read_run",
+        "read_only": True,
+        "handler": "_tool_read_run",
         "description": (
             "One run, by the id list_runs or run_node gave: status, trigger, timing, parameter values, the "
             "output ids of the inputs it read, rows and schema, the error, and the end of its log (`log_lines`, "
@@ -466,6 +532,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "cancel_run",
+        "read_only": False,
+        "handler": "_tool_cancel_run",
         "description": (
             "Stop a run that is queued or running, by the id run_node or list_runs gave: a running attempt is "
             "killed, a queued run (waiting for its upstream nodes or behind another run of the same node) ends "
@@ -481,6 +549,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "list_packages",
+        "read_only": True,
+        "handler": "_tool_list_packages",
         "description": (
             "The packages this project lists in its pyproject.toml, each with the version installed and whether "
             "it comes from the project or from exuvia itself, plus the install status (installing, ready, failed "
@@ -499,6 +569,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "list_env",
+        "read_only": True,
+        "handler": "_tool_list_env",
         "description": (
             "The project's environment variables, which every node gets in os.environ: each one's name, whether "
             "it is secret, and a plain variable's value. A secret's value is never shown, and it appears as *** "
@@ -514,6 +586,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "request_secret",
+        "read_only": False,
+        "handler": "_tool_request_secret",
         "description": (
             "Ask the user to set an API key, token or other secret a node needs, without it ever passing "
             "through you: give only the variable's name and why it is needed. The user enters the value "
@@ -535,6 +609,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "request_packages",
+        "read_only": False,
+        "handler": "_tool_request_packages",
         "description": (
             "Ask for packages to be added to the project's pyproject.toml and installed, for nodes that import "
             "something not available. Give PyPI requirement strings (`scikit-learn`, `scipy>=1.14`); one without "
@@ -554,6 +630,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "add_view_packages",
+        "read_only": False,
+        "handler": "_tool_add_view_packages",
         "description": (
             "Add npm packages for views to import (charting, tables, dates, markdown...) to the project's "
             "package.json: `recharts`, `date-fns@^4`, `@tanstack/react-table`. One without a version is pinned to "
@@ -574,6 +652,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "docs",
+        "read_only": False,
+        "handler": "_tool_docs",
         "description": (
             "exuvia's documentation, for what the guide does not cover: the `exuvia` command line (every command "
             "and its options) and updating exuvia, deploying a server or hub (Docker, "
@@ -595,6 +675,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "version",
+        "read_only": True,
+        "handler": "_tool_version",
         "description": (
             "Which exuvia this is and how to update it: the running `version`, how it was `install`ed (`uvx`, "
             "`uv-tool`, `pipx`, `pip`, `source` for a clone, or `deployed` for a server run from the image), the "
@@ -614,6 +696,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "report_issue",
+        "read_only": True,
+        "handler": "_tool_report_issue",
         "description": (
             "Tell the exuvia maintainers something is wrong or missing: a bug in exuvia itself, a tool that fails "
             "on valid input, instructions that are wrong or confusing, a feature the user needs that does not "
@@ -642,17 +726,11 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
-VIEW_TOOLS = {
-    "list_views", "read_view", "write_view", "write_view_file", "delete_view_file", "delete_view", "restore_view_file",
-}
-
-# Tools that change nothing in the project: all a viewer of a shared hub
-# project may call (sharing.py). Every other tool needs an editor.
-READ_TOOLS = frozenset({
-    "list_nodes", "read_node", "list_files", "read_file", "list_revisions", "read_revision", "list_tags", "read_tag",
-    "list_views", "read_view", "query_data", "list_runs", "read_run", "list_packages", "list_env",
-    "report_issue", "version",
-})
+_SPECS = {t["name"]: t for t in TOOL_SPECS}
+# What a model and an MCP client see of each tool.
+TOOLS: list[dict[str, Any]] = [{k: t[k] for k in ("name", "description", "input_schema")} for t in TOOL_SPECS]
+READ_TOOLS = frozenset(t["name"] for t in TOOL_SPECS if t["read_only"])
+VIEW_TOOLS = frozenset(t["name"] for t in TOOL_SPECS if t["handler"] == "_view_tool")
 
 RUNS_LIMIT = 100
 RUN_LOG_LINES = 200
@@ -904,286 +982,331 @@ class Agent:
             return await self._dispatch(name, args, origin)
 
     async def _dispatch(self, name: str, args: dict[str, Any], origin: str = "agent") -> tuple[bool, str, dict[str, Any]]:
+        spec = _SPECS.get(name)
+        if spec is None:
+            return False, f"unknown tool {name}", {}
+        out = getattr(self, spec["handler"])(name, args, origin)
+        return await out if inspect.isawaitable(out) else out
+
+    def _tool_list_nodes(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
         ws = self.ws
-        if name == "list_nodes":
-            snap = ws.snapshot()
-            nodes = [
-                {
-                    k: n.get(k)
-                    for k in (
-                        "name", "kind", "deps", "helpers", "description", "schedule", "cascade", "params", "run_params",
-                        "stage", "state", "reason", "rows", "schema",
-                    )
-                    if n.get(k) not in (None, [], "")
-                }
-                for n in snap["nodes"]
-            ]
-            return True, json.dumps(nodes, default=str), {}
-        if name == "read_node":
+        snap = ws.snapshot()
+        nodes = [
+            {
+                k: n.get(k)
+                for k in (
+                    "name", "kind", "deps", "helpers", "description", "schedule", "cascade", "params", "run_params",
+                    "stage", "state", "reason", "rows", "schema",
+                )
+                if n.get(k) not in (None, [], "")
+            }
+            for n in snap["nodes"]
+        ]
+        return True, json.dumps(nodes, default=str), {}
+
+    def _tool_read_node(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        try:
+            return True, ws.project.source(args["name"]), {"node": args["name"]}
+        except KeyError:
+            return False, f"no node named {args['name']}", {}
+
+    def _tool_write_node(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        with ws.editing():
+            ws.project.write_node(args["name"], args["source"], args["kind"])
+            ws.reload()
+        node = ws.graph.nodes.get(args["name"])
+        if node is None:
+            return False, "file written but node not found after reload", {}
+        if node.parse_error:
+            return False, f"written, but it does not parse: {node.parse_error}", {"node": node.name}
+        return True, json.dumps({"written": node.name, "deps": node.deps, "schedule": node.schedule}), {"node": node.name}
+
+    def _tool_delete_node(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        with ws.editing():
             try:
-                return True, ws.project.source(args["name"]), {"node": args["name"]}
+                ws.project.delete_node(args["name"])
             except KeyError:
                 return False, f"no node named {args['name']}", {}
-        if name == "write_node":
-            with ws.editing():
-                ws.project.write_node(args["name"], args["source"], args["kind"])
-                ws.reload()
-            node = ws.graph.nodes.get(args["name"])
-            if node is None:
-                return False, "file written but node not found after reload", {}
-            if node.parse_error:
-                return False, f"written, but it does not parse: {node.parse_error}", {"node": node.name}
-            return True, json.dumps({"written": node.name, "deps": node.deps, "schedule": node.schedule}), {"node": node.name}
-        if name == "delete_node":
-            with ws.editing():
-                try:
-                    ws.project.delete_node(args["name"])
-                except KeyError:
-                    return False, f"no node named {args['name']}", {}
-                ws.reload()
-            return True, f"deleted {args['name']}", {}
-        if name == "read_revision":
-            source = ws.code_source(args["hash"])
-            if source is None:
-                return False, f"no saved version {args['hash']}", {}
-            return True, source, {}
-        if name == "list_revisions":
-            view, node = args.get("view"), args.get("name")
-            if bool(view) == bool(node):
-                return False, "give either `name` (a node) or `view`", {}
-            revs = ws.code_revisions(node=node, view=view, limit=50)
-            if not revs:
-                return False, f"no saved versions of {view or node}", {}
-            return True, json.dumps(revs, default=str), {"view": view} if view else {"node": node}
-        if name in ("list_tags", "read_tag", "create_tag", "delete_tag"):
-            return self._tag_tool(name, args)
-        if name in VIEW_TOOLS:
-            return self._view_tool(name, args)
-        if name == "restore_node":
-            try:
-                ws.restore_node(args["name"], args["hash"])
-            except KeyError as e:
-                return False, str(e.args[0]), {}
-            return True, f"restored {args['name']} to version {args['hash']}", {"node": args["name"]}
+            ws.reload()
+        return True, f"deleted {args['name']}", {}
 
-        if name == "list_files":
-            return True, json.dumps(ws.helpers()), {}
-        if name in ("read_file", "write_file", "delete_file"):
-            path = args["path"]
-            try:
-                if name == "read_file":
-                    info = ws.read_helper(path)
-                    used = f"# used by: {', '.join(info['used_by']) or 'no node yet'}\n"
-                    return True, used + info["source"], {"file": path}
-                if name == "delete_file":
-                    return True, json.dumps(ws.delete_helper(path)), {}
-                result = ws.write_helper(path, args["source"])
-            except ValueError as e:
-                return False, str(e), {}
-            except KeyError:
-                return False, f"no file {path}", {}
-            if result["parse_error"]:
-                return False, f"written, but it does not parse: {result['parse_error']}", {"file": path}
-            return True, json.dumps(result), {"file": path}
-        if name == "run_node":
-            target = args["name"]
-            if target not in ws.graph.nodes:
-                return False, f"no node named {target}", {}
-            if ws.graph.nodes[target].push:
-                return False, (
-                    f"{target} is a push node: its output is uploaded from another machine with "
-                    "`exuvia push`, never run here. Ask the user to push it."
-                ), {"node": target}
-            refresh = bool(args.get("full_refresh"))
-            if refresh and not ws.graph.nodes[target].partition_by:
-                return False, f"{target} is not partitioned: full_refresh is for nodes with partition_by", {}
-            try:
-                params = ws.resolve_params(args.get("params"))
-            except ValueError as e:
-                return False, str(e), {}
-            wait = args.get("wait_seconds")
-            wait = RUN_WAIT_DEFAULT if wait is None else min(max(wait, 0), RUN_WAIT_MAX)
-            queued: dict[str, str] = {}
-            ready = asyncio.Event()
+    def _tool_read_revision(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        source = ws.code_source(args["hash"])
+        if source is None:
+            return False, f"no saved version {args['hash']}", {}
+        return True, source, {}
 
-            def on_queued(ids: dict[str, str]) -> None:
-                queued.update(ids)
-                ready.set()
+    def _tool_list_revisions(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        view, node = args.get("view"), args.get("name")
+        if bool(view) == bool(node):
+            return False, "give either `name` (a node) or `view`", {}
+        revs = ws.code_revisions(node=node, view=view, limit=50)
+        if not revs:
+            return False, f"no saved versions of {view or node}", {}
+        return True, json.dumps(revs, default=str), {"view": view} if view else {"node": node}
 
-            # A task of the workspace's own, so a run still going when this
-            # call returns keeps running.
-            task = ws._spawn(ws.run(
-                [target], params=params, force={target}, trigger=origin,
-                full_refresh={target} if refresh else None, on_queued=on_queued,
-            ))
-            queuing = asyncio.ensure_future(ready.wait())
-            try:
-                await asyncio.wait({task, queuing}, return_when=asyncio.FIRST_COMPLETED)
-            finally:
-                queuing.cancel()
-            done, _ = await asyncio.wait({task}, timeout=wait)
-            if not done:
-                return True, json.dumps(_running_report(ws, target, queued), default=str)[:12000], {"node": target}
-            ok, report = await node_report(ws, target, params, task.result())
-            return ok, json.dumps(report, default=str)[:12000], {"node": target}
-        if name == "query_data":
-            try:
-                res = await asyncio.to_thread(ws.query, args["sql"], limit=50, params=args.get("params"))
-            except Exception as e:  # duckdb errors go back to the model
-                return False, f"{type(e).__name__}: {e}", {}
-            cols = [c["name"] for c in res["columns"]]
-            return True, json.dumps([dict(zip(cols, r)) for r in res["rows"]], default=str)[:12000], {}
-        if name == "define_param":
-            if not NODE_NAME.match(args["name"]):
-                return False, "parameter names must be snake_case identifiers", {}
-            spec = {"type": args["type"], "default": args.get("default"), "description": args.get("description") or ""}
-            try:
-                coerce_param(args["name"], spec["type"], spec["default"], ws.project.today)
-            except ValueError as e:
-                return False, str(e), {}
-            ws.set_param(args["name"], spec)
-            return True, json.dumps({"defined": args["name"], **spec, "value_now": ws.resolve_params()[args["name"]]}), {}
-        if name in ("set_stage", "delete_stage"):
-            if name == "delete_stage" and args["name"] not in ws.graph.stages:
-                return False, f"no stage named {args['name']}", {}
-            try:
-                out = ws.set_stage(args["name"], args.get("nodes") if name == "set_stage" else None,
-                                   args.get("title"), args.get("description"))
-            except ValueError as e:
-                return False, str(e), {}
-            return True, json.dumps(out), {}
-        if name == "delete_param":
-            if args["name"] not in ws.project.params:
-                return False, f"no parameter named {args['name']}", {}
-            readers = sorted(n.name for n in ws.graph.nodes.values() if args["name"] in (n.params or []))
-            ws.set_param(args["name"], None)
-            out: dict[str, Any] = {"deleted": args["name"]}
-            if readers:
-                out["still_declared_by"] = readers
-            return True, json.dumps(out), {}
-        if name == "list_runs":
-            node, limit = args.get("name"), min(args.get("limit") or 20, RUNS_LIMIT)
-            if node and node not in ws.graph.nodes and ws.project.path_for(node) is None:
-                return False, f"no node named {node}", {}
-            rows = ws.store.runs_for(node, limit=limit) if node else ws.store.recent_runs(limit=limit)
-            return True, json.dumps([_run_summary(r) for r in rows], default=str), {"node": node} if node else {}
-        if name == "cancel_run":
-            run = ws.store.run(args["run_id"])
-            if run is None:
-                return False, f"no run {args['run_id']}: list_runs shows them", {}
-            if run["status"] not in ("queued", "running"):
-                return False, f"run {run['id']} of {run['node']} has already ended: {run['status']}", {"node": run["node"]}
-            if not ws.cancel(run["id"]):
-                return False, (
-                    f"run {run['id']} of {run['node']} is not going in this server, so it cannot be stopped from "
-                    "here (it may have just ended: read_run shows it)"
-                ), {"node": run["node"]}
-            final = await _wait_for_run(ws, run["id"], 10)
-            out = {"cancelled": run["id"], "node": run["node"], "status": final.get("status"), "error": final.get("error")}
-            return True, json.dumps(out), {"node": run["node"]}
-        if name == "read_run":
-            wait = min(max(args.get("wait_seconds") or 0, 0), RUN_WAIT_MAX)
-            run = await _wait_for_run(ws, args["run_id"], wait) if wait else ws.store.run(args["run_id"])
-            if run is None:
-                return False, f"no run {args['run_id']}: list_runs shows them", {}
-            raw = run.pop("log", None) or ""
-            log = raw.splitlines()
-            lines = args.get("log_lines") or RUN_LOG_LINES
-            out = _run_summary(run)
-            out.update(log_tail(raw, lines))
-            if len(log) > lines:
-                out["log_lines_omitted"] = len(log) - lines
-            src = ws.run_source(args["run_id"]) or {}
-            out["code_current"] = src.get("code_current", False)
-            if not out["code_current"] and src.get("source"):
-                out["source"] = src["source"][:RUN_SOURCE_MAX]
-            missing = missing_package(run.get("error"))
-            if missing:
-                out["missing_package"] = missing
+    def _tool_restore_node(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        try:
+            ws.restore_node(args["name"], args["hash"])
+        except KeyError as e:
+            return False, str(e.args[0]), {}
+        return True, f"restored {args['name']} to version {args['hash']}", {"node": args["name"]}
+
+    def _tool_list_files(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        return True, json.dumps(ws.helpers()), {}
+
+    def _file_tool(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        path = args["path"]
+        try:
+            if name == "read_file":
+                info = ws.read_helper(path)
+                used = f"# used by: {', '.join(info['used_by']) or 'no node yet'}\n"
+                return True, used + info["source"], {"file": path}
+            if name == "delete_file":
+                return True, json.dumps(ws.delete_helper(path)), {}
+            result = ws.write_helper(path, args["source"])
+        except ValueError as e:
+            return False, str(e), {}
+        except KeyError:
+            return False, f"no file {path}", {}
+        if result["parse_error"]:
+            return False, f"written, but it does not parse: {result['parse_error']}", {"file": path}
+        return True, json.dumps(result), {"file": path}
+
+    async def _tool_run_node(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        target = args["name"]
+        if target not in ws.graph.nodes:
+            return False, f"no node named {target}", {}
+        if ws.graph.nodes[target].push:
+            return False, (
+                f"{target} is a push node: its output is uploaded from another machine with "
+                "`exuvia push`, never run here. Ask the user to push it."
+            ), {"node": target}
+        refresh = bool(args.get("full_refresh"))
+        if refresh and not ws.graph.nodes[target].partition_by:
+            return False, f"{target} is not partitioned: full_refresh is for nodes with partition_by", {}
+        try:
+            params = ws.resolve_params(args.get("params"))
+        except ValueError as e:
+            return False, str(e), {}
+        wait = args.get("wait_seconds")
+        wait = RUN_WAIT_DEFAULT if wait is None else min(max(wait, 0), RUN_WAIT_MAX)
+        queued: dict[str, str] = {}
+        ready = asyncio.Event()
+
+        def on_queued(ids: dict[str, str]) -> None:
+            queued.update(ids)
+            ready.set()
+
+        # A task of the workspace's own, so a run still going when this
+        # call returns keeps running.
+        task = ws._spawn(ws.run(
+            [target], params=params, force={target}, trigger=origin,
+            full_refresh={target} if refresh else None, on_queued=on_queued,
+        ))
+        queuing = asyncio.ensure_future(ready.wait())
+        try:
+            await asyncio.wait({task, queuing}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            queuing.cancel()
+        done, _ = await asyncio.wait({task}, timeout=wait)
+        if not done:
+            return True, json.dumps(_running_report(ws, target, queued), default=str)[:12000], {"node": target}
+        ok, report = await node_report(ws, target, params, task.result())
+        return ok, json.dumps(report, default=str)[:12000], {"node": target}
+
+    async def _tool_query_data(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        try:
+            res = await asyncio.to_thread(ws.query, args["sql"], limit=50, params=args.get("params"))
+        except Exception as e:  # duckdb errors go back to the model
+            return False, f"{type(e).__name__}: {e}", {}
+        cols = [c["name"] for c in res["columns"]]
+        return True, json.dumps([dict(zip(cols, r)) for r in res["rows"]], default=str)[:12000], {}
+
+    def _tool_define_param(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        if not NODE_NAME.match(args["name"]):
+            return False, "parameter names must be snake_case identifiers", {}
+        spec = {"type": args["type"], "default": args.get("default"), "description": args.get("description") or ""}
+        try:
+            coerce_param(args["name"], spec["type"], spec["default"], ws.project.today)
+        except ValueError as e:
+            return False, str(e), {}
+        ws.set_param(args["name"], spec)
+        return True, json.dumps({"defined": args["name"], **spec, "value_now": ws.resolve_params()[args["name"]]}), {}
+
+    def _stage_tool(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        if name == "delete_stage" and args["name"] not in ws.graph.stages:
+            return False, f"no stage named {args['name']}", {}
+        try:
+            out = ws.set_stage(args["name"], args.get("nodes") if name == "set_stage" else None,
+                               args.get("title"), args.get("description"))
+        except ValueError as e:
+            return False, str(e), {}
+        return True, json.dumps(out), {}
+
+    def _tool_delete_param(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        if args["name"] not in ws.project.params:
+            return False, f"no parameter named {args['name']}", {}
+        readers = sorted(n.name for n in ws.graph.nodes.values() if args["name"] in (n.params or []))
+        ws.set_param(args["name"], None)
+        out: dict[str, Any] = {"deleted": args["name"]}
+        if readers:
+            out["still_declared_by"] = readers
+        return True, json.dumps(out), {}
+
+    def _tool_list_runs(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        node, limit = args.get("name"), min(args.get("limit") or 20, RUNS_LIMIT)
+        if node and node not in ws.graph.nodes and ws.project.path_for(node) is None:
+            return False, f"no node named {node}", {}
+        rows = ws.store.runs_for(node, limit=limit) if node else ws.store.recent_runs(limit=limit)
+        return True, json.dumps([_run_summary(r) for r in rows], default=str), {"node": node} if node else {}
+
+    async def _tool_cancel_run(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        run = ws.store.run(args["run_id"])
+        if run is None:
+            return False, f"no run {args['run_id']}: list_runs shows them", {}
+        if run["status"] not in ("queued", "running"):
+            return False, f"run {run['id']} of {run['node']} has already ended: {run['status']}", {"node": run["node"]}
+        if not ws.cancel(run["id"]):
+            return False, (
+                f"run {run['id']} of {run['node']} is not going in this server, so it cannot be stopped from "
+                "here (it may have just ended: read_run shows it)"
+            ), {"node": run["node"]}
+        final = await _wait_for_run(ws, run["id"], 10)
+        out = {"cancelled": run["id"], "node": run["node"], "status": final.get("status"), "error": final.get("error")}
+        return True, json.dumps(out), {"node": run["node"]}
+
+    async def _tool_read_run(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        wait = min(max(args.get("wait_seconds") or 0, 0), RUN_WAIT_MAX)
+        run = await _wait_for_run(ws, args["run_id"], wait) if wait else ws.store.run(args["run_id"])
+        if run is None:
+            return False, f"no run {args['run_id']}: list_runs shows them", {}
+        raw = run.pop("log", None) or ""
+        log = raw.splitlines()
+        lines = args.get("log_lines") or RUN_LOG_LINES
+        out = _run_summary(run)
+        out.update(log_tail(raw, lines))
+        if len(log) > lines:
+            out["log_lines_omitted"] = len(log) - lines
+        src = ws.run_source(args["run_id"]) or {}
+        out["code_current"] = src.get("code_current", False)
+        if not out["code_current"] and src.get("source"):
+            out["source"] = src["source"][:RUN_SOURCE_MAX]
+        missing = missing_package(run.get("error"))
+        if missing:
+            out["missing_package"] = missing
+        text = json.dumps(out, default=str)
+        if len(text) > RUN_TEXT_MAX:  # a huge log: keep its end
+            out["log_tail"] = out["log_tail"][-(RUN_TEXT_MAX // 2):]
             text = json.dumps(out, default=str)
-            if len(text) > RUN_TEXT_MAX:  # a huge log: keep its end
-                out["log_tail"] = out["log_tail"][-(RUN_TEXT_MAX // 2):]
-                text = json.dumps(out, default=str)
-            return True, text, {"node": run["node"]}
-        if name == "list_packages":
-            st = ws.packages.state()
-            st.pop("manifest", None)
-            st["log"] = "\n".join(st["log"].splitlines()[-20:])
-            if args.get("environment"):
-                st["environment"] = ws.packages.environment()
-                if not ws.packages.local:
-                    st["environment_note"] = (
-                        "nodes run on a remote executor: this is the server's environment, which may differ "
-                        "from the executor's"
-                    )
-            st["view_packages"] = ws.npm.state()["packages"]
-            return True, json.dumps(st, default=str), {}
-        if name == "add_view_packages":
-            if agent_mode() == "off":
-                return False, "changing packages from the agent is turned off on this server (EXUVIA_AGENT_PACKAGES=off)", {}
-            try:
-                st = await asyncio.to_thread(ws.npm.add, args.get("packages") or [])
-            except NpmError as e:
-                return False, str(e)[-3000:], {}
-            listed = ", ".join(f"{p['name']}@{p['version']}" for p in st["packages"])
-            return True, f"package.json now lists {listed}. Views import them by name.", {}
-        if name == "list_env":
-            def shown(r: dict[str, Any]) -> dict[str, Any]:
-                out = {k: v for k, v in r.items() if k in ("name", "secret", "value", "source") or (k == "readable" and not v)}
-                if r["source"] == "group":
-                    out["group"] = r["group"]["name"]
-                if r.get("overrides"):
-                    out["overrides_group"] = r["overrides"]["name"]
-                if r.get("overrides_hub"):
-                    out["overrides_hub"] = True
-                return out
+        return True, text, {"node": run["node"]}
 
-            return True, json.dumps({"variables": [shown(r) for r in ws.effective_env()]}), {}
-        if name == "request_secret":
-            try:
-                res = ws.request_env_var(args["name"], args.get("reason") or "", origin)
-            except EnvError as e:
-                return False, str(e), {}
-            if res["status"] == "set":
-                res["message"] = f"{res['name']} is already set: nodes read it with os.environ[{res['name']!r}]."
-            else:
-                res["message"] = (
-                    f"Asked the user to set {res['name']}. It waits for them in the workbench's Environment panel, "
-                    f"where they enter the value (it is stored encrypted and never shown to you). From a terminal "
-                    f"they can run `exuvia env set {res['name']}` instead. Tell them, without asking for the value; "
-                    "call list_env to see when it is set, then run the node."
+    def _tool_list_packages(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        st = ws.packages.state()
+        st.pop("manifest", None)
+        st["log"] = "\n".join(st["log"].splitlines()[-20:])
+        if args.get("environment"):
+            st["environment"] = ws.packages.environment()
+            if not ws.packages.local:
+                st["environment_note"] = (
+                    "nodes run on a remote executor: this is the server's environment, which may differ "
+                    "from the executor's"
                 )
-            return True, json.dumps(res), {}
-        if name == "request_packages":
-            try:
-                res = await asyncio.to_thread(
-                    ws.packages.request, args.get("packages") or [], args.get("reason") or "", origin
-                )
-            except PackagesError as e:
-                return False, str(e)[-3000:], {}
-            if res["status"] == "requested":
-                text = (
-                    f"Requested {', '.join(res['packages'])}. A person approves it in the workbench's Packages panel; "
-                    "tell the user it is waiting for them, and re-run the node once list_packages shows it installed."
-                )
-            else:
-                text = (
-                    f"Added {', '.join(res['packages'])} to pyproject.toml. They install in the background; running "
-                    "a node waits for the install to finish."
-                )
-            return True, text, {}
-        if name == "docs":
-            ok, text = docs.tool(args)
-            return ok, text, {}
-        if name == "version":
-            from . import about
+        st["view_packages"] = ws.npm.state()["packages"]
+        return True, json.dumps(st, default=str), {}
 
-            return True, json.dumps(await about.about(args.get("refresh") is True, self.command)), {}
-        if name == "report_issue":
-            return True, json.dumps(feedback.draft(args["title"], args["details"], args.get("kind") or "bug", origin)), {}
-        return False, f"unknown tool {name}", {}
+    async def _tool_add_view_packages(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        if agent_mode() == "off":
+            return False, "changing packages from the agent is turned off on this server (EXUVIA_AGENT_PACKAGES=off)", {}
+        try:
+            st = await asyncio.to_thread(ws.npm.add, args.get("packages") or [])
+        except NpmError as e:
+            return False, str(e)[-3000:], {}
+        listed = ", ".join(f"{p['name']}@{p['version']}" for p in st["packages"])
+        return True, f"package.json now lists {listed}. Views import them by name.", {}
 
-    def _tag_tool(self, name: str, args: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
+    def _tool_list_env(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        def shown(r: dict[str, Any]) -> dict[str, Any]:
+            out = {k: v for k, v in r.items() if k in ("name", "secret", "value", "source") or (k == "readable" and not v)}
+            if r["source"] == "group":
+                out["group"] = r["group"]["name"]
+            if r.get("overrides"):
+                out["overrides_group"] = r["overrides"]["name"]
+            if r.get("overrides_hub"):
+                out["overrides_hub"] = True
+            return out
+
+        return True, json.dumps({"variables": [shown(r) for r in ws.effective_env()]}), {}
+
+    def _tool_request_secret(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        try:
+            res = ws.request_env_var(args["name"], args.get("reason") or "", origin)
+        except EnvError as e:
+            return False, str(e), {}
+        if res["status"] == "set":
+            res["message"] = f"{res['name']} is already set: nodes read it with os.environ[{res['name']!r}]."
+        else:
+            res["message"] = (
+                f"Asked the user to set {res['name']}. It waits for them in the workbench's Environment panel, "
+                f"where they enter the value (it is stored encrypted and never shown to you). From a terminal "
+                f"they can run `exuvia env set {res['name']}` instead. Tell them, without asking for the value; "
+                "call list_env to see when it is set, then run the node."
+            )
+        return True, json.dumps(res), {}
+
+    async def _tool_request_packages(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        try:
+            res = await asyncio.to_thread(
+                ws.packages.request, args.get("packages") or [], args.get("reason") or "", origin
+            )
+        except PackagesError as e:
+            return False, str(e)[-3000:], {}
+        if res["status"] == "requested":
+            text = (
+                f"Requested {', '.join(res['packages'])}. A person approves it in the workbench's Packages panel; "
+                "tell the user it is waiting for them, and re-run the node once list_packages shows it installed."
+            )
+        else:
+            text = (
+                f"Added {', '.join(res['packages'])} to pyproject.toml. They install in the background; running "
+                "a node waits for the install to finish."
+            )
+        return True, text, {}
+
+    def _tool_docs(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ok, text = docs.tool(args)
+        return ok, text, {}
+
+    async def _tool_version(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        from . import about
+
+        return True, json.dumps(await about.about(args.get("refresh") is True, self.command)), {}
+
+    def _tool_report_issue(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        return True, json.dumps(feedback.draft(args["title"], args["details"], args.get("kind") or "bug", origin)), {}
+
+    def _tag_tool(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
         ws = self.ws
 
         def when(t: dict[str, Any]) -> dict[str, Any]:
@@ -1212,7 +1335,7 @@ class Agent:
         except ValueError as e:
             return False, str(e), {}
 
-    def _view_tool(self, name: str, args: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
+    def _view_tool(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
         ws = self.ws
         if name == "list_views":
             keys = ("name", "title", "description", "reads", "files", "state", "reason")

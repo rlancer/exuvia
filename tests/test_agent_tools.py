@@ -177,3 +177,23 @@ def test_viewers_get_the_new_read_tools():
 
     assert {"list_runs", "read_run", "list_packages"} <= READ_TOOLS
     assert "delete_param" not in READ_TOOLS
+
+
+def test_every_tool_is_one_entry_with_a_handler_and_a_read_only_flag():
+    """TOOL_SPECS is the one list of tools: TOOLS, READ_TOOLS, VIEW_TOOLS and
+    the dispatch derive from it, so a tool cannot be listed without a
+    handler, or be forgotten as read-only (which made it editor-only)."""
+    import inspect
+
+    from exuvia.agent import READ_TOOLS, TOOL_SPECS, TOOLS, VIEW_TOOLS
+
+    names = [t["name"] for t in TOOL_SPECS]
+    assert len(names) == len(set(names))
+    for t in TOOL_SPECS:
+        assert isinstance(t.get("read_only"), bool), t["name"]
+        handler = getattr(Agent, t.get("handler", ""), None)
+        assert callable(handler), t["name"]
+        assert list(inspect.signature(handler).parameters)[:4] == ["self", "name", "args", "origin"], t["name"]
+    assert [t["name"] for t in TOOLS] == names and all(set(t) == {"name", "description", "input_schema"} for t in TOOLS)
+    assert READ_TOOLS == {t["name"] for t in TOOL_SPECS if t["read_only"]}
+    assert VIEW_TOOLS <= set(names) and "read_view" in VIEW_TOOLS
