@@ -250,6 +250,16 @@ def cmd_push(args: argparse.Namespace) -> None:
     print(f"pushed {args.node}: {shape}, output {run.get('artifact_id')} (run {run.get('id')})")
 
 
+def cmd_cancel(args: argparse.Namespace) -> None:
+    from .pushing import PushError, cancel_run
+
+    try:
+        cancel_run(args.url, args.run_id, allow_http=args.allow_http)
+    except PushError as e:
+        raise SystemExit(str(e)) from None
+    print(f"stopping run {args.run_id}: it ends failed, with the error `cancelled`")
+
+
 def cmd_executor(args: argparse.Namespace) -> None:
     import os
 
@@ -326,6 +336,13 @@ def main() -> None:
     p.add_argument("--note", help="a line for the run's log, e.g. where the data came from")
     p.add_argument("--allow-http", action="store_true", help="send to a plain-http address on another machine anyway")
     p.set_defaults(fn=cmd_push)
+
+    p = sub.add_parser("cancel", help="stop a queued or running run on a running exuvia")
+    p.add_argument("run_id", help="the run's id (the workbench's run history, or the MCP list_runs tool)")
+    p.add_argument("--url", required=True, metavar="URL",
+                   help="the project: <hub>/p/<project>, or an `exuvia serve` address; sends EXUVIA_API_TOKEN")
+    p.add_argument("--allow-http", action="store_true", help="send to a plain-http address on another machine anyway")
+    p.set_defaults(fn=cmd_cancel)
 
     p = sub.add_parser("executor", help="serve node execution over HTTP")
     p.add_argument("--host", default="127.0.0.1")

@@ -1295,8 +1295,20 @@ it at start.
   cached or skipped don't clear it. Refreshing everything stale
   (`POST /api/run-stale`, `exuvia run`) retries failed nodes.
 - **Subprocess isolation.** Every node runs in its own Python process: crash
-  isolation, clean per-run logs streamed live to the UI, killable timeouts
-  (`EXUVIA_RUN_TIMEOUT`, default 1800 s).
+  isolation, clean per-run logs (stdout and stderr in the order printed,
+  streamed live to the UI and readable with `read_run` while the run goes
+  on), killable timeouts (`EXUVIA_RUN_TIMEOUT`, default 1800 s; per node,
+  `timeout=<seconds>`, SQL `-- timeout: 300`). A run that times out fails
+  with `timed out after ...`; a runner killed from outside says so (a
+  SIGKILL exuvia did not send is usually the out-of-memory killer).
+- **Stopping a run.** A queued or running run can be stopped from the
+  workbench (Stop), the MCP `cancel_run` tool, `exuvia cancel <run id> --url
+  <project>` or `POST /api/runs/{id}/cancel`: a running attempt is killed, a
+  queued one (waiting behind another run of the node, or for its upstream
+  nodes) ends at once. It ends failed with the error `cancelled`, is not
+  retried, sends no failure webhook, and the runs downstream of it in its
+  batch are skipped. Queued runs run the node's code as it is when they
+  start, not as it was when they were queued.
 - **Nodes don't get exuvia's own settings.** A node's process starts from the
   server's environment minus every `EXUVIA_*` and `PORTKEY_*` variable and
   package index credentials (`UV_INDEX_<NAME>_USERNAME` / `_PASSWORD`), with
@@ -2374,8 +2386,10 @@ The agent runs a tool loop over the live workspace: `list_nodes`, `read_node`,
 `write_node`, `delete_node`, `list_files` / `read_file` / `write_file` /
 `delete_file` (shared helpers under `lib/`), `list_views` / `read_view` /
 `write_view` / `write_view_file` / `delete_view_file` / `delete_view` (see
-"Views"), `run_node`, `list_runs` and `read_run` (run history: what a
-schedule or a cascade ran, with each run's error and log), `define_param` /
+"Views"), `run_node` (waits up to `wait_seconds`, default 240, then returns
+the run id of a run still going), `list_runs`, `read_run` (run history: what
+a schedule or a cascade ran, with each run's error and log, or the log so far
+of one still going) and `cancel_run`, `define_param` /
 `delete_param`, `query_data` (DuckDB over every node's current output),
 `list_packages`, `request_packages` and `add_view_packages` (see "Packages"), `list_env` and
 `request_secret` (the project's environment variables by name, and asking
@@ -2674,6 +2688,7 @@ section named after each one has the details.
 | `exuvia status [DIR]` | each node's freshness. `--json`, `--param NAME=VALUE` | below |
 | `exuvia mcp [DIR]` | the agent's tools over MCP on stdio: the project in `DIR`, or `--url URL` to relay to a running server or hub | MCP |
 | `exuvia push NODE FILE --url URL` | upload a push node's output (`.parquet`, `.csv`, `.json`) from the machine that has the data. `--param`, `--note`, `--allow-http` | Push nodes |
+| `exuvia cancel RUN_ID --url URL` | stop a queued or running run of a running exuvia (a hub project or `exuvia serve`); sends `EXUVIA_API_TOKEN`. `--allow-http` | Stopping a run |
 | `exuvia env list`, `set`, `rm` | a project's (or, with `--group`, a hub group's; with `--hub`, the hub's) environment variables and secrets, in a folder or over `--url` | Environment variables and secrets |
 | `exuvia executor` | serve node execution over HTTP for a control plane. `--host`, `--port` (8080) | Architecture |
 | `exuvia secrets-key` | print a new key for `EXUVIA_SECRETS_KEY` | Encryption |

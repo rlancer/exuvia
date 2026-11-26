@@ -39,13 +39,23 @@ from fastapi.responses import FileResponse, StreamingResponse
 from . import __version__, envvars
 from .envvars import EnvError
 from .executor import ExecRequest, LocalExecutor, bundle_hash_of_zip
-from .project import NODE_NAME
+from .project import MAX_TIMEOUT, NODE_NAME
 
 RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 BUNDLE_ID = re.compile(r"^[0-9a-f]{24}$")
 CHUNK_ID = re.compile(r"^[0-9a-f]{16}$")
 INPUT_EXT = {"table": ".parquet", "json": ".json", "multi": ".zip"}
 RUN_TTL_S = 2 * 3600
+
+
+def _timeout(value: Any) -> float | None:
+    """A run's ``timeout`` from the control plane: seconds, or None for this
+    executor's own EXUVIA_RUN_TIMEOUT."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 1 <= value <= MAX_TIMEOUT:
+        raise HTTPException(400, f"bad timeout: seconds from 1 to {MAX_TIMEOUT}")
+    return float(value)
 
 
 def create_executor_app() -> FastAPI:
@@ -234,6 +244,7 @@ def create_executor_app() -> FastAPI:
             env=env,
             partition_by=spec.get("partition_by") if isinstance(spec.get("partition_by"), str) else None,
             partitions=[str(v) for v in spec.get("partitions") or []],
+            timeout=_timeout(spec.get("timeout")),
         )
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[str | None] = asyncio.Queue()

@@ -15,11 +15,38 @@ from .packages import missing_package
 from .workspace import Workspace
 
 LOG_TAIL_LINES = 40
+PRINTED_LINES = 30
+_TRACEBACK = "Traceback (most recent call last):"
+_CHAINED = ("During handling of the above exception", "The above exception was the direct cause")
 
 
-def _log_tail(ws: Workspace, run: dict[str, Any] | None) -> str:
+def log_tail(log: str, lines: int = LOG_TAIL_LINES) -> dict[str, Any]:
+    """``{"log_tail": the last lines of a run's log}``, plus ``printed``: the
+    lines the node printed just before its last traceback, when that
+    traceback is long enough to push them out of the tail (a failure deep in
+    a database driver, say), so what the node said it was doing is kept."""
+    every = log.splitlines()
+    out: dict[str, Any] = {"log_tail": "\n".join(every[-lines:])}
+    start = next((i for i in range(len(every) - 1, -1, -1) if every[i].startswith(_TRACEBACK)), -1)
+    # A chained exception's tracebacks are one block: start at its first.
+    while start > 0:
+        above = next((i for i in range(start - 1, -1, -1) if every[i].strip()), -1)
+        if above < 0 or not every[above].startswith(_CHAINED):
+            break
+        first = next((i for i in range(above - 1, -1, -1) if every[i].startswith(_TRACEBACK)), -1)
+        if first < 0:
+            break
+        start = first
+    if start > 0 and start - 1 < len(every) - lines:  # the line before it is not in the tail
+        before = every[:start][-PRINTED_LINES:]
+        if any(ln.strip() for ln in before):
+            out["printed"] = "\n".join(before)
+    return out
+
+
+def _log_tail(ws: Workspace, run: dict[str, Any] | None) -> dict[str, Any]:
     full = ws.store.run(run["id"]) if run and run.get("id") else None
-    return "\n".join(((full or {}).get("log") or "").splitlines()[-LOG_TAIL_LINES:])
+    return log_tail((full or {}).get("log") or "")
 
 
 async def node_report(
@@ -34,7 +61,7 @@ async def node_report(
             "runs": summary,
             "run_id": (run or {}).get("id"),
             "error": (run or {}).get("error"),
-            "log_tail": _log_tail(ws, run),
+            **_log_tail(ws, run),
         }
         missing = missing_package(out["error"])
         if missing:
@@ -72,7 +99,7 @@ def graph_report(ws: Workspace, finals: dict[str, Any]) -> tuple[bool, dict[str,
     tail of each one that did not succeed."""
     summary = {n: (r or {}).get("status") for n, r in finals.items()}
     failed = [
-        {"node": n, "run_id": (r or {}).get("id"), "error": (r or {}).get("error"), "log_tail": _log_tail(ws, r)}
+        {"node": n, "run_id": (r or {}).get("id"), "error": (r or {}).get("error"), **_log_tail(ws, r)}
         for n, r in finals.items()
         if (r or {}).get("status") != "success"
     ]

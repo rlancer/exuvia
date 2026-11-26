@@ -25,7 +25,7 @@ from .npm import NpmError
 from .npm import declared as npm_declared
 from .packages import PackagesError, agent_mode, missing_package
 from .project import NODE_NAME, coerce_param
-from .report import node_report
+from .report import log_tail, node_report
 from .workspace import Workspace, acting_as
 
 MAX_TURNS = 30
@@ -257,7 +257,11 @@ TOOLS: list[dict[str, Any]] = [
             "several outputs). `params` overrides run "
             "parameters for this run (e.g. {\"as_of\": \"2026-03-02\"} to replay a past date); omitted "
             "parameters use their defaults. `full_refresh` (partitioned nodes only) rebuilds the output from "
-            "empty: what the run returns becomes the whole output, and exuvia.partitions() is [] for it."
+            "empty: what the run returns becomes the whole output, and exuvia.partitions() is [] for it. "
+            "It waits up to `wait_seconds` (default 240, at most 900; 0 returns at once) for the run to end; a run "
+            "still going then keeps running and comes back as status `running` with its run_id and log so far: "
+            "follow it with read_run (which can wait too), stop it with cancel_run. Do not call run_node again "
+            "to check on it, that queues another run."
         ),
         "input_schema": {
             "type": "object",
@@ -265,6 +269,10 @@ TOOLS: list[dict[str, Any]] = [
                 "name": {"type": "string"},
                 "params": {"type": "object"},
                 "full_refresh": {"type": "boolean"},
+                "wait_seconds": {
+                    "type": "integer", "minimum": 0, "maximum": 900,
+                    "description": "how long to wait for the run to end, default 240",
+                },
             },
             "required": ["name"],
             "additionalProperties": False,
@@ -323,7 +331,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "list_runs",
         "description": (
             "Recent runs, newest first: of one node (`name`) or of every node. Each has its id, node, status "
-            "(queued, running, success, cached, failed, skipped), trigger (schedule, cascade, agent, mcp, api, "
+            "(queued, running, success, cached, failed, skipped; a stopped run is failed with error `cancelled`), trigger (schedule, cascade, agent, mcp, api, "
             "...), who started it, when it was queued, started and finished (UTC), its parameter values, rows and "
             "error. Use it to see whether scheduled runs succeeded and to find a failed one; read_run gives its log."
         ),
@@ -341,14 +349,36 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "One run, by the id list_runs or run_node gave: status, trigger, timing, parameter values, the "
             "output ids of the inputs it read, rows and schema, the error, and the end of its log (`log_lines`, "
-            "default 200). When the node's code has changed since, `source` is the code that run executed."
+            "default 200), stdout and stderr in the order printed. A run still queued or running shows its log so "
+            "far; `wait_seconds` (at most 900) waits that long for it to end first. When a long traceback pushes "
+            "what the node printed out of the tail, `printed` has the lines just before it. When the node's code "
+            "has changed since, `source` is the code that run executed."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "run_id": {"type": "string"},
                 "log_lines": {"type": "integer", "description": "how many lines from the end of the log, default 200"},
+                "wait_seconds": {
+                    "type": "integer", "minimum": 0, "maximum": 900,
+                    "description": "wait up to this long for a queued or running run to end, default 0",
+                },
             },
+            "required": ["run_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "cancel_run",
+        "description": (
+            "Stop a run that is queued or running, by the id run_node or list_runs gave: a running attempt is "
+            "killed, a queued run (waiting for its upstream nodes or behind another run of the same node) ends "
+            "at once, and it is not retried. It ends failed with error `cancelled`; runs downstream of it in the "
+            "same batch are skipped. Use it for a run that hangs or that runs code you have since fixed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"run_id": {"type": "string"}},
             "required": ["run_id"],
             "additionalProperties": False,
         },
@@ -529,6 +559,9 @@ READ_TOOLS = frozenset({
 
 RUNS_LIMIT = 100
 RUN_LOG_LINES = 200
+RUN_WAIT_DEFAULT = 240  # seconds run_node waits: under the ~300 s idle timeout of common MCP clients
+RUN_WAIT_MAX = 900  # the stdio relay's own timeout (mcp_server.REMOTE_TIMEOUT)
+RUNNING_LOG_LINES = 20
 RUN_TEXT_MAX = 20000  # characters of a read_run answer
 RUN_SOURCE_MAX = 8000
 
@@ -545,6 +578,38 @@ def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
     for k in ("queued_at", "started_at", "finished_at"):
         if run.get(k) is not None:
             out[k.removesuffix("_at")] = _utc(run[k])
+    return out
+
+
+async def _wait_for_run(ws: Workspace, run_id: str, seconds: float) -> dict[str, Any] | None:
+    """The run once it has ended, or as it is after ``seconds``."""
+    deadline = time.monotonic() + seconds
+    while True:
+        run = ws.store.run(run_id)
+        if run is None or run["status"] not in ("queued", "running") or time.monotonic() >= deadline:
+            return run
+        await asyncio.sleep(min(1.0, max(deadline - time.monotonic(), 0.05)))
+
+
+def _running_report(ws: Workspace, target: str, queued: dict[str, str]) -> dict[str, Any]:
+    """What run_node says about a run still going when it stops waiting: each
+    queued run's status, and the log so far of the one running."""
+    runs = {n: ws.store.run(rid) or {} for n, rid in queued.items()}
+    out: dict[str, Any] = {
+        "status": "running",
+        "run_id": queued.get(target),
+        "runs": {n: r.get("status") for n, r in runs.items()},
+        "next": (
+            "The run goes on. read_run with this run_id shows its log so far (wait_seconds waits for it to end); "
+            "cancel_run stops it. Calling run_node again would queue another run."
+        ),
+    }
+    going = next((n for n, r in runs.items() if r.get("status") == "running"), None)
+    if going:
+        log = (runs[going].get("log") or "").splitlines()
+        if going != target:
+            out["running_now"] = {"node": going, "run_id": queued[going]}
+        out["log_tail"] = "\n".join(log[-RUNNING_LOG_LINES:])
     return out
 
 
@@ -600,7 +665,7 @@ SYSTEM = """You are the agent inside exuvia, a DAG workbench for analysts and da
 - A project is a folder of node files in `nodes/`. One file = one node. File name (snake_case) = node name.
 - Python node: a module with exactly one function decorated `@exuvia.node(...)`. Its parameter names ARE its upstream dependencies; exuvia passes each upstream's output (table outputs arrive as pandas DataFrames). Return a DataFrame (preferred), a dict/list/scalar (stored as JSON; numpy values, dates, dataclasses and pydantic models are converted), or None. Any other object (a fitted model, a custom class) fails the run: return the numbers you need from it instead. Put the description in the function docstring.
 - Several outputs from one node: when one step naturally yields several results of different shapes (a model fit's predictions, coefficients and metrics; an API call that returns two tables), return a dict, dataclass or pydantic model whose values include DataFrames, e.g. `return {"preds": preds_df, "coefs": coefs_df, "metrics": {"r2": r2}}`. Names are lowercase identifiers. Each DataFrame is a table and anything else is JSON. Downstream, SQL reads a table as `<node>.<name>` (`select * from fit.coefs`); a Python parameter `fit` gets a dict `{"preds": DataFrame, ...}`, or the dataclass / pydantic model itself when the parameter is annotated with it (`def report(fit: FitResult)`, the class in a `lib/` helper). A JSON output can be typed the same way. Prefer separate nodes when the results do not come from the same expensive step.
-- Decorator keywords (must be literals): `schedule="<cron>"` (local time; re-runs this node on that cadence), `cascade=True|False` (auto re-run when upstream output changes; default True), `chart={...}` a Vega-Lite spec WITHOUT a `data` key — the UI injects the node's output rows, `tags=[...]`, `retries=N` (try a failed run again up to N more times, 0-10; for flaky sources such as APIs) with `retry_delay=<seconds>` (default 30, doubling per retry), `overlap="queue"|"skip"` (a scheduled fire while the node is still running: run it after, the default, or drop it), `push=True` (a push node: its output is uploaded from another machine with `exuvia push`, for data only that machine can read, such as a Bloomberg Terminal's; it takes no upstream nodes and no schedule, its function never runs here, and run_node refuses it), `live=True` or `live=<seconds>` (a live node re-runs whenever a view that depends on it is opened, or only when its output is older than that many seconds; the view shows its last output at once and updates when the new one lands; for data worth fetching again whenever someone looks, such as quotes; not for push nodes), `partition_by="<column>"` (a partitioned node, for data that grows a little each run, such as daily prices: each run returns rows for one or many values of that column and they replace those partitions, every other partition is kept; `exuvia.partitions()` lists the values already stored, [] on the first run or a full refresh, so the node fetches only what is new; SQL: `-- partition_by: date` and `$last_partition`; downstream nodes read the whole history; its own params such as as_of don't split the output; rebuild it from scratch with run_node full_refresh), `key=["date", "ticker"]` (the columns that identify a row: a run whose output has a null in them or a key twice fails and the previous output stays; declare it on every table node whose rows have a natural key, so duplicates can't skew an analysis; for a partitioned node it holds across the whole output, so a row whose partition changes must be returned with its old partition too), `on_duplicate="last"` (with key: keep the last row for each repeated key instead of failing, only for sources known to resend rows), `merge=True` (partitioned node with a key, for sources that send part of a day at a time: a run's rows update or insert by key into the partitions they hold, and stored rows the run doesn't return stay; a merge never removes a row, so deletes and re-dated rows need run_node full_refresh, which replaces the whole output).
+- Decorator keywords (must be literals): `schedule="<cron>"` (local time; re-runs this node on that cadence), `cascade=True|False` (auto re-run when upstream output changes; default True), `chart={...}` a Vega-Lite spec WITHOUT a `data` key — the UI injects the node's output rows, `tags=[...]`, `retries=N` (try a failed run again up to N more times, 0-10; for flaky sources such as APIs) with `retry_delay=<seconds>` (default 30, doubling per retry), `overlap="queue"|"skip"` (a scheduled fire while the node is still running: run it after, the default, or drop it), `timeout=<seconds>` (an attempt that takes longer is stopped and fails, then retried with `retries`; default the server's EXUVIA_RUN_TIMEOUT, 1800; set it on nodes that read from something that can hang, such as an external database; SQL: `-- timeout: 300`), `push=True` (a push node: its output is uploaded from another machine with `exuvia push`, for data only that machine can read, such as a Bloomberg Terminal's; it takes no upstream nodes and no schedule, its function never runs here, and run_node refuses it), `live=True` or `live=<seconds>` (a live node re-runs whenever a view that depends on it is opened, or only when its output is older than that many seconds; the view shows its last output at once and updates when the new one lands; for data worth fetching again whenever someone looks, such as quotes; not for push nodes), `partition_by="<column>"` (a partitioned node, for data that grows a little each run, such as daily prices: each run returns rows for one or many values of that column and they replace those partitions, every other partition is kept; `exuvia.partitions()` lists the values already stored, [] on the first run or a full refresh, so the node fetches only what is new; SQL: `-- partition_by: date` and `$last_partition`; downstream nodes read the whole history; its own params such as as_of don't split the output; rebuild it from scratch with run_node full_refresh), `key=["date", "ticker"]` (the columns that identify a row: a run whose output has a null in them or a key twice fails and the previous output stays; declare it on every table node whose rows have a natural key, so duplicates can't skew an analysis; for a partitioned node it holds across the whole output, so a row whose partition changes must be returned with its old partition too), `on_duplicate="last"` (with key: keep the last row for each repeated key instead of failing, only for sources known to resend rows), `merge=True` (partitioned node with a key, for sources that send part of a day at a time: a run's rows update or insert by key into the partitions they hold, and stored rows the run doesn't return stay; a merge never removes a row, so deletes and re-dated rows need run_node full_refresh, which replaces the whole output).
 - SQL node (`.sql`): DuckDB SQL; reference upstream nodes by name as tables. Header comments: first `--` lines are the description; `-- schedule: <cron>`, `-- cascade: false`, `-- chart: {json}`, `-- retries: 2`, `-- retry_delay: 60`, `-- overlap: skip`, `-- live: true` (or seconds), `-- partition_by: date` (then `$last_partition` is the newest stored value, or NULL), `-- key: date, ticker`, `-- on_duplicate: last`, `-- merge: true`.
 - Run parameters make results reproducible over time. A project declares them (see "Run parameters" below; add one with define_param). A node that reads one must declare it: `@exuvia.node(params=["as_of"])` then `exuvia.param("as_of")` (dates arrive as "YYYY-MM-DD" strings); in SQL, `-- params: as_of` then `$as_of`. A node's output is stored per value of the parameters it or its upstream nodes declare, so each date has its own output and history, and nodes without parameters are computed once and shared. A node that reads `as_of` must compute "as of that date": filter source data to rows known on or before it, and never call "now"/"today" yourself.
 - Outputs are content-hashed. Unchanged output stops a cascade. Each node runs in its own subprocess with the project root as the working directory and on sys.path.
@@ -625,6 +690,7 @@ def rolling_vol(returns):
 - Prefer small, single-purpose nodes with clear names over one big node. Reuse existing nodes as inputs instead of recomputing.
 - After writing a node, run it. If it fails, read the error, fix it, and re-run. Do not hand back a node you have not seen succeed unless the user asked you not to run it.
 - Runs you did not start (a schedule, a cascade, someone else): list_runs shows them, newest first, and read_run gives one run's error and log.
+- Long runs: run_node waits up to wait_seconds (default 240), then returns status `running` with the run_id while the run goes on. Follow it with read_run (wait_seconds to wait for the end; its log so far otherwise) instead of calling run_node again, and print progress (`print(..., flush=True)`) in nodes that take minutes, so the log shows how far they got. A run that hangs or runs code you have since fixed: cancel_run, then run the node again.
 - Add a `chart` when a node's output is naturally visual (time series, distributions, rankings).
 - Imports go inside the function or at module top; available packages: {packages}; `list_packages` with `environment: true` lists every installed package and its version. Do not pip install. A package that is not listed goes in the project's `pyproject.toml` under `[project] dependencies`, which exuvia installs from: {packages_how}
 - Only delete or rename nodes when asked. Keep edits minimal when changing an existing node.
@@ -673,9 +739,10 @@ def _validate(name: str, args: Any) -> str | None:
         if prop.get("type") == "boolean" and args.get(key) is not None and not isinstance(args[key], bool):
             return f"`{key}` must be true or false"
         if prop.get("type") == "integer" and args.get(key) is not None and (
-            isinstance(args[key], bool) or not isinstance(args[key], int) or args[key] < 1
+            isinstance(args[key], bool) or not isinstance(args[key], int) or args[key] < prop.get("minimum", 1)
         ):
-            return f"`{key}` must be a positive whole number"
+            least = prop.get("minimum", 1)
+            return f"`{key}` must be a positive whole number" if least == 1 else f"`{key}` must be a whole number from {least}"
         if prop.get("type") == "array" and key in args and not (
             isinstance(args[key], list) and all(isinstance(v, str) for v in args[key])
         ):
@@ -829,10 +896,30 @@ class Agent:
                 params = ws.resolve_params(args.get("params"))
             except ValueError as e:
                 return False, str(e), {}
-            finals = await ws.run(
-                [target], params=params, force={target}, trigger=origin, full_refresh={target} if refresh else None
-            )
-            ok, report = await node_report(ws, target, params, finals)
+            wait = args.get("wait_seconds")
+            wait = RUN_WAIT_DEFAULT if wait is None else min(max(wait, 0), RUN_WAIT_MAX)
+            queued: dict[str, str] = {}
+            ready = asyncio.Event()
+
+            def on_queued(ids: dict[str, str]) -> None:
+                queued.update(ids)
+                ready.set()
+
+            # A task of the workspace's own, so a run still going when this
+            # call returns keeps running.
+            task = ws._spawn(ws.run(
+                [target], params=params, force={target}, trigger=origin,
+                full_refresh={target} if refresh else None, on_queued=on_queued,
+            ))
+            queuing = asyncio.ensure_future(ready.wait())
+            try:
+                await asyncio.wait({task, queuing}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                queuing.cancel()
+            done, _ = await asyncio.wait({task}, timeout=wait)
+            if not done:
+                return True, json.dumps(_running_report(ws, target, queued), default=str)[:12000], {"node": target}
+            ok, report = await node_report(ws, target, params, task.result())
             return ok, json.dumps(report, default=str)[:12000], {"node": target}
         if name == "query_data":
             try:
@@ -866,14 +953,30 @@ class Agent:
                 return False, f"no node named {node}", {}
             rows = ws.store.runs_for(node, limit=limit) if node else ws.store.recent_runs(limit=limit)
             return True, json.dumps([_run_summary(r) for r in rows], default=str), {"node": node} if node else {}
-        if name == "read_run":
+        if name == "cancel_run":
             run = ws.store.run(args["run_id"])
             if run is None:
                 return False, f"no run {args['run_id']}: list_runs shows them", {}
-            log = (run.pop("log", None) or "").splitlines()
+            if run["status"] not in ("queued", "running"):
+                return False, f"run {run['id']} of {run['node']} has already ended: {run['status']}", {"node": run["node"]}
+            if not ws.cancel(run["id"]):
+                return False, (
+                    f"run {run['id']} of {run['node']} is not going in this server, so it cannot be stopped from "
+                    "here (it may have just ended: read_run shows it)"
+                ), {"node": run["node"]}
+            final = await _wait_for_run(ws, run["id"], 10)
+            out = {"cancelled": run["id"], "node": run["node"], "status": final.get("status"), "error": final.get("error")}
+            return True, json.dumps(out), {"node": run["node"]}
+        if name == "read_run":
+            wait = min(max(args.get("wait_seconds") or 0, 0), RUN_WAIT_MAX)
+            run = await _wait_for_run(ws, args["run_id"], wait) if wait else ws.store.run(args["run_id"])
+            if run is None:
+                return False, f"no run {args['run_id']}: list_runs shows them", {}
+            raw = run.pop("log", None) or ""
+            log = raw.splitlines()
             lines = args.get("log_lines") or RUN_LOG_LINES
             out = _run_summary(run)
-            out["log_tail"] = "\n".join(log[-lines:])
+            out.update(log_tail(raw, lines))
             if len(log) > lines:
                 out["log_lines_omitted"] = len(log) - lines
             src = ws.run_source(args["run_id"]) or {}

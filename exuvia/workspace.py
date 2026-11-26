@@ -150,6 +150,11 @@ class Workspace:
         self._cancelled: set[str] = set()  # runs asked to stop: never retried
         # Runs waiting to retry: run_id -> (loop, event that cuts the wait short).
         self._retry_waits: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Event]] = {}
+        # Every run not finished yet: run_id -> (loop, its task). One waiting
+        # for its upstream nodes, the node's lock or a slot is cancelled by
+        # cancelling the task; one in _executing by its executor.
+        self._run_tasks: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Task[str]]] = {}
+        self._executing: set[str] = set()
         self._stop_watching: asyncio.Event | None = None
         self._backfill: dict[str, Any] | None = None
         self.executor = make_executor(self.project.root, MAX_PARALLEL)
@@ -868,6 +873,7 @@ class Workspace:
         cascade: bool = True,
         recheck: set[str] | None = None,
         full_refresh: set[str] | None = None,
+        on_queued: Callable[[dict[str, str]], None] | None = None,
     ) -> dict[str, Any]:
         """Run targets (and stale ancestors) for one parameter set.
         ``recheck`` are targets to queue even while they are fresh, and to
@@ -875,6 +881,8 @@ class Workspace:
         changed their inputs, and are cached otherwise. ``full_refresh``
         are partitioned nodes to rebuild from an empty output (they run
         even when fresh): what the run returns becomes the whole output.
+        ``on_queued`` is called with {node: run id} once the runs are
+        queued, before any of them starts (not at all when nothing runs).
         Returns {node: final run row}."""
         self.graph = self.project.load()
         g = self.graph
@@ -921,8 +929,29 @@ class Workspace:
         tasks: dict[str, asyncio.Task[str]] = {}
 
         async def run_one(name: str) -> str:
+            run_id, key = run_ids[name], keys[name]
+            try:
+                return await attempts_of(name)
+            except asyncio.CancelledError:
+                if run_id not in self._cancelled:  # the workspace is stopping
+                    raise
+                task = asyncio.current_task()
+                if task is not None:
+                    task.uncancel()
+                return self._finish(run_id, name, key, status="failed", error="cancelled")
+            finally:
+                self._run_tasks.pop(run_id, None)
+
+        async def attempts_of(name: str) -> str:
             deps_in_plan = [d for d in g.upstream(name) if d in tasks]
-            results = await asyncio.gather(*(tasks[d] for d in deps_in_plan))
+            # asyncio.wait, not gather: cancelling this run must not cancel
+            # the upstream runs it waits for.
+            if deps_in_plan:
+                await asyncio.wait([tasks[d] for d in deps_in_plan])
+            results = [
+                "failed" if tasks[d].cancelled() or tasks[d].exception() is not None else tasks[d].result()
+                for d in deps_in_plan
+            ]
             run_id, key = run_ids[name], keys[name]
             if any(r != "success" for r in results):
                 bad = [d for d, r in zip(deps_in_plan, results) if r != "success"]
@@ -938,18 +967,28 @@ class Workspace:
                     async with self._slots:
                         if attempt == 1 and name not in force and self._is_fresh_ignoring_inflight(name, key, params):
                             return self._finish(run_id, name, key, status="cached")
-                        result = await self._execute(
-                            run_id, name, key, params, attempt=attempt, attempts=attempts,
-                            full_refresh=name in full_refresh,
-                        )
+                        if run_id in self._cancelled:
+                            return self._finish(run_id, name, key, status="failed", error="cancelled")
+                        self._executing.add(run_id)
+                        try:
+                            result = await self._execute(
+                                run_id, name, key, params, attempt=attempt, attempts=attempts,
+                                full_refresh=name in full_refresh,
+                            )
+                        finally:
+                            self._executing.discard(run_id)
                     if result != RETRY:
                         return result
                     if not await self._wait_to_retry(run_id, node.retry_delay * 2 ** (attempt - 1)):
                         return self._finish(run_id, name, key, status="failed", error="cancelled")
                 return self._finish(run_id, name, key, status="failed", error="no attempts left")  # unreachable
 
+        loop = asyncio.get_running_loop()
         for n in plan:
             tasks[n] = asyncio.create_task(run_one(n))
+            self._run_tasks[run_ids[n]] = (loop, tasks[n])
+        if on_queued is not None:
+            on_queued(dict(run_ids))
         await asyncio.gather(*tasks.values(), return_exceptions=True)
         finals = {n: self.store.run(run_ids[n]) for n in plan}
 
@@ -1110,7 +1149,7 @@ class Workspace:
             del self._inflight[(name, key)]
         self._emit_run(run_id)
         self.bus.publish({"type": "graph"})
-        if status == "failed":
+        if status == "failed" and error != "cancelled":  # someone stopped it: nothing to tell them
             self._notify_failure(run_id)
         return status
 
@@ -1403,6 +1442,8 @@ class Workspace:
             env=envvars.run_env(env_rows),
             partition_by=node.partition_by,
             partitions=have,
+            timeout=node.timeout,
+            cancelled=lambda: run_id in self._cancelled,
         )
         if node.partition_by and full_refresh:
             on_log("exuvia: full refresh: what this run returns becomes the whole output\n")
@@ -1454,20 +1495,45 @@ class Workspace:
         )
 
     def cancel(self, run_id: str) -> bool:
-        """Stop a run: kill its attempt in progress, or end its wait to retry.
-        Either way it is not tried again. Safe to call from any thread."""
+        """Stop a run that has not finished. A queued one (waiting for its
+        upstream nodes, the node's lock or a free slot) ends at once, an
+        attempt in progress is killed, a wait to retry is cut short. Either
+        way it is not tried again, and it ends failed with the error
+        ``cancelled``. False when it is not a run still going here. Safe to
+        call from any thread."""
+        # Marked first: the killed attempt must not find itself retryable.
+        self._cancelled.add(run_id)
         waiting = self._retry_waits.get(run_id)
         if waiting is not None:
-            self._cancelled.add(run_id)
             loop, wake = waiting
             loop.call_soon_threadsafe(wake.set)
             return True
-        # Marked first: the killed attempt must not find itself retryable.
-        self._cancelled.add(run_id)
+        entry = self._run_tasks.get(run_id)
+        if entry is not None:
+            loop, task = entry
+            loop.call_soon_threadsafe(self._cancel_on_loop, run_id, task)
+            return True
         if self.executor.cancel(run_id):
             return True
         self._cancelled.discard(run_id)
         return False
+
+    def _cancel_on_loop(self, run_id: str, task: asyncio.Task[str]) -> None:
+        """The rest of ``cancel``, on the run's own loop, where whether it is
+        executing cannot change underneath: an attempt in progress is the
+        executor's to stop (the task must not be cancelled while a thread
+        runs it), anything else is the task's."""
+        if task.done():
+            return
+        waiting = self._retry_waits.get(run_id)
+        if waiting is not None:
+            waiting[1].set()
+        elif run_id in self._executing:
+            # Before its process starts, the executor sees it in _cancelled
+            # (ExecRequest.cancelled) and does not start it.
+            threading.Thread(target=self.executor.cancel, args=(run_id,), daemon=True).start()
+        else:
+            task.cancel()
 
     # -- backfill ------------------------------------------------------------
     def backfill_status(self) -> dict[str, Any] | None:
