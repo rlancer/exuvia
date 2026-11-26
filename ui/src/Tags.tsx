@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { EditorState } from "@uiw/react-codemirror";
 import { unifiedMergeView } from "@codemirror/merge";
-import { colorVars, spacingVars } from "@astryxdesign/core/theme/tokens.stylex";
+import { colorVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
@@ -22,6 +22,8 @@ import { useAccess } from "./Access";
 import { IconPlus } from "./icons";
 import { AppDialog } from "./ui/AppDialog";
 import { CodeEditor } from "./ui/CodeEditor";
+import { historyFrame, Note } from "./ui/historyFrame";
+import { restoreTarget } from "./revisions";
 
 const when = (ts: number) => new Date(ts * 1000).toLocaleString();
 
@@ -57,15 +59,15 @@ export function TagRail(props: {
   return (
     <>
       {canEdit && (
-        <div {...stylex.props(styles.bar)}>
-          <Text type="supporting" color="secondary" maxLines={1} xstyle={styles.grow}>
+        <div {...stylex.props(historyFrame.bar, styles.surface)}>
+          <Text type="supporting" color="secondary" maxLines={1} xstyle={historyFrame.grow}>
             A tag names the whole project's code at one save.
           </Text>
-          <Button size="sm" label="New tag" icon={<IconPlus />} tooltip="Tag the code as it is now" onClick={() => setMaking(true)} xstyle={styles.fixed} />
+          <Button size="sm" label="New tag" icon={<IconPlus />} tooltip="Tag the code as it is now" onClick={() => setMaking(true)} xstyle={historyFrame.fixed} />
         </div>
       )}
       {err && <Banner status="error" container="section" title={err} />}
-      <div {...stylex.props(styles.scroll)}>
+      <div {...stylex.props(historyFrame.scroll)}>
         <List density="compact" hasDividers aria-label="Tags">
           {(tags ?? []).map((t) => (
             <ListItem
@@ -228,7 +230,7 @@ export function TagBrowser(props: {
   const original = sel?.hash ? texts[sel.hash] : "";
   const doc = sel?.current_hash ? texts[sel.current_hash] : "";
   const ready = sel != null && original !== undefined && doc !== undefined;
-  const target = sel?.hash ? restoreTargetOf(sel) : null;
+  const target = sel?.hash ? restoreTarget(sel) : null;
 
   const act = async () => {
     const what = confirm;
@@ -242,7 +244,7 @@ export function TagBrowser(props: {
         props.onDeleted?.();
         return;
       }
-      const t = restoreTargetOf(what);
+      const t = restoreTarget(what);
       if (!t || !what.hash) return;
       if (t.kind === "node") await api.restoreNode(t.name, what.hash);
       else await api.restoreViewFile(t.name, t.path, what.hash);
@@ -259,30 +261,30 @@ export function TagBrowser(props: {
 
   if (!tag)
     return (
-      <div {...stylex.props(styles.frame, styles.alone)}>
+      <div {...stylex.props(historyFrame.frame, historyFrame.alone, styles.surface)}>
         {err ? <Banner status="error" container="section" title={err} /> : <Note>Loading tag…</Note>}
       </div>
     );
 
   return (
-    <div {...stylex.props(styles.frame, styles.alone)}>
-      <div {...stylex.props(styles.bar)}>
-        <span title={when(tag.created_at)} {...stylex.props(styles.grow)}>
+    <div {...stylex.props(historyFrame.frame, historyFrame.alone, styles.surface)}>
+      <div {...stylex.props(historyFrame.bar, styles.surface)}>
+        <span title={when(tag.created_at)} {...stylex.props(historyFrame.grow)}>
           <Text type="supporting" color="secondary" maxLines={1}>
             {[tag.message, `tagged ${ago(tag.created_at)}`, tag.author && `by ${tag.author}`].filter(Boolean).join(" · ")}
           </Text>
         </span>
         {canEdit && <Button size="sm" variant="destructive" label="Delete tag" tooltip="The code it names stays in the history" onClick={() => setConfirm("delete")} />}
       </div>
-      <div {...stylex.props(styles.history)}>
-        <div {...stylex.props(styles.list)}>
-          <div {...stylex.props(styles.bar)}>
-            <SegmentedControl size="sm" layout="fill" label="Which files" value={which} onChange={(v) => setWhich(v === "all" ? "all" : "changed")} xstyle={styles.grow}>
+      <div {...stylex.props(historyFrame.grid, historyFrame.side, styles.fill)}>
+        <div {...stylex.props(historyFrame.list)}>
+          <div {...stylex.props(historyFrame.bar, styles.surface)}>
+            <SegmentedControl size="sm" layout="fill" label="Which files" value={which} onChange={(v) => setWhich(v === "all" ? "all" : "changed")} xstyle={historyFrame.grow}>
               <SegmentedControlItem value="changed" label={`Changed since (${changed.length})`} />
               <SegmentedControlItem value="all" label={`All (${files.length})`} />
             </SegmentedControl>
           </div>
-          <div {...stylex.props(styles.scroll)}>
+          <div {...stylex.props(historyFrame.scroll)}>
             <List density="compact" hasDividers aria-label="Files in the tag">
               {shown.map((f) => (
                 <ListItem
@@ -301,11 +303,11 @@ export function TagBrowser(props: {
             {!shown.length && <Note>The code now is the same as at this tag.</Note>}
           </div>
         </div>
-        <div {...stylex.props(styles.diff)}>
+        <div {...stylex.props(historyFrame.diff)}>
           {err && <Banner status="error" container="section" title={err} />}
           {sel && (
-            <div {...stylex.props(styles.bar)}>
-              <Text type="supporting" color="secondary" maxLines={1} xstyle={styles.grow}>
+            <div {...stylex.props(historyFrame.bar, styles.surface)}>
+              <Text type="supporting" color="secondary" maxLines={1} xstyle={historyFrame.grow}>
                 {sel.status === "added"
                   ? "new since the tag: the tag has no such file"
                   : sel.status === "deleted"
@@ -341,7 +343,7 @@ export function TagBrowser(props: {
           ) : sel ? (
             <Note>Loading…</Note>
           ) : (
-            <div {...stylex.props(styles.note)}>
+            <div {...stylex.props(historyFrame.note)}>
               <EmptyState isCompact title="Nothing has changed" description="Every file is as it was when this tag was made." />
             </div>
           )}
@@ -369,56 +371,9 @@ export function TagBrowser(props: {
   );
 }
 
-function restoreTargetOf(f: TagFile): { kind: "node"; name: string } | { kind: "view"; name: string; path: string } | null {
-  if (f.node) return { kind: "node", name: f.node };
-  const prefix = `views/${f.view}/`;
-  if (f.view && f.path.startsWith(prefix)) return { kind: "view", name: f.view, path: f.path.slice(prefix.length) };
-  return null;
-}
-
-function Note({ children }: { children: ReactNode }) {
-  return (
-    <div {...stylex.props(styles.note)}>
-      <Text color="secondary" justify="center">
-        {children}
-      </Text>
-    </div>
-  );
-}
-
-const COMPACT = "@media (max-width: 900px)";
-
 const styles = stylex.create({
-  frame: { flexGrow: 1, minWidth: 0, minHeight: 0, height: "100%" },
-  alone: { display: "flex", flexDirection: "column", backgroundColor: colorVars["--color-background-surface"] },
-  history: {
-    display: "grid",
-    flexGrow: 1,
-    minHeight: 0,
-    gap: "1px",
-    backgroundColor: colorVars["--color-border"],
-    gridTemplateColumns: { default: "300px minmax(0, 1fr)", [COMPACT]: "minmax(0, 1fr)" },
-    gridTemplateRows: { default: "minmax(0, 1fr)", [COMPACT]: "fit-content(36%) minmax(0, 1fr)" },
-  },
-  list: { display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, backgroundColor: colorVars["--color-background-surface"] },
-  diff: { display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, backgroundColor: colorVars["--color-background-surface"] },
-  bar: {
-    display: "flex",
-    alignItems: "center",
-    gap: spacingVars["--spacing-2"],
-    flexShrink: 0,
-    boxSizing: "border-box",
-    minHeight: "40px",
-    paddingBlock: spacingVars["--spacing-1-5"],
-    paddingInline: spacingVars["--spacing-2"],
-    borderBottomWidth: "1px",
-    borderBottomStyle: "solid",
-    borderBottomColor: colorVars["--color-border"],
-    backgroundColor: colorVars["--color-background-surface"],
-  },
-  grow: { flexGrow: 1, minWidth: 0 },
-  // The button keeps its words; the hint beside it is what gets cut.
-  fixed: { flexShrink: 0 },
-  scroll: { flexGrow: 1, minHeight: 0, overflowY: "auto" },
-  note: { display: "grid", placeItems: "center", flexGrow: 1, minHeight: 0, padding: spacingVars["--spacing-6"] },
+  // On its own in the main area: it brings the surface it is read on.
+  surface: { backgroundColor: colorVars["--color-background-surface"] },
+  // The list and the diff fill what the head leaves.
+  fill: { flexGrow: 1, minHeight: 0 },
 });
