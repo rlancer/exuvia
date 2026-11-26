@@ -237,7 +237,7 @@ def fit(returns):
 ```
 
 ```sql
--- a table of a node with several outputs is <node>.<name>
+-- a table of a node with several outputs is <node>.<name> ("fit.coefs" works too)
 select term, value from fit.coefs order by abs(value) desc
 ```
 

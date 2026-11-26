@@ -42,6 +42,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -2008,7 +2009,9 @@ class Workspace:
         parameter set it has run with, adding one ``_<param>`` column per
         parameter — the view to compare runs over time. A node with several
         outputs is a schema instead: ``<node>.<part>`` for each table part,
-        and ``<node>.<part>__runs``.
+        and ``<node>.<part>__runs``. Each of those is also a view named
+        ``"<node>.<part>"`` (one quoted name, as views and DuckDB's own
+        "Did you mean" hint write it), so that form works too.
 
         The connection runs in the server's process, so it is a sandbox: it
         can read the files behind its views and nothing else, and it is
@@ -2026,6 +2029,8 @@ class Workspace:
         names = [n for n in self.graph.nodes if only is None or n in only]
         # (view name, select, a select to try when the first one fails)
         views: list[tuple[str, str, str | None]] = []
+        # ("<node>.<part>" as one quoted name, the view it shows)
+        aliases: list[tuple[str, str]] = []
         files: list[str] = []
 
         def read(path: str | None, cols: str = "") -> str:
@@ -2058,6 +2063,7 @@ class Workspace:
                 schemas.add(name)
                 for part in table_parts(ls):
                     views.append((f'"{name}"."{part}"', read(part_path(ls, part)), None))
+                    aliases.append((f'"{name}.{part}"', f'"{name}"."{part}"'))
             if not self.graph.effective_params(name):
                 continue
             history = self.store.history(name, HISTORY_VIEW_LIMIT)
@@ -2073,6 +2079,7 @@ class Workspace:
                         path = part_path(run, part)
                         if path:
                             outputs.setdefault(f'"{name}"."{part}__runs"', []).append((path, params))
+                            aliases.append((f'"{name}.{part}__runs"', f'"{name}"."{part}__runs"'))
             for view, runs in outputs.items():
                 files.extend(path for path, _ in runs)
                 views.append((view, _history_select(runs), _history_union(runs)))
@@ -2081,6 +2088,7 @@ class Workspace:
         con.execute("set allowed_paths = ?", [sorted({f for f in files if f})])
         for schema in sorted(schemas):
             con.execute(f'create schema if not exists "{schema}"')
+        made: set[str] = set()
         for view, select, fallback in views:
             try:
                 con.execute(f"create view {view} as {select}")
@@ -2090,7 +2098,11 @@ class Workspace:
                 try:
                     con.execute(f"create view {view} as {fallback}")
                 except duckdb.Error:
-                    pass  # incompatible schemas across runs: leave the history view out
+                    continue  # incompatible schemas across runs: leave the history view out
+            made.add(view)
+        for alias, view in dict(aliases).items():
+            if view in made:
+                con.execute(f"create view {alias} as select * from {view}")
         con.execute("set enable_external_access = false")
         con.execute("set lock_configuration = true")
         return con
@@ -2128,7 +2140,7 @@ class Workspace:
 
     @staticmethod
     def _query(con: Any, sql: str, limit: int) -> dict[str, Any]:
-        rel = con.sql(sql)
+        rel = _sql(con, sql)
         if rel is None:
             return {"columns": [], "rows": []}
         rows = rel.limit(limit).fetchall()
@@ -2139,10 +2151,48 @@ class Workspace:
 
     @staticmethod
     def _query_arrow(con: Any, sql: str, limit: int | None) -> ArrowStream:
-        rel = con.sql(sql)
+        rel = _sql(con, sql)
         if rel is not None and limit is not None:
             rel = rel.limit(int(limit))
         return ArrowStream(rel, owner=con)
+
+
+_MISSING_TABLE = re.compile(r'Table with name "?([^"\s!]+)"? does not exist')
+
+
+def _sql(con: Any, sql: str) -> Any:
+    """``con.sql(sql)`` over an outputs database, where a missing table that
+    is a node with several outputs, or one of those outputs named without its
+    node, gets an error naming the tables to query instead (DuckDB's own
+    hint can point at a name that is not there)."""
+    import duckdb
+
+    try:
+        return con.sql(sql)
+    except duckdb.CatalogException as e:
+        m = _MISSING_TABLE.search(str(e))
+        if not m:
+            raise
+        missing = m.group(1)
+        rows = con.execute(
+            "select table_schema, table_name from information_schema.tables "
+            "where table_schema <> 'main' and not ends_with(table_name, '__runs') order by table_schema, table_name"
+        ).fetchall()
+        parts: dict[str, list[str]] = {}
+        for schema, table in rows:
+            parts.setdefault(schema, []).append(table)
+        if missing in parts:
+            tables = ", ".join(f"{missing}.{t}" for t in parts[missing])
+            raise duckdb.CatalogException(
+                f"{missing} has several outputs, each a table of its own: query {tables}"
+            ) from None
+        owners = [s for s, tables in parts.items() if missing in tables]
+        if owners:
+            named = " or ".join(f"{s}.{missing}" for s in owners)
+            raise duckdb.CatalogException(
+                f"{missing} is an output of a node with several: query it as {named}"
+            ) from None
+        raise
 
 
 def output_parts(schema: Any) -> list[dict[str, Any]]:

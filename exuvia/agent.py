@@ -274,7 +274,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "query_data",
         "description": (
             "Run read-only DuckDB SQL over the current outputs of all table nodes; each node is a view "
-            "named after the node, and each table of a node with several outputs is `<node>.<name>`. Use it to inspect data before writing or after running nodes. Max 50 rows returned. "
+            "named after the node, and each table of a node with several outputs is `<node>.<name>` (or `\"<node>.<name>\"`, one quoted name). Use it to inspect data before writing or after running nodes. Max 50 rows returned. "
             "`params` picks which parameter set the views show (defaults otherwise). For nodes that depend on "
             "parameters, `<node>__runs` unions every parameter set that has run, with a `_<param>` column each — "
             "use it to compare runs across dates. It reads node outputs only: no other file and no network "

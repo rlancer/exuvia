@@ -899,6 +899,8 @@ def sql_deps(text: str, names: set[str]) -> list[str]:
     found: list[str] = []
     for m in _IDENT.finditer(body):
         ident = (m.group(1) or m.group(2) or "").lower()
+        if m.group(1) and ident not in names and "." in ident:  # "<node>.<part>", one quoted name
+            ident = ident.split(".", 1)[0]
         if ident in names and ident not in found:
             found.append(ident)
     return found
