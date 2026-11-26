@@ -218,12 +218,21 @@ from universe u join rolling_vol v using (ticker)
 group by 1
 ```
 
-**The description** is the module or function docstring, or a SQL node's
-first `--` lines, and it is Markdown: the notebook renders it as a cell's
-text. Start with a one-sentence paragraph, which is all a card on the canvas
-shows (as plain text), then put any detail in paragraphs or `-` lists. An
-indented line is a code block in Markdown, so Google- or NumPy-style
-`Args:` sections show as code; write them as a list instead.
+**The description** is the node function's docstring (the module
+docstring when the function has none), or a SQL node's first `--` lines
+other than settings such as `-- schedule:`. It is Markdown: the notebook
+renders it as a cell's text. Start with a one-sentence paragraph, which is
+all a card on the canvas shows (as plain text), then put any detail in
+paragraphs, `-` lists or tables (GitHub-style, `| a | b |` rows under a
+`|---|---|` line). An indented line is a code block in Markdown, so Google-
+or NumPy-style `Args:` sections show as code; write them as a list instead.
+
+Rewriting a description doesn't make the node stale. Freshness compares the
+code with its descriptions taken out (every docstring in a Python node and
+in the `lib/` helpers it imports, a SQL node's description lines), so an
+edit that only changes them keeps the node and everything below it fresh.
+The edit is still saved as a code revision. Any other change, comments and
+blank lines included, is a code change.
 
 Maths is LaTeX, typeset by [KaTeX](https://katex.org): `$…$` inside a
 sentence, `$$…$$` on lines of its own for a displayed formula. A dollar
@@ -1409,9 +1418,9 @@ it at start.
   outputs out. Outputs recorded before the store was set (or whose upload
   failed) are uploaded in the background when the project loads, and stay in
   exports until they are. Deleting a project deletes its objects.
-- **Freshness is derived, not flagged.** A node is *fresh* when its code hash
-  matches its last successful run and each upstream's current artifact is the
-  one that run consumed. Otherwise it is *stale*, and the reason says why.
+- **Freshness is derived, not flagged.** A node is *fresh* when its code
+  (descriptions aside) matches its last successful run's and each upstream's
+  current artifact is the one that run consumed. Otherwise it is *stale*, and the reason says why.
 - **Run = target + stale ancestors**, in dependency order, in parallel where
   the graph allows (`EXUVIA_MAX_PARALLEL`, default 4).
 - **A failed refresh doesn't block what reads it.** When an ancestor's latest
@@ -2614,8 +2623,10 @@ Credentials can then be limited to the prefix. On AWS:
 ## The agent
 
 The agent runs a tool loop over the live workspace: `list_nodes`, `read_node`,
-`write_node`, `delete_node`, `list_files` / `read_file` / `write_file` /
-`delete_file` (shared helpers under `lib/`), `list_views` / `read_view` /
+`write_node`, `edit_node`, `delete_node`, `list_files` / `read_file` /
+`write_file` / `edit_file` / `delete_file` (shared helpers under `lib/`;
+the two `edit_` tools change part of a file by exact string replacement and
+return the diff, so a one-line fix doesn't resend the whole file), `list_views` / `read_view` /
 `write_view` / `write_view_file` / `delete_view_file` / `delete_view` (see
 "Views"), `set_stage` / `delete_stage` (see "The canvas"),
 `list_revisions` / `read_revision` / `restore_node` / `restore_view_file`
