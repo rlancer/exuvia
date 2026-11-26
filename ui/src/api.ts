@@ -281,7 +281,8 @@ export type ViewData = { kind: "table"; arrow: ArrayBuffer } | { kind: "json"; v
 
 /** One saved version of a code file (`GET /api/code/revisions`; exuvia/store.py code_revisions). */
 export interface CodeRevision {
-  id: number;
+  /** 32 hex characters, time-ordered (exuvia/store.py); a string, never a number. */
+  id: string;
   /** Project-relative, e.g. `nodes/prices.py` or `views/board/App.tsx`. */
   path: string;
   node: string | null;
