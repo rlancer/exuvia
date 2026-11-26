@@ -124,7 +124,8 @@ TOOLS: list[dict[str, Any]] = [
             "List the saved versions of one node's code (`name`), or of every file of one view (`view`), newest "
             "first: path, hash, who saved it (agent, api, file, template, restore, ...), when, and whether it is "
             "the current code. Read an old version with read_revision; bring it back with restore_node or "
-            "restore_view_file."
+            "restore_view_file. The whole project's history as git commits, on GitHub or any git remote, is the "
+            "`exuvia mirror` command the user runs (see docs)."
         ),
         "input_schema": {
             "type": "object",
@@ -482,7 +483,8 @@ TOOLS: list[dict[str, Any]] = [
             "exuvia's documentation, for what the guide does not cover: the `exuvia` command line (every command "
             "and its options) and updating exuvia, deploying a server or hub (Docker, "
             "Compose, Kubernetes), auth and agent tokens, private package indexes and Kerberos, executors, record "
-            "databases, schedules on hosts that sleep, the HTTP API, embedding exuvia, MCP setup, views in depth. "
+            "databases, schedules on hosts that sleep, the HTTP API, embedding exuvia, MCP setup, views in depth, "
+            "the code's history in git or on GitHub (`exuvia mirror`). "
             "With no input: the table of contents. `topic`: one section by its heading. `query`: the passages "
             "that match some words, across every section. It is the README of the installed version, read "
             "locally: no network."
@@ -694,7 +696,8 @@ def rolling_vol(returns):
 - Add a `chart` when a node's output is naturally visual (time series, distributions, rankings).
 - Imports go inside the function or at module top; available packages: {packages}; `list_packages` with `environment: true` lists every installed package and its version. Do not pip install. A package that is not listed goes in the project's `pyproject.toml` under `[project] dependencies`, which exuvia installs from: {packages_how}
 - Only delete or rename nodes when asked. Keep edits minimal when changing an existing node.
-- For anything about exuvia this guide does not cover (the `exuvia` command line and its options, updating exuvia, deploying it, hubs, auth and tokens, executors, package indexes, the HTTP API, MCP setup), read `docs` before you answer or act: it is the documentation of the installed version. Do not answer those from memory, and do not guess at commands or flags.
+- For anything about exuvia this guide does not cover (the `exuvia` command line and its options, updating exuvia, deploying it, hubs, auth and tokens, executors, package indexes, the HTTP API, MCP setup, the code's history in git), read `docs` before you answer or act: it is the documentation of the installed version. Do not answer those from memory, and do not guess at commands or flags.
+- The code's whole history as git commits (to browse with git, keep on GitHub or any git remote, or back up off the server) is the `exuvia mirror` command, run in the user's own terminal so it pushes with their own git or `gh` sign-in. Read `docs` with topic `The history in git` for the command and its options, then give the user the command for this project: `--url` with the project's address (the workbench address they open, `<hub>/p/<project>` on a hub; ask them if you don't know it), `--remote` or `--github`, and their agent token in `EXUVIA_API_TOKEN`. Run it yourself only when you have a shell on the user's machine and they asked you to. Never ask for, store or write a git token: their git already has one.
 - `version` says which exuvia is running, how it was installed, whether a newer release is out and the exact command that updates it. Use it when the user asks about the version or updating, or when something they want is not in this version's `docs`. Update exuvia only when the user asks.
 - Finish with a short summary of what you changed and what the data shows — a few sentences, not a report. Describe findings factually; you are a research tool and do not give investment advice.
 
