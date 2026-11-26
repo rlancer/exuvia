@@ -40,6 +40,8 @@ MAX_PROJECTS = 200
 # last_used written) again; also how long another replica can take to notice
 # a revoked key.
 SEEN_EVERY = 60.0
+# Lookups remembered at once: past it, the misses and the stale ones go first.
+SEEN_MAX = 4096
 # The maker of a key made by the operator.
 OPERATOR = ""
 
@@ -106,12 +108,15 @@ class DataKeyStore(HubRecordStore):
         self._lock = threading.Lock()
         # hash -> (key or None, when read)
         self._seen: dict[str, tuple[DataKey | None, float]] = {}
+        # Counts the changes to the keys: what was read before one is not kept after it.
+        self._version = 0
 
     def _replaced(self, data: dict[str, list[dict[str, Any]]]) -> None:
         self._changed()
 
     def _changed(self) -> None:
         with self._lock:
+            self._version += 1
             self._seen.clear()
 
     def _projects_of(self, ids: list[str]) -> dict[str, list[str]]:
@@ -198,6 +203,7 @@ class DataKeyStore(HubRecordStore):
         h = _hash(key)
         with self._lock:
             hit = self._seen.get(h)
+            version = self._version
         if hit and now - hit[1] < SEEN_EVERY:
             return hit[0]
         rows = self._q(f"select {COLS} from data_keys where scope=? and hash=?", (self.scope, h))
@@ -207,7 +213,15 @@ class DataKeyStore(HubRecordStore):
             self._q("update data_keys set last_used=? where scope=? and id=?", (now, self.scope, r["id"]))
             found = DataKey(r["id"], r["owner_id"], r["name"], tuple(self._projects_of([r["id"]])[r["id"]]))
         with self._lock:
-            self._seen[h] = (found, now)
+            # A key revoked (or changed) while it was being read is not
+            # remembered as it was: the next request reads it again.
+            if self._version == version:
+                if len(self._seen) >= SEEN_MAX:
+                    # Anyone can send any number of made-up keys: what is remembered stays bounded.
+                    self._seen = {k: v for k, v in self._seen.items() if v[0] is not None and now - v[1] < SEEN_EVERY}
+                    if len(self._seen) >= SEEN_MAX:
+                        self._seen.clear()
+                self._seen[h] = (found, now)
         return found
 
     def forget_project(self, project: str) -> None:

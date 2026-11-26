@@ -108,6 +108,29 @@ def test_the_proxy_hint_names_the_proxy_without_its_password(monkeypatch):
     assert "trust store" in proxy_hint("https://exuvia.example.com", ssl.SSLCertVerificationError("CERTIFICATE_VERIFY_FAILED"))
 
 
+def test_a_proxy_without_a_scheme_keeps_its_password_too():
+    from exuvia.nethttp import _safe
+
+    assert _safe("user:secret@proxy:8080") == "user:***@proxy:8080"
+    assert _safe("http://user:pw@proxy.invalid:3128") == "http://user:***@proxy.invalid:3128"
+    assert _safe("http://proxy:3128") == "http://proxy:3128" and _safe("proxy:3128") == "proxy:3128"
+
+
+def test_the_ui_serves_only_its_own_files(tmp_path):
+    """The route that serves the built UI needs no token: a path that climbs
+    out of the UI's folder must name nothing."""
+    from exuvia.http_util import static_file
+
+    ui = tmp_path / "static"
+    (ui / "assets").mkdir(parents=True)
+    (ui / "index.html").write_text("app")
+    (ui / "assets" / "app.js").write_text("js")
+    (tmp_path / "secret.env").write_text("TOKEN=1")
+    assert static_file(ui, "assets/app.js") == (ui / "assets" / "app.js").resolve()
+    for path in ("../secret.env", "assets/../../secret.env", "/etc/passwd", "../../../../../../etc/passwd", "", "assets", "nope.js"):
+        assert static_file(ui, path) is None, path
+
+
 def test_tools_over_http_behind_a_proxy(served):
     url, root = served
     listed = tool("--url", url)

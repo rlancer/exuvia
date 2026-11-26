@@ -28,6 +28,7 @@ sends can change a connection other requests share.
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -68,7 +69,7 @@ class DataKeyPatch(BaseModel):
 
 class DataQueryReq(BaseModel):
     sql: str = Field(description='One SELECT (or EXPLAIN). Each project is a catalog: `"sales".orders`.')
-    limit: int | None = Field(None, description="Rows to return. JSON: 500 unless given, 5000 at most. Arrow: every row unless given.")
+    limit: int | None = Field(None, ge=0, description="Rows to return. JSON: 500 unless given, 5000 at most. Arrow: every row unless given.")
     projects: list[str] | None = Field(
         None, description="The projects to attach. Default: the key's projects whose id appears in `sql`."
     )
@@ -172,7 +173,10 @@ bearer = HTTPBearer(
 
 
 def check_select(cur: Any, sql: str) -> None:
-    """Raise ValueError unless ``sql`` is one SELECT (or EXPLAIN)."""
+    """Raise ValueError unless ``sql`` is one SELECT (or EXPLAIN). The
+    statement's kind is not all that keeps a query from writing: EXPLAIN
+    ANALYZE runs what it explains, so every query also runs in a read-only
+    transaction (``read_only``)."""
     import duckdb
 
     try:
@@ -184,6 +188,29 @@ def check_select(cur: Any, sql: str) -> None:
     kind = str(statements[0].type).rsplit(".", 1)[-1]
     if kind not in ("SELECT", "EXPLAIN"):
         raise ValueError(f"the data API is read-only: only SELECT runs here, not {kind}")
+
+
+def named_in(sql: str, projects: tuple[str, ...] | list[str]) -> list[str]:
+    """The projects ``sql`` names: each whose id is in it as a word of its
+    own (`domain` does not name a project called `main`). A project named
+    like one of DuckDB's own catalogs is only attached when asked for by
+    name (``projects``): `crm.main.accounts` must not fail for a key that
+    also reads a project called `main`."""
+    text = sql.lower()
+    return [
+        p
+        for p in projects
+        if p.lower() not in RESERVED_CATALOGS
+        and re.search(rf"(?<![a-z0-9_]){re.escape(p.lower())}(?![a-z0-9_])", text)
+    ]
+
+
+def read_only(cur: Any) -> Any:
+    """``cur`` in a transaction that cannot write, until it is closed. The
+    connection under it is shared by every key that reads the same projects,
+    so nothing one request sends may change what the next one reads."""
+    cur.execute("begin transaction read only")
+    return cur
 
 
 class QueryConnections:
@@ -462,22 +489,28 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
                 raise HTTPException(404, f"this key does not read {', '.join(missing)}")
             chosen = list(dict.fromkeys(body.projects))
         else:
-            text = body.sql.lower()
-            chosen = [p for p in projects if p.lower() in text]
+            chosen = named_in(body.sql, projects)
         workspaces = {pid: (await hub.get(pid)).ws for pid in chosen}
 
         def run() -> Any:
+            cur = None
+            streaming = False
             try:
-                cur = connections.cursor(workspaces)
+                cur = read_only(connections.cursor(workspaces))
                 check_select(cur, body.sql)
                 if wants_arrow(request.headers.get("accept")):
-                    return arrow_response(query_arrow(cur, body.sql, body.limit))
+                    stream = query_arrow(cur, body.sql, body.limit)  # closes the cursor when it has been read
+                    streaming = True
+                    return arrow_response(stream)
                 rows = JSON_ROWS if body.limit is None else min(body.limit, JSON_MAX)
                 return FastJSON({**query_json(cur, body.sql, rows), "projects": chosen})
             except HTTPException:
                 raise
             except Exception as e:
                 raise HTTPException(400, str(e) if type(e) is ValueError else f"{type(e).__name__}: {e}") from e
+            finally:
+                if cur is not None and not streaming:
+                    cur.close()
 
         return await asyncio.to_thread(run)
 
@@ -487,14 +520,13 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
     def data_spec(request: Request) -> Any:
         """The data API's own OpenAPI spec: only the routes a data key can
         use. No key needed, so an agent can read it before it has one."""
-        base = str(request.base_url).rstrip("/")
-        spec = spec_cache.get(base)
+        # Built once. Only `servers` differs by request (it is the address the
+        # request came to, which the Host header names), so nothing is kept
+        # per address: anyone can send any Host.
+        spec = spec_cache.get("spec")
         if spec is None:
             routes = [r for r in app.routes if getattr(r, "path", "").startswith(PREFIX)]
-            spec = get_openapi(
-                title="exuvia data API", version=__version__, description=SPEC_DESCRIPTION,
-                routes=routes, servers=[{"url": base}],
-            )
+            spec = get_openapi(title="exuvia data API", version=__version__, description=SPEC_DESCRIPTION, routes=routes)
             spec["security"] = [{"dataKey": []}]
-            spec_cache[base] = spec
-        return spec
+            spec_cache["spec"] = spec
+        return {**spec, "servers": [{"url": str(request.base_url).rstrip("/")}]}

@@ -32,7 +32,7 @@ from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Req
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import _STARTED, __version__, about as about_mod, auth, dataapi, mcp_http
 from .activity import ActivityStore
@@ -47,7 +47,7 @@ from .project import NODE_NAME, PARAM_TYPES, coerce_param
 from .pushing import format_of, max_bytes
 from .report import graph_report, node_report
 from .groups import open_groups
-from .http_util import FastJSON, arrow_response, need_partitioned, partition_range, query_params, resolve_params
+from .http_util import FastJSON, arrow_response, need_partitioned, partition_range, query_params, resolve_params, static_file
 from .sharing import GRANT_ROLES, LINK_COOKIE, MAX_LINK_DAYS, at_least, looks_like_link, open_sharing
 from .store import clean_origin
 from .agent_mcp import CALLBACK_PATH, McpServers, finish_sign_in, open_mcp_servers, private_allowed, probe, sign_in
@@ -209,7 +209,7 @@ class SettingsReq(BaseModel):
 
 class QueryReq(BaseModel):
     sql: str
-    limit: int | None = None
+    limit: int | None = Field(None, ge=0)
     params: dict[str, Any] | None = None
 
 
@@ -1851,8 +1851,7 @@ def create_app(root: str | Path) -> FastAPI:
 
         @app.get("/{path:path}")
         def spa(path: str) -> FileResponse:
-            f = STATIC / path
-            return FileResponse(f if path and f.is_file() else STATIC / "index.html")
+            return FileResponse(static_file(STATIC, path) or STATIC / "index.html")
 
     return app
 

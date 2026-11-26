@@ -133,6 +133,11 @@ def test_the_query_sees_a_new_run_at_once(hub):
     "select 1; select 2",
     "select * from read_csv('/etc/passwd')",
     "copy (select 1) to 'out.csv'",
+    # EXPLAIN ANALYZE runs what it explains: the transaction is read-only too.
+    "explain analyze drop view crm.main.accounts",
+    "explain analyze create table crm.main.x as select 1",
+    "explain analyze create table memory.main.x as select 1",
+    "explain analyze create macro crm.main.m(a) as a + 1",
 ])
 def test_a_key_only_reads(hub, sql):
     key = make_key(hub, ["crm"])
@@ -141,6 +146,23 @@ def test_a_key_only_reads(hub, sql):
     # and the shared connection still answers
     ok = hub.post("/api/data/query", json={"sql": "select count(*) from crm.accounts"}, headers=bearer(key))
     assert ok.json()["rows"] == [[2]]
+
+
+def test_explain_still_answers_and_a_limit_is_never_negative(hub):
+    key = make_key(hub, ["crm"])
+    plan = hub.post("/api/data/query", json={"sql": "explain analyze select * from crm.accounts"}, headers=bearer(key))
+    assert plan.status_code == 200 and plan.json()["rows"]
+    assert hub.post("/api/data/query", json={"sql": "select 1", "limit": -1}, headers=bearer(key)).status_code == 422
+
+
+def test_a_project_is_named_by_a_word_of_its_own():
+    from exuvia.dataapi import named_in
+
+    projects = ("crm", "main", "sales-eu")
+    assert named_in("select domain from crm.accounts", projects) == ["crm"]  # `domain` is not `main`
+    assert named_in('select * from "sales-eu".orders join CRM.accounts using (id)', projects) == ["crm", "sales-eu"]
+    assert named_in("select * from crm.main.accounts", projects) == ["crm"]  # DuckDB's own catalog, not the project
+    assert named_in("select 1 as scrm", projects) == []
 
 
 def test_a_key_reads_only_its_projects(hub):
@@ -230,6 +252,10 @@ def test_the_data_api_publishes_its_own_spec(hub):
         "description": "A data API key, made in the hub's account menu (Data API keys).",
     }
     assert spec["security"] == [{"dataKey": []}] and spec["servers"] == [{"url": "http://testserver"}]
+    # `servers` is the address asked; nothing is kept for each one (anyone can send any Host).
+    other = hub.get("/api/data/openapi.json", headers={"host": "hub.example"}).json()
+    assert other["servers"] == [{"url": "http://hub.example"}] and other["paths"] == spec["paths"]
+    assert hub.get("/api/data/openapi.json").json()["servers"] == [{"url": "http://testserver"}]
     query = spec["paths"]["/api/data/query"]["post"]
     ok = query["responses"]["200"]["content"]
     assert ok["application/json"]["schema"] == {"$ref": "#/components/schemas/QueryAnswer"}

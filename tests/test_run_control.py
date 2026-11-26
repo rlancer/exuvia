@@ -4,8 +4,11 @@ node's ``timeout``, and logs that keep what a failed node printed."""
 
 import asyncio
 import json
+import sys
 import time
 from types import SimpleNamespace
+
+import pytest
 
 from exuvia import mcp_server
 from exuvia.agent import Agent, _validate
@@ -196,6 +199,44 @@ def test_a_node_timeout_stops_a_hung_attempt(tmp_path):
     assert res["status"] == "failed"
     assert res["error"] == "timed out after 8s (the node's timeout)"
     assert "the attempt was stopped" in ws.store.run(res["id"])["log"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a runner's children are killed with its process group (POSIX)")
+def test_a_timeout_ends_a_node_that_started_a_process_of_its_own(tmp_path):
+    """The child holds the runner's output pipe: killing the runner alone
+    left the run waiting for as long as the child lived."""
+    body = """import subprocess, sys
+    print("starting a child", flush=True)
+    subprocess.run([sys.executable, "-c", "import time; time.sleep(120)"])
+    return pd.DataFrame({'x': [1]})"""
+    py(tmp_path, "shell", body=body, kw="timeout=3")
+    ws = Workspace(tmp_path)
+    started = time.monotonic()
+    res = run(ws, ["shell"])["shell"]
+    assert time.monotonic() - started < 60
+    assert (res["status"], res["error"]) == ("failed", "timed out after 3s (the node's timeout)")
+
+
+def test_cancelling_a_run_queued_behind_another_leaves_the_first_in_flight(tmp_path):
+    gate = waits_for(tmp_path)
+    ws = Workspace(tmp_path)
+    agent = Agent(ws)
+
+    async def steps(call):
+        _, first = await call("run_node", {"name": "slow", "wait_seconds": 0})
+        await until(lambda: ws.store.run(first["run_id"])["status"] == "running")
+        _, second = await call("run_node", {"name": "slow", "wait_seconds": 0})
+        await call("cancel_run", {"run_id": second["run_id"]})
+        # The first is still running: the node is, and the workspace is busy.
+        assert ws.busy and ws.status()["slow"]["state"] == "running"
+        gate.write_text("go")
+        await until(lambda: ws.store.run(first["run_id"])["status"] != "running")
+        # It succeeded: the run cancelled before it started says nothing about the node.
+        assert ws.store.run(first["run_id"])["status"] == "success"
+        assert ws.status()["slow"]["state"] == "fresh"
+
+    in_loop(agent, steps)
+    assert not ws.busy and not ws._inflight and not ws._unfinished
 
 
 def test_timeout_parses_from_python_and_sql(tmp_path):

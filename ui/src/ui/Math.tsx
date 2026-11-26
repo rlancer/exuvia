@@ -16,6 +16,8 @@ export default function MathExpression({ value, display }: { value: string; disp
     throwOnError: false,
     errorColor: colorVars["--color-text-error"],
     output: "htmlAndMathml",
+    // No rule or space wider than a line: `\rule{200em}{1em}` must not stretch the page.
+    maxSize: 40,
   });
   return display === "block" ? <div dangerouslySetInnerHTML={{ __html: html }} /> : <span dangerouslySetInnerHTML={{ __html: html }} />;
 }

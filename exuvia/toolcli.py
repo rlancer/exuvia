@@ -166,6 +166,14 @@ async def _run(url: str | None, project: str | None, name: str | None, tool_inpu
             return 0
         with _quiet():
             res = await backend.call(name, tool_input)
+            ws = getattr(backend, "ws", None)
+            if ws is not None and ws.busy:
+                # A project opened here (no --url) runs in this process, and a
+                # run would end with it: run_node's "the run goes on" must be
+                # true, so this waits for what it started.
+                print("exuvia tool: waiting for the run to end, it runs in this process (Ctrl-C stops it)", file=sys.stderr)
+                while ws.busy:
+                    await asyncio.sleep(0.2)
     except Unreachable as e:
         print(f"exuvia tool: {backend.unreachable(e)}", file=sys.stderr)
         return 2

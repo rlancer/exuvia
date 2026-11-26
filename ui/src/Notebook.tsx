@@ -1,4 +1,4 @@
-import { createContext, lazy, memo, Suspense, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, lazy, memo, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { colorVars, durationVars, fontWeightVars, radiusVars, spacingVars, textSizeVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { Badge } from "@astryxdesign/core/Badge";
@@ -70,13 +70,33 @@ export function Notebook(props: {
   const [scroller, setScroller] = useState<HTMLElement | null>(null);
   const cells = useRef(new Map<string, HTMLElement>());
   const first = useRef(true);
+  // The node last picked in the notebook itself: its cell is under the pointer, and stays there.
+  const own = useRef<string | null>(null);
+  const pick = useCallback(
+    (name: string | null) => {
+      own.current = name;
+      onSelect(name);
+    },
+    [onSelect],
+  );
+  const { onEdit } = props;
+  const edit = useCallback(
+    (name: string) => {
+      own.current = name;
+      onEdit(name);
+    },
+    [onEdit],
+  );
 
   // The selected node's cell in view: centred when the notebook opens on it, brought in when it is picked elsewhere.
   useEffect(() => {
-    const el = selected ? cells.current.get(selected) : null;
-    if (!el || !scroller) return;
+    if (!scroller) return;
     const smooth = !first.current;
     first.current = false;
+    const here = own.current !== null && own.current === selected;
+    own.current = null;
+    const el = selected ? cells.current.get(selected) : null;
+    if (!el || here) return;
     const box = scroller.getBoundingClientRect();
     const r = el.getBoundingClientRect();
     if (smooth && r.top >= box.top && r.top <= box.bottom - 96) return;
@@ -90,7 +110,7 @@ export function Notebook(props: {
 
   return (
     <Scroller.Provider value={scroller}>
-      <div ref={setScroller} {...stylex.props(styles.scroll)} onClick={(e) => e.target === e.currentTarget && onSelect(null)}>
+      <div ref={setScroller} {...stylex.props(styles.scroll)} onClick={(e) => e.target === e.currentTarget && pick(null)}>
         <div {...stylex.props(styles.column)}>
           <Text type="supporting" color="secondary" xstyle={styles.note}>
             The graph in reading order: each node after what it reads, chains kept together, stages as sections. Reading order is not run order: a node
@@ -107,8 +127,8 @@ export function Notebook(props: {
                     selected={c.id === selected}
                     flash={props.flash[c.id] ?? 0}
                     dark={props.dark}
-                    onSelect={onSelect}
-                    onEdit={props.onEdit}
+                    onSelect={pick}
+                    onEdit={edit}
                   />
                 ) : (
                   <ViewCell key={c.id} cell={c} project={project} dark={props.dark} onOpen={() => props.onOpenView(c.view.name)} />

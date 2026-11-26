@@ -43,6 +43,8 @@ const PIN_HEAD = 38;
 /** Room a stage's frame leaves around its nodes, and its header above them. */
 const PAD = 12;
 const FRAME_HEAD = 30;
+/** The narrowest canvas the Activity panel opens over by itself, and the graph is fitted beside: the panel's 340px and room for a graph. */
+const ROOM_FOR_ACTIVITY = 900;
 
 type CardData = { g: GraphNode; selected: boolean; flash: number; dim: boolean };
 
@@ -248,14 +250,27 @@ export function Canvas(props: {
   const [moved, setMoved] = useState(0);
   // The node to bring into view at the next fit: at first the one selected, so coming back from the notebook keeps it in view.
   const focusing = useRef<string | null>(selected);
-  // Open by default on a graph big enough to lose track of, where there is room for it.
+  // Open by default on a graph big enough to lose track of, where there is
+  // room for it: on the canvas itself, which the inspector and the side panel
+  // leave half a wide window of. Until the canvas is measured, the window says.
   const narrow = useMediaQuery("(max-width: 1100px)");
-  const activityOpen = prefs.activity ?? (nodes.length > 8 && !narrow);
+  const flow = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = flow.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const seen = new ResizeObserver(() => setWidth(el.clientWidth));
+    seen.observe(el);
+    setWidth(el.clientWidth);
+    return () => seen.disconnect();
+  }, []);
+  const roomy = width ? width >= ROOM_FOR_ACTIVITY : !narrow;
+  const activityOpen = prefs.activity ?? (nodes.length > 8 && roomy);
   // Fit the graph (or the node brought into view) beside the open Activity panel, not under it.
   const fitPadding = useRef<FitViewOptions["padding"]>(0.15);
-  fitPadding.current = activityOpen && !narrow ? { top: "32px", right: "340px", bottom: "32px", left: "32px" } : 0.15;
+  fitPadding.current = activityOpen && roomy ? { top: "32px", right: "340px", bottom: "32px", left: "32px" } : 0.15;
   const focusPadding = useRef<FitViewOptions["padding"]>(0.8);
-  focusPadding.current = activityOpen && !narrow ? { top: "25%", right: "360px", bottom: "25%", left: "25%" } : 0.8;
+  focusPadding.current = activityOpen && roomy ? { top: "25%", right: "360px", bottom: "25%", left: "25%" } : 0.8;
 
   const shown = useMemo(() => visible(nodes, views, stages, { collapsed, showViews: prefs.views }), [nodes, views, stages, collapsed, prefs.views]);
   const at = useRef(shown.at);
@@ -328,7 +343,12 @@ export function Canvas(props: {
           };
       }
     });
-    setRfNodes([...frames, ...items]);
+    // Each keeps the size React Flow measured it at: a node drawn again with
+    // none counts as new, and the graph as not yet measured.
+    setRfNodes((old) => {
+      const measured = new Map(old.map((n) => [n.id, n.measured]));
+      return [...frames, ...items].map((n) => (measured.get(n.id) ? { ...n, measured: measured.get(n.id) } : n));
+    });
 
     const busy = new Set<string>();
     for (const n of nodes) if (n.state === "running" || n.state === "queued") busy.add(shown.at[n.name]);
@@ -354,11 +374,15 @@ export function Canvas(props: {
     );
   }, [shown, nodes, positions, selected, flash, dark, project, moved, fold, onOpenView, setRfNodes, setRfEdges]);
 
-  // Fit once React Flow has measured the nodes, and again on structural change.
+  // Fit once React Flow has measured the nodes, and again on structural
+  // change: once for each shape of the graph, so a status update, a selection
+  // or the clock never takes the view back from where it was moved to.
   const initialized = useNodesInitialized();
+  const fitted = useRef<string | null>(null);
   useEffect(() => {
-    if (!initialized) return;
+    if (!initialized || fitted.current === structure) return;
     const t = setTimeout(() => {
+      fitted.current = structure;
       // A node in a folded stage is brought into view as its stage's card.
       const target = focusing.current ? (at.current[focusing.current] ?? null) : null;
       focusing.current = null;
@@ -386,7 +410,7 @@ export function Canvas(props: {
   const plainViews = views.filter((v) => !v.canvas).length;
 
   return (
-    <div {...stylex.props(styles.flow)}>
+    <div ref={flow} {...stylex.props(styles.flow)}>
       <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}

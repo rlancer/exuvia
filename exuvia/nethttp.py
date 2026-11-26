@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -71,8 +72,6 @@ def proxy_hint(url: str, error: Exception | None = None) -> str:
 
 
 def _safe(proxy: str) -> str:
-    """A proxy URL without its password."""
-    parts = urlsplit(proxy)
-    if parts.password:
-        return proxy.replace(f":{parts.password}@", ":***@", 1)
-    return proxy
+    """A proxy URL without its password, with or without a scheme
+    (``user:pw@proxy:3128`` is a proxy too, and has no scheme to parse by)."""
+    return re.sub(r"^((?:[a-z][a-z0-9+.-]*://)?[^:@/]*):[^@/]*@", r"\1:***@", proxy, count=1, flags=re.I)
