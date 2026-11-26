@@ -31,11 +31,10 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import os
 import sys
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 ORIGIN = "cli"
 
@@ -98,47 +97,38 @@ def read_value(args: argparse.Namespace, stdin: Any = None) -> str:
 
 # -- a running exuvia -------------------------------------------------------------
 def check_url(url: str, allow_http: bool) -> str:
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        raise SystemExit(f"--url must be an http(s) address, e.g. https://exuvia.example.com/p/research: got {url!r}")
-    if parts.scheme == "http" and not allow_http and not _loopback(parts.hostname):
-        raise SystemExit(
-            f"{url} is plain http on another machine: the value and your token would cross the network "
-            "unencrypted. Use its https address, or --allow-http if the network is private."
-        )
-    return url.rstrip("/")
+    """remote.check_url, for the command line: a refused address exits."""
+    from .remote import check_url
 
-
-def _loopback(host: str) -> bool:
-    from .nethttp import loopback
-
-    return loopback(host)
+    try:
+        return check_url(url, allow_http)
+    except ValueError as e:
+        raise SystemExit(str(e)) from None
 
 
 class Remote:
-    def __init__(self, url: str, token: str | None, group: str | None = None, hub: bool = False):
-        import httpx
-
-        headers = {"X-Exuvia-Origin": ORIGIN}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        if group:
-            self.url, base = f"{url} (group {group})", f"{url}/api/groups/{quote(group, safe='')}"
-        elif hub:
-            self.url, base = f"{url} (the hub's variables)", f"{url}/api/hub"
-        else:
-            self.url, base = url, f"{url}/api"
-        from .nethttp import client_options
-
-        self.http = httpx.Client(base_url=base, headers=headers, timeout=30.0, **client_options(url))
-
-    def _call(self, method: str, path: str, body: Any = None) -> dict[str, Any]:
-        import httpx
+    def __init__(self, url: str, allow_http: bool, group: str | None = None, hub: bool = False):
+        from .remote import connect
 
         try:
-            r = self.http.request(method, path, json=body)
-        except httpx.HTTPError as e:
-            raise SystemExit(f"could not reach exuvia at {self.url} ({type(e).__name__}): is it running?") from e
+            self.http = connect(url, allow_http, origin=ORIGIN)
+        except ValueError as e:
+            raise SystemExit(str(e)) from None
+        url = self.http.where
+        if group:
+            self.url, self.base = f"{url} (group {group})", f"/api/groups/{quote(group, safe='')}"
+        elif hub:
+            self.url, self.base = f"{url} (the hub's variables)", "/api/hub"
+        else:
+            self.url, self.base = url, "/api"
+
+    def _call(self, method: str, path: str, body: Any = None) -> dict[str, Any]:
+        from .remote import Unreachable
+
+        try:
+            r = self.http.request(method, self.base + path, json=body)
+        except Unreachable as e:
+            raise SystemExit(str(e)) from e
         if r.status_code == 401:
             raise SystemExit(
                 f"{self.url} needs a token: set EXUVIA_API_TOKEN (or EXUVIA_API_TOKEN_FILE) to the server's token "
@@ -229,9 +219,7 @@ def main(args: argparse.Namespace) -> None:
     if args.hub and not args.url:
         raise SystemExit("--hub is a hub's own variables: give the hub's address with --url")
     if args.url:
-        target: Remote | Local = Remote(
-            check_url(args.url, args.allow_http), os.environ.get("EXUVIA_API_TOKEN"), args.group, args.hub
-        )
+        target: Remote | Local = Remote(args.url, args.allow_http, args.group, args.hub)
         where = target.url
     else:
         from .cli import _load_dotenv

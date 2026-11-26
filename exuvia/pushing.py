@@ -121,20 +121,6 @@ def encode(value: Any) -> tuple[bytes, str]:
     return _to_json(value).encode("utf-8"), "json"
 
 
-def _token(token: str | None) -> str | None:
-    if token:
-        return token
-    if os.environ.get("EXUVIA_API_TOKEN"):
-        return os.environ["EXUVIA_API_TOKEN"]
-    path = os.environ.get("EXUVIA_API_TOKEN_FILE")
-    if path:
-        try:
-            return Path(path).expanduser().read_text(encoding="utf-8").strip() or None
-        except OSError as e:
-            raise PushError(f"EXUVIA_API_TOKEN_FILE: cannot read {path}: {e.strerror or e}") from e
-    return None
-
-
 def push(
     url: str,
     node: str,
@@ -157,30 +143,21 @@ def push(
     names): your own agent token from the workbench's account menu, or the
     server's. Plain http is refused unless the server is on this machine or
     ``allow_http``. Raises PushError when the push did not happen."""
-    import httpx
+    from .remote import Unreachable
 
-    from .envcli import check_url
-    from .nethttp import client_options, proxy_hint
-
-    try:
-        base = check_url(url, allow_http)
-    except SystemExit as e:
-        raise PushError(str(e)) from None
     data, fmt = encode(value)
     query: dict[str, str] = {"format": fmt}
     if params:
         query["params"] = json.dumps(params, default=str)
     if note:
         query["note"] = note[:500]
-    headers = {"Content-Type": FORMATS[fmt], "X-Exuvia-Origin": "push"}
-    tok = _token(token)
-    if tok:
-        headers["Authorization"] = f"Bearer {tok}"
-    target = f"{base}/api/nodes/{quote(node, safe='')}/push"
     try:
-        r = httpx.post(target, params=query, content=data, headers=headers, timeout=timeout, **client_options(base))
-    except httpx.HTTPError as e:
-        raise PushError(f"could not reach exuvia at {base} ({type(e).__name__}): is it running?{proxy_hint(base, e)}") from e
+        with _connect(url, allow_http, "push", token, timeout) as http:
+            base = http.where
+            r = http.post(f"/api/nodes/{quote(node, safe='')}/push", params=query, content=data,
+                          headers={"Content-Type": FORMATS[fmt]})
+    except Unreachable as e:
+        raise PushError(str(e)) from e
     if r.status_code == 401:
         raise PushError(
             f"{base} needs a token: set EXUVIA_API_TOKEN (or EXUVIA_API_TOKEN_FILE) to your own agent token "
@@ -200,28 +177,28 @@ def push(
 def cancel_run(url: str, run_id: str, *, token: str | None = None, allow_http: bool = False) -> None:
     """Stop run ``run_id`` of the exuvia project at ``url`` (as for
     :func:`push`). Raises PushError when it could not be stopped."""
-    import httpx
-
-    from .envcli import check_url
-    from .nethttp import client_options, proxy_hint
+    from .remote import Unreachable
 
     try:
-        base = check_url(url, allow_http)
-    except SystemExit as e:
-        raise PushError(str(e)) from None
-    headers = {"X-Exuvia-Origin": "cli"}
-    tok = _token(token)
-    if tok:
-        headers["Authorization"] = f"Bearer {tok}"
-    try:
-        r = httpx.post(
-            f"{base}/api/runs/{quote(run_id, safe='')}/cancel", headers=headers, timeout=30.0, **client_options(base)
-        )
-    except httpx.HTTPError as e:
-        raise PushError(f"could not reach exuvia at {base} ({type(e).__name__}): is it running?{proxy_hint(base, e)}") from e
+        with _connect(url, allow_http, "cli", token, 30.0) as http:
+            base = http.where
+            r = http.post(f"/api/runs/{quote(run_id, safe='')}/cancel")
+    except Unreachable as e:
+        raise PushError(str(e)) from e
     if r.status_code == 401:
         raise PushError(f"{base} needs a token: set EXUVIA_API_TOKEN (or EXUVIA_API_TOKEN_FILE)")
     if r.status_code >= 400:
         raise PushError(f"{base}: HTTP {r.status_code}: {r.text[:300]}")
     if not r.json().get("ok"):
         raise PushError(f"run {run_id} is not queued or running at {base}, so there is nothing to stop")
+
+
+def _connect(url: str, allow_http: bool, origin: str, token: str | None, timeout: float) -> Any:
+    """remote.connect, its ValueError (a refused address, an unreadable
+    token file) as a PushError."""
+    from .remote import FROM_ENV, connect
+
+    try:
+        return connect(url, allow_http, origin=origin, token=token or FROM_ENV, timeout=timeout)
+    except ValueError as e:
+        raise PushError(str(e)) from None
