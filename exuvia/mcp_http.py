@@ -31,6 +31,7 @@ from typing import Any
 
 from .mcp_server import (
     HUB_API_TOOLS,
+    Backend,
     HUB_GUIDE_TOOL,
     NO_PROJECT,
     ORIGIN,
@@ -74,7 +75,7 @@ def _tool_defs() -> list[dict[str, Any]]:
     return [{"name": t["name"], "description": t["description"], "input_schema": t["input_schema"]} for t in TOOLS]
 
 
-class ProjectBackend:
+class ProjectBackend(Backend):
     """One loaded project: ``exuvia serve``'s own, or the hub project the
     request's path names."""
 
@@ -88,7 +89,7 @@ class ProjectBackend:
         role = _role.get()
         return [t for t in _tool_defs() if _may(role, t["name"])]
 
-    async def call(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
+    async def call_tool(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
         if not _may(_role.get(), name):
             return False, _view_only(None)
         ok, text, _ = await _ctx.get().agent.call_tool(name, args, ORIGIN)
@@ -98,7 +99,7 @@ class ProjectBackend:
         return ok, text
 
 
-class HubLocalBackend:
+class HubLocalBackend(Backend):
     """Every project on this hub, as HubBackend (mcp_server.py) offers them
     from outside, but called in this process."""
 
@@ -157,7 +158,7 @@ class HubLocalBackend:
         ctx, problem = await self._project(args["project"])
         return (False, problem) if problem else (True, ctx.agent.instructions())
 
-    async def call(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
+    async def call_tool(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
         if name == "list_projects":
             return True, json.dumps({"projects": self.hub.visible(), "templates": self.hub.templates()}, indent=1)
         if name in PROJECT_FREE:
