@@ -9,8 +9,8 @@ import { api, type Column, type ColumnStats, type GraphNode, type Preview, type 
 import { fmtBytes, fmtCell, fmtNum } from "./util";
 
 /*
- * What a node made, shown wherever it is shown: the inspector's Data and
- * Chart tabs, its query box, and a notebook cell's preview.
+ * What a node made, shown wherever it is shown: the inspector's Data tab (its
+ * chart over its rows), its query box, and a notebook cell's preview.
  */
 
 /**
@@ -234,8 +234,71 @@ export function themeColors(host: HTMLElement, names: string[]): string[] {
   return out;
 }
 
+/** The rows a chart's selection holds, out of the rows it charts; null while nothing is selected. */
+export type ChartSelection = { columns: Column[]; rows: unknown[][]; of: number } | null;
+
+type Enc = { field?: unknown; type?: unknown; aggregate?: unknown; bin?: unknown; timeUnit?: unknown } | undefined;
+
+/** A row's value on a continuous axis, as a number (a time as its milliseconds). */
+const asNumber = (v: unknown): number => (typeof v === "number" ? v : v instanceof Date ? v.getTime() : typeof v === "string" ? Date.parse(v) : NaN);
+
+/**
+ * The selection a chart gets so it can pick rows, or null when its spec is
+ * not one it can be added to (a layered, faceted or concatenated chart, one
+ * with params of its own, or one whose x is aggregated, binned or by time
+ * unit, where a mark is not a row). A continuous x is brushed by dragging (x
+ * and y for points, x alone otherwise); a category x is picked by clicking.
+ */
+export function chartBrush(chart: Record<string, unknown> | null): { param: Record<string, unknown>; fields: string[]; kind: "interval" | "point" } | null {
+  if (!chart || ["layer", "facet", "repeat", "concat", "hconcat", "vconcat", "params", "selection"].some((k) => k in chart)) return null;
+  const enc = (chart.encoding ?? {}) as Record<string, Enc>;
+  const plain = (e: Enc) => !!e && typeof e.field === "string" && !e.aggregate && !e.bin && !e.timeUnit;
+  const continuous = (e: Enc) => plain(e) && (e!.type === "quantitative" || e!.type === "temporal");
+  const { x, y } = enc;
+  if (!plain(x)) return null;
+  const mark = typeof chart.mark === "string" ? chart.mark : (chart.mark as { type?: string } | undefined)?.type;
+  if (continuous(x)) {
+    const both = ["point", "circle", "square"].includes(mark ?? "") && continuous(y);
+    const fields = both ? [x!.field as string, y!.field as string] : [x!.field as string];
+    return { kind: "interval", fields, param: { name: "brush", select: { type: "interval", encodings: both ? ["x", "y"] : ["x"] } } };
+  }
+  return { kind: "point", fields: [x!.field as string], param: { name: "brush", select: { type: "point", encodings: ["x"] } } };
+}
+
+/** The rows of `rows` (named by `columns`) inside a selection's value (Vega's `brush` signal); null for an empty one. */
+export function selectedRows(
+  brush: { kind: "interval" | "point"; fields: string[] },
+  value: Record<string, unknown> | null | undefined,
+  columns: Column[],
+  rows: unknown[][],
+): unknown[][] | null {
+  if (!value) return null;
+  const tests: ((r: unknown[]) => boolean)[] = [];
+  for (const f of brush.fields) {
+    const got = value[f];
+    const i = columns.findIndex((c) => c.name === f);
+    if (!Array.isArray(got) || i < 0) continue;
+    if (brush.kind === "interval") {
+      const [lo, hi] = [asNumber(got[0]), asNumber(got[1])].sort((a, b) => a - b);
+      tests.push((r) => {
+        const v = asNumber(r[i]);
+        return v >= lo && v <= hi;
+      });
+    } else {
+      const keep = new Set(got.map(String));
+      tests.push((r) => keep.has(String(r[i])));
+    }
+  }
+  if (!tests.length) return null;
+  return rows.filter((r) => tests.every((t) => t(r)));
+}
+
 /** A node's chart (`chart` in its decorator): its Vega-Lite spec over its output, in the theme's colours. */
-export function NodeChart({ node, dark, height = 300 }: { node: GraphNode; dark: boolean; height?: number }) {
+export function NodeChart({ node, dark, height = 300, onSelect }: { node: GraphNode; dark: boolean; height?: number; onSelect?: (s: ChartSelection) => void }) {
+  // The latest onSelect, so a new one does not draw the chart again.
+  const select = useRef(onSelect);
+  select.current = onSelect;
+  const linked = !!onSelect;
   const ref = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   // A node with several outputs charts its first table.
@@ -254,12 +317,17 @@ export function NodeChart({ node, dark, height = 300 }: { node: GraphNode; dark:
       const values = d.rows.map((r) => Object.fromEntries(r.map((v, i) => [cols[i], v])));
       // The chart is drawn on a canvas: it takes the theme's colours as they are now.
       const [label, rule, strong, ...series] = themeColors(ref.current!, ["--color-text-secondary", "--color-border", "--color-border-emphasized", ...SERIES]);
+      // Linked to a table: a selection on the chart picks the rows it shows.
+      const brush = linked ? chartBrush(node.chart) : null;
       const spec = {
         $schema: "https://vega.github.io/schema/vega-lite/v5.json",
         width: "container",
         height,
         autosize: { type: "fit", contains: "padding" },
         ...node.chart,
+        ...(brush && {
+          params: [brush.kind === "interval" ? { ...brush.param, select: { ...(brush.param.select as object), mark: { fill: series[0], fillOpacity: 0.12, stroke: series[0] } } } : brush.param],
+        }),
         data: { values },
         config: {
           background: "transparent",
@@ -278,8 +346,23 @@ export function NodeChart({ node, dark, height = 300 }: { node: GraphNode; dark:
         if (cancelled || !ref.current) return;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const res = await embed(ref.current, spec as any, { actions: { export: true, source: false, compiled: false, editor: false } });
-        if (cancelled) res.finalize();
-        else finalize = () => res.finalize();
+        if (cancelled) {
+          res.finalize();
+          return;
+        }
+        finalize = () => res.finalize();
+        select.current?.(null);
+        if (brush) {
+          // A drag fires on every move: the rows are worked out once a frame.
+          let frame = 0;
+          res.view.addSignalListener("brush", (_name: string, value: unknown) => {
+            cancelAnimationFrame(frame);
+            frame = requestAnimationFrame(() => {
+              const rows = selectedRows(brush, value as Record<string, unknown>, d.columns!, d.rows!);
+              select.current?.(rows ? { columns: d.columns!, rows, of: d.rows!.length } : null);
+            });
+          });
+        }
       } catch (e) {
         if (!cancelled) setError(`Chart spec error: ${(e as Error).message}`);
       }
@@ -288,7 +371,7 @@ export function NodeChart({ node, dark, height = 300 }: { node: GraphNode; dark:
       cancelled = true;
       finalize?.();
     };
-  }, [d, node.chart, dark, height]);
+  }, [d, node.chart, dark, height, linked]);
   return (
     <>
       {error && <Banner status="error" title={error} />}

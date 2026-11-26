@@ -218,6 +218,14 @@ from universe u join rolling_vol v using (ticker)
 group by 1
 ```
 
+**A chart** (`chart`) shows in the node's Data tab, and in its notebook cell,
+over the rows it charts (the first 5,000). On a chart of one view whose x is
+a column (not aggregated, binned or by time unit) the two are linked: drag
+across a continuous x (and y, for points) or click a category, and the rows
+under it show only what was picked; Clear shows them all again. A chart that
+sets its own `params`, or layers, facets or concatenates views, is drawn as
+written, without the link.
+
 **The description** is the module or function docstring, or a SQL node's
 first `--` lines, and it is Markdown: the notebook renders it as a cell's
 text. Start with a one-sentence paragraph, which is all a card on the canvas
@@ -948,7 +956,7 @@ node's cell.
   description, rendered as Markdown: see "Nodes"), what it reads (each a
   link to that cell), its code (folded;
   a click opens it in the inspector's editor), the first rows of its output
-  or its chart, and Run.
+  under its chart when it has one, and Run.
 - **Views** come right after the last node they read: a pinned view
   (`canvas` in its view.json) rendered live, as on the canvas; any other
   view a line that opens it.
