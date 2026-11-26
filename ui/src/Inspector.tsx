@@ -540,6 +540,15 @@ function DataTab({ node }: { node: GraphNode }) {
 }
 
 function ChartTab({ node, dark }: { node: GraphNode; dark: boolean }) {
+  return (
+    <div {...stylex.props(styles.scroll, styles.chart)}>
+      <NodeChart node={node} dark={dark} />
+    </div>
+  );
+}
+
+/** A node's chart (`chart` in its decorator): its Vega-Lite spec over its output, in the theme's colours. The notebook draws it too. */
+export function NodeChart({ node, dark, height = 300 }: { node: GraphNode; dark: boolean; height?: number }) {
   const ref = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -560,7 +569,7 @@ function ChartTab({ node, dark }: { node: GraphNode; dark: boolean }) {
       const spec = {
         $schema: "https://vega.github.io/schema/vega-lite/v5.json",
         width: "container",
-        height: 300,
+        height,
         autosize: { type: "fit", contains: "padding" },
         ...node.chart,
         data: { values },
@@ -590,12 +599,12 @@ function ChartTab({ node, dark }: { node: GraphNode; dark: boolean }) {
       cancelled = true;
       finalize?.();
     };
-  }, [node.name, node.artifact_id, node.chart, dark]);
+  }, [node.name, node.artifact_id, node.chart, dark, height]);
   return (
-    <div {...stylex.props(styles.scroll, styles.chart)}>
+    <>
       {error && <Banner status="error" title={error} />}
       <div ref={ref} {...stylex.props(styles.vega)} />
-    </div>
+    </>
   );
 }
 

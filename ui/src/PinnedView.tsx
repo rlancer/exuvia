@@ -26,6 +26,8 @@ export default function PinnedView(props: {
   height: number;
   dark: boolean;
   onOpen: () => void;
+  /** As wide as where it is put (the notebook's column), at the height its manifest names. */
+  fill?: boolean;
 }) {
   const { project, dark } = props;
   // Parameters the view itself set (useParams in its code): the card then shows that set.
@@ -64,7 +66,7 @@ export default function PinnedView(props: {
   return (
     <div {...stylex.props(styles.card)}>
       {/* The header is the card's handle: drag it to move the card, double-click it to open the view. */}
-      <div {...stylex.props(styles.head)} data-pin-head onDoubleClick={props.onOpen}>
+      <div {...stylex.props(styles.head, props.fill && styles.still)} data-pin-head onDoubleClick={props.onOpen}>
         <IconWindow />
         <span {...stylex.props(styles.title)} title={title}>
           {title}
@@ -81,7 +83,7 @@ export default function PinnedView(props: {
         </div>
       ) : null}
       {/* Wheel and drag inside the view are the view's own: they do not pan the canvas. */}
-      <div {...stylex.props(styles.body, styles.size(props.width, props.height))}>
+      <div {...stylex.props(styles.body, props.fill ? styles.fill(props.height) : styles.size(props.width, props.height))}>
         {view.parse_error ? null : (
           <ViewFrame key={view.hash} view={view} params={params} dark={dark} hidden={false} refreshing={refreshing} onParams={changeParams} onStatus={setStatus} />
         )}
@@ -127,8 +129,11 @@ const styles = stylex.create({
     fontSize: textSizeVars["--font-size-base"],
     fontWeight: fontWeightVars["--font-weight-semibold"],
   },
+  // Nothing to drag in the notebook.
+  still: { cursor: "default" },
   problem: { paddingInline: spacingVars["--spacing-3"], paddingBlock: spacingVars["--spacing-1"] },
   body: { position: "relative", display: "flex", cursor: "default", backgroundColor: colorVars["--color-background-body"] },
   // The size the view's manifest names (`canvas.width`, `canvas.height`).
   size: (width: number, height: number) => ({ width, height }),
+  fill: (height: number) => ({ width: "100%", height }),
 });

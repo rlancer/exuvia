@@ -87,3 +87,7 @@ export const IconActivity = icon(<path d="M1.5 8.5h3l1.8-4.5 3.4 8 1.8-3.5h3" />
 /** Fold a stage into one card, or open it out. */
 export const IconCollapse = icon(<path d="M4.5 2.5 8 6l3.5-3.5M4.5 13.5 8 10l3.5 3.5" />);
 export const IconUncollapse = icon(<path d="M4.5 5.5 8 2l3.5 3.5M4.5 10.5 8 14l3.5-3.5" />);
+/** The graph drawn as a canvas: nodes and the edges between them. */
+export const IconGraph = icon(<path d="M4 2.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM12 2.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM8 10.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM4.8 5.3l2.4 5.4M11.2 5.3l-2.4 5.4" />);
+/** The graph read as a notebook: a page of cells, top to bottom. */
+export const IconNotebook = icon(<path d="M3.5 1.8h9a.7.7 0 0 1 .7.7v11a.7.7 0 0 1-.7.7h-9a.7.7 0 0 1-.7-.7v-11a.7.7 0 0 1 .7-.7zM5.5 4.8h5M5.5 8h5M5.5 11.2h3" />);
