@@ -6,6 +6,7 @@ import json
 import sys
 import textwrap
 
+import duckdb
 import pytest
 
 from exuvia.agent import Agent
@@ -112,7 +113,7 @@ def test_ad_hoc_sql_reads_outputs_and_nothing_else(tmp_path):
         "set lock_configuration = false",
         "install httpfs",
     ):
-        with pytest.raises(Exception):
+        with pytest.raises(duckdb.Error):  # refused by the sandbox: permission, catalog or parser error
             ws.query(sql)
     assert not (tmp_path / "leak.csv").exists() and not (tmp_path / "x.duckdb").exists()
 

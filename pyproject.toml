@@ -64,3 +64,9 @@ exclude = ["/site"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+# Default rules plus flake8-bugbear. B008 (a call in a default argument) is
+# how FastAPI declares Depends/Query/Body parameters.
+extend-select = ["B"]
+ignore = ["B008"]

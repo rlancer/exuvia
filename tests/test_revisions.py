@@ -318,12 +318,13 @@ def test_processes_creating_the_postgres_schema_at_once_all_succeed():
             start = threading.Barrier(len(dbs))
             errors: list[BaseException] = []
 
+            # B023: the threads run and are joined in this iteration, so the loop's start and errors are the ones meant.
             def open_store(db):
-                start.wait()
+                start.wait()  # noqa: B023
                 try:
                     Store(db, scope="s", owns_db=False)
                 except BaseException as e:  # noqa: BLE001 - reported below
-                    errors.append(e)
+                    errors.append(e)  # noqa: B023
 
             threads = [threading.Thread(target=open_store, args=(db,)) for db in dbs]
             for t in threads:

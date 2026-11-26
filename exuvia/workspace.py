@@ -591,7 +591,7 @@ class Workspace:
         closer = {r["name"] for r in self.store.env_vars()}
         group_names = {r["name"] for r in inherited["rows"] if r["source"] == "group"}
         out = []
-        for r, v in zip(inherited["rows"], envvars.public(inherited["rows"])):
+        for r, v in zip(inherited["rows"], envvars.public(inherited["rows"]), strict=True):
             if r["source"] == "group":
                 out.append({**v, "source": "group", "group": group, "overridden": v["name"] in closer})
             else:
@@ -1098,7 +1098,7 @@ class Workspace:
                 for d in deps_in_plan
             ]
             run_id, key = run_ids[name], keys[name]
-            bad = [d for d, r in zip(deps_in_plan, results) if r not in OK]
+            bad = [d for d, r in zip(deps_in_plan, results, strict=True) if r not in OK]
             if bad:
                 return self._finish(run_id, name, key, status="skipped", error=f"upstream failed: {', '.join(bad)}")
             lock = self._node_locks.setdefault((name, key), asyncio.Lock())
@@ -2046,7 +2046,7 @@ class Workspace:
             rel = rel.limit(int(limit), int(offset))
             return {
                 "kind": "table",
-                "columns": [{"name": c, "type": str(t)} for c, t in zip(rel.columns, rel.types)],
+                "columns": [{"name": c, "type": str(t)} for c, t in zip(rel.columns, rel.types, strict=True)],
                 "rows": jsonable([list(r) for r in rel.fetchall()]),
                 "total": total,
                 **meta,
@@ -2078,7 +2078,7 @@ class Workspace:
             rows = [list(r) for r in rel.fetchall()]
             return {
                 "kind": "table",
-                "columns": [{"name": c, "type": str(t)} for c, t in zip(cols, rel.types)],
+                "columns": [{"name": c, "type": str(t)} for c, t in zip(cols, rel.types, strict=True)],
                 "rows": jsonable(rows),
                 "total": total,
                 **meta,

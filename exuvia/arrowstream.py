@@ -45,7 +45,7 @@ class ArrowStream:
         import pyarrow as pa
 
         self._owner = owner
-        columns = [{"name": c, "type": str(t)} for c, t in zip(rel.columns, rel.types)] if rel is not None else []
+        columns = [{"name": c, "type": str(t)} for c, t in zip(rel.columns, rel.types, strict=True)] if rel is not None else []
         tag = {METADATA_KEY: json.dumps({"columns": columns, **(meta or {})}, default=str).encode()}
         if rel is None:  # a statement with no result set
             self.schema = pa.schema([]).with_metadata(tag)

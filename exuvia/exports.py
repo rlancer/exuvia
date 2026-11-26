@@ -194,7 +194,7 @@ def _flatten(batch: Any, schema: Any) -> Any:
     import pyarrow as pa
 
     cols = []
-    for col, field in zip(batch.columns, schema):
+    for col, field in zip(batch.columns, schema, strict=True):
         if field.type == pa.string() and col.type != pa.string() and _needs_text(col.type):
             cols.append(pa.array([None if v is None else _text(v) for v in col.to_pylist()], pa.string()))
         else:
