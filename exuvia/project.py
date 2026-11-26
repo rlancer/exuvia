@@ -108,6 +108,10 @@ class Node:
     stage: str | None = None
     helpers: list[str] = field(default_factory=list)  # lib/ files it imports, directly or not
     code_hash: str = ""  # the node file plus every helper it imports
+    # The same with descriptions taken out (docstrings; a SQL node's leading
+    # `--` description lines): what freshness compares, so rewriting a
+    # description doesn't make the node stale. See ``logic_text``.
+    logic_hash: str = ""
     parse_error: str | None = None
     line: int = 1
 
@@ -349,6 +353,7 @@ class Project:
         self.config = self._load_config()  # picks up hand edits to exuvia.json
         raw: dict[str, Node] = {}
         helper_cache: dict[Path, tuple[str, set[str]]] = {}
+        helper_logic: dict[str, str] = {}
         for path in self.node_files():
             n = parse_node(path, self.root)
             if n.kind == "python":
@@ -359,6 +364,12 @@ class Project:
                 if n.helpers:
                     n.code_hash = _hash(
                         text + "".join(f"\0{rel}\0{helper_cache[self.root / rel][0]}" for rel in n.helpers)
+                    )
+                    for rel in n.helpers:
+                        if rel not in helper_logic:
+                            helper_logic[rel] = python_logic(helper_cache[self.root / rel][0])
+                    n.logic_hash = _hash(
+                        python_logic(text) + "".join(f"\0{rel}\0{helper_logic[rel]}" for rel in n.helpers)
                     )
             raw[n.name] = n
         # SQL deps can only be resolved once every node name is known.
@@ -728,9 +739,11 @@ def parse_node(path: Path, root: Path) -> Node:
         path=path.relative_to(root).as_posix(),
         code_hash=_hash(text),
     )
+    node.logic_hash = node.code_hash
     if not NODE_NAME.match(node.name):
         node.parse_error = "File name must be a snake_case identifier."
         return node
+    node.logic_hash = _hash(logic_text(kind, text))
     try:
         if kind == "python":
             _parse_python(node, text)
@@ -742,6 +755,99 @@ def parse_node(path: Path, root: Path) -> Node:
     except ValueError as e:
         node.parse_error = str(e)
     return node
+
+
+def same_code(run: dict[str, Any], node: Node) -> bool:
+    """Whether ``run`` ran the code ``node`` has now, descriptions aside.
+    Runs recorded before ``logic_hash`` existed compare the whole text."""
+    if run.get("logic_hash"):
+        return run["logic_hash"] == node.logic_hash
+    return run.get("code_hash") == node.code_hash
+
+
+def logic_text(kind: str, text: str) -> str:
+    """A node file's text with its descriptions taken out, so an edit that
+    only rewrites a description leaves it, and the node's ``logic_hash``,
+    the same. Code, comments and formatting stay as written."""
+    return python_logic(text) if kind == "python" else _sql_logic(text)
+
+
+def python_logic(text: str) -> str:
+    """Python source without its docstrings: the module's and every
+    function's and class's. A docstring on lines of its own goes with those
+    lines and any blank lines after it, so adding or removing one changes
+    nothing either. Line endings become ``\n``. Source that doesn't parse
+    comes back as it is."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return text
+    data = text.encode("utf-8")
+    lines = data.split(b"\n")
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line) + 1)
+    cuts: list[tuple[int, int]] = []
+    for owner in ast.walk(tree):
+        if not isinstance(owner, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        first = owner.body[0] if owner.body else None
+        if not (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+            and first.end_lineno is not None
+            and first.end_col_offset is not None
+        ):
+            continue
+        # AST lines count from 1; columns are UTF-8 byte offsets.
+        top, bottom = first.lineno - 1, first.end_lineno - 1
+        alone = not lines[top][: first.col_offset].strip() and not lines[bottom][first.end_col_offset :].strip()
+        if alone:
+            bottom += 1
+            while bottom < len(lines) and not lines[bottom].strip():
+                bottom += 1
+            cuts.append((starts[top], min(starts[bottom], len(data))))
+        else:  # `def f(): """Doc."""`, or `"""Doc."""; x = 1`
+            cuts.append((starts[top] + first.col_offset, starts[bottom] + first.end_col_offset))
+    out, at = [], 0
+    for begin, end in sorted(cuts):
+        if begin < at:
+            continue
+        out.append(data[at:begin])
+        at = end
+    out.append(data[at:])
+    return b"".join(out).decode("utf-8")
+
+
+def _sql_logic(text: str) -> str:
+    """SQL without the description: the leading ``--`` lines that aren't a
+    header setting (``-- schedule:``, ``-- chart:`` and the rest stay), and
+    the blank lines among them."""
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    kept: list[str] = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not stripped.startswith("--"):
+            return "\n".join(kept + lines[i:])
+        if _sql_setting(line) is not None:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def _sql_setting(line: str) -> tuple[str, str] | None:
+    """``(key, value)`` when a leading ``--`` line is a header setting such
+    as ``-- schedule: 0 17 * * 1-5``; None when it is description."""
+    m = _SQL_HEADER.match(line)
+    if not m:
+        return None
+    key, val = m.group(1), m.group(2)
+    if key in _SQL_SETTINGS or (key in _SQL_SETTINGS_WITH_VALUE and val):
+        return key, val
+    return None
 
 
 def _is_node_decorator(dec: ast.expr) -> ast.Call | bool:
@@ -927,35 +1033,33 @@ def _parse_sql(node: Node, text: str) -> None:
             if line.strip():
                 break
             continue
-        m = _SQL_HEADER.match(line)
-        if m:
-            key, val = m.group(1), m.group(2)
-            if key == "schedule":
-                node.schedule = val or None
-            elif key == "cascade":
-                node.cascade = val.lower() not in {"false", "no", "0"}
-            elif key == "chart" and val:
-                node.chart = json.loads(val)
-            elif key == "tags" and val:
-                node.tags = [t.strip() for t in val.split(",") if t.strip()]
-            elif key == "params":
-                node.params = _param_names([t.strip() for t in val.split(",") if t.strip()])
-            elif key in RUN_OPTIONS and val:
-                _set_run_option(node, key, val)
-            elif key == "live":
-                node.live = _live_value(val)
-            elif key == "partition_by":
-                node.partition_by = _partition_column(val)
-            elif key == "key":
-                node.key = key_columns([t for t in val.split(",") if t.strip()])
-            elif key == "on_duplicate" and val:
-                node.on_duplicate = on_duplicate_value(val.strip())
-            elif key == "merge":
-                node.merge = _merge_value(val)
-            else:
-                desc.append(_comment_text(line))
-        else:
+        setting = _sql_setting(line)
+        if setting is None:
             desc.append(_comment_text(line))
+            continue
+        key, val = setting
+        if key == "schedule":
+            node.schedule = val or None
+        elif key == "cascade":
+            node.cascade = val.lower() not in {"false", "no", "0"}
+        elif key == "chart":
+            node.chart = json.loads(val)
+        elif key == "tags":
+            node.tags = [t.strip() for t in val.split(",") if t.strip()]
+        elif key == "params":
+            node.params = _param_names([t.strip() for t in val.split(",") if t.strip()])
+        elif key in RUN_OPTIONS:
+            _set_run_option(node, key, val)
+        elif key == "live":
+            node.live = _live_value(val)
+        elif key == "partition_by":
+            node.partition_by = _partition_column(val)
+        elif key == "key":
+            node.key = key_columns([t for t in val.split(",") if t.strip()])
+        elif key == "on_duplicate":
+            node.on_duplicate = on_duplicate_value(val.strip())
+        elif key == "merge":
+            node.merge = _merge_value(val)
     # Markdown, as a Python node's docstring is: its lines and blank lines kept.
     node.description = "\n".join(desc).strip()
     _check_key(node)
@@ -1115,6 +1219,10 @@ def check_stage(name: Any, spec: Any) -> tuple[dict[str, Any], str | None]:
 
 
 RUN_OPTIONS = ("retries", "retry_delay", "overlap", "timeout")
+# Header settings a SQL node's leading `--` lines can make, and the ones of
+# them an empty value leaves out (that line is then description).
+_SQL_SETTINGS = {"schedule", "cascade", "params", "live", "partition_by", "key", "merge"}
+_SQL_SETTINGS_WITH_VALUE = {"chart", "tags", "on_duplicate", *RUN_OPTIONS}
 MAX_RETRIES = 10
 MAX_TIMEOUT = 86400
 OVERLAP_POLICIES = ("queue", "skip")

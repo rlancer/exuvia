@@ -63,6 +63,7 @@ TABLES = {
     version integer,        -- a partitioned node's output: its manifest version (output_partitions; 0: empty)
     partition_by text,      -- and the column it is partitioned by
     unique_key text,        -- json [column]: the key its whole output was checked against (keys.py)
+    logic_hash text,        -- code_hash with descriptions taken out (project.logic_text): what freshness compares
     primary key (project, id)
 )""",
     "schedules": """create table if not exists schedules (
@@ -312,6 +313,8 @@ def _upgrade_legacy(db: Database) -> None:
         db.query("alter table runs add column partition_by text")
     if cols and "unique_key" not in cols:  # from before keys
         db.query("alter table runs add column unique_key text")
+    if cols and "logic_hash" not in cols:  # from before description edits kept nodes fresh
+        db.query("alter table runs add column logic_hash text")
     cols = db.columns("code_revisions")
     if cols and "view_name" not in cols:  # from before views existed
         db.query("alter table code_revisions add column view_name text")

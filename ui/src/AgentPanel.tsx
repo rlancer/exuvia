@@ -60,6 +60,8 @@ function toolLabel(it: Extract<Item, { kind: "tool" }>): string {
       return `read ${i.name ?? ""}`;
     case "write_node":
       return `wrote ${i.name ?? "…"}${i.lines ? ` · ${i.lines} lines` : ""}`;
+    case "edit_node":
+      return `edited ${i.name ?? "…"}`;
     case "delete_node":
       return `deleted ${i.name ?? ""}`;
     case "run_node": {
@@ -84,6 +86,8 @@ function toolLabel(it: Extract<Item, { kind: "tool" }>): string {
       return `read ${i.path ?? ""}`;
     case "write_file":
       return `wrote ${i.path ?? "…"}${i.lines ? ` · ${i.lines} lines` : ""}`;
+    case "edit_file":
+      return `edited ${i.path ?? "…"}`;
     case "delete_file":
       return `deleted ${i.path ?? ""}`;
     case "docs":
