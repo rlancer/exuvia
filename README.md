@@ -218,6 +218,13 @@ from universe u join rolling_vol v using (ticker)
 group by 1
 ```
 
+**The description** is the module or function docstring, or a SQL node's
+first `--` lines, and it is Markdown: the notebook renders it as a cell's
+text. Start with a one-sentence paragraph, which is all a card on the canvas
+shows (as plain text), then put any detail in paragraphs or `-` lists. An
+indented line is a code block in Markdown, so Google- or NumPy-style
+`Args:` sections show as code; write them as a list instead.
+
 The graph is read **statically** (`ast` for Python, identifier matching for
 SQL), so a broken node still shows up in the graph with its error, and nothing
 runs until you ask.
@@ -912,7 +919,8 @@ node's cell.
   its description and how many of its nodes are in each state. Nodes in no
   stage come in an untitled section, placed by what they read.
 - **Each node is a cell**: its state, what it is for (its docstring or
-  description), what it reads (each a link to that cell), its code (folded;
+  description, rendered as Markdown: see "Nodes"), what it reads (each a
+  link to that cell), its code (folded;
   a click opens it in the inspector's editor), the first rows of its output
   or its chart, and Run.
 - **Views** come right after the last node they read: a pinned view

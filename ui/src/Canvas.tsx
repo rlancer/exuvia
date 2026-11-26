@@ -24,7 +24,7 @@ import { Badge } from "@astryxdesign/core/Badge";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
 import type { GraphNode, NodeStage, Project, ProjectView } from "./api";
-import { ago, fmtNum, until } from "./util";
+import { ago, fmtNum, summary, until } from "./util";
 import { IconClock, IconCollapse, IconLayers, IconUncollapse, IconWindow } from "./icons";
 import { StateDot, statusOf, statusText } from "./ui/state";
 import { countStates, lineage, STATE_ORDER, visible, worstState, type Item, type Visible } from "./canvasGraph";
@@ -60,7 +60,7 @@ const Card = memo(function Card({ data }: NodeProps<Node<CardData>>) {
           <Badge label={g.kind === "python" ? "py" : "sql"} />
         </span>
       </div>
-      {g.description ? <div {...stylex.props(styles.desc)}>{g.description}</div> : null}
+      {g.description ? <div {...stylex.props(styles.desc)}>{summary(g.description)}</div> : null}
       <div {...stylex.props(styles.meta)}>
         <span {...stylex.props(styles.state, statusText[status])}>{g.state}</span>
         {g.rows != null && <span>{fmtNum(g.rows)} rows</span>}

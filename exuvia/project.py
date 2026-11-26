@@ -913,6 +913,13 @@ def _imported_modules(tree: ast.AST, package: str | None) -> set[str]:
 _SQL_HEADER = re.compile(r"^\s*--\s*([a-z_]+)\s*:\s*(.*?)\s*$")
 
 
+def _comment_text(line: str) -> str:
+    """A ``--`` comment line's text: the marker and the one space after it
+    gone, any further indent (a nested list item's) kept."""
+    text = line.strip()[2:]
+    return (text[1:] if text.startswith(" ") else text).rstrip()
+
+
 def _parse_sql(node: Node, text: str) -> None:
     desc: list[str] = []
     for line in text.splitlines():
@@ -946,10 +953,11 @@ def _parse_sql(node: Node, text: str) -> None:
             elif key == "merge":
                 node.merge = _merge_value(val)
             else:
-                desc.append(line.strip()[2:].strip())
+                desc.append(_comment_text(line))
         else:
-            desc.append(line.strip()[2:].strip())
-    node.description = " ".join(d for d in desc if d)
+            desc.append(_comment_text(line))
+    # Markdown, as a Python node's docstring is: its lines and blank lines kept.
+    node.description = "\n".join(desc).strip()
     _check_key(node)
     if node.schedule:
         _validate_cron(node.schedule)
