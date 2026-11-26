@@ -8,6 +8,7 @@ streamed to the UI so the analyst sees exactly what changed.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import inspect
 import json
 import time
@@ -25,7 +26,7 @@ from .envvars import EnvError
 from .npm import NpmError
 from .npm import declared as npm_declared
 from .packages import PackagesError, agent_mode, missing_package
-from .project import NODE_NAME, coerce_param
+from .project import NODE_NAME, NODE_SUFFIXES, coerce_param
 from .report import log_tail, node_report
 from .workspace import Workspace, acting_as
 
@@ -72,6 +73,34 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "source": {"type": "string"},
             },
             "required": ["name", "kind", "source"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "edit_node",
+        "read_only": False,
+        "handler": "_tool_edit_node",
+        "description": (
+            "Change part of a node file by exact string replacement, instead of resending the whole file with "
+            "write_node. `old_string` must appear in the file exactly once (add surrounding lines to make it "
+            "unique) unless `replace_all` is set. Returns the parsed deps or a parse error, and a unified diff "
+            "of the change. Editing does not run the node; call run_node after."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "the node's name"},
+                "old_string": {
+                    "type": "string",
+                    "description": "Text to replace, copied exactly from the file (indentation included)",
+                },
+                "new_string": {"type": "string", "description": "What replaces it"},
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "Replace every occurrence; otherwise `old_string` must appear exactly once",
+                },
+            },
+            "required": ["name", "old_string", "new_string"],
             "additionalProperties": False,
         },
     },
@@ -125,6 +154,33 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "source": {"type": "string"},
             },
             "required": ["path", "source"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "edit_file",
+        "read_only": False,
+        "handler": "_file_tool",
+        "description": (
+            "Change part of a helper module under `lib/` by exact string replacement, instead of resending it "
+            "with write_file. `old_string` must appear exactly once unless `replace_all` is set. Returns the "
+            "nodes that import it (now stale when the code changed: re-run them) and a unified diff of the change."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "lib/<name>.py or lib/<package>/<name>.py"},
+                "old_string": {
+                    "type": "string",
+                    "description": "Text to replace, copied exactly from the file (indentation included)",
+                },
+                "new_string": {"type": "string", "description": "What replaces it"},
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "Replace every occurrence; otherwise `old_string` must appear exactly once",
+                },
+            },
+            "required": ["path", "old_string", "new_string"],
             "additionalProperties": False,
         },
     },
@@ -868,7 +924,7 @@ def rolling_vol(returns):
 - Long runs: run_node waits up to wait_seconds (default 240), then returns status `running` with the run_id while the run goes on. Follow it with read_run (wait_seconds to wait for the end; its log so far otherwise) instead of calling run_node again, and print progress (`print(..., flush=True)`) in nodes that take minutes, so the log shows how far they got. A run that hangs or runs code you have since fixed: cancel_run, then run the node again.
 - Add a `chart` when a node's output is naturally visual (time series, distributions, rankings).
 - Imports go inside the function or at module top; available packages: {packages}; `list_packages` with `environment: true` lists every installed package and its version. Do not pip install. A package that is not listed goes in the project's `pyproject.toml` under `[project] dependencies`, which exuvia installs from: {packages_how}
-- Only delete or rename nodes when asked. Keep edits minimal when changing an existing node.
+- Only delete or rename nodes when asked. Keep edits minimal when changing an existing node: change part of a node or helper with edit_node / edit_file (exact string replacement; the result shows the diff) rather than resending the whole file with write_node / write_file.
 - Every save of a node, view file, `lib/` helper or config file is kept as a revision: list_revisions and read_revision show old code, restore_node and restore_view_file bring a version back (itself saved as a new version). A tag names the whole project's code at one save, like a git tag: list_tags, and read_tag to compare a tag with the code now. Create or delete a tag only when the user asks (e.g. "tag this as v1" before a big change).
 - For anything about exuvia this guide does not cover (the `exuvia` command line and its options, updating exuvia, deploying it, hubs, auth and tokens, executors, package indexes, the HTTP API, MCP setup, the code's history in git), read `docs` before you answer or act: it is the documentation of the installed version. Do not answer those from memory, and do not guess at commands or flags.
 - The code's whole history as git commits (to browse with git, keep on GitHub or any git remote, or back up off the server) is the `exuvia mirror` command, run in the user's own terminal so it pushes with their own git or `gh` sign-in. Read `docs` with topic `The history in git` for the command and its options, then give the user the command for this project: `--url` with the project's address (the workbench address they open, `<hub>/p/<project>` on a hub; ask them if you don't know it), `--remote` or `--github`, and their agent token in `EXUVIA_API_TOKEN`. Run it yourself only when you have a shell on the user's machine and they asked you to. Never ask for, store or write a git token: their git already has one.
@@ -1017,12 +1073,38 @@ class Agent:
         with ws.editing():
             ws.project.write_node(args["name"], args["source"], args["kind"])
             ws.reload()
-        node = ws.graph.nodes.get(args["name"])
-        if node is None:
+        return self._node_written(args["name"], {"written": args["name"]})
+
+    def _tool_edit_node(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+        node = args["name"]
+        with ws.editing():  # read and write under one hold, so no other save lands in between
+            path = ws.project.path_for(node)
+            if path is None:
+                return False, f"no node named {node}", {}
+            before = ws.project.source(node)
+            after, count, error = apply_edit(before, args)
+            if error:
+                return False, f"{node} not changed: {error}", {"node": node}
+            ws.project.write_node(node, after, NODE_SUFFIXES[path.suffix])
+            ws.reload()
+        rel = path.relative_to(ws.project.root).as_posix()
+        return self._node_written(node, {"edited": node, "replacements": count}, edit_diff(before, after, rel))
+
+    def _node_written(
+        self, node: str, out: dict[str, Any], diff: str | None = None
+    ) -> tuple[bool, str, dict[str, Any]]:
+        """What write_node and edit_node answer once the file is saved."""
+        n = self.ws.graph.nodes.get(node)
+        if n is None:
             return False, "file written but node not found after reload", {}
-        if node.parse_error:
-            return False, f"written, but it does not parse: {node.parse_error}", {"node": node.name}
-        return True, json.dumps({"written": node.name, "deps": node.deps, "schedule": node.schedule}), {"node": node.name}
+        if n.parse_error:
+            said = f"written, but it does not parse: {n.parse_error}"
+            return False, said + (f"\n{diff}" if diff else ""), {"node": node}
+        out = {**out, "deps": n.deps, "schedule": n.schedule}
+        if diff is not None:
+            out["diff"] = diff
+        return True, json.dumps(out), {"node": node}
 
     def _tool_delete_node(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
         ws = self.ws
@@ -1073,13 +1155,23 @@ class Agent:
                 return True, used + info["source"], {"file": path}
             if name == "delete_file":
                 return True, json.dumps(ws.delete_helper(path)), {}
-            result = ws.write_helper(path, args["source"])
+            if name == "edit_file":
+                with ws.editing():  # read and write under one hold
+                    before = ws.read_helper(path)["source"]
+                    after, count, error = apply_edit(before, args)
+                    if error:
+                        return False, f"{path} not changed: {error}", {"file": path}
+                    result = ws.write_helper(path, after)
+                result = {**result, "replacements": count, "diff": edit_diff(before, after, path)}
+            else:
+                result = ws.write_helper(path, args["source"])
         except ValueError as e:
             return False, str(e), {}
         except KeyError:
             return False, f"no file {path}", {}
         if result["parse_error"]:
-            return False, f"written, but it does not parse: {result['parse_error']}", {"file": path}
+            said = f"written, but it does not parse: {result['parse_error']}"
+            return False, said + (f"\n{result['diff']}" if result.get("diff") else ""), {"file": path}
         return True, json.dumps(result), {"file": path}
 
     async def _tool_run_node(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
@@ -1557,6 +1649,43 @@ def _record(transcript: list[dict[str, Any]], ev: dict[str, Any]) -> None:
         transcript.append(dict(ev))
 
 
+# Longest diff edit_node and edit_file return, in characters.
+EDIT_DIFF_MAX = 8000
+
+
+def apply_edit(source: str, args: dict[str, Any]) -> tuple[str, int, str | None]:
+    """``source`` with ``args["old_string"]`` replaced by ``args["new_string"]``
+    (every occurrence with ``replace_all``), how many were replaced, and why
+    nothing could be when it couldn't."""
+    old, new = args["old_string"], args["new_string"]
+    if not old:
+        return source, 0, "`old_string` is empty: copy the text to replace from the file"
+    if old == new:
+        return source, 0, "`old_string` and `new_string` are the same"
+    count = source.count(old)
+    if count == 0:
+        return source, 0, (
+            "`old_string` is not in the file. Read it again and copy the text exactly, indentation included"
+        )
+    if count > 1 and not args.get("replace_all"):
+        return source, 0, (
+            f"`old_string` appears {count} times. Add surrounding lines to make it unique, or set `replace_all`"
+        )
+    return source.replace(old, new), count, None
+
+
+def edit_diff(before: str, after: str, path: str) -> str:
+    """A unified diff of one edit, cut to ``EDIT_DIFF_MAX`` characters."""
+    diff = "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True), after.splitlines(keepends=True), f"a/{path}", f"b/{path}", n=2
+        )
+    )
+    if len(diff) > EDIT_DIFF_MAX:
+        diff = diff[:EDIT_DIFF_MAX] + "\n… (diff cut short)\n"
+    return diff
+
+
 def _ui_input(name: str, args: dict[str, Any]) -> dict[str, Any]:
     if name == "write_node":
         src = args.get("source") or ""
@@ -1564,6 +1693,8 @@ def _ui_input(name: str, args: dict[str, Any]) -> dict[str, Any]:
     if name == "write_file":
         src = args.get("source") or ""
         return {"path": args.get("path"), "lines": src.count("\n") + 1}
+    if name in ("edit_node", "edit_file"):  # not the strings: a transcript keeps what the change was, not its text
+        return {k: args[k] for k in ("name", "path") if k in args}
     if name == "write_view_file":
         src = args.get("source") or ""
         return {"name": args.get("name"), "path": args.get("path"), "lines": src.count("\n") + 1}

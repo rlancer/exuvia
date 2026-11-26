@@ -2623,8 +2623,10 @@ Credentials can then be limited to the prefix. On AWS:
 ## The agent
 
 The agent runs a tool loop over the live workspace: `list_nodes`, `read_node`,
-`write_node`, `delete_node`, `list_files` / `read_file` / `write_file` /
-`delete_file` (shared helpers under `lib/`), `list_views` / `read_view` /
+`write_node`, `edit_node`, `delete_node`, `list_files` / `read_file` /
+`write_file` / `edit_file` / `delete_file` (shared helpers under `lib/`;
+the two `edit_` tools change part of a file by exact string replacement and
+return the diff, so a one-line fix doesn't resend the whole file), `list_views` / `read_view` /
 `write_view` / `write_view_file` / `delete_view_file` / `delete_view` (see
 "Views"), `set_stage` / `delete_stage` (see "The canvas"),
 `list_revisions` / `read_revision` / `restore_node` / `restore_view_file`
