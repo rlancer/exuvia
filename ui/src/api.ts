@@ -517,6 +517,32 @@ export const tokensApi = {
   },
 };
 
+/** A read-only key for the data API (`/api/data/`): never the key itself. */
+export interface DataKey {
+  id: string;
+  name: string;
+  /** Its last 4 characters. */
+  hint: string;
+  /** The projects it reads, sorted. */
+  projects: string[];
+  /** Who made it (a user id); null for the operator. */
+  owner_id: string | null;
+  created_at: number;
+  last_used: number | null;
+}
+
+export const dataKeysApi = {
+  list: async () => ((await sendTo("GET", "/api/data-keys")).json() as Promise<{ keys: DataKey[] }>).then((r) => r.keys),
+  /** A new key; `key` is in this answer only. */
+  create: async (name: string, projects: string[]) =>
+    (await sendTo("POST", "/api/data-keys", { name, projects })).json() as Promise<DataKey & { key: string }>,
+  update: async (id: string, change: { name?: string; projects?: string[] }) =>
+    (await sendTo("PATCH", `/api/data-keys/${encodeURIComponent(id)}`, change)).json() as Promise<DataKey>,
+  revoke: async (id: string) => {
+    await sendTo("DELETE", `/api/data-keys/${encodeURIComponent(id)}`);
+  },
+};
+
 /** One of the MCP servers the built-in agent connects to for you: never the header values. */
 export interface AgentMcpServer {
   name: string;

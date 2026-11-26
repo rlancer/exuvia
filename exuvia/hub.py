@@ -92,6 +92,8 @@ class Hub:
         # When each person last opened and changed each project (activity.py;
         # set by create_hub_app, in the groups' database).
         self.activity: Any = None
+        # Read-only keys for the data API (datakeys.py; set by create_hub_app).
+        self.data_keys: Any = None
         self.keyring = envvars.Keyring(self.root / ".exuvia")
         # The projects a request may see (create_hub_app filters by sharing).
         self.visible: Any = self.list
@@ -315,6 +317,8 @@ class Hub:
                 self.groups.forget_project(project_id)
             if self.activity is not None:
                 self.activity.forget(project_id)
+            if self.data_keys is not None:
+                self.data_keys.forget_project(project_id)
             self._load_origin.pop(project_id, None)
         store = artifact_store()
         if store is not None:
@@ -432,9 +436,9 @@ class Hub:
                     tar.add(path, arcname=f"{pid}/{posix}")
                 if copy is not None:
                     tar.add(copy, arcname=f"{pid}/{DB_REL}")
-            # The user list, the projects' sharing and the groups, unless a
+            # The user list, the projects' sharing, the groups and the data keys, unless a
             # shared database holds them.
-            stores = [s for s in (self.users, self.sharing, self.groups) if s is not None]
+            stores = [s for s in (self.users, self.sharing, self.groups, self.data_keys) if s is not None]
             if stores and not database_url():
                 users = Path(scratch) / "hub.db"
                 for s in stores:
@@ -474,6 +478,8 @@ class Hub:
                     self.sharing.replace_from(users)
                 if self.groups is not None:
                     self.groups.replace_from(users)
+                if self.data_keys is not None:
+                    self.data_keys.replace_from(users)
             # The hub's key comes along with the groups it encrypts; with a
             # shared database (whose groups the archive does not replace) it
             # only fills in a key this hub does not have yet.

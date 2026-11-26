@@ -26,6 +26,7 @@ import { GroupDialog, GroupNameDialog, ProjectGroupDialog } from "./GroupDialog"
 import { notifyError } from "./toast";
 import { GENERAL_LABEL, ShareDialog } from "./Share";
 import { ConnectDialog } from "./Connect";
+import { DataKeysDialog } from "./DataKeys";
 import { HubVariablesPanel } from "./AdminPage";
 import { SignedInAs } from "./Me";
 import { HelpMenu } from "./Help";
@@ -33,7 +34,7 @@ import { useMe } from "./useMe";
 import { useColorMode } from "./theme/colorMode";
 import { Brand, Mark } from "./Brand";
 import { AppDialog } from "./ui/AppDialog";
-import { IconFolder, IconMoon, IconPlus, IconShare, IconSpark, IconSun, IconTrash } from "./icons";
+import { IconFolder, IconKey, IconMoon, IconPlus, IconShare, IconSpark, IconSun, IconTrash } from "./icons";
 import { HubNav, workbenchUrl as workbench } from "./HubNav";
 import { Toasts } from "./toast";
 import { isProjectSort, recentWork, SORT_LABEL, sortProjects, type ProjectSort } from "./projectOrder";
@@ -96,6 +97,7 @@ export default function Hub() {
   const [filter, setFilter] = useState<Filter>("all");
   const [sort, setSort] = useState<ProjectSort>(keptSort);
   const [connecting, setConnecting] = useState(false);
+  const [dataKeys, setDataKeys] = useState(false);
   // The group open on its page: from a row, or `/?group=<id>` (the Environment dialog's link).
   const [openGroup, setOpenGroup] = useState<string | null>(() => new URLSearchParams(location.search).get("group"));
   const [newGroup, setNewGroup] = useState(false);
@@ -292,6 +294,13 @@ export default function Hub() {
               tooltip="Connect a coding agent to every project on this hub over MCP"
               onClick={() => setConnecting(true)}
             />
+            <Button
+              label="Data API"
+              icon={<IconKey />}
+              isIconOnly={compact}
+              tooltip="Read-only keys for apps of your own that read this hub's data"
+              onClick={() => setDataKeys(true)}
+            />
             <Divider orientation="vertical" xstyle={styles.rule} />
           </>
         )}
@@ -423,6 +432,7 @@ export default function Hub() {
         />
       )}
       {connecting && listing && <ConnectDialog auth={listing.auth} onClose={() => setConnecting(false)} />}
+      {dataKeys && <DataKeysDialog onClose={() => setDataKeys(false)} />}
       {sharing && (
         <ShareDialog project={sharing.id} name={sharing.name} self={uid} onClose={() => setSharing(null)} onChanged={load} />
       )}
