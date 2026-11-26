@@ -7,6 +7,7 @@
                                  --param as_of=2026-03-02 replays a parameter set
     exuvia status [dir]          print node freshness
     exuvia mcp [dir | --url URL] the agent's tools for MCP clients (Claude Code, Cursor, ...)
+    exuvia mirror <dest>         the project's code history as git commits; --remote / --github push them
     exuvia executor              run nodes for a remote control plane (HTTP service)
     exuvia env list|set|rm       a project's environment variables (a secret is asked for, never an argument)
     exuvia secrets-key           print a new key for EXUVIA_SECRETS_KEY
@@ -260,6 +261,35 @@ def cmd_cancel(args: argparse.Namespace) -> None:
     print(f"stopping run {args.run_id}: it ends failed, with the error `cancelled`")
 
 
+def cmd_mirror(args: argparse.Namespace) -> None:
+    from .mirror import LocalSource, MirrorError, RemoteSource, mirror
+
+    dest = Path(args.dest).resolve()
+    try:
+        if args.url and args.project:
+            raise MirrorError("give --url or --project, not both")
+        if args.url:
+            source: RemoteSource | LocalSource = RemoteSource(args.url, allow_http=args.allow_http)
+        else:
+            root = Path(args.project or ".").resolve()
+            if dest == root or root in dest.parents:
+                raise MirrorError(f"{dest} is inside the project: mirror into a folder outside it")
+            _load_dotenv(root)
+            source = LocalSource(root)
+        done = mirror(source, dest, branch=args.branch, remote=args.remote, github=args.github, log=print)
+    except MirrorError as e:
+        raise SystemExit(f"exuvia mirror: {e}") from None
+    if not done["tip"]:
+        print(f"nothing to mirror: {source.where} has no code revisions yet")
+        return
+    line = f"{done['commits']} new commit{'s' * (done['commits'] != 1)} on {args.branch} in {dest}" if done["commits"] else (
+        f"{args.branch} in {dest} is up to date"
+    )
+    if done["pushed"]:
+        line += f", pushed to {done['remote']}"
+    print(f"{line} ({done['tip'][:12]})")
+
+
 def cmd_executor(args: argparse.Namespace) -> None:
     import os
 
@@ -343,6 +373,18 @@ def main() -> None:
                    help="the project: <hub>/p/<project>, or an `exuvia serve` address; sends EXUVIA_API_TOKEN")
     p.add_argument("--allow-http", action="store_true", help="send to a plain-http address on another machine anyway")
     p.set_defaults(fn=cmd_cancel)
+
+    p = sub.add_parser("mirror", help="copy a project's code history into a git repository, and push it")
+    p.add_argument("dest", help="the git repository to commit to (made when it is missing or an empty folder)")
+    p.add_argument("--url", metavar="URL",
+                   help="the project: <hub>/p/<project>, or an `exuvia serve` address; sends EXUVIA_API_TOKEN")
+    p.add_argument("--project", metavar="DIR", help="a project folder on this machine instead (default: .)")
+    p.add_argument("--branch", default="exuvia", help="the branch the history goes on (default: exuvia)")
+    p.add_argument("--remote", metavar="REMOTE", help="push the branch here afterwards: a remote's name or a git URL")
+    p.add_argument("--github", metavar="OWNER/NAME",
+                   help="push to this GitHub repository through the gh CLI, creating it (private) when missing")
+    p.add_argument("--allow-http", action="store_true", help="read from a plain-http address on another machine anyway")
+    p.set_defaults(fn=cmd_mirror)
 
     p = sub.add_parser("executor", help="serve node execution over HTTP")
     p.add_argument("--host", default="127.0.0.1")

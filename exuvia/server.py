@@ -1159,11 +1159,25 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
     # -- code revisions --------------------------------------------------------
     @r.get("/code/revisions")
     def code_revisions(
-        node: str | None = None, view: str | None = None, limit: int = 200, ctx: Ctx = Depends(get_ctx)
+        node: str | None = None,
+        view: str | None = None,
+        limit: int = 200,
+        after: str | None = None,
+        ctx: Ctx = Depends(get_ctx),
     ) -> list[dict[str, Any]]:
         """Saved versions of the project's code, newest first; ``node``
-        narrows to one node, ``view`` to one view's files (deleted ones included)."""
-        return ctx.ws.code_revisions(node=node, view=view, limit=min(max(limit, 1), 1000))
+        narrows to one node, ``view`` to one view's files (deleted ones included).
+        ``after`` (a revision id, or empty for the first) instead pages
+        through every revision oldest first, from the one after it."""
+        limit = min(max(limit, 1), 1000)
+        if after is not None:
+            if node or view:
+                raise HTTPException(400, "after pages through every revision: give it without node or view")
+            try:
+                return ctx.ws.store.code_revisions_after(after or None, limit)
+            except KeyError:
+                raise HTTPException(404, f"no revision {after}") from None
+        return ctx.ws.code_revisions(node=node, view=view, limit=limit)
 
     @r.get("/code/blobs/{digest}")
     def code_blob(digest: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:

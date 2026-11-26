@@ -1388,6 +1388,68 @@ also brings back a deleted node, file or view. Other files (`lib/`,
 `exuvia.json`, `AGENTS.md`, `pyproject.toml`) can be read and compared there
 but not restored from the workbench.
 
+### The history in git: `exuvia mirror`
+
+`exuvia mirror` copies that history into a git repository, one commit per
+save, so it can be cloned, diffed and blamed with ordinary tools, or kept on
+GitHub. It runs on your machine with your own `git`, and pushes with
+whatever git already uses there (SSH keys, a credential helper, `gh auth`):
+exuvia never holds a git credential, and nothing runs on the server.
+
+```bash
+# a hub project (or an `exuvia serve` address), pushed to a remote
+exuvia mirror ./sales-code --url https://exuvia.example.com/p/sales --remote git@github.com:me/sales-code.git
+# the same through the GitHub CLI, which creates the repository (private) the first time
+exuvia mirror ./sales-code --url https://exuvia.example.com/p/sales --github me/sales-code
+# a project folder on this machine (default: the current one); no push
+exuvia mirror ../sales-code --project .
+```
+
+- `--url` sends `EXUVIA_API_TOKEN` (or `EXUVIA_API_TOKEN_FILE`), as `exuvia
+  push` does: your own agent token from the workbench's account menu, or the
+  server's. `--project DIR` reads the folder's records directly (`EXUVIA_DB`
+  included) without starting a server. It mirrors what exuvia has recorded:
+  a file edited while no server was running is recorded when one next opens
+  the project.
+- The destination is made (`git init`) when it is missing or an empty
+  folder, with the branch checked out, so the files are there to read. In a
+  repository that already exists, the branch's files are updated only if it
+  is the one checked out (and never over a change made there).
+- History goes on one branch, `exuvia` (`--branch` for another). Each commit's
+  author is the signed-in person who saved it, or how it was saved (`agent`,
+  `ui`, `api`, `file`, `template`, ...), at an `@exuvia.invalid` address; its
+  date is the save's. Files saved together (a template, a view's files) are
+  one commit. Each message ends in `Exuvia-Origin:` and `Exuvia-Revision:
+  <id>` trailers.
+- Run it again and it carries on from the last revision the branch holds:
+  the repository is the cursor, so there is no state file, and a fresh
+  folder with `--remote` picks up from the remote's branch. The committer is
+  always `exuvia` and every date comes from the revisions, so mirroring the
+  same history again makes the same commit hashes.
+- It is one way: it never force-pushes, and it stops when the branch holds a
+  commit it did not make. Edit the code in exuvia, not in the mirror.
+
+To keep a GitHub mirror current without a machine of your own, run it on a
+schedule in the mirror repository itself:
+
+```yaml
+# .github/workflows/mirror.yml in me/sales-code
+on:
+  schedule: [{cron: "17 * * * *"}]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uvx exuvia mirror . --url https://exuvia.example.com/p/sales --remote origin
+        env:
+          EXUVIA_API_TOKEN: ${{ secrets.EXUVIA_API_TOKEN }}
+```
+
 ## Records: SQLite, Postgres, or your own adapter
 
 Run history, schedules, agent sessions and code revisions are small rows; node
@@ -2689,6 +2751,7 @@ section named after each one has the details.
 | `exuvia mcp [DIR]` | the agent's tools over MCP on stdio: the project in `DIR`, or `--url URL` to relay to a running server or hub | MCP |
 | `exuvia push NODE FILE --url URL` | upload a push node's output (`.parquet`, `.csv`, `.json`) from the machine that has the data. `--param`, `--note`, `--allow-http` | Push nodes |
 | `exuvia cancel RUN_ID --url URL` | stop a queued or running run of a running exuvia (a hub project or `exuvia serve`); sends `EXUVIA_API_TOKEN`. `--allow-http` | Stopping a run |
+| `exuvia mirror DEST` | the project's code history as git commits on branch `exuvia` in `DEST`, from `--url URL` or `--project DIR` (default `.`); `--remote REMOTE` or `--github OWNER/NAME` pushes it. `--branch`, `--allow-http` | The history in git |
 | `exuvia env list`, `set`, `rm` | a project's (or, with `--group`, a hub group's; with `--hub`, the hub's) environment variables and secrets, in a folder or over `--url` | Environment variables and secrets |
 | `exuvia executor` | serve node execution over HTTP for a control plane. `--host`, `--port` (8080) | Architecture |
 | `exuvia secrets-key` | print a new key for `EXUVIA_SECRETS_KEY` | Encryption |
@@ -3007,7 +3070,7 @@ headlessly or iframe the UI:
 | `GET/HEAD /api/artifacts/{node}/{artifact_id}.parquet` (or `.json`, `.zip`) | the stored file of one output, byte for byte, with `Range` support (see "Binary data") |
 | `GET/HEAD /api/artifacts/{node}/{artifact_id}/{part}.parquet` (or `.json`) | one output of a node with several, as a file of its own |
 | `GET /api/nodes/{name}/history` | the node's stored output per parameter set (with the `code_hash` each was computed with) |
-| `GET /api/code/revisions` | saved versions of the code, newest first (`?node=` for one node, `?view=` for one view's files, deleted ones included); each says how it was saved (`origin`), by whom (`author`, with `EXUVIA_AUTH=headers`) and whether it is current |
+| `GET /api/code/revisions` | saved versions of the code, newest first (`?node=` for one node, `?view=` for one view's files, deleted ones included); each says how it was saved (`origin`), by whom (`author`, with `EXUVIA_AUTH=headers`) and whether it is current. `?after=<revision id>` instead pages through every revision oldest first from the one after it (`?after=` with no id: from the first; `limit` up to 1000), as `exuvia mirror` reads them |
 | `GET /api/code/blobs/{hash}` | the text of one saved version |
 | `GET /api/code/archive` | the project's code as a .zip (nodes, `lib/` helpers, views, `exuvia.json`, `pyproject.toml`, `uv.lock`, `package.json`; never `.env` or outputs); `?node=` for one node and the helpers it imports, `?view=` for one view |
 | `POST /api/nodes/{name}/restore` | make a saved version (`{hash}`) current again; brings back a deleted node |

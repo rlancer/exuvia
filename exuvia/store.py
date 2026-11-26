@@ -764,6 +764,27 @@ class Store:
             r["view"] = r.pop("view_name")
         return rows
 
+    def code_revisions_after(self, after: str | None, limit: int = 1000) -> list[dict[str, Any]]:
+        """Revisions saved after revision ``after`` (from the first when it
+        is None), oldest first: the order ``exuvia mirror`` replays them in,
+        a page at a time. KeyError when no revision has the id ``after``."""
+        where, args = "project=?", [self.scope]
+        if after:
+            found = self._q("select saved_at from code_revisions where project=? and id=?", (self.scope, after))
+            if not found:
+                raise KeyError(after)
+            t = found[0]["saved_at"]
+            where += " and (saved_at > ? or (saved_at = ? and id > ?))"
+            args += [t, t, after]
+        rows = self._q(
+            f"select id, path, node, view_name, hash, origin, author, author_user, saved_at from code_revisions where {where} "
+            "order by saved_at, id limit ?",
+            (*args, limit),
+        )
+        for r in rows:
+            r["view"] = r.pop("view_name")
+        return rows
+
     def code_source(self, digest: str) -> str | None:
         """The text with this content hash, if any revision recorded it."""
         rows = self._q("select source from code_blobs where project=? and hash=?", (self.scope, digest))

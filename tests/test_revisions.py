@@ -129,6 +129,17 @@ def test_revisions_saved_in_the_same_instant_read_back_in_the_order_written(back
     revs = ws.store.code_revisions(path=path)
     assert [r["hash"] for r in revs] == [f"h{i}" for i in reversed(range(20))]
 
+    # Paging oldest first (exuvia mirror) keeps that order across the ties.
+    ws.store.record_code([(path, "nums", None, "h20", "v20")], "api", now=999.0)
+    pages, after = [], None
+    while page := ws.store.code_revisions_after(after, 3):
+        pages += page
+        after = page[-1]["id"]
+    assert [r["hash"] for r in pages] == ["h20", *(f"h{i}" for i in range(20))]
+    assert pages[0]["view"] is None
+    with pytest.raises(KeyError):
+        ws.store.code_revisions_after("no-such-id")
+
 
 def test_config_changes_are_versioned(backend, tmp_path):
     ws = Workspace(tmp_path / "p")
