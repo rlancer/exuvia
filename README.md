@@ -2685,7 +2685,18 @@ token from a file (`EXUVIA_API_TOKEN_FILE`).
 instructions, and without it describes the hub and lists its projects.
 `docs` and `version` are about exuvia rather than a project, so they take no
 `project`. One
-MCP server then covers all of them, including ones created later. A hub's
+MCP server then covers all of them, including ones created later.
+
+The agent can also organize the hub, as the person its token signs in as and
+with the same checks as the hub's own pages: `list_groups`, `get_group`,
+`create_group`, `update_group` (rename it or hand it over), `delete_group`
+and `set_group_member` for [groups](#groups-shared-access-and-secrets);
+`set_project_group` to put a project in a group, move it or take it out
+(`create_project` takes a `group` too); and `get_project_sharing`,
+`set_project_member` and `set_project_access` for [sharing a
+project](#sharing-projects), with `list_people` to find someone's user id.
+A role of `none` takes someone off. The hub's `/mcp` endpoint has them, and
+so does `exuvia mcp --url` given the hub's address. A hub's
 home page writes this setup out (**Connect agent**), with a person's own
 agent token already in it on a hub where people sign in. For an agent that should
 see only one project, give `<hub>/p/<project>` instead.

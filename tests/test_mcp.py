@@ -33,6 +33,11 @@ def nums():
 '''
 TOTAL = "select sum(n) as s from nums\n"
 TOOL_NAMES = {"guide", *(t["name"] for t in TOOLS)}
+HUB_TOOL_NAMES = {
+    "list_projects", "create_project", "list_people", "list_groups", "get_group", "create_group", "update_group",
+    "delete_group", "set_group_member", "set_project_group", "get_project_sharing", "set_project_member",
+    "set_project_access",
+}
 
 
 def text(result) -> str:
@@ -275,7 +280,7 @@ def test_a_hub_url_relays_to_every_project(hub_served):
 
     seen = asyncio.run(go())
     tools = seen["tools"]
-    assert set(tools) == {"guide", "list_projects", "create_project", *(t["name"] for t in TOOLS)}
+    assert set(tools) == {"guide", *HUB_TOOL_NAMES, *(t["name"] for t in TOOLS)}
     run_schema = tools["run_node"].input_schema
     assert run_schema["required"] == ["project", "name"] and "project" in run_schema["properties"]
     assert "project" not in tools["guide"].input_schema.get("required", [])
@@ -300,6 +305,63 @@ def test_a_hub_url_relays_to_every_project(hub_served):
     assert "ask them first" in run_schema["properties"]["project"]["description"]
     assert not seen["book_guide"].is_error and "How exuvia works" in text(seen["book_guide"])
     assert {p["id"]: p["nodes"] for p in seen["listing"]["projects"]} == {"books": 1, "other": 0}
+
+
+def test_a_hub_url_organizes_groups(hub_served):
+    """Through the relay, the agent makes groups, starts a project in one,
+    moves projects between groups and renames and deletes a group, with the
+    hub API's checks: a hub nobody signs in to (the token only) has no
+    people to add."""
+    from exuvia.mcp_server import remote_backend
+
+    async def go():
+        backend = await remote_backend(hub_served, "s3cret")
+        await backend.start()
+        try:
+            async with Client(build_server(backend, "")) as client:
+                async def call(name, args):
+                    r = await client.call_tool(name, args)
+                    return r.is_error, text(r)
+
+                _, made = await call("create_group", {"name": "Research"})
+                gid = json.loads(made)["id"]
+                in_group = await call("create_project", {"id": "books", "group": gid})
+                await call("create_project", {"id": "loose"})
+                moved = await call("set_project_group", {"project": "loose", "group": gid})
+                group = await call("get_group", {"group": gid})
+                out = await call("set_project_group", {"project": "loose", "group": None})
+                renamed = await call("update_group", {"group": gid, "name": "Lab"})
+                listed = await call("list_groups", {})
+                person = await call("set_group_member", {"group": gid, "email": "bob@example.com", "role": "editor"})
+                both = await call("set_group_member", {"group": gid, "user": "u1", "email": "b@x.org", "role": "viewer"})
+                nothing = await call("update_group", {"group": gid})
+                no_group = await call("create_project", {"id": "x", "group": "nope"})
+                sneaky = await call("get_group", {"group": "../projects"})
+                bad_project = await call("set_project_group", {"project": "../api", "group": gid})
+                deleted = await call("delete_group", {"group": gid})
+                after = await call("list_projects", {})
+            return locals()
+        finally:
+            await backend.stop()
+
+    seen = asyncio.run(go())
+    err, made = seen["in_group"]
+    assert not err and json.loads(made)["group"]["id"] == seen["gid"]
+    assert json.loads(made)["workbench"] == f"{hub_served}/p/books/"
+    assert not seen["moved"][0]
+    err, group = seen["group"]
+    assert not err and {p["id"] for p in json.loads(group)["projects"]} == {"books", "loose"}
+    assert not seen["out"][0] and json.loads(seen["out"][1])["group"] is None
+    assert not seen["renamed"][0] and json.loads(seen["renamed"][1])["name"] == "Lab"
+    assert [(g["name"], g["projects"]) for g in json.loads(seen["listed"][1])["groups"]] == [("Lab", 1)]
+    assert seen["person"][0] and "nobody signs in" in seen["person"][1]
+    assert seen["both"][0] and "give one of `user`" in seen["both"][1]
+    assert seen["nothing"][0] and "INVALID_INPUT" in seen["nothing"][1]
+    assert seen["no_group"][0] and "no group nope" in seen["no_group"][1]
+    assert seen["sneaky"][0] and "INVALID_INPUT: no group ../projects" in seen["sneaky"][1]
+    assert seen["bad_project"][0] and "no project ../api" in seen["bad_project"][1]
+    assert not seen["deleted"][0] and json.loads(seen["deleted"][1])["projects"] == ["books"]
+    assert {p["id"]: p["group"] for p in json.loads(seen["after"][1])["projects"]} == {"books": None, "loose": None}
 
 
 def test_a_hub_url_needs_the_token(hub_served):
@@ -399,7 +461,7 @@ def test_a_hub_answers_mcp_over_http(hub_served):
         return locals()
 
     seen = asyncio.run(hub_wide("s3cret"))
-    assert set(seen["tools"]) == {"guide", "list_projects", "create_project", *(t["name"] for t in TOOLS)}
+    assert set(seen["tools"]) == {"guide", *HUB_TOOL_NAMES, *(t["name"] for t in TOOLS)}
     assert seen["tools"]["run_node"].input_schema["required"] == ["project", "name"]
     assert "project" not in seen["tools"]["docs"].input_schema["properties"]
     assert not seen["docs"].is_error and "## Deploying > Kerberos" in text(seen["docs"])
