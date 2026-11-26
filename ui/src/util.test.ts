@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { summary } from "./util";
+import { fmtBytes, summary } from "./util";
 
 describe("summary", () => {
   it("is the first paragraph, on one line", () => {
@@ -22,5 +22,14 @@ describe("summary", () => {
   it("skips a leading fence and blank lines", () => {
     expect(summary("\n\n```\ncode\n```")).toBe("code");
     expect(summary("")).toBe("");
+  });
+});
+
+describe("fmtBytes", () => {
+  it("keeps to the largest unit at 1 or more", () => {
+    expect(fmtBytes(812)).toBe("812 B");
+    expect(fmtBytes(1536)).toBe("1.5 KB");
+    expect(fmtBytes(42 * 1024 * 1024)).toBe("42 MB");
+    expect(fmtBytes(null)).toBe("");
   });
 });

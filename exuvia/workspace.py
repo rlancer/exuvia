@@ -2145,6 +2145,48 @@ class Workspace:
         }
         return ArrowStream(rel, meta, owner=con)
 
+    def table_stats(
+        self,
+        name: str,
+        params: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        part: str | None = None,
+    ) -> dict[str, Any] | None:
+        """What a table output's Parquet footers say (tablestats.py): its
+        rows, row groups, sizes and compression, and each column's type (as
+        SQL has it), nulls, min and max. Reads no rows. None when the output
+        (or ``part``) is not a table. Blocking: call it off the event loop."""
+        ls = self._output_run(name, params, run_id)
+        if ls is None:
+            return None
+        if ls["kind"] == "multi" and part is not None:
+            found = self.part_file(ls, part)
+            if found is None or found[1] != "table":
+                return None
+            files = [str(found[0])]
+        elif part is None and (ls["kind"] == "table" or self.is_partitioned(ls)):
+            files = self.table_files(ls)
+        else:
+            return None
+        if not files:
+            return None
+        import duckdb
+
+        from .tablestats import parquet_stats
+
+        out = parquet_stats(files)
+        by_name = out.pop("columns")
+        # The types the Data tab and SQL show (DuckDB's), from the footers too.
+        con = duckdb.connect()
+        try:
+            rel = con.read_parquet(files, union_by_name=True).limit(0)
+            out["columns"] = [
+                {"name": c, "type": str(t), **by_name.get(c, {})} for c, t in zip(rel.columns, rel.types, strict=True)
+            ]
+        finally:
+            con.close()
+        return {"kind": "table", "run_id": ls["id"], "finished_at": ls.get("finished_at"), **out}
+
     def artifact_file(self, node: str, artifact_id: str, part: str | None = None) -> tuple[Path, str] | None:
         """The stored file of one of ``node``'s outputs and its kind (``table``,
         ``json`` or ``multi``), fetched from the remote artifact store first

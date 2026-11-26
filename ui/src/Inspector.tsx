@@ -28,7 +28,7 @@ import { useAccess } from "./Access";
 import { codeGroup, DownloadMenu, outputGroups, tableItems } from "./Export";
 import { nodeExportUrl, saveQuery, saveUrl } from "./download";
 import { CodeEditor } from "./ui/CodeEditor";
-import { DataTable, NodeChart, OutputPicker, useNodePreview, useOutputPart } from "./NodeOutput";
+import { DatasetSummary, DataTable, NodeChart, OutputPicker, useNodePreview, useOutputPart, useTableStats } from "./NodeOutput";
 import { StateDot, statusOf, statusText } from "./ui/state";
 import { useColorMode } from "./theme/colorMode";
 
@@ -380,18 +380,23 @@ function DataTab({ node }: { node: GraphNode }) {
   const { parts, shown, pick } = useOutputPart(node);
   const multi = node.output_kind === "multi";
   const { preview: p } = useNodePreview(node, 300, shown);
-  const picker = shown !== null && (
+  const isTable = p?.kind === "table";
+  // What the output's Parquet footers say: no row is read for it.
+  const stats = useTableStats(node, shown, isTable);
+  const picker = (shown !== null || (isTable && stats)) && (
     <div {...stylex.props(styles.strip)}>
-      <OutputPicker node={node} parts={parts} shown={shown} onPick={pick} />
-      {node.schema?.find((c) => c.name === shown)?.type === "table" ? (
-        <Text type="supporting" color="secondary">
-          SQL: <Code size="inherit">{`${node.name}.${shown}`}</Code>
-        </Text>
-      ) : (
-        <Text type="supporting" color="secondary">
-          JSON (not in SQL)
-        </Text>
-      )}
+      {shown !== null && <OutputPicker node={node} parts={parts} shown={shown} onPick={pick} />}
+      {shown !== null &&
+        (node.schema?.find((c) => c.name === shown)?.type === "table" ? (
+          <Text type="supporting" color="secondary">
+            SQL: <Code size="inherit">{`${node.name}.${shown}`}</Code>
+          </Text>
+        ) : (
+          <Text type="supporting" color="secondary">
+            JSON (not in SQL)
+          </Text>
+        ))}
+      {isTable && stats && <DatasetSummary stats={stats} />}
     </div>
   );
   // A node with several outputs: all of them at once, as stored.
@@ -415,7 +420,7 @@ function DataTab({ node }: { node: GraphNode }) {
       <div {...stylex.props(styles.fill)}>
         {picker}
         <div {...stylex.props(styles.scroll)}>
-          <DataTable columns={p.columns} rows={p.rows} />
+          <DataTable columns={p.columns} rows={p.rows} stats={stats} />
         </div>
         <div {...stylex.props(styles.foot)}>
           <Text type="supporting" color="secondary" maxLines={1} hasTabularNumbers xstyle={styles.footText}>

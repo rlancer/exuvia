@@ -338,6 +338,31 @@ export interface Preview {
   value?: unknown;
 }
 
+/** A table output's column, with what its Parquet footers say of it (null where they don't say). */
+export type ColumnStats = {
+  name: string;
+  type: string;
+  nulls: number | null;
+  min: unknown;
+  max: unknown;
+  /** On disk (compressed), and before compression. */
+  bytes: number;
+  uncompressed_bytes: number;
+};
+
+/** A table output's overview, read from its Parquet footers alone: GET /api/nodes/{name}/stats. */
+export interface TableStats {
+  kind: "table";
+  rows: number;
+  files: number;
+  row_groups: number;
+  bytes: number;
+  uncompressed_bytes: number;
+  compression: string[];
+  created_by: string[];
+  columns: ColumnStats[];
+}
+
 /**
  * Where this page's project API lives. `exuvia serve` serves one project at
  * `/` with its API at `/api`; a hub serves each project's workbench at
@@ -475,6 +500,9 @@ export const api = {
   schedule: () => req<ScheduleState>("GET", "/api/schedule"),
   pause: (name: string, paused: boolean) => req("POST", `/api/nodes/${name}/schedule`, { paused }),
   data: (name: string, limit = 200, part?: string) => nodeData(name, limit, part),
+  /** A table output's overview from its Parquet footers (no row is read). */
+  stats: (name: string, part?: string) =>
+    req<TableStats>("GET", `/api/nodes/${name}/stats${part ? `?part=${encodeURIComponent(part)}` : ""}`),
   runs: (name: string) => req<RunRow[]>("GET", `/api/nodes/${name}/runs`),
   recentRuns: () => req<RunRow[]>("GET", "/api/runs"),
   runDetail: (id: string) => req<RunRow>("GET", `/api/runs/${id}`),

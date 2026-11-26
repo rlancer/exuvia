@@ -382,6 +382,11 @@ def test_data_routes_prune_and_list_partitions(tmp_path):
         assert days == sorted(days) and days[0] == "2026-02-27"
         m = c.get("/api/nodes/prices/partitions").json()
         assert [f["partitions"][0] for f in m["files"]] == ["2026-02-27", "2026-03-02", "2026-03-03", "2026-03-04"]
+        # The overview sums every chunk's footer.
+        stats = c.get("/api/nodes/prices/stats").json()
+        assert (stats["rows"], stats["files"]) == (8, 4)
+        date = next(col for col in stats["columns"] if col["name"] == "date")
+        assert (date["nulls"], date["min"], date["max"]) == (0, "2026-02-27", "2026-03-04")
         # A range with no partitions has no rows, but the output's columns.
         out = c.get("/api/nodes/prices/data", params={"partitions": "2030-01-01.."}).json()
         assert out["total"] == 0 and out["rows"] == [] and [col["name"] for col in out["columns"]] == ["date", "ticker", "px"]
