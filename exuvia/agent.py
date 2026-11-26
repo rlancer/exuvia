@@ -1131,7 +1131,7 @@ class Agent:
         except Exception as e:  # duckdb errors go back to the model
             return False, f"{type(e).__name__}: {e}", {}
         cols = [c["name"] for c in res["columns"]]
-        return True, json.dumps([dict(zip(cols, r)) for r in res["rows"]], default=str)[:12000], {}
+        return True, json.dumps([dict(zip(cols, r, strict=True)) for r in res["rows"]], default=str)[:12000], {}
 
     def _tool_define_param(self, name: str, args: dict[str, Any], origin: str) -> tuple[bool, str, dict[str, Any]]:
         ws = self.ws

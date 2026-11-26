@@ -126,7 +126,7 @@ def test_tools_over_http_behind_a_proxy(served):
     assert ran.returncode == 0, ran.stderr
     assert json.loads(ran.stdout)["rows"] == 3
 
-    queried = tool(env={"EXUVIA_URL": url}, *["query_data", '{"sql": "select sum(n) as s from nums"}'])
+    queried = tool("query_data", '{"sql": "select sum(n) as s from nums"}', env={"EXUVIA_URL": url})
     assert json.loads(queried.stdout) == [{"s": 6}]
 
     assert "How exuvia works" in tool("--url", url, "guide").stdout

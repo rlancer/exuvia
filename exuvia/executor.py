@@ -374,7 +374,7 @@ class RemoteExecutor:
         resp = self.http.post("/v1/chunks/missing", json={"chunks": ids})
         resp.raise_for_status()
         missing = set(resp.json()["missing"])
-        for p, i in zip(paths, ids):
+        for p, i in zip(paths, ids, strict=True):
             if i in missing:
                 with open(p, "rb") as f:
                     self.http.put(f"/v1/chunks/{i}", content=f.read()).raise_for_status()

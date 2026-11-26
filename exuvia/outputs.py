@@ -159,7 +159,7 @@ def query_json(con: Any, sql: str, limit: int) -> dict[str, Any]:
         return {"columns": [], "rows": []}
     rows = rel.limit(limit).fetchall()
     return {
-        "columns": [{"name": c, "type": str(t)} for c, t in zip(rel.columns, rel.types)],
+        "columns": [{"name": c, "type": str(t)} for c, t in zip(rel.columns, rel.types, strict=True)],
         "rows": jsonable([list(r) for r in rows]),
     }
 

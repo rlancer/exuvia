@@ -94,7 +94,7 @@ async def node_report(
 def _shown(preview: dict[str, Any]) -> dict[str, Any]:
     if preview.get("kind") == "table":
         cols = [c["name"] for c in preview["columns"]]
-        return {"head": [dict(zip(cols, r)) for r in preview["rows"]]}
+        return {"head": [dict(zip(cols, r, strict=True)) for r in preview["rows"]]}
     return {"value": preview.get("value")}
 
 
