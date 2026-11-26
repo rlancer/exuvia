@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -765,8 +765,8 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         request: Request,
         name: str,
         node: str,
-        limit: int | None = None,
-        offset: int = 0,
+        limit: int | None = Query(None, ge=0),
+        offset: int = Query(0, ge=0),
         params: str | None = None,
         part: str | None = None,
         partitions: str | None = None,
@@ -1018,8 +1018,8 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
     def data(
         request: Request,
         name: str,
-        limit: int | None = None,
-        offset: int = 0,
+        limit: int | None = Query(None, ge=0),
+        offset: int = Query(0, ge=0),
         params: str | None = None,
         run_id: str | None = None,
         part: str | None = None,

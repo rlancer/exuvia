@@ -181,3 +181,66 @@ def test_a_hub_with_its_token(tmp_path, monkeypatch):
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+
+
+def _fake(routes):
+    """A server that answers ``routes`` (path -> (status, JSON)) and drops
+    the connection on any other path."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            if self.path not in routes:
+                self.connection.close()
+                return
+            status, answer = routes[self.path]
+            body = json.dumps(answer).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return f"http://127.0.0.1:{server.server_port}", server
+
+
+def _run_tool(url, name=None):
+    import asyncio
+
+    from exuvia import toolcli
+
+    return asyncio.run(toolcli._run(url, None, name, {}, schema=False, raw=False))
+
+
+def test_a_server_that_goes_away_or_refuses_says_so_and_exits_2(capsys):
+    """No traceback: a hub that stops answering after its first reply, and a
+    workbench that turns the token away, are each one line and exit 2."""
+    url, hub = _fake({"/healthz": (200, {"mode": "hub"}), "/api/projects": (200, {"projects": []})})
+    try:
+        assert _run_tool(url) == 2  # /api/tools: the connection drops
+        assert "could not reach" in capsys.readouterr().err
+    finally:
+        hub.shutdown()
+    url, bench = _fake({"/healthz": (200, {"mode": "project"}), "/api/guide": (401, {"detail": "unauthorized"})})
+    try:
+        for name in (None, "guide"):
+            assert _run_tool(url, name) == 2
+            said = capsys.readouterr()
+            assert "HTTP 401" in said.err and said.out == ""
+    finally:
+        bench.shutdown()
+
+
+def test_the_guide_of_a_server_that_is_not_running_is_not_an_answer():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    guide = tool("--url", f"http://127.0.0.1:{port}", "guide")
+    assert guide.returncode == 2 and guide.stdout == "" and "could not reach exuvia" in guide.stderr
+    raw = tool("--url", f"http://127.0.0.1:{port}", "guide", "--json")
+    assert raw.returncode == 2 and json.loads(raw.stdout)["ok"] is False

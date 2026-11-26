@@ -202,8 +202,14 @@ import exuvia
 def rolling_vol(returns):
     out = returns.sort_values("date").copy()
     out["vol_20d"] = out.groupby("ticker")["ret"].transform(lambda s: s.rolling(20).std() * 252**0.5)
-    return out.dropna()
+    return out.dropna().reset_index(drop=True)
 ```
+
+A DataFrame's index is stored as a column (named `index` when it has no
+name), unless it is the default one. A filter, a sort or a `dropna` leaves
+the old row labels as the index, so end such a node with
+`.reset_index(drop=True)`, or with `.reset_index()` when the index means
+something (a date, a group key).
 
 **SQL** (DuckDB) — upstream nodes are tables:
 
@@ -224,7 +230,20 @@ a column (not aggregated, binned or by time unit) the two are linked: drag
 across a continuous x (and y, for points) or click a category, and the rows
 under it show only what was picked; Clear shows them all again. A chart that
 sets its own `params`, or layers, facets or concatenates views, is drawn as
-written, without the link.
+written, without the link. A node with several outputs opens on the one its
+chart draws (its first table).
+
+**The Data tab** shows every row of a table output, whether it has ten or
+ten million. Only the rows in view are drawn, and they are read from the
+server 500 at a time as you scroll, each page from the same run as the
+first, so a run that finishes meanwhile never mixes two outputs on screen.
+A row that is still on its way shows as `…`. Past about 370,000 rows the
+scrollbar is a share of the way through the output rather than a row
+count, because a browser lays out only so tall a page. Over the rows, each
+column's header says how many values are missing and its smallest and
+largest, and a line gives the output's shape and size: these come from the
+output's Parquet footers, so they cost the same for any number of rows. A
+notebook cell shows the first rows only.
 
 **The description** is the node function's docstring (the module
 docstring when the function has none), or a SQL node's first `--` lines
@@ -2960,7 +2979,8 @@ The input is a JSON object (an argument, or `-` for stdin), and each
 `-a KEY=VALUE` sets one field: `VALUE` is read as JSON when it is JSON (`42`,
 `true`, `{"as_of": "2026-03-02"}`) and as text otherwise. The tool's answer
 goes to stdout. A tool that fails prints its error to stderr and exits 1;
-an exuvia that cannot be reached exits 2, with what to check. `--json`
+an exuvia that cannot be reached, or that turns the token away, exits 2,
+with what to check. `--json`
 prints `{"ok", "text"}` instead. `--url` can stand in for `EXUVIA_URL`;
 with neither, `exuvia tool` opens the project in the current folder (or
 `--project DIR`) itself, as `exuvia mcp DIR` does. On a whole hub, each
@@ -3376,7 +3396,7 @@ headlessly or iframe the UI:
 | `POST /api/tools/{name}` | run one of those tools with the body as its input, as the agent would: `{"ok", "text", ...}`. A failed tool or a rejected input is still a 200 with `ok: false` and `text` saying why; an unknown tool is a 404. `exuvia mcp --url` relays MCP tool calls here (see "MCP") |
 | `POST /api/run-stale` | refresh everything stale |
 | `POST/GET/DELETE /api/backfill` | replay a list or date range of parameter values |
-| `GET /api/nodes/{name}/data` | a node's output (`?params=` or `?run_id=`, `?limit=`, `?offset=`): JSON rows, or an Arrow stream (see "Binary data"). For a node with several outputs, `kind: "multi"` and its `parts`; `?part=` reads one |
+| `GET /api/nodes/{name}/data` | a node's output (`?params=` or `?run_id=`, `?limit=`, `?offset=`): JSON rows, or an Arrow stream (see "Binary data"). `?limit=` and `?offset=` read it a page at a time (with `?run_id=`, every page from the same run), as the Data tab does. For a node with several outputs, `kind: "multi"` and its `parts`; `?part=` reads one |
 | `GET /api/nodes/{name}/stats` | a table output's overview from its Parquet footers alone, no row read (`?params=`, `?run_id=`, `?part=` as for `/data`): `rows`, `files`, `row_groups`, `bytes` on disk, `uncompressed_bytes`, `compression`, `created_by`, and per column its `type`, `nulls`, `min`, `max` and `bytes`; a figure the writer did not record is `null`. What the Data tab shows over its rows: each column header's missing values, min and max, and the output's shape, missing values and size |
 | `GET /api/nodes/{name}/export` | a node's whole output as a file to save (see "Downloads"): `?format=` `csv`, `xlsx`, `parquet` or `json` (`json` only, for a JSON output), or `zip` for every output of a node with several; `?params=`, `?run_id=` and `?part=` pick the output as for `/data`; `?filename=` names it |
 | `GET/HEAD /api/artifacts/{node}/{artifact_id}.parquet` (or `.json`, `.zip`) | the stored file of one output, byte for byte, with `Range` support (see "Binary data") |

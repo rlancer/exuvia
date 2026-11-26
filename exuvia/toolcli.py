@@ -169,6 +169,9 @@ async def _run(url: str | None, project: str | None, name: str | None, tool_inpu
     except Unreachable as e:
         print(f"exuvia tool: {backend.unreachable(e)}", file=sys.stderr)
         return 2
+    except RuntimeError as e:  # the server answered, but not with its tools: the token turned away, an older server
+        print(f"exuvia tool: {e}", file=sys.stderr)
+        return 2
     finally:
         await backend.stop()
     if raw:

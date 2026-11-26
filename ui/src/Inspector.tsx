@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { EditorView } from "@uiw/react-codemirror";
 import { python } from "@codemirror/lang-python";
 import { sql } from "@codemirror/lang-sql";
@@ -28,7 +28,8 @@ import { useAccess } from "./Access";
 import { codeGroup, DownloadMenu, outputGroups, tableItems } from "./Export";
 import { nodeExportUrl, saveQuery, saveUrl } from "./download";
 import { CodeEditor } from "./ui/CodeEditor";
-import { chartBrush, DatasetSummary, DataTable, NodeChart, OutputPicker, useNodePreview, useOutputPart, useTableStats, type ChartSelection } from "./NodeOutput";
+import { chartBrush, chartedPart, ChartPick, DatasetSummary, DataTable, NodeChart, OutputPicker, RowsTable, rowsSource, useNodePreview, useOutputPart, useRowPages, useTableStats, type ChartSelection } from "./NodeOutput";
+import { PAGE_ROWS } from "./rowWindow";
 import { StateDot, statusOf, statusText } from "./ui/state";
 import { useColorMode } from "./theme/colorMode";
 
@@ -373,27 +374,30 @@ export function Inspector(props: {
   );
 }
 
-/** How many of a chart's selected rows the table shows. */
-const SELECTED_ROWS = 1000;
-
+/**
+ * A node's output: every row of a table, drawn as it scrolls into view and
+ * read a page at a time, under its chart when it has one; or its JSON.
+ */
 function DataTab({ node, dark }: { node: GraphNode; dark: boolean }) {
   // A node with several outputs shows one at a time.
   const { parts, shown, pick } = useOutputPart(node);
-  // The chart, over the rows, when the output shown is the one it charts
-  // (a node with several outputs charts its first table); what is selected
-  // on it is what the table shows. `chartKey` draws it again, unselected.
-  const charted = node.output_kind === "multi" ? (node.schema ?? []).find((c) => c.type === "table")?.name ?? null : null;
-  const hasChart = !!node.chart && !!node.artifact_id && shown === charted;
+  // The chart, over the rows, when the output shown is the one it charts;
+  // what is selected on it is what the table shows. A new `cleared` draws
+  // it again, unselected.
+  const hasChart = !!node.chart && !!node.artifact_id && shown === chartedPart(node);
   const [sel, setSel] = useState<ChartSelection>(null);
-  const [chartKey, setChartKey] = useState(0);
+  const [cleared, setCleared] = useState(0);
   // Another output, or another node: nothing is selected.
   useEffect(() => setSel(null), [node.name, shown]);
   const brush = hasChart ? chartBrush(node.chart) : null;
   const multi = node.output_kind === "multi";
-  const { preview: p } = useNodePreview(node, 300, shown);
+  const { preview: p } = useNodePreview(node, PAGE_ROWS, shown);
   const isTable = p?.kind === "table";
   // What the output's Parquet footers say: no row is read for it.
   const stats = useTableStats(node, shown, isTable);
+  // Every row of the output, its first page here and the rest read as they scroll into view.
+  const all = useRowPages(node, shown, p);
+  const picked = useMemo(() => (sel ? rowsSource(sel.columns, sel.rows) : null), [sel]);
   const picker = (shown !== null || (isTable && stats)) && (
     <div {...stylex.props(styles.strip)}>
       {shown !== null && <OutputPicker node={node} parts={parts} shown={shown} onPick={pick} />}
@@ -426,53 +430,45 @@ function DataTab({ node, dark }: { node: GraphNode; dark: boolean }) {
         <EmptyState isCompact title="No output yet" description="Run the node." />
       </div>
     );
-  if (p.kind === "table" && p.columns && p.rows)
+  if (p.kind === "table" && p.columns && p.rows && all)
     return (
-      <div {...stylex.props(styles.fill)}>
+      <div {...stylex.props(styles.fill, styles.tableFill)}>
         {picker}
         {hasChart && (
           <div {...stylex.props(styles.chart)}>
-            <NodeChart key={chartKey} node={node} dark={dark} height={200} onSelect={setSel} />
-          </div>
-        )}
-        <div {...stylex.props(styles.scroll)}>
-          {sel ? (
-            <DataTable columns={sel.columns} rows={sel.rows.slice(0, SELECTED_ROWS)} stats={stats} />
-          ) : (
-            <DataTable columns={p.columns} rows={p.rows} stats={stats} />
-          )}
-        </div>
-        <div {...stylex.props(styles.foot)}>
-          {sel ? (
-            <>
-              <Text type="supporting" color="secondary" maxLines={1} hasTabularNumbers xstyle={styles.footText}>
-                {sel.rows.length > SELECTED_ROWS ? `first ${fmtNum(SELECTED_ROWS)} of ` : ""}
-                {fmtNum(sel.rows.length)} selected of {fmtNum(sel.of)} charted rows
-              </Text>
-              <Button
-                size="sm"
-                variant="ghost"
-                label="Clear"
-                onClick={() => {
+            <NodeChart node={node} dark={dark} height={200} onSelect={setSel} reset={cleared} />
+            {brush && (
+              <ChartPick
+                kind={brush.kind}
+                sel={sel}
+                onClear={() => {
                   setSel(null);
-                  setChartKey((k) => k + 1);
+                  setCleared((n) => n + 1);
                 }}
               />
-            </>
-          ) : (
-            <Text type="supporting" color="secondary" maxLines={1} hasTabularNumbers xstyle={styles.footText}>
-              {p.rows.length < (p.total ?? 0) ? `first ${p.rows.length} of ` : ""}
-              {fmtNum(p.total)} rows · {p.columns.length} columns · {ago(node.finished_at)}
-              {brush ? ` · ${brush.kind === "interval" ? "drag across" : "click"} the chart to pick rows` : ""}
-            </Text>
-          )}
-          <DownloadMenu
-            small
-            up
-            label="Download"
-            title={`Download every row of ${shown ? `${node.name}.${shown}` : node.name}`}
-            groups={[{ title: "Every row", items: tableItems((f) => saveUrl(nodeExportUrl(node.name, f, { part: shown })), p.total) }, ...zipAll]}
-          />
+            )}
+          </div>
+        )}
+        {sel && picked ? (
+          <RowsTable columns={sel.columns} source={picked} stats={stats} resetKey={sel} />
+        ) : (
+          <RowsTable columns={p.columns} source={all} stats={stats} resetKey={`${node.artifact_id}/${shown ?? ""}`} />
+        )}
+        <div {...stylex.props(styles.foot)}>
+          <Text type="supporting" color="secondary" maxLines={1} hasTabularNumbers xstyle={styles.footText}>
+            {sel
+              ? `${fmtNum(sel.rows.length)} selected rows · ${sel.columns.length} columns`
+              : `${fmtNum(p.total)} rows · ${p.columns.length} columns · ${ago(node.finished_at)}`}
+          </Text>
+          <div {...stylex.props(styles.footEnd)}>
+            <DownloadMenu
+              small
+              up
+              label="Download"
+              title={`Download every row of ${shown ? `${node.name}.${shown}` : node.name}`}
+              groups={[{ title: "Every row", items: tableItems((f) => saveUrl(nodeExportUrl(node.name, f, { part: shown })), p.total) }, ...zipAll]}
+            />
+          </div>
         </div>
       </div>
     );
@@ -484,18 +480,20 @@ function DataTab({ node, dark }: { node: GraphNode; dark: boolean }) {
         <Text type="supporting" color="secondary" maxLines={1} xstyle={styles.footText}>
           JSON · {ago(node.finished_at)}
         </Text>
-        <DownloadMenu
-          small
-          up
-          label="Download"
-          title={`Download ${shown ? `${node.name}.${shown}` : node.name}`}
-          groups={[
-            {
-              items: [{ key: "json", label: "JSON", hint: ".json: the value as it was returned", onPick: () => saveUrl(nodeExportUrl(node.name, "json", { part: shown })) }],
-            },
-            ...zipAll,
-          ]}
-        />
+        <div {...stylex.props(styles.footEnd)}>
+          <DownloadMenu
+            small
+            up
+            label="Download"
+            title={`Download ${shown ? `${node.name}.${shown}` : node.name}`}
+            groups={[
+              {
+                items: [{ key: "json", label: "JSON", hint: ".json: the value as it was returned", onPick: () => saveUrl(nodeExportUrl(node.name, "json", { part: shown })) }],
+              },
+              ...zipAll,
+            ]}
+          />
+        </div>
       </div>
     </div>
   );
@@ -753,6 +751,8 @@ const styles = stylex.create({
   body: { position: "relative", display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, overflow: "auto" },
   // A tab that lays itself out: what scrolls in it, and a bar that stays put under it.
   fill: { display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0, minHeight: 0 },
+  // The Data tab of a table: where its chart leaves the rows too little room, all of it scrolls.
+  tableFill: { overflowY: "auto" },
   scroll: { flexGrow: 1, minWidth: 0, minHeight: 0, overflow: "auto" },
   center: { display: "grid", placeItems: "center", flexGrow: 1, padding: spacingVars["--spacing-6"] },
   // The bar under a tab's content: what is shown, and what can be done with it.
@@ -769,6 +769,8 @@ const styles = stylex.create({
     borderTopColor: colorVars["--color-border"],
   },
   footText: { flexGrow: 1, minWidth: 0 },
+  // What can be done, at the bar's end: it keeps its width, and the text gives way.
+  footEnd: { display: "flex", flexShrink: 0 },
   // A bar over a tab's content: which output, which run.
   strip: {
     display: "flex",

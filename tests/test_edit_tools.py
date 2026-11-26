@@ -2,7 +2,7 @@
 
 import json
 
-from exuvia.agent import TOOLS, Agent, apply_edit
+from exuvia.agent import TOOLS, Agent, apply_edit, edit_diff
 from exuvia.workspace import Workspace
 from test_helpers import call
 
@@ -36,6 +36,14 @@ def test_apply_edit_needs_one_exact_match():
     assert "not in the file" in apply_edit("a", {"old_string": "z", "new_string": "c"})[2]
     assert "empty" in apply_edit("a", {"old_string": "", "new_string": "c"})[2]
     assert "the same" in apply_edit("a", {"old_string": "a", "new_string": "a"})[2]
+
+
+def test_a_last_line_without_a_newline_keeps_a_line_of_its_own_in_the_diff():
+    diff = edit_diff("select 1 as a", "select 2 as a", "nodes/one.sql")
+    assert diff.endswith(
+        "-select 1 as a\n\\ No newline at end of file\n+select 2 as a\n\\ No newline at end of file\n"
+    )
+    assert "\\ No newline" not in edit_diff("a\nb\n", "a\nc\n", "x")
 
 
 def test_edit_node_changes_one_line_and_returns_the_diff(tmp_path):

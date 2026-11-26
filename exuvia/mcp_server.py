@@ -708,6 +708,18 @@ class RemoteBackend(_Relay):
         except Unreachable as e:
             return self.offline_message(e)
 
+    async def guide(self, args: dict[str, Any]) -> tuple[bool, str] | ToolResult:
+        """The guide as a tool call: a server that does not answer is a
+        failed call (``exuvia tool`` exits 2), not instructions to read.
+        ``instructions`` still answers with how to start it, for an MCP
+        client that connects before the server is up."""
+        from .remote import Unreachable
+
+        try:
+            return True, (await self._load_guide())["instructions"]
+        except Unreachable as e:
+            return ToolResult(False, self.offline_message(e), unreachable=True)
+
     async def tools(self) -> list[dict[str, Any]]:
         from .remote import Unreachable
 
@@ -763,19 +775,21 @@ class HubBackend(_Relay):
 
         try:
             r = await self.http.get(f"{self.url}/api/projects")
+            if r.status_code == 401:
+                raise RuntimeError(
+                    f"{self.url} turned the token away: set EXUVIA_API_TOKEN (or EXUVIA_API_TOKEN_FILE, a file that "
+                    "holds it) to the hub's API token, or to your agent token (the hub's account menu: Connect an agent)"
+                )
+            if r.status_code != 200:
+                raise RuntimeError(f"GET {self.url}/api/projects: HTTP {r.status_code} {r.text[:300]}")
+            # A hub can stop answering between its first reply and the next: that is unreachable too.
+            self._project_tools = await self._load_project_tools(r.json().get("projects", []))
         except Unreachable as e:
             await self.http.aclose()
             raise RuntimeError(self.unreachable(e)) from None
-        if r.status_code == 401:
+        except RuntimeError:
             await self.http.aclose()
-            raise RuntimeError(
-                f"{self.url} turned the token away: set EXUVIA_API_TOKEN (or EXUVIA_API_TOKEN_FILE, a file that holds it) "
-                "to the hub's API token, or to your agent token (the hub's account menu: Connect an agent)"
-            )
-        if r.status_code != 200:
-            await self.http.aclose()
-            raise RuntimeError(f"GET {self.url}/api/projects: HTTP {r.status_code} {r.text[:300]}")
-        self._project_tools = await self._load_project_tools(r.json().get("projects", []))
+            raise
 
     def unreachable(self, e: Exception) -> str:
         from .remote import unreachable

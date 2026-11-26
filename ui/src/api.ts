@@ -336,6 +336,8 @@ export interface Preview {
   rows?: unknown[][];
   total?: number | null;
   value?: unknown;
+  /** The run that made it: what later pages of the same output are asked of (`api.rows`). */
+  run_id?: string;
 }
 
 /** A table output's column, with what its Parquet footers say of it (null where they don't say). */
@@ -427,14 +429,18 @@ async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
   return (await send(method, url, body)).json() as Promise<T>;
 }
 
-/** A node's output: the first `limit` rows of a table (read as Arrow), or its JSON value.
- * `part` picks one output of a node with several. */
-async function nodeData(name: string, limit: number, part?: string): Promise<Preview> {
-  const q = `limit=${limit}${part ? `&part=${encodeURIComponent(part)}` : ""}`;
+/** A node's output: `limit` rows of a table from row `offset` on (read as Arrow), or its JSON value.
+ * `part` picks one output of a node with several; `runId` the output of that run rather than the latest. */
+async function nodeData(name: string, limit: number, part?: string, offset = 0, runId?: string): Promise<Preview> {
+  const q = new URLSearchParams({ limit: String(limit) });
+  if (offset) q.set("offset", String(offset));
+  if (part) q.set("part", part);
+  if (runId) q.set("run_id", runId);
   const res = await send("GET", `/api/nodes/${name}/data?${q}`, undefined, `${ARROW_STREAM}, application/json`);
   if (!isArrow(res)) return res.json() as Promise<Preview>;
   const table = await readArrow(res);
-  return { kind: "table", total: arrowMeta(table).total ?? table.numRows, ...toGrid(table) };
+  const meta = arrowMeta(table);
+  return { kind: "table", total: meta.total ?? table.numRows, run_id: meta.run_id, ...toGrid(table) };
 }
 
 /** DuckDB SQL over every output; the first `limit` rows of the result (read as Arrow). */
@@ -500,6 +506,9 @@ export const api = {
   schedule: () => req<ScheduleState>("GET", "/api/schedule"),
   pause: (name: string, paused: boolean) => req("POST", `/api/nodes/${name}/schedule`, { paused }),
   data: (name: string, limit = 200, part?: string) => nodeData(name, limit, part),
+  /** `limit` rows of a table output from row `offset` on, of the run `runId` made (so pages of one output agree). */
+  rows: async (name: string, o: { offset: number; limit: number; part?: string; runId?: string }) =>
+    (await nodeData(name, o.limit, o.part, o.offset, o.runId)).rows ?? [],
   /** A table output's overview from its Parquet footers (no row is read). */
   stats: (name: string, part?: string) =>
     req<TableStats>("GET", `/api/nodes/${name}/stats${part ? `?part=${encodeURIComponent(part)}` : ""}`),

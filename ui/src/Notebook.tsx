@@ -12,7 +12,7 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { api, type GraphNode, type Preview, type Project, type ProjectView } from "./api";
 import { useAccess } from "./Access";
-import { DatasetSummary, DataTable, NodeChart, OutputPicker, useNodePreview, useOutputPart, useTableStats, type ChartSelection } from "./NodeOutput";
+import { chartBrush, chartedPart, ChartPick, DatasetSummary, DataTable, NodeChart, OutputPicker, useNodePreview, useOutputPart, useTableStats, type ChartSelection } from "./NodeOutput";
 import { notebook, type Cell, type Section } from "./notebookOrder";
 import { ago, fmtNum } from "./util";
 import { failed } from "./toast";
@@ -291,11 +291,11 @@ function Source({ node, onOpen }: { node: GraphNode; onOpen: () => void }) {
 function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
   const { parts, shown, pick } = useOutputPart(node);
   // A node with several outputs charts its first table: the chart shows over that one.
-  const charted = node.output_kind === "multi" ? (node.schema ?? []).find((c) => c.type === "table")?.name ?? null : null;
-  const chart = !!node.chart && !!node.artifact_id && shown === charted;
+  const chart = !!node.chart && !!node.artifact_id && shown === chartedPart(node);
+  const brush = chart ? chartBrush(node.chart) : null;
   const [sel, setSel] = useState<ChartSelection>(null);
-  // Clear draws the chart again (`chartKey`), with nothing selected.
-  const [chartKey, setChartKey] = useState(0);
+  // Clear draws the chart again (a new `cleared`), with nothing selected.
+  const [cleared, setCleared] = useState(0);
   useEffect(() => setSel(null), [node.name, shown]);
   const { preview, failed } = useNodePreview(node, PREVIEW_ROWS, shown);
   // A read that failed shows as no output.
@@ -305,7 +305,17 @@ function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
 
   const chartBox = chart && (
     <div {...stylex.props(styles.output, styles.chart)} onClick={(e) => e.stopPropagation()}>
-      <NodeChart key={chartKey} node={node} dark={dark} height={220} onSelect={setSel} />
+      <NodeChart node={node} dark={dark} height={220} onSelect={setSel} reset={cleared} />
+      {brush && (
+        <ChartPick
+          kind={brush.kind}
+          sel={sel}
+          onClear={() => {
+            setSel(null);
+            setCleared((n) => n + 1);
+          }}
+        />
+      )}
     </div>
   );
   const picker = parts.length > 1 && shown !== null && (
@@ -333,22 +343,10 @@ function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
           )}
         </div>
         {sel ? (
-          <HStack gap={2} vAlign="center">
-            <Text type="supporting" color="secondary" hasTabularNumbers>
-              {sel.rows.length > SELECTED_ROWS ? `First ${fmtNum(SELECTED_ROWS)} of ` : ""}
-              {fmtNum(sel.rows.length)} selected of {fmtNum(sel.of)} charted rows
-            </Text>
-            <Button
-              size="sm"
-              variant="ghost"
-              label="Clear"
-              onClick={(e) => {
-                e.stopPropagation();
-                setSel(null);
-                setChartKey((k) => k + 1);
-              }}
-            />
-          </HStack>
+          <Text type="supporting" color="secondary" hasTabularNumbers>
+            {sel.rows.length > SELECTED_ROWS ? `First ${fmtNum(SELECTED_ROWS)} of ` : ""}
+            {fmtNum(sel.rows.length)} selected rows · {sel.columns.length} columns
+          </Text>
         ) : stats ? (
           <DatasetSummary stats={stats} shown={p.rows.length} storage={false} />
         ) : (

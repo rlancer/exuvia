@@ -4,7 +4,8 @@ its nulls and its smallest and largest value as the writer recorded them.
 No row is read, so it costs the same for ten rows as for ten million.
 
 A value the footers cannot answer (a row group written without statistics,
-a nested column's nulls, a binary column's bounds) is None, never a guess."""
+a nested column's nulls, a binary column's bounds, the bounds of long text)
+is None, never a guess."""
 
 from __future__ import annotations
 
@@ -12,6 +13,19 @@ import os
 from typing import Any
 
 from .outputs import jsonable
+
+
+# A writer may record a long string's bounds cut short: DuckDB keeps 256
+# bytes of each, and adds one to the last byte of the largest so that it is
+# still an upper bound. Such a bound is no value of the column, and the
+# footer (as pyarrow reads it) does not say which bounds were cut, so a text
+# bound this long is not answered.
+_TEXT_BOUND = 256
+
+
+def _cut(v: Any) -> bool:
+    """Whether a bound may be a string its writer cut short."""
+    return isinstance(v, str) and len(v.encode("utf-8")) >= _TEXT_BOUND
 
 
 def _leaves(t: Any) -> int:
@@ -53,7 +67,7 @@ class _Column:
             self.nulls += s.null_count
         if s is not None and s.has_null_count and s.null_count >= rows:
             return  # every value null: no bounds to have
-        if s is None or not s.has_min_max or isinstance(s.min, bytes):
+        if s is None or not s.has_min_max or isinstance(s.min, bytes) or _cut(s.min) or _cut(s.max):
             self.bounded = False
             return
         try:

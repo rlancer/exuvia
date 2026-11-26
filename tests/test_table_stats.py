@@ -45,6 +45,18 @@ def test_footers_sum_over_row_groups_and_files(tmp_path):
     assert (cols["raw"]["nulls"], cols["raw"]["min"]) == (3, None)
 
 
+def test_a_bound_its_writer_cut_short_is_not_answered(tmp_path):
+    """DuckDB keeps 256 bytes of a string bound, and bumps the last byte of
+    the largest: that is no value of the column, so it is not shown as one."""
+    import duckdb
+
+    path = str(tmp_path / "long.parquet")
+    duckdb.sql(f"copy (select repeat('x', 400) as s, 'short' as t union all select 'a', 'text') to '{path}' (format parquet)")
+    cols = parquet_stats([path])["columns"]
+    assert (cols["s"]["nulls"], cols["s"]["min"], cols["s"]["max"]) == (0, None, None)
+    assert (cols["t"]["min"], cols["t"]["max"]) == ("short", "text")
+
+
 def test_route_answers_tables_and_parts(tmp_path):
     write(tmp_path, "nodes/px.py", '''
         import exuvia
@@ -75,3 +87,26 @@ def test_route_answers_tables_and_parts(tmp_path):
         assert client.get("/api/nodes/fit/stats", params={"part": "coefs"}).json()["rows"] == 2
         assert client.get("/api/nodes/fit/stats").status_code == 404  # several outputs: pick one
         assert client.get("/api/nodes/fit/stats", params={"part": "metrics"}).status_code == 404  # JSON
+
+
+def test_rows_are_read_a_page_at_a_time(tmp_path):
+    """What the Data tab's table asks as it scrolls: `limit` rows from
+    `offset` on, of one run, and a 422 for a page that cannot be."""
+    write(tmp_path, "nodes/seq.py", '''
+        import exuvia
+
+        @exuvia.node()
+        def seq():
+            import pandas as pd
+            return pd.DataFrame({"i": range(1200)})
+    ''')
+    with TestClient(create_app(tmp_path)) as client:
+        assert client.post("/api/nodes/seq/run", json={"wait": 60}).json()["ok"]
+        first = client.get("/api/nodes/seq/data", params={"limit": 500}).json()
+        assert first["total"] == 1200 and [r[0] for r in first["rows"]][:2] == [0, 1]
+        page = client.get("/api/nodes/seq/data", params={"limit": 500, "offset": 1000, "run_id": first["run_id"]}).json()
+        assert [r[0] for r in page["rows"]] == list(range(1000, 1200))
+        assert client.get("/api/nodes/seq/data", params={"limit": 500, "offset": 5000}).json()["rows"] == []
+        for bad in ({"offset": -1}, {"limit": -5}):
+            assert client.get("/api/nodes/seq/data", params=bad).status_code == 422
+            assert client.get("/api/nodes/seq/data", params=bad, headers={"accept": "application/vnd.apache.arrow.stream"}).status_code == 422
