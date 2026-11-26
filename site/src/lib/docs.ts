@@ -110,6 +110,13 @@ const PAGES: PageSpec[] = [
     summary: "Nodes that re-run whenever a view that reads them opens: the view shows what it has at once, then updates.",
   },
   {
+    slug: "canvas",
+    group: "Build",
+    source: { heading: "The canvas: stages, views and activity" },
+    title: "The canvas",
+    summary: "Reading a big graph: stages that fold into one card, views drawn with what they read, lineage and what is running now.",
+  },
+  {
     slug: "downloads",
     group: "Build",
     source: { heading: "Downloads" },
