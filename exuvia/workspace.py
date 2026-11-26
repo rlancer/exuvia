@@ -70,6 +70,8 @@ from .keys import KeyViolation, enforce_file
 from .partitioned import Manifest, PartitionError, Writer, commit, in_range, prune, sort_values
 from .pushing import save_pushed
 from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Project, View, _hash, _validate_cron, check_stage
+from . import outputs
+from .outputs import jsonable, lock_outputs, output_parts, outputs_connection  # noqa: F401 - lock_outputs, outputs_connection: re-exported
 from .runner import PART_EXT, PART_NAME, finite
 from .store import CodeChange, clean_origin, open_store
 
@@ -78,7 +80,6 @@ MAX_PARALLEL = int(os.environ.get("EXUVIA_MAX_PARALLEL", "4"))
 # "external": something else POSTs /api/schedule/tick (Durable Object alarm,
 # k8s CronJob, system cron) — for hosts that sleep or scale to zero.
 SCHEDULER = os.environ.get("EXUVIA_SCHEDULER", "internal")
-HISTORY_VIEW_LIMIT = 400  # parameter sets unioned into a `<node>__runs` view
 _ALL_ROWS = 2**62  # the limit of an offset-only read
 # How soon an external scheduler should tick again while a fire waits for the
 # node's run in progress to end (overlap="queue"; see next_fire_at).
@@ -187,13 +188,13 @@ class Workspace:
         # and a scheduled run was started by the clock, not by whichever
         # request (and signed-in person) happened to load the project.
         self._stop_watching = asyncio.Event()
-        self._spawn(self._watch_files(self._stop_watching), context=Context())
+        self.spawn(self._watch_files(self._stop_watching), context=Context())
         if artifact_store() is not None:
-            self._spawn(self._sync_artifacts(), context=Context())
+            self.spawn(self._sync_artifacts(), context=Context())
         if SCHEDULER == "internal":
-            self._spawn(self._schedule_loop(), context=Context())
+            self.spawn(self._schedule_loop(), context=Context())
 
-    def _spawn(self, coro: Coroutine[Any, Any, Any], *, context: Context | None = None) -> asyncio.Task[Any]:
+    def spawn(self, coro: Coroutine[Any, Any, Any], *, context: Context | None = None) -> asyncio.Task[Any]:
         """Start a background task and keep a reference to it until it ends:
         the event loop only holds tasks weakly, and stop() cancels them."""
         task = asyncio.create_task(coro, context=context)
@@ -891,7 +892,7 @@ class Workspace:
                 finally:
                     self._live_pending -= pending
 
-            self._spawn(go())
+            self.spawn(go())
         return {"live": live, "started": started, "skipped": skipped, "params": params}
 
     def views(self, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -1144,7 +1145,7 @@ class Workspace:
             ]
             downstream = self._cascade_set(changed) - set(plan)
             if downstream:
-                self._spawn(
+                self.spawn(
                     self.run(
                         sorted(downstream), params=params, trigger="cascade", pull_upstream=False, cascade=False
                     )
@@ -1232,7 +1233,7 @@ class Workspace:
         if prev is None or prev["artifact_id"] != fields["artifact_id"]:
             downstream = self._cascade_set([name])
             if downstream:
-                self._spawn(
+                self.spawn(
                     self.run(sorted(downstream), params=params, trigger="cascade", pull_upstream=False, cascade=False)
                 )
         return self.store.run(run_id) or {}
@@ -1720,7 +1721,7 @@ class Workspace:
             "started_at": time.time(),
             "finished_at": None,
         }
-        self._spawn(self._run_backfill(param, resolved, targets, base, force))
+        self.spawn(self._run_backfill(param, resolved, targets, base, force))
         self.bus.publish({"type": "backfill", "backfill": self.backfill_status()})
         return self.backfill_status() or {}
 
@@ -1823,7 +1824,7 @@ class Workspace:
             due.append(node.name)
             slot = max(nxt, self._prev_fire(node.schedule, now))
             # The clock started it, not whoever called /api/schedule/tick.
-            self._spawn(
+            self.spawn(
                 self.run([node.name], params=self._slot_params(slot), force={node.name}, trigger="schedule"),
                 context=Context(),
             )
@@ -2046,7 +2047,7 @@ class Workspace:
             return {
                 "kind": "table",
                 "columns": [{"name": c, "type": str(t)} for c, t in zip(rel.columns, rel.types)],
-                "rows": _jsonable([list(r) for r in rel.fetchall()]),
+                "rows": jsonable([list(r) for r in rel.fetchall()]),
                 "total": total,
                 **meta,
                 **extra,
@@ -2078,7 +2079,7 @@ class Workspace:
             return {
                 "kind": "table",
                 "columns": [{"name": c, "type": str(t)} for c, t in zip(cols, rel.types)],
-                "rows": _jsonable(rows),
+                "rows": jsonable(rows),
                 "total": total,
                 **meta,
             }
@@ -2213,131 +2214,15 @@ class Workspace:
         ]
 
     def _outputs_db(self, params: dict[str, Any] | None, only: list[str] | None = None) -> Any:
-        """A DuckDB connection with every table output as a view.
-
-        ``<node>`` is the node's current table for ``params`` (the defaults
-        when omitted). ``<node>__runs`` unions its output across every
-        parameter set it has run with, adding one ``_<param>`` column per
-        parameter — the view to compare runs over time. A node with several
-        outputs is a schema instead: ``<node>.<part>`` for each table part,
-        and ``<node>.<part>__runs``. Each of those is also a view named
-        ``"<node>.<part>"`` (one quoted name, as views and DuckDB's own
-        "Did you mean" hint write it), so that form works too.
-
-        The connection runs in the server's process, so it is a sandbox: it
-        can read the files behind its views and nothing else, and it is
-        locked so the SQL cannot reach any other file (the server's
-        environment in ``/proc/self/environ``, another project, exuvia's
-        database), the network or an extension (``read_csv``, ``COPY ... TO``,
-        ``ATTACH`` of a file, ``INSTALL`` all fail) nor undo the lock. With
-        ``only`` it has just those nodes' views (a view's ``reads``), and
-        ``read_parquet`` of another node's output fails too.
-        """
-        con = outputs_connection()
-        files = self.add_output_views(con, params, only=only)
-        lock_outputs(con, files)
-        return con
+        """outputs.outputs_db for this project: the locked DuckDB sandbox
+        with every table output (or only ``only``'s) as a view."""
+        return outputs.outputs_db(self, params, only)
 
     def add_output_views(
         self, con: Any, params: dict[str, Any] | None, only: list[str] | None = None, catalog: str | None = None
     ) -> list[str]:
-        """Create ``_outputs_db``'s views on ``con``, in the attached
-        in-memory database ``catalog`` when given (the data API puts each
-        project in a catalog named after it: ``"<project>".<node>``).
-        Returns the files the views read, for ``lock_outputs``. Blocking:
-        it may download outputs from the remote artifact store."""
-        import duckdb
-
-        resolved = self.resolve_params(params)
-        names = [n for n in self.graph.nodes if only is None or n in only]
-        # ((schema or None, table), select, a select to try when the first one fails)
-        views: list[tuple[tuple[str | None, str], str, str | None]] = []
-        # ("<node>.<part>" as one table name, the (schema, table) it shows)
-        aliases: list[tuple[str, tuple[str | None, str]]] = []
-        files: list[str] = []
-
-        def read(path: str | None, cols: str = "") -> str:
-            files.append(path or "")
-            return f"select {cols}* from read_parquet({_lit(path)})"
-
-        def read_all(paths: list[str]) -> str:
-            files.extend(paths)
-            return f"select * from read_parquet([{', '.join(_lit(p) for p in paths)}], union_by_name = true)"
-
-        def table_parts(run: dict[str, Any]) -> list[str]:
-            return [p["name"] for p in output_parts(run.get("schema")) if p["kind"] == "table"]
-
-        def part_path(run: dict[str, Any], part: str) -> str | None:
-            found = self.part_file(run, part)
-            return str(found[0]) if found else None
-
-        schemas: set[str] = set()
-        for name in names:
-            ls = self.store.last_success(name, self.node_params(name, resolved)[1])
-            if self.is_partitioned(ls):
-                # Exactly the manifest's files: no chunk of another version is readable.
-                paths = self.table_files(ls)  # type: ignore[arg-type]
-                if paths:
-                    views.append(((None, name), read_all(paths), None))
-            elif ls and ls["kind"] == "table":
-                views.append(((None, name), read(self.artifact_path(ls)), None))
-            elif ls and ls["kind"] == "multi":
-                # Several outputs: each table is <node>.<part>, in a schema named after the node.
-                schemas.add(name)
-                for part in table_parts(ls):
-                    views.append(((name, part), read(part_path(ls, part)), None))
-                    aliases.append((f"{name}.{part}", (name, part)))
-            if not self.graph.effective_params(name):
-                continue
-            history = self.store.history(name, HISTORY_VIEW_LIMIT)
-            outputs: dict[tuple[str | None, str], list[tuple[str, dict[str, Any]]]] = {}  # view -> [(file, run params)]
-            for run in history:
-                params = run.get("params") or {}
-                if run["kind"] == "table":
-                    for path in self.table_files(run):
-                        outputs.setdefault((None, f"{name}__runs"), []).append((path, params))
-                elif run["kind"] == "multi":
-                    schemas.add(name)
-                    for part in table_parts(run):
-                        path = part_path(run, part)
-                        if path:
-                            outputs.setdefault((name, f"{part}__runs"), []).append((path, params))
-                            aliases.append((f"{name}.{part}__runs", (name, f"{part}__runs")))
-            for view, runs in outputs.items():
-                files.extend(path for path, _ in runs)
-                views.append((view, _history_select(runs), _history_union(runs)))
-        # The views read their files only once external access is off and
-        # the files are allowed (lock_outputs), but creating a view over a
-        # file reads its schema, so the files must be allowed first.
-        con.execute("set allowed_paths = ?", [sorted({*_allowed_paths(con), *(f for f in files if f)})])
-        db = f"{_ident(catalog)}." if catalog else ""
-        if catalog:
-            con.execute(f"attach ':memory:' as {_ident(catalog)}")
-
-        def qualified(view: tuple[str | None, str]) -> str:
-            schema, table = view
-            if schema is None:
-                return f"{db}main.{_ident(table)}" if catalog else _ident(table)
-            return f"{db}{_ident(schema)}.{_ident(table)}"
-
-        for schema in sorted(schemas):
-            con.execute(f"create schema if not exists {db}{_ident(schema)}")
-        made: set[tuple[str | None, str]] = set()
-        for view, select, fallback in views:
-            try:
-                con.execute(f"create view {qualified(view)} as {select}")
-            except duckdb.Error:
-                if fallback is None:
-                    raise
-                try:
-                    con.execute(f"create view {qualified(view)} as {fallback}")
-                except duckdb.Error:
-                    continue  # incompatible schemas across runs: leave the history view out
-            made.add(view)
-        for alias, view in dict(aliases).items():
-            if view in made:
-                con.execute(f"create view {qualified((None, alias))} as select * from {qualified(view)}")
-        return [f for f in files if f]
+        """outputs.add_output_views for this project."""
+        return outputs.add_output_views(self, con, params, only, catalog)
 
     def _view_reads(self, view: str) -> list[str]:
         """The nodes a view may read: those in its manifest's ``reads`` that
@@ -2355,182 +2240,20 @@ class Workspace:
 
     def view_query(self, view: str, sql: str, limit: int = 500, params: dict[str, Any] | None = None) -> dict[str, Any]:
         """``query`` for a view: only the nodes in its ``reads`` exist."""
-        return self._query(self._outputs_db(params, only=self._view_reads(view)), sql, limit)
+        return outputs.query_json(self._outputs_db(params, only=self._view_reads(view)), sql, limit)
 
     def view_query_arrow(
         self, view: str, sql: str, limit: int | None = None, params: dict[str, Any] | None = None
     ) -> ArrowStream:
-        return self._query_arrow(self._outputs_db(params, only=self._view_reads(view)), sql, limit)
+        return outputs.query_arrow(self._outputs_db(params, only=self._view_reads(view)), sql, limit)
 
     def query(self, sql: str, limit: int = 500, params: dict[str, Any] | None = None) -> dict[str, Any]:
         """Ad-hoc DuckDB SQL over node outputs (the views of ``_outputs_db``)."""
-        return self._query(self._outputs_db(params), sql, limit)
+        return outputs.query_json(self._outputs_db(params), sql, limit)
 
     def query_arrow(self, sql: str, limit: int | None = None, params: dict[str, Any] | None = None) -> ArrowStream:
         """``query`` as an Arrow stream: every row unless ``limit`` is given."""
-        return self._query_arrow(self._outputs_db(params), sql, limit)
-
-    @staticmethod
-    def _query(con: Any, sql: str, limit: int) -> dict[str, Any]:
-        rel = _sql(con, sql)
-        if rel is None:
-            return {"columns": [], "rows": []}
-        rows = rel.limit(limit).fetchall()
-        return {
-            "columns": [{"name": c, "type": str(t)} for c, t in zip(rel.columns, rel.types)],
-            "rows": _jsonable([list(r) for r in rows]),
-        }
-
-    @staticmethod
-    def _query_arrow(con: Any, sql: str, limit: int | None) -> ArrowStream:
-        rel = _sql(con, sql)
-        if rel is not None and limit is not None:
-            rel = rel.limit(int(limit))
-        return ArrowStream(rel, owner=con)
-
-
-_MISSING_TABLE = re.compile(r'Table with name "?([^"\s!]+)"? does not exist')
-
-
-def _sql(con: Any, sql: str) -> Any:
-    """``con.sql(sql)`` over an outputs database, where a missing table that
-    is a node with several outputs, or one of those outputs named without its
-    node, gets an error naming the tables to query instead (DuckDB's own
-    hint can point at a name that is not there)."""
-    import duckdb
-
-    try:
-        return con.sql(sql)
-    except duckdb.CatalogException as e:
-        m = _MISSING_TABLE.search(str(e))
-        if not m:
-            raise
-        missing = m.group(1)
-        rows = con.execute(
-            "select table_schema, table_name from information_schema.tables "
-            "where table_schema <> 'main' and not ends_with(table_name, '__runs') order by table_schema, table_name"
-        ).fetchall()
-        parts: dict[str, list[str]] = {}
-        for schema, table in rows:
-            parts.setdefault(schema, []).append(table)
-        if missing in parts:
-            tables = ", ".join(f"{missing}.{t}" for t in parts[missing])
-            raise duckdb.CatalogException(
-                f"{missing} has several outputs, each a table of its own: query {tables}"
-            ) from None
-        owners = [s for s, tables in parts.items() if missing in tables]
-        if owners:
-            named = " or ".join(f"{s}.{missing}" for s in owners)
-            raise duckdb.CatalogException(
-                f"{missing} is an output of a node with several: query it as {named}"
-            ) from None
-        raise
-
-
-def output_parts(schema: Any) -> list[dict[str, Any]]:
-    """``[{name, kind, rows}]`` for the parts of an output with several,
-    from the schema its run recorded (see ``runner.save_artifact``)."""
-    if not isinstance(schema, list):
-        return []
-    return [
-        {"name": p["name"], "kind": p.get("type"), "rows": p.get("rows")}
-        for p in schema
-        if isinstance(p, dict) and isinstance(p.get("name"), str) and p.get("type") in PART_EXT
-    ]
-
-
-# The column naming the file each row came from, in a `<node>__runs` view's
-# read (dropped from what the view shows).
-_RUN_FILE = "__exuvia_file"
-
-
-def _history_select(runs: list[tuple[str, dict[str, Any]]]) -> str:
-    """A `<node>__runs` view: one ``read_parquet`` over every run's file,
-    joined to each run's parameters (one ``_<param>`` column each) by file.
-    Two runs with the same output share a file, read once and joined to
-    both. About twice as fast as a union of one read per run."""
-    names = sorted({k for _, params in runs for k in params})
-    files = ", ".join(_lit(f) for f in dict.fromkeys(path for path, _ in runs))
-    rows = ", ".join(
-        "(" + ", ".join([_lit(path), *(_lit(params.get(k)) for k in names)]) + ")" for path, params in runs
-    )
-    cols = ", ".join(f'"_{k}"' for k in names)
-    return (
-        f'select r.* exclude ("{_RUN_FILE}"), f.* exclude ("{_RUN_FILE}") '
-        f"from read_parquet([{files}], union_by_name = true, filename = '{_RUN_FILE}') f "
-        f'join (values {rows}) r("{_RUN_FILE}"{", " + cols if cols else ""}) using ("{_RUN_FILE}")'
-    )
-
-
-def _history_union(runs: list[tuple[str, dict[str, Any]]]) -> str:
-    """The same view as a union of one read per run: slower, but it holds
-    where the single read fails (types across runs that don't combine)."""
-    selects = []
-    for path, params in runs:
-        cols = ", ".join(f'{_lit(v)} as "_{k}"' for k, v in sorted(params.items()))
-        selects.append(f"select {cols + ', ' if cols else ''}* from read_parquet({_lit(path)})")
-    return " union all by name ".join(selects)
-
-
-def outputs_connection() -> Any:
-    """A DuckDB connection for SQL over outputs: no extension installs or
-    loads itself (see ``Workspace._outputs_db``)."""
-    import duckdb
-
-    return duckdb.connect(config={"autoinstall_known_extensions": False, "autoload_known_extensions": False})
-
-
-def lock_outputs(con: Any, files: list[str]) -> None:
-    """Lock an outputs connection: only ``files`` (the files behind its
-    views) stay readable, nothing reaches the network or another file, and
-    no setting can change again."""
-    con.execute("set allowed_paths = ?", [sorted({f for f in files if f})])
-    con.execute("set enable_external_access = false")
-    con.execute("set lock_configuration = true")
-
-
-def _allowed_paths(con: Any) -> list[str]:
-    row = con.execute("select current_setting('allowed_paths')").fetchone()
-    value = row[0] if row else None
-    return [str(v) for v in value] if isinstance(value, (list, tuple)) else []
-
-
-def _ident(name: str) -> str:
-    return '"' + name.replace('"', '""') + '"'
-
-
-def _lit(value: Any) -> str:
-    """A SQL literal (DDL cannot take prepared parameters)."""
-    if value is None:
-        return "NULL"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return repr(value)
-    return "'" + str(value).replace("'", "''") + "'"
-
-
-def _jsonable(rows: list[list[Any]]) -> list[list[Any]]:
-    import math
-    from datetime import date
-    from decimal import Decimal
-
-    def conv(v: Any) -> Any:
-        if v is None or isinstance(v, (str, bool, int)):
-            return v
-        if isinstance(v, float):
-            return None if math.isnan(v) or math.isinf(v) else v
-        if isinstance(v, Decimal):
-            return float(v)
-        if isinstance(v, (datetime, date)):
-            return v.isoformat()
-        if isinstance(v, (list, tuple)):
-            return [conv(x) for x in v]
-        if isinstance(v, dict):
-            return {str(k): conv(x) for k, x in v.items()}
-        return str(v)
-
-    return [[conv(v) for v in r] for r in rows]
+        return outputs.query_arrow(self._outputs_db(params), sql, limit)
 
 
 def _view_of(rel: str) -> str | None:

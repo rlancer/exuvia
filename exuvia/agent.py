@@ -1109,7 +1109,7 @@ class Agent:
 
         # A task of the workspace's own, so a run still going when this
         # call returns keeps running.
-        task = ws._spawn(ws.run(
+        task = ws.spawn(ws.run(
             [target], params=params, force={target}, trigger=origin,
             full_refresh={target} if refresh else None, on_queued=on_queued,
         ))

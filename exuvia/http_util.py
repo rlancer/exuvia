@@ -17,7 +17,7 @@ from .workspace import Workspace
 
 class FastJSON(JSONResponse):
     """JSON written straight from an answer whose values are already JSON
-    (``Workspace._jsonable``), skipping FastAPI's ``jsonable_encoder``, which
+    (``outputs.jsonable``), skipping FastAPI's ``jsonable_encoder``, which
     walks every value again and took over half of a large answer's time.
     The bytes are the same as a plain JSONResponse's for such an answer."""
 
