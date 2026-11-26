@@ -80,7 +80,7 @@ const PAGES: PageSpec[] = [
     group: "Build",
     source: { heading: "Partitioned nodes: a history that grows each run" },
     title: "Partitioned nodes",
-    summary: "Nodes whose runs add or replace a day (or any partition) of one output: daily runs, backfills and corrections without rewriting the history.",
+    summary: "Nodes whose runs add, replace or merge by key into a day (or any partition) of one output: daily runs, backfills and corrections without rewriting the history.",
   },
   {
     slug: "keys",

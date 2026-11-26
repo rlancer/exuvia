@@ -213,12 +213,18 @@ def commit(
     unique: list[str] | None = None,
     on_duplicate: str = "error",
     verified: bool = False,
+    merge: bool = False,
     log: Callable[[str], None] | None = None,
 ) -> Commit | None:
     """Commit the rows of the Parquet file ``staged`` (None: no rows) on top
     of ``base``: each partition they hold replaces that partition; with
     ``full_refresh`` every partition they don't hold is dropped too. Returns
     None when nothing changed: identical rows write nothing.
+
+    With ``merge`` (which needs ``unique``) the rows update or insert by key
+    into the stored rows of the partitions they hold, and those partitions
+    are replaced by the result: stored rows whose key the run didn't return
+    stay. A full refresh doesn't merge.
 
     With a ``unique`` key (keys.py) the rows must hold it, and so must the
     whole output they make, whether or not anything changed: raises
@@ -255,6 +261,14 @@ def commit(
                 if log:
                     log(f"exuvia: kept the last row for each key ({', '.join(unique)}); "
                         f"dropped {extra} row{'s' if extra != 1 else ''} that repeated one\n")
+        if merge and unique and not full_refresh:
+            merged = _merge_stored(base, unique, w)
+            if merged and log:
+                log(f"exuvia: merged into the stored rows of {merged} partition{'s' if merged != 1 else ''} by key "
+                    f"({', '.join(unique)})\n")
+            if merged and verified and key not in unique:
+                # Per partition the key holds; a key can still repeat across them.
+                keys.check_rows(con, "_new", unique, key, merge=True)
         # Each row as text, hashed; a partition's digest hashes its rows' hashes in order.
         rows = con.execute(
             f"select v, sha256(string_agg(h, '' order by h)), count(*) from "
@@ -273,7 +287,7 @@ def commit(
         con.execute("create or replace temp table _gone (v varchar)")
         con.executemany("insert into _gone values (?)", [(v,) for v in gone])
         stay = [w.local(f["file"]) for f in base.files if set(f["partitions"]) - gone]
-        keys.check_against(con, "_new", stay, "_gone", unique, key)
+        keys.check_against(con, "_new", stay, "_gone", unique, key, merge=merge)
     if len(changed) == 1:
         (v,) = changed
         new = {v: w.write(f"select * from _new where cast({_ident(key)} as varchar) = {_lit(v)}")}
@@ -288,7 +302,7 @@ def commit(
     manifest = compact(Manifest(key, partitions, files), w)
     if unique and not verified:
         try:
-            keys.check_output(con, [w.local(f["file"]) for f in manifest.files], unique, key)
+            keys.check_output(con, [w.local(f["file"]) for f in manifest.files], unique, key, merge=merge)
         except keys.KeyViolation:
             w.discard_unused(set())  # nothing refers to what this commit wrote
             raise
@@ -296,6 +310,37 @@ def commit(
     w.discard_unused(used)
     before = {f["file"] for f in base.files}
     return Commit(manifest, [f["file"] for f in manifest.files if f["file"] not in before])
+
+
+def _merge_stored(base: Manifest, unique: list[str], w: Writer) -> int:
+    """Turn ``_new`` (one run's rows) into the full rows of the partitions it
+    holds: its rows, plus each stored row of those partitions whose key it
+    didn't return. Reads only the files that hold one of them. Returns how
+    many stored partitions it merged into."""
+    con, key = w.con, base.key
+    q = _ident(key)
+    held = {v for (v,) in con.execute(f"select distinct cast({q} as varchar) from _new").fetchall()}
+    touched = sort_values(held & set(base.partitions))
+    files = [w.local(f["file"]) for f in base.files if set(f["partitions"]) & set(touched)]
+    if not files:
+        return 0
+    con.execute("create or replace temp table _touched (v varchar)")
+    con.executemany("insert into _touched values (?)", [(v,) for v in touched])
+    # The same key in the same partition: the run's row wins.
+    on = " and ".join(
+        [f"cast(o.{q} as varchar) = cast(n.{q} as varchar)"] + [f"o.{_ident(k)} = n.{_ident(k)}" for k in unique if k != key]
+    )
+    paths = "[" + ", ".join(_lit(p) for p in files) + "]"
+    con.execute("drop table if exists _run")
+    con.execute("alter table _new rename to _run")
+    con.execute(
+        f"create temp table _new as select * from _run union all by name "
+        f"select o.* from read_parquet({paths}, union_by_name = true) o "
+        f"where cast(o.{q} as varchar) in (select v from _touched) "
+        f"and not exists (select 1 from _run n where {on})"
+    )
+    con.execute("drop table _run")
+    return len(touched)
 
 
 def _without(base: Manifest, drop: set[str], w: Writer) -> list[dict[str, Any]]:

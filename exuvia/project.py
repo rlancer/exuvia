@@ -86,6 +86,9 @@ class Node:
     # stored. on_duplicate "last" keeps the last row for a repeated key.
     key: list[str] = field(default_factory=list)
     on_duplicate: str = "error"
+    # A partitioned node with a key: a run's rows update or insert by key into
+    # the partitions they hold, and the stored rows they don't name stay.
+    merge: bool = False
     # Its output is uploaded (``exuvia push``), never computed here: for data
     # only another machine can read, such as a Bloomberg Terminal's.
     push: bool = False
@@ -729,6 +732,8 @@ def _parse_python(node: Node, text: str) -> None:
                 node.key = key_columns(value)
             elif kw.arg == "on_duplicate":
                 node.on_duplicate = on_duplicate_value(value)
+            elif kw.arg == "merge":
+                node.merge = _merge_value(value)
     _check_key(node)
     if node.push:
         _check_push(node)
@@ -739,6 +744,21 @@ def _parse_python(node: Node, text: str) -> None:
 def _check_key(node: Node) -> None:
     if node.on_duplicate != "error" and not node.key:
         raise ValueError("`on_duplicate` says what to do with rows that repeat a key: declare the `key` too.")
+    if node.merge and not node.partition_by:
+        raise ValueError("`merge` merges a run's rows into the partitions they hold: declare `partition_by` too.")
+    if node.merge and not node.key:
+        raise ValueError("`merge` updates or inserts rows by their key: declare the `key` too.")
+
+
+def _merge_value(value: Any) -> bool:
+    """``merge``: True or False; from a SQL header, its text."""
+    if isinstance(value, str):
+        value = {"true": True, "yes": True, "on": True, "false": False, "no": False, "off": False, "": False}.get(
+            value.strip().lower(), value
+        )
+    if not isinstance(value, bool):
+        raise ValueError(f"`merge` must be True or False, not {value!r}.")
+    return value
 
 
 def _check_push(node: Node) -> None:
@@ -857,6 +877,8 @@ def _parse_sql(node: Node, text: str) -> None:
                 node.key = key_columns([t for t in val.split(",") if t.strip()])
             elif key == "on_duplicate" and val:
                 node.on_duplicate = on_duplicate_value(val.strip())
+            elif key == "merge":
+                node.merge = _merge_value(val)
             else:
                 desc.append(line.strip()[2:].strip())
         else:

@@ -234,6 +234,7 @@ export function Inspector(props: {
             <Text type="supporting" color="secondary" maxLines={1}>
               key {node.key.join(", ")}
               {node.on_duplicate === "last" ? " (last row wins)" : ""}
+              {node.merge ? ", runs merge by key" : ""}
             </Text>
           )}
           {node.deps.length > 0 && (

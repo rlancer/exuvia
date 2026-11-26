@@ -1225,6 +1225,7 @@ class Workspace:
             base, staged, w, full_refresh=full_refresh, unique=node.key or None, on_duplicate=node.on_duplicate,
             # The stored output was checked against this key when it was written.
             verified=bool(version) and (prev or {}).get("unique_key") == unique_key,
+            merge=node.merge,
             log=lambda text: self.store.append_log(run_id, text),
         )
         if done is None:  # identical rows, or none: the output stays as it is
