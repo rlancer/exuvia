@@ -13,7 +13,7 @@ as JSON or as an Arrow stream. People manage their keys at
 ``/api/data-keys``.
 
 The query is the fast path. Its connection is the sandbox
-``Workspace._outputs_db`` builds (only the files behind its views are
+``outputs.outputs_db`` builds (only the files behind its views are
 readable, nothing else, and the settings are locked), with each project's
 views attached in a catalog named after the project. Building one costs tens
 of milliseconds, so the connection is kept and each request gets a cursor
@@ -43,7 +43,8 @@ from .arrowstream import wants_arrow
 from .http_util import FastJSON, arrow_response, need_partitioned, partition_range, query_params, resolve_params
 from .datakeys import MAX_PROJECTS, DataKey, DataKeyStore, clean_projects, looks_like_key
 from .sharing import at_least
-from .workspace import Workspace, lock_outputs, outputs_connection, output_parts
+from .outputs import lock_outputs, output_parts, outputs_connection, query_arrow, query_json
+from .workspace import Workspace
 
 PREFIX = "/api/data/"
 CACHE_TTL = 5.0  # seconds a query connection is reused without a local change
@@ -470,9 +471,9 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
                 cur = connections.cursor(workspaces)
                 check_select(cur, body.sql)
                 if wants_arrow(request.headers.get("accept")):
-                    return arrow_response(Workspace._query_arrow(cur, body.sql, body.limit))
+                    return arrow_response(query_arrow(cur, body.sql, body.limit))
                 rows = JSON_ROWS if body.limit is None else min(body.limit, JSON_MAX)
-                return FastJSON({**Workspace._query(cur, body.sql, rows), "projects": chosen})
+                return FastJSON({**query_json(cur, body.sql, rows), "projects": chosen})
             except HTTPException:
                 raise
             except Exception as e:
