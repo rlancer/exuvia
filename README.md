@@ -219,12 +219,15 @@ group by 1
 ```
 
 **A chart** (`chart`) shows in the node's Data tab, and in its notebook cell,
-over the rows it charts (the first 5,000). On a chart of one view whose x is
-a column (not aggregated, binned or by time unit) the two are linked: drag
-across a continuous x (and y, for points) or click a category, and the rows
-under it show only what was picked; Clear shows them all again. A chart that
-sets its own `params`, or layers, facets or concatenates views, is drawn as
-written, without the link.
+over the output's rows. It draws every row of an output up to 50,000, and a
+random sample of 50,000 drawn from all of them past that (it says so under
+the chart). On a chart of one view whose x is a column (not aggregated,
+binned or by time unit) the two are linked: drag across a continuous x (and
+y, for points) or click a category, and the rows under it show only what was
+picked, out of the whole output, not only the rows drawn: the count is every
+row in the selection, read with SQL once the selection stops moving. Clear
+shows them all again. A chart that sets its own `params`, or layers, facets
+or concatenates views, is drawn as written, without the link.
 
 **The description** is the node function's docstring (the module
 docstring when the function has none), or a SQL node's first `--` lines
