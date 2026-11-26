@@ -695,3 +695,24 @@ def test_a_hub_answers_version_without_a_project(hub_served, released):
 
     res = asyncio.run(over_http())
     assert not res.is_error and json.loads(text(res))["upgrade"] == "uvx exuvia@latest hub <folder>"
+
+
+@pytest.mark.parametrize("url,start", [
+    ("http://127.0.0.1:8123", True),
+    ("http://localhost:8123", True),
+    ("http://[::1]:8123", True),
+    ("https://exuvia.example.com", False),
+    ("http://10.0.0.5:8123", False),
+    ("http://127.0.0.1:8123/p/sales", False),  # a hub project: no one command starts it
+])
+def test_remote_backend_suggests_starting_only_a_local_workbench(url, start, monkeypatch):
+    """Only a workbench on this machine can be started by the agent; for any
+    other address the message says the server there is unreachable."""
+    import httpx
+
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    said = RemoteBackend(url).offline_message(httpx.ConnectError("refused"))
+    assert said.startswith(f"could not reach exuvia at {url}")
+    assert ("`exuvia serve" in said) == start
+    assert ("unreachable" in said) != start
