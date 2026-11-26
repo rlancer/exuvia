@@ -243,3 +243,25 @@ def test_the_data_api_publishes_its_own_spec(hub):
     key = make_key(hub, ["sales", "crm"])
     DataProjects.model_validate(hub.get("/api/data/projects", headers=bearer(key)).json())
     QueryAnswer.model_validate(hub.post("/api/data/query", json={"sql": JOIN}, headers=bearer(key)).json())
+
+
+STATS = '''import exuvia
+
+
+@exuvia.node()
+def stats():
+    return {"mean": float("nan"), "n": 0, "range": [float("-inf"), float("inf")]}
+'''
+
+
+def test_a_json_output_with_nan_is_served_as_null(hub):
+    """JSON has no NaN or Infinity: they are written as null, so both routes
+    that serve the output answer instead of failing to render it."""
+    project(hub, "lab", "stats", STATS)
+    want = {"mean": None, "n": 0, "range": [None, None]}
+    r = hub.get("/p/lab/api/nodes/stats/data", headers=ALICE)
+    assert r.status_code == 200, r.text
+    assert r.json()["value"] == want
+    r = hub.get("/api/data/projects/lab/nodes/stats", headers=bearer(make_key(hub, ["lab"])))
+    assert r.status_code == 200, r.text
+    assert r.json()["value"] == want

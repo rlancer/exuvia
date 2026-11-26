@@ -1,4 +1,5 @@
 import asyncio
+import json
 import textwrap
 from pathlib import Path
 
@@ -320,3 +321,15 @@ def test_a_cached_upstream_does_not_skip_what_reads_it(tmp_path):
     res = run(ws, ["mid", "down"], recheck={"mid"}, force={"down"})
     assert res["mid"]["status"] == "cached"
     assert res["down"]["status"] == "success", res["down"]["error"]
+
+
+def test_json_output_nan_is_null_even_when_stored_before(tmp_path):
+    py(tmp_path, "cfg", body="return {'mean': float('nan'), 'n': 0, 'hi': float('inf'), 'name': 'NaN'}")
+    ws = Workspace(tmp_path)
+    run(ws, ["cfg"])
+    want = {"mean": None, "n": 0, "hi": None, "name": "NaN"}
+    assert ws.preview("cfg")["value"] == want
+    [path] = [p for p in tmp_path.rglob("*.json") if json.loads(p.read_text()) == want]
+    # An output written before NaN became null still reads as null.
+    path.write_text('{"mean": NaN, "n": 0, "hi": Infinity, "name": "NaN"}')
+    assert ws.preview("cfg")["value"] == want
