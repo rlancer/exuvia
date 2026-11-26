@@ -970,7 +970,7 @@ class Agent:
             return False, f"INVALID_INPUT: {problem}", {}
         try:
             return await self._call(name, args, origin)
-        except Exception as e:  # surface tool crashes to the model, not the user
+        except Exception as e:  # noqa: BLE001 - surface tool crashes to the model, not the user
             return False, (
                 f"{type(e).__name__}: {e}\n\n(An unexpected error inside exuvia. If your input was valid, "
                 "this is a bug: tell the user and offer to report it with `report_issue`.)"
@@ -1129,7 +1129,7 @@ class Agent:
         ws = self.ws
         try:
             res = await asyncio.to_thread(ws.query, args["sql"], limit=50, params=args.get("params"))
-        except Exception as e:  # duckdb errors go back to the model
+        except Exception as e:  # noqa: BLE001 - duckdb, parameter and SQL errors go back to the model
             return False, f"{type(e).__name__}: {e}", {}
         cols = [c["name"] for c in res["columns"]]
         return True, json.dumps([dict(zip(cols, r, strict=True)) for r in res["rows"]], default=str)[:12000], {}
@@ -1416,7 +1416,7 @@ class Agent:
                 stopped = {"type": "error", "error": "Stopped."}
                 self.ws.bus.publish({"type": "agent_event", "session_id": session_id, "event": stopped})
                 queue.put_nowait(stopped)
-            except Exception as e:  # never leave a listener hanging
+            except Exception as e:  # noqa: BLE001 - never leave a listener hanging
                 failed = {"type": "error", "error": f"{type(e).__name__}: {e}"}
                 self.ws.bus.publish({"type": "agent_event", "session_id": session_id, "event": failed})
                 queue.put_nowait(failed)

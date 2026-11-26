@@ -66,7 +66,9 @@ exclude = ["/site"]
 testpaths = ["tests"]
 
 [tool.ruff.lint]
-# Default rules plus flake8-bugbear. B008 (a call in a default argument) is
-# how FastAPI declares Depends/Query/Body parameters.
-extend-select = ["B"]
+# Default rules plus flake8-bugbear, blind `except Exception` (BLE001: narrow
+# it, or say why with `# noqa: BLE001 - why`) and stale noqa comments
+# (RUF100). B008 (a call in a default argument) is how FastAPI declares
+# Depends/Query/Body parameters.
+extend-select = ["B", "BLE001", "RUF100"]
 ignore = ["B008"]

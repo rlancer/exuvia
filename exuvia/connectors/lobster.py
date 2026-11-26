@@ -157,7 +157,7 @@ def lake(threads: int = 16) -> Any:
     for ext in ("httpfs", "iceberg"):
         try:
             con.execute(f"LOAD {ext}")
-        except Exception:
+        except Exception:  # noqa: BLE001 - not installed here yet (whatever error the connection raises for it)
             con.execute(f"INSTALL {ext}")  # local use; the workflows image ships them
             con.execute(f"LOAD {ext}")
     # Iceberg scans wait on object-store latency, not CPU.

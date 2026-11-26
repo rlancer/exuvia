@@ -1193,7 +1193,7 @@ class Workspace:
                 res = await asyncio.to_thread(save_pushed, data, fmt, out_dir)
                 if node.partition_by and res["kind"] not in ("table", "none"):
                     raise PartitionError(f"{name} is partitioned by `{node.partition_by}`: push a table")
-            except Exception as e:  # unreadable data fails the run, as a node that raises does
+            except Exception as e:  # noqa: BLE001 - unreadable data fails the run, as a node that raises does
                 error = f"{type(e).__name__}: {e}"
                 self.store.append_log(run_id, f"exuvia: could not read the pushed {fmt}: {error}\n")
                 self._finish(run_id, name, key, status="failed", error=error)
@@ -1312,7 +1312,7 @@ class Workspace:
             base = os.environ.get("EXUVIA_PUBLIC_URL", "").strip().rstrip("/")
             link = f"{base}{self.api_prefix}/runs/{run_id}" if base else None
             send(url, payload(self.project.name, run, link))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - a webhook that fails must never fail the run it reports
             print(f"exuvia: failure webhook skipped for run {run_id}: {e}", file=sys.stderr)
 
     def _rel(self, path: str | None) -> str | None:
@@ -1480,7 +1480,7 @@ class Workspace:
         try:
             if not store.fetch(key, local):
                 print(f"exuvia: output {rel} is not in {store.describe()}", file=sys.stderr)
-        except Exception as e:  # the read that needed it reports the missing file
+        except Exception as e:  # noqa: BLE001 - the read that needed it reports the missing file
             print(f"exuvia: could not download {rel} from {store.describe()}: {e}", file=sys.stderr)
 
     def _upload(self, rel: str | None) -> bool:
@@ -1495,7 +1495,7 @@ class Workspace:
             return False
         try:
             store.put(key, local)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - the output stays local; False says it was not stored
             print(f"exuvia: could not upload {rel} to {store.describe()}: {e}", file=sys.stderr)
             return False
         self.store.mark_stored(rel)
@@ -1559,7 +1559,7 @@ class Workspace:
         # the log.
         try:
             env_rows, secret_rows = self._run_rows()
-        except Exception as e:  # the hub's database, for the group's: the run must not stay "running"
+        except Exception as e:  # noqa: BLE001 - the hub's database, for the group's: the run must not stay "running"
             error = f"could not read the project's variables: {type(e).__name__}: {e}"
             return self._finish(run_id, name, key, status="failed", error=error)
         redact = envvars.Redactor(secret_rows)
@@ -1599,7 +1599,7 @@ class Workspace:
                 staged = res.artifact_path if res.kind == "table" else None
                 try:
                     fields = await asyncio.to_thread(self._commit_partitions, run_id, name, key, prev, staged, full_refresh)
-                except Exception as e:  # rows that can't be committed, or a write that failed
+                except Exception as e:  # noqa: BLE001 - rows that can't be committed, or a write that failed
                     error = redact(f"{type(e).__name__}: {e}") or ""
                     on_log(f"exuvia: the output was not stored: {error}\n")
                     return self._finish(run_id, name, key, status="failed", error=error)
@@ -1756,7 +1756,7 @@ class Workspace:
                 bf["done"] += 1
             else:
                 bf["state"] = "done"
-        except Exception as e:  # a bad value or a vanished node must not kill the server
+        except Exception as e:  # noqa: BLE001 - a bad value or a vanished node must not kill the server
             bf["state"], bf["error"] = "failed", f"{type(e).__name__}: {e}"
         finally:
             bf["current"] = None
@@ -1769,7 +1769,7 @@ class Workspace:
         while True:
             try:
                 await self.tick()
-            except Exception as e:  # never let the scheduler die
+            except Exception as e:  # noqa: BLE001 - never let the scheduler die
                 print(f"[exuvia] scheduler error: {e}", file=sys.stderr)
             await asyncio.sleep(5)
 

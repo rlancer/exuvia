@@ -126,7 +126,7 @@ async def latest_version(refresh: bool = False) -> tuple[str | None, str | None,
         if stale or (refresh and age > REFRESH_MIN):
             try:
                 _cache.update(latest=await _fetch(), error=None)
-            except Exception as e:  # offline, blocked, PyPI down: say so, don't fail the page
+            except Exception as e:  # noqa: BLE001 - offline, blocked, PyPI down: say so, don't fail the page
                 _cache.update(error=f"couldn't reach PyPI ({type(e).__name__})")
             _cache["checked_at"] = time.time()
         return _cache["latest"], _cache["error"], _cache["checked_at"]

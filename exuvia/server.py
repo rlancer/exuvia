@@ -879,7 +879,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
     async def push_node(
         name: str,
         request: Request,
-        format: str | None = None,  # noqa: A002 — the query parameter's name
+        format: str | None = None,  # shadows the builtin: it is the query parameter's name
         params: str | None = None,
         note: str | None = None,
         ctx: Ctx = Depends(get_ctx),

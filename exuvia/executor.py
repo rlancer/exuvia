@@ -366,7 +366,7 @@ class RemoteExecutor:
         if self._chunks_ok is None:
             try:
                 self._chunks_ok = bool(self.http.get("/healthz").json().get("chunks"))
-            except Exception:
+            except Exception:  # noqa: BLE001 - an older executor answers /healthz anyhow (or not at all): no chunks then
                 self._chunks_ok = False
         ids = [Path(p).stem for p in paths]
         if not self._chunks_ok or not all(CHUNK_ID.match(i) for i in ids):
@@ -436,12 +436,12 @@ class RemoteExecutor:
             if res.ok and res.kind not in (None, "none"):
                 res.artifact_path = self._download(req, res)
             return res
-        except Exception as e:  # network / protocol errors become run failures
+        except Exception as e:  # noqa: BLE001 - network / protocol errors become run failures
             return ExecResult(ok=False, error=f"executor error: {type(e).__name__}: {e}")
         finally:
             try:
                 self.http.delete(f"/v1/runs/{req.run_id}")
-            except Exception:
+            except Exception:  # noqa: BLE001 - best effort: cleaning up must not change the run's result
                 pass
 
     def _download(self, req: ExecRequest, res: ExecResult) -> str:
@@ -467,7 +467,7 @@ class RemoteExecutor:
     def cancel(self, run_id: str) -> bool:
         try:
             return self.http.post(f"/v1/runs/{run_id}/cancel").json().get("ok", False)
-        except Exception:
+        except Exception:  # noqa: BLE001 - best effort: an executor that can't be reached has nothing to stop
             return False
 
 
