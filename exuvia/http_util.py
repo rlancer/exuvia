@@ -1,11 +1,12 @@
 """HTTP helpers the workbench's API (server.py) and the hub's data API
 (dataapi.py) share: request parsing for run parameters and partition
-ranges, and the two ways a data answer goes out (FastJSON, an Arrow
-stream)."""
+ranges, the two ways a data answer goes out (FastJSON, an Arrow stream),
+and which file of the built UI a path names (static_file)."""
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
@@ -25,6 +26,19 @@ class FastJSON(JSONResponse):
 
     def render(self, content: Any) -> bytes:
         return json.dumps(content, ensure_ascii=False, allow_nan=False, separators=(",", ":"), default=str).encode()
+
+
+def static_file(root: Path, path: str) -> Path | None:
+    """The file of the built UI a request path names, or None: the app's own
+    page then answers, as for any address the UI routes itself. Only a file
+    under ``root``: a path that climbs out of it (``..``, however it is
+    written) names nothing. The route that serves these answers without a
+    token, so it must never reach a file outside the UI's folder."""
+    if not path:
+        return None
+    base = root.resolve()
+    f = (base / path).resolve()
+    return f if f.is_relative_to(base) and f.is_file() else None
 
 
 def arrow_response(stream: ArrowStream) -> StreamingResponse:

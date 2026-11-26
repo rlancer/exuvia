@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -39,6 +40,23 @@ def node_environ(base: Mapping[str, str] | None = None, *, index: bool = True) -
     }
 
 
+def kill(proc: "subprocess.Popen[bytes]") -> None:
+    """Kill a runner and every process it started. A node that shells out
+    (``subprocess.run``, a database client, ``curl``) leaves a child holding
+    the runner's output pipe: killing the runner alone leaves the run
+    waiting on that pipe for as long as the child lives, which is exactly
+    when a timeout or a cancel is needed. Each runner leads a process group
+    of its own (``_spawn``), so the group goes at once. On Windows only the
+    runner is killed."""
+    if sys.platform != "win32":
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError):
+            pass  # no such group any more, or not one of ours: the runner itself, below
+    proc.kill()
+
+
 class WarmPool:
     def __init__(self, cwd: Path, size: int):
         self.cwd = cwd
@@ -58,6 +76,10 @@ class WarmPool:
             cwd=self.cwd,
             env=env,
             creationflags=flags,
+            # Its own session, so `kill` can end it with whatever it started.
+            # Ctrl-C in the terminal then reaches exuvia alone, which kills
+            # its runners as it closes (LocalExecutor.close).
+            start_new_session=sys.platform != "win32",
         )
 
     def _refill(self) -> None:
@@ -69,7 +91,7 @@ class WarmPool:
             proc = self._spawn()
             with self._lock:
                 if self._closed:
-                    proc.kill()
+                    kill(proc)
                     return
                 self._idle.append(proc)
 
@@ -94,4 +116,4 @@ class WarmPool:
             self._closed = True
             idle, self._idle = self._idle, []
         for p in idle:
-            p.kill()
+            kill(p)

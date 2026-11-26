@@ -140,6 +140,9 @@ function Workbench() {
   const setMode = useCallback((m: Mode, helperPath?: string) => {
     if (helperPath) setHelper((helperRef.current = helperPath));
     setModeState(m);
+    // The notebook's address (with the cell picked) is kept by the effect
+    // below: going to the graph from the notebook itself leaves it as it is.
+    if (m === "graph" && parse(location.hash).page === "notebook") return;
     goTo(routeOf(m, helperRef.current));
   }, []);
   // What the side panel's Files and History tabs opened last.
@@ -482,6 +485,7 @@ function Workbench() {
                   </div>
                   {tag ? (
                     <TagBrowser
+                      key={tag}
                       name={tag}
                       tick={codeTick}
                       dark={dark}

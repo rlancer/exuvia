@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from . import packages
-from .pool import WarmPool
+from .pool import WarmPool, kill
 from .project import VIEW_DIR
 
 RUN_TIMEOUT_S = int(os.environ.get("EXUVIA_RUN_TIMEOUT", "1800"))
@@ -126,7 +126,7 @@ class LocalExecutor:
 
     def close(self) -> None:
         for p in list(self._procs.values()):
-            p.kill()
+            kill(p)
         self.pool.close()
 
     def execute(self, req: ExecRequest, on_log: LogFn) -> ExecResult:
@@ -187,7 +187,7 @@ class LocalExecutor:
 
             def time_up() -> None:
                 timed_out.set()
-                proc.kill()
+                kill(proc)
 
             timer = threading.Timer(req.time_limit, time_up)
             timer.start()
@@ -220,7 +220,7 @@ class LocalExecutor:
                 return False
             self._cancelled.add(run_id)
         if proc is not None:
-            proc.kill()
+            kill(proc)
         return True
 
 

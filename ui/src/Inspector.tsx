@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { EditorView } from "@uiw/react-codemirror";
 import { python } from "@codemirror/lang-python";
 import { sql } from "@codemirror/lang-sql";
@@ -18,6 +18,7 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Text } from "@astryxdesign/core/Text";
+import { TextInput } from "@astryxdesign/core/TextInput";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { api, type Column, type GraphNode, type RunRow } from "./api";
 import { ago, dur, fmtNum, until } from "./util";
@@ -28,7 +29,9 @@ import { useAccess } from "./Access";
 import { codeGroup, DownloadMenu, outputGroups, tableItems } from "./Export";
 import { nodeExportUrl, saveQuery, saveUrl } from "./download";
 import { CodeEditor } from "./ui/CodeEditor";
-import { chartBrush, DatasetSummary, DataTable, NodeChart, OutputPicker, SelectionText, useNodePreview, useOutputPart, useSelectedRows, useTableStats, type ChartSelection } from "./NodeOutput";
+import { chartBrush, chartedPart, ChartPick, DatasetSummary, DataTable, isNumeric, NodeChart, OutputPicker, RowsTable, rowsSource, useAskedRows, useNodePreview, useOutputPart, useRowPages, useTableStats, type ChartSelection } from "./NodeOutput";
+import { PAGE_ROWS } from "./rowWindow";
+import { baseQuery, nextSort, tableOf, type Sort, type TableAsk } from "./tableQuery";
 import { StateDot, statusOf, statusText } from "./ui/state";
 import { useColorMode } from "./theme/colorMode";
 
@@ -373,26 +376,55 @@ export function Inspector(props: {
   );
 }
 
+/**
+ * A node's output: every row of a table, drawn as it scrolls into view and
+ * read a page at a time, under its chart when it has one; or its JSON. The
+ * rows can be asked for another way (tableQuery.ts): filtered by a SQL
+ * condition, sorted by a column (its name is pressed), picked on the chart,
+ * or as a query of one's own over the output.
+ */
 function DataTab({ node, dark }: { node: GraphNode; dark: boolean }) {
   // A node with several outputs shows one at a time.
   const { parts, shown, pick } = useOutputPart(node);
-  // The chart, over the rows, when the output shown is the one it charts
-  // (a node with several outputs charts its first table); what is selected
-  // on it is what the table shows. `chartKey` draws it again, unselected.
-  const charted = node.output_kind === "multi" ? (node.schema ?? []).find((c) => c.type === "table")?.name ?? null : null;
-  const hasChart = !!node.chart && !!node.artifact_id && shown === charted;
+  // The chart, over the rows, when the output shown is the one it charts;
+  // what is selected on it is what the table shows. A new `cleared` draws
+  // it again, unselected.
+  const hasChart = !!node.chart && !!node.artifact_id && shown === chartedPart(node);
   const [sel, setSel] = useState<ChartSelection>(null);
-  const [chartKey, setChartKey] = useState(0);
-  // Another output, or another node: nothing is selected.
-  useEffect(() => setSel(null), [node.name, shown]);
-  const brush = hasChart ? chartBrush(node.chart) : null;
-  // The selection's rows in the whole output (the charted ones until those are read).
-  const picked = useSelectedRows(node, shown, sel);
+  const [cleared, setCleared] = useState(0);
+  // What is asked of the rows: a condition (`filter`, as applied; `draft` as
+  // it is typed), a column to sort by, or a query written out (`sql` as run,
+  // null while none is written; `sqlDraft` as it is typed).
+  const [filter, setFilter] = useState("");
+  const [draft, setDraft] = useState("");
+  const [sort, setSort] = useState<Sort | null>(null);
+  const [sql, setSql] = useState<string | null>(null);
+  const [sqlDraft, setSqlDraft] = useState("");
+  const writing = sql !== null;
+  // Another output, or another node: nothing is selected or asked.
+  useEffect(() => {
+    setSel(null);
+    setFilter("");
+    setDraft("");
+    setSort(null);
+    setSql(null);
+  }, [node.name, shown]);
+  // A query of one's own is not the chart's rows: the chart picks nothing while one is written.
+  const brush = hasChart && !writing ? chartBrush(node.chart) : null;
   const multi = node.output_kind === "multi";
-  const { preview: p } = useNodePreview(node, 300, shown);
+  const { preview: p } = useNodePreview(node, PAGE_ROWS, shown);
   const isTable = p?.kind === "table";
   // What the output's Parquet footers say: no row is read for it.
   const stats = useTableStats(node, shown, isTable);
+  // Every row of the output, its first page here and the rest read as they scroll into view.
+  const all = useRowPages(node, shown, p);
+  // The rows asked for, when anything is: read with SQL, a page at a time too.
+  const table = tableOf(node.name, shown);
+  const picked = sel?.where ?? "";
+  const ask = useMemo<TableAsk>(() => ({ sql, where: [filter, picked], sort }), [sql, filter, picked, sort]);
+  const asked = useAskedRows(table, ask, node.artifact_id, isTable);
+  // The charted rows a selection holds show at once, until all of its rows are read.
+  const quick = useMemo(() => (sel && !filter && !sort && !writing ? rowsSource(sel.columns, sel.rows) : null), [sel, filter, sort, writing]);
   const picker = (shown !== null || (isTable && stats)) && (
     <div {...stylex.props(styles.strip)}>
       {shown !== null && <OutputPicker node={node} parts={parts} shown={shown} onPick={pick} />}
@@ -425,55 +457,153 @@ function DataTab({ node, dark }: { node: GraphNode; dark: boolean }) {
         <EmptyState isCompact title="No output yet" description="Run the node." />
       </div>
     );
-  if (p.kind === "table" && p.columns && p.rows)
+  if (p.kind === "table" && p.columns && p.rows && all) {
+    // What the table shows: the rows asked for once they are read; until
+    // then the charted rows of a selection, else what it showed before.
+    const answer = asked.table && (asked.current || !quick) ? asked.table : null;
+    const view = answer
+      ? { columns: answer.columns, source: answer.source, key: answer.sql }
+      : quick && sel
+        ? { columns: sel.columns, source: quick, key: sel as unknown }
+        : { columns: p.columns, source: all, key: `${node.artifact_id}/${shown ?? ""}` as unknown };
+    const narrowed = !!filter || !!sel;
+    const runSql = () => {
+      setSort(null);
+      setSql(sqlDraft);
+    };
+    const example = p.columns.find((c) => isNumeric(c.type));
     return (
-      <div {...stylex.props(styles.fill)}>
+      <div {...stylex.props(styles.fill, styles.tableFill)}>
         {picker}
         {hasChart && (
           <div {...stylex.props(styles.chart)}>
-            <NodeChart key={chartKey} node={node} dark={dark} height={200} onSelect={setSel} />
-          </div>
-        )}
-        <div {...stylex.props(styles.scroll)}>
-          {picked ? (
-            <DataTable columns={picked.columns} rows={picked.rows} stats={stats} />
-          ) : (
-            <DataTable columns={p.columns} rows={p.rows} stats={stats} />
-          )}
-        </div>
-        <div {...stylex.props(styles.foot)}>
-          {sel && picked ? (
-            <>
-              <Text type="supporting" color="secondary" maxLines={1} hasTabularNumbers xstyle={styles.footText}>
-                <SelectionText sel={sel} picked={picked} />
-              </Text>
-              <Button
-                size="sm"
-                variant="ghost"
-                label="Clear"
-                onClick={() => {
+            <NodeChart node={node} dark={dark} height={200} onSelect={writing ? undefined : setSel} reset={cleared} />
+            {brush && (
+              <ChartPick
+                kind={brush.kind}
+                selected={
+                  !sel
+                    ? null
+                    : asked.current && asked.table
+                      ? `${fmtNum(asked.table.total)} row${asked.table.total === 1 ? "" : "s"} selected${filter ? " that pass the filter" : ""}`
+                      : `${fmtNum(sel.rows.length)} of ${fmtNum(sel.of)} charted rows selected${asked.error ? " (the rest could not be read)" : ", counting all…"}`
+                }
+                onClear={() => {
                   setSel(null);
-                  setChartKey((k) => k + 1);
+                  setCleared((n) => n + 1);
                 }}
               />
-            </>
-          ) : (
-            <Text type="supporting" color="secondary" maxLines={1} hasTabularNumbers xstyle={styles.footText}>
-              {p.rows.length < (p.total ?? 0) ? `first ${p.rows.length} of ` : ""}
-              {fmtNum(p.total)} rows · {p.columns.length} columns · {ago(node.finished_at)}
-              {brush ? ` · ${brush.kind === "interval" ? "drag across" : "click"} the chart to pick rows` : ""}
-            </Text>
-          )}
-          <DownloadMenu
-            small
-            up
-            label="Download"
-            title={`Download every row of ${shown ? `${node.name}.${shown}` : node.name}`}
-            groups={[{ title: "Every row", items: tableItems((f) => saveUrl(nodeExportUrl(node.name, f, { part: shown })), p.total) }, ...zipAll]}
+            )}
+          </div>
+        )}
+        {writing ? (
+          <div {...stylex.props(styles.ask, styles.askSql)}>
+            <div
+              {...stylex.props(styles.query)}
+              onKeyDownCapture={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  runSql();
+                }
+              }}
+            >
+              <CodeEditor value={sqlDraft} onChange={setSqlDraft} dark={dark} activeLine={false} extensions={QUERY} />
+            </div>
+            <div {...stylex.props(styles.queryRow)}>
+              <Button size="sm" label="Run" isLoading={asked.loading} onClick={runSql} />
+              <Button size="sm" variant="ghost" label="Back to the rows" tooltip="Leave the query: the output's own rows again" onClick={() => setSql(null)} />
+              <Text type="supporting" color="secondary" maxLines={1}>
+                DuckDB · every table node is a view · {MOD}Enter
+              </Text>
+            </div>
+          </div>
+        ) : (
+          <div {...stylex.props(styles.ask)}>
+            <TextInput
+              size="sm"
+              type="search"
+              label="Filter the rows with a SQL condition"
+              isLabelHidden
+              placeholder={`Filter: a SQL condition, e.g. ${example ? `${example.name} > 0` : `${p.columns[0]?.name ?? "column"} = '…'`} (Enter)`}
+              value={draft}
+              onChange={(v) => {
+                setDraft(v);
+                if (!v) setFilter(""); // cleared: every row again, without a press of Enter
+              }}
+              onEnter={() => setFilter(draft.trim())}
+              hasClear
+              hasSpellCheck={false}
+              autoComplete="off"
+              autoCapitalize="off"
+              isLoading={asked.loading}
+              status={asked.error ? { type: "error" } : draft.trim() !== filter ? { type: "warning" } : undefined}
+              containerXstyle={styles.askInput}
+            />
+            <Button
+              size="sm"
+              variant="ghost"
+              label="SQL"
+              tooltip="Write a query of your own over this output"
+              onClick={() => {
+                const text = baseQuery(table, { sql: null, where: [filter], sort: null });
+                setSqlDraft(text);
+                setSort(null);
+                setSel(null);
+                setSql(text);
+              }}
+            />
+          </div>
+        )}
+        {asked.error && (
+          <Banner
+            status="error"
+            title={
+              <Text type="code" wordBreak="break-word" xstyle={styles.pre}>
+                {asked.error}
+              </Text>
+            }
           />
+        )}
+        <RowsTable
+          columns={view.columns}
+          source={view.source}
+          stats={writing ? null : stats}
+          resetKey={view.key}
+          sort={sort}
+          onSort={(column) => setSort(nextSort(sort, column))}
+        />
+        <div {...stylex.props(styles.foot)}>
+          <Text type="supporting" color="secondary" maxLines={1} hasTabularNumbers xstyle={styles.footText}>
+            {answer
+              ? `${fmtNum(answer.total)}${narrowed && !writing ? ` of ${fmtNum(p.total)}` : ""} rows · ${answer.columns.length} columns`
+              : `${fmtNum(p.total)} rows · ${p.columns.length} columns · ${ago(node.finished_at)}`}
+            {answer && writing ? " · your query" : ""}
+            {answer && sort ? ` · by ${sort.column}${sort.desc ? ", largest first" : ""}` : ""}
+          </Text>
+          <div {...stylex.props(styles.footEnd)}>
+            {answer && (narrowed || writing || sort) ? (
+              <DownloadMenu
+                small
+                up
+                label="Download"
+                title="Download the rows shown: every row of what is asked for"
+                groups={[{ title: "The rows shown", items: tableItems((f) => saveQuery(answer.sql, f), answer.total) }]}
+              />
+            ) : (
+              <DownloadMenu
+                small
+                up
+                label="Download"
+                title={`Download every row of ${shown ? `${node.name}.${shown}` : node.name}`}
+                groups={[{ title: "Every row", items: tableItems((f) => saveUrl(nodeExportUrl(node.name, f, { part: shown })), p.total) }, ...zipAll]}
+              />
+            )}
+          </div>
         </div>
       </div>
     );
+  }
   return (
     <div {...stylex.props(styles.fill)}>
       {picker}
@@ -482,18 +612,20 @@ function DataTab({ node, dark }: { node: GraphNode; dark: boolean }) {
         <Text type="supporting" color="secondary" maxLines={1} xstyle={styles.footText}>
           JSON · {ago(node.finished_at)}
         </Text>
-        <DownloadMenu
-          small
-          up
-          label="Download"
-          title={`Download ${shown ? `${node.name}.${shown}` : node.name}`}
-          groups={[
-            {
-              items: [{ key: "json", label: "JSON", hint: ".json: the value as it was returned", onPick: () => saveUrl(nodeExportUrl(node.name, "json", { part: shown })) }],
-            },
-            ...zipAll,
-          ]}
-        />
+        <div {...stylex.props(styles.footEnd)}>
+          <DownloadMenu
+            small
+            up
+            label="Download"
+            title={`Download ${shown ? `${node.name}.${shown}` : node.name}`}
+            groups={[
+              {
+                items: [{ key: "json", label: "JSON", hint: ".json: the value as it was returned", onPick: () => saveUrl(nodeExportUrl(node.name, "json", { part: shown })) }],
+              },
+              ...zipAll,
+            ]}
+          />
+        </div>
       </div>
     </div>
   );
@@ -751,6 +883,8 @@ const styles = stylex.create({
   body: { position: "relative", display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, overflow: "auto" },
   // A tab that lays itself out: what scrolls in it, and a bar that stays put under it.
   fill: { display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0, minHeight: 0 },
+  // The Data tab of a table: where its chart leaves the rows too little room, all of it scrolls.
+  tableFill: { overflowY: "auto" },
   scroll: { flexGrow: 1, minWidth: 0, minHeight: 0, overflow: "auto" },
   center: { display: "grid", placeItems: "center", flexGrow: 1, padding: spacingVars["--spacing-6"] },
   // The bar under a tab's content: what is shown, and what can be done with it.
@@ -767,6 +901,20 @@ const styles = stylex.create({
     borderTopColor: colorVars["--color-border"],
   },
   footText: { flexGrow: 1, minWidth: 0 },
+  // What is asked of the rows, over them: a condition to filter by, or a query written out.
+  ask: {
+    display: "flex",
+    alignItems: "center",
+    gap: spacingVars["--spacing-2"],
+    flexShrink: 0,
+    paddingBlock: spacingVars["--spacing-2"],
+    paddingInline: spacingVars["--spacing-4"],
+    ...rule,
+  },
+  askSql: { flexDirection: "column", alignItems: "stretch" },
+  askInput: { flexGrow: 1, minWidth: 0 },
+  // What can be done, at the bar's end: it keeps its width, and the text gives way.
+  footEnd: { display: "flex", flexShrink: 0 },
   // A bar over a tab's content: which output, which run.
   strip: {
     display: "flex",

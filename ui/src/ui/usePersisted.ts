@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 /*
  * What this browser remembers for the app: a panel left open, a tab, a
@@ -54,23 +54,23 @@ export function usePersisted<T>(
   fallback: T | (() => T),
   accept: (v: unknown) => T | undefined,
 ): [T, (next: T | ((old: T) => T)) => void] {
-  const acceptRef = useRef(accept);
-  acceptRef.current = accept;
-  const initial = () => readStored(key, acceptRef.current) ?? (typeof fallback === "function" ? (fallback as () => T)() : fallback);
-  const [value, setValue] = useState<T>(initial);
+  const read = () => readStored(key, accept) ?? (typeof fallback === "function" ? (fallback as () => T)() : fallback);
+  const [held, setHeld] = useState(() => ({ key, value: read() }));
+  let { value } = held;
+  if (held.key !== key) {
+    // Another key: what is stored under it shows in this same render, not one
+    // late (a remembered layout must not be drawn as the default first).
+    value = read();
+    setHeld({ key, value });
+  }
   const keyRef = useRef(key);
-  useEffect(() => {
-    if (keyRef.current === key) return;
-    keyRef.current = key;
-    setValue(initial());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  keyRef.current = key;
   const set = useCallback(
     (next: T | ((old: T) => T)) =>
-      setValue((old) => {
-        const v = typeof next === "function" ? (next as (old: T) => T)(old) : next;
+      setHeld((old) => {
+        const v = typeof next === "function" ? (next as (old: T) => T)(old.value) : next;
         writeStored(keyRef.current, v);
-        return v;
+        return { key: keyRef.current, value: v };
       }),
     [],
   );

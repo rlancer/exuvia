@@ -16,4 +16,4 @@ import exuvia
 def rolling_vol(returns):
     out = returns.sort_values("date").copy()
     out["vol_20d"] = out.groupby("ticker")["ret"].transform(lambda s: s.rolling(20).std() * 252**0.5)
-    return out.dropna(subset=["vol_20d"])[["date", "ticker", "vol_20d"]]
+    return out.dropna(subset=["vol_20d"])[["date", "ticker", "vol_20d"]].reset_index(drop=True)

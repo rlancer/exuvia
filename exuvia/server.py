@@ -28,11 +28,11 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import _STARTED, __version__, about as about_mod, auth, dataapi, mcp_http
 from .activity import ActivityStore
@@ -47,7 +47,7 @@ from .project import NODE_NAME, PARAM_TYPES, coerce_param
 from .pushing import format_of, max_bytes
 from .report import graph_report, node_report
 from .groups import open_groups
-from .http_util import FastJSON, arrow_response, need_partitioned, partition_range, query_params, resolve_params
+from .http_util import FastJSON, arrow_response, need_partitioned, partition_range, query_params, resolve_params, static_file
 from .sharing import GRANT_ROLES, LINK_COOKIE, MAX_LINK_DAYS, at_least, looks_like_link, open_sharing
 from .store import clean_origin
 from .agent_mcp import CALLBACK_PATH, McpServers, finish_sign_in, open_mcp_servers, private_allowed, probe, sign_in
@@ -209,7 +209,8 @@ class SettingsReq(BaseModel):
 
 class QueryReq(BaseModel):
     sql: str
-    limit: int | None = None
+    limit: int | None = Field(None, ge=0)
+    offset: int = Field(0, ge=0)
     params: dict[str, Any] | None = None
 
 
@@ -765,8 +766,8 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         request: Request,
         name: str,
         node: str,
-        limit: int | None = None,
-        offset: int = 0,
+        limit: int | None = Query(None, ge=0),
+        offset: int = Query(0, ge=0),
         params: str | None = None,
         part: str | None = None,
         partitions: str | None = None,
@@ -1018,8 +1019,8 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
     def data(
         request: Request,
         name: str,
-        limit: int | None = None,
-        offset: int = 0,
+        limit: int | None = Query(None, ge=0),
+        offset: int = Query(0, ge=0),
         params: str | None = None,
         run_id: str | None = None,
         part: str | None = None,
@@ -1280,12 +1281,17 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         """DuckDB SQL over every node's output. JSON: the first ``limit`` rows
         (500 unless given, 5000 at most). With
         ``Accept: application/vnd.apache.arrow.stream``: an Arrow stream of
-        every row, or of ``limit`` rows when given."""
+        every row, or of ``limit`` rows when given. ``offset`` skips rows
+        first, to read a result a page at a time: each page runs the query
+        again, so pages only agree when its order is fixed (an ORDER BY that
+        leaves no ties, or none at all over one table)."""
         try:
             if wants_arrow(request.headers.get("accept")):
-                return arrow_response(ctx.ws.query_arrow(body.sql, limit=body.limit, params=body.params))
+                return arrow_response(
+                    ctx.ws.query_arrow(body.sql, limit=body.limit, params=body.params, offset=body.offset)
+                )
             rows = 500 if body.limit is None else min(body.limit, 5000)
-            return FastJSON(ctx.ws.query(body.sql, limit=rows, params=body.params))
+            return FastJSON(ctx.ws.query(body.sql, limit=rows, params=body.params, offset=body.offset))
         except Exception as e:
             raise HTTPException(400, f"{type(e).__name__}: {e}") from e
 
@@ -1851,8 +1857,7 @@ def create_app(root: str | Path) -> FastAPI:
 
         @app.get("/{path:path}")
         def spa(path: str) -> FileResponse:
-            f = STATIC / path
-            return FileResponse(f if path and f.is_file() else STATIC / "index.html")
+            return FileResponse(static_file(STATIC, path) or STATIC / "index.html")
 
     return app
 

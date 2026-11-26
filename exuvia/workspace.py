@@ -151,6 +151,9 @@ class Workspace:
         self._node_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._slots = asyncio.Semaphore(MAX_PARALLEL)
         self._inflight: dict[tuple[str, str], str] = {}  # (node, params_key) -> run_id
+        # Every run of it that has not ended, oldest first: a second one can be
+        # queued behind the first, and when either ends the other is still in flight.
+        self._unfinished: dict[tuple[str, str], list[str]] = {}
         # Live refreshes started but whose runs may not have registered yet
         # (see refresh_view): (node, params_key).
         self._live_pending: set[tuple[str, str]] = set()
@@ -1067,7 +1070,7 @@ class Workspace:
         for n in plan:
             own, keys[n] = self.node_params(n, params)
             run_ids[n] = self.store.create_run(n, batch, trigger, own, keys[n], started_by, started_by_user)
-            self._inflight[(n, keys[n])] = run_ids[n]
+            self._in_flight(n, keys[n], run_ids[n])
             self._emit_run(run_ids[n])
         prev_artifacts = {n: status[n]["artifact_id"] for n in plan}
 
@@ -1180,7 +1183,7 @@ class Workspace:
         # Two pushes of the same output are recorded one after the other.
         async with self._node_locks.setdefault((name, key), asyncio.Lock()):
             prev = self.store.last_success(name, key)
-            self._inflight[(name, key)] = run_id
+            self._in_flight(name, key, run_id)
             self.store.update_run(
                 run_id,
                 status="running",
@@ -1265,6 +1268,11 @@ class Workspace:
             return False
         return not (st["state"] == "failed" and st["output_current"])
 
+    def _in_flight(self, name: str, key: str, run_id: str) -> None:
+        """Record a run that has begun (queued or running) until ``_finish``."""
+        self._inflight[(name, key)] = run_id
+        self._unfinished.setdefault((name, key), []).append(run_id)
+
     def _is_fresh_ignoring_inflight(self, name: str, key: str, params: dict[str, Any]) -> bool:
         run_id = self._inflight.pop((name, key), None)
         try:
@@ -1295,8 +1303,18 @@ class Workspace:
     ) -> str:
         self.store.update_run(run_id, status=status, error=error, finished_at=time.time(), **fields)
         self._cancelled.discard(run_id)
+        # The node is in flight for as long as any run of it is: when this was
+        # the one shown, the one before it (still running or queued) is again.
+        left = [r for r in self._unfinished.get((name, key), []) if r != run_id]
+        if left:
+            self._unfinished[(name, key)] = left
+        else:
+            self._unfinished.pop((name, key), None)
         if self._inflight.get((name, key)) == run_id:
-            del self._inflight[(name, key)]
+            if left:
+                self._inflight[(name, key)] = left[-1]
+            else:
+                del self._inflight[(name, key)]
         self._emit_run(run_id)
         self.bus.publish({"type": "graph"})
         if status == "failed" and error != "cancelled":  # someone stopped it: nothing to tell them
@@ -2296,13 +2314,18 @@ class Workspace:
     ) -> ArrowStream:
         return outputs.query_arrow(self._outputs_db(params, only=self._view_reads(view)), sql, limit)
 
-    def query(self, sql: str, limit: int = 500, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Ad-hoc DuckDB SQL over node outputs (the views of ``_outputs_db``)."""
-        return outputs.query_json(self._outputs_db(params), sql, limit)
+    def query(
+        self, sql: str, limit: int = 500, params: dict[str, Any] | None = None, offset: int = 0
+    ) -> dict[str, Any]:
+        """Ad-hoc DuckDB SQL over node outputs (the views of ``_outputs_db``):
+        ``limit`` rows of the result from row ``offset`` on."""
+        return outputs.query_json(self._outputs_db(params), sql, limit, offset)
 
-    def query_arrow(self, sql: str, limit: int | None = None, params: dict[str, Any] | None = None) -> ArrowStream:
+    def query_arrow(
+        self, sql: str, limit: int | None = None, params: dict[str, Any] | None = None, offset: int = 0
+    ) -> ArrowStream:
         """``query`` as an Arrow stream: every row unless ``limit`` is given."""
-        return outputs.query_arrow(self._outputs_db(params), sql, limit)
+        return outputs.query_arrow(self._outputs_db(params), sql, limit, offset)
 
 
 def _view_of(rel: str) -> str | None:

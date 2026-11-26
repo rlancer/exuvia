@@ -343,6 +343,10 @@ def commits_by_revision(git: Git, tip: str) -> dict[str, str]:
     return out
 
 
+# What a tag's name starts with and holds (workspace.TAG_NAME is stricter): never a dash first.
+_TAG_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
 def mirror_tags(
     git: Git, source: RemoteSource | LocalSource, tip: str, remote: str | None, log: Callable[[str], None]
 ) -> tuple[int, int]:
@@ -355,7 +359,13 @@ def mirror_tags(
     commits = commits_by_revision(git, tip)
     made, ready = 0, []
     for tag in sorted(tags, key=lambda t: (t["created_at"], t["name"])):
-        name, commit = tag["name"], commits.get(tag["revision"])
+        name, commit = str(tag["name"]), commits.get(tag["revision"])
+        # A name comes from the server at --url, and goes to git as an
+        # argument: only a name exuvia itself makes (it never starts with a
+        # dash, so git cannot read it as an option).
+        if not _TAG_NAME.fullmatch(name):
+            log(f"tag {name!r}: not a tag name exuvia makes; left out")
+            continue
         if commit is None or git.run("check-ref-format", f"refs/tags/{name}", check=False).returncode != 0:
             log(f"tag {name}: its revision {tag['revision']} is not on this branch; left out")
             continue

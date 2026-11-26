@@ -1,4 +1,4 @@
-import { createContext, lazy, memo, Suspense, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, lazy, memo, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { colorVars, durationVars, fontWeightVars, radiusVars, spacingVars, textSizeVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { Badge } from "@astryxdesign/core/Badge";
@@ -12,7 +12,7 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { api, type GraphNode, type Preview, type Project, type ProjectView } from "./api";
 import { useAccess } from "./Access";
-import { DatasetSummary, DataTable, NodeChart, OutputPicker, SelectionText, useNodePreview, useOutputPart, useSelectedRows, useTableStats, type ChartSelection } from "./NodeOutput";
+import { chartBrush, chartedPart, ChartPick, DatasetSummary, DataTable, NodeChart, OutputPicker, SelectionText, useNodePreview, useOutputPart, useSelectedRows, useTableStats, type ChartSelection } from "./NodeOutput";
 import { notebook, type Cell, type Section } from "./notebookOrder";
 import { ago, fmtNum } from "./util";
 import { failed } from "./toast";
@@ -69,13 +69,33 @@ export function Notebook(props: {
   const [scroller, setScroller] = useState<HTMLElement | null>(null);
   const cells = useRef(new Map<string, HTMLElement>());
   const first = useRef(true);
+  // The node last picked in the notebook itself: its cell is under the pointer, and stays there.
+  const own = useRef<string | null>(null);
+  const pick = useCallback(
+    (name: string | null) => {
+      own.current = name;
+      onSelect(name);
+    },
+    [onSelect],
+  );
+  const { onEdit } = props;
+  const edit = useCallback(
+    (name: string) => {
+      own.current = name;
+      onEdit(name);
+    },
+    [onEdit],
+  );
 
   // The selected node's cell in view: centred when the notebook opens on it, brought in when it is picked elsewhere.
   useEffect(() => {
-    const el = selected ? cells.current.get(selected) : null;
-    if (!el || !scroller) return;
+    if (!scroller) return;
     const smooth = !first.current;
     first.current = false;
+    const here = own.current !== null && own.current === selected;
+    own.current = null;
+    const el = selected ? cells.current.get(selected) : null;
+    if (!el || here) return;
     const box = scroller.getBoundingClientRect();
     const r = el.getBoundingClientRect();
     if (smooth && r.top >= box.top && r.top <= box.bottom - 96) return;
@@ -89,7 +109,7 @@ export function Notebook(props: {
 
   return (
     <Scroller.Provider value={scroller}>
-      <div ref={setScroller} {...stylex.props(styles.scroll)} onClick={(e) => e.target === e.currentTarget && onSelect(null)}>
+      <div ref={setScroller} {...stylex.props(styles.scroll)} onClick={(e) => e.target === e.currentTarget && pick(null)}>
         <div {...stylex.props(styles.column)}>
           <Text type="supporting" color="secondary" xstyle={styles.note}>
             The graph in reading order: each node after what it reads, chains kept together, stages as sections. Reading order is not run order: a node
@@ -106,8 +126,8 @@ export function Notebook(props: {
                     selected={c.id === selected}
                     flash={props.flash[c.id] ?? 0}
                     dark={props.dark}
-                    onSelect={onSelect}
-                    onEdit={props.onEdit}
+                    onSelect={pick}
+                    onEdit={edit}
                   />
                 ) : (
                   <ViewCell key={c.id} cell={c} project={project} dark={props.dark} onOpen={() => props.onOpenView(c.view.name)} />
@@ -290,11 +310,11 @@ function Source({ node, onOpen }: { node: GraphNode; onOpen: () => void }) {
 function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
   const { parts, shown, pick } = useOutputPart(node);
   // A node with several outputs charts its first table: the chart shows over that one.
-  const charted = node.output_kind === "multi" ? (node.schema ?? []).find((c) => c.type === "table")?.name ?? null : null;
-  const chart = !!node.chart && !!node.artifact_id && shown === charted;
+  const chart = !!node.chart && !!node.artifact_id && shown === chartedPart(node);
+  const brush = chart ? chartBrush(node.chart) : null;
   const [sel, setSel] = useState<ChartSelection>(null);
-  // Clear draws the chart again (`chartKey`), with nothing selected.
-  const [chartKey, setChartKey] = useState(0);
+  // Clear draws the chart again (a new `cleared`), with nothing selected.
+  const [cleared, setCleared] = useState(0);
   useEffect(() => setSel(null), [node.name, shown]);
   // The selection's rows in the whole output (the charted ones until those are read).
   const picked = useSelectedRows(node, shown, sel);
@@ -306,7 +326,17 @@ function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
 
   const chartBox = chart && (
     <div {...stylex.props(styles.output, styles.chart)} onClick={(e) => e.stopPropagation()}>
-      <NodeChart key={chartKey} node={node} dark={dark} height={220} onSelect={setSel} />
+      <NodeChart node={node} dark={dark} height={220} onSelect={setSel} reset={cleared} />
+      {brush && (
+        <ChartPick
+          kind={brush.kind}
+          selected={sel && picked ? <SelectionText sel={sel} picked={picked} /> : null}
+          onClear={() => {
+            setSel(null);
+            setCleared((n) => n + 1);
+          }}
+        />
+      )}
     </div>
   );
   const picker = parts.length > 1 && shown !== null && (
@@ -333,23 +363,7 @@ function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
             <DataTable columns={p.columns} rows={p.rows} stats={stats} />
           )}
         </div>
-        {sel && picked ? (
-          <HStack gap={2} vAlign="center">
-            <Text type="supporting" color="secondary" hasTabularNumbers>
-              <SelectionText sel={sel} picked={picked} />
-            </Text>
-            <Button
-              size="sm"
-              variant="ghost"
-              label="Clear"
-              onClick={(e) => {
-                e.stopPropagation();
-                setSel(null);
-                setChartKey((k) => k + 1);
-              }}
-            />
-          </HStack>
-        ) : stats ? (
+        {sel && picked ? null : stats ? (
           <DatasetSummary stats={stats} shown={p.rows.length} storage={false} />
         ) : (
           <Text type="supporting" color="secondary" hasTabularNumbers>

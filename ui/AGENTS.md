@@ -73,6 +73,7 @@ const styles = stylex.create({
 | A dialog | `AppDialog` (`src/ui/AppDialog.tsx`): title, one-line subtitle, body, footer |
 | "Are you sure?" | Astryx `AlertDialog` |
 | A code editor | `CodeEditor` (`src/ui/CodeEditor.tsx`) |
+| A table of rows | `DataTable` for a few hundred rows that are already here; `RowsTable` for any number, drawn as they scroll into view and read a page at a time (`useRowPages` for an output as stored, `useAskedRows` for one filtered, sorted or queried: the SQL is built in `src/tableQuery.ts`), all in `src/NodeOutput.tsx` |
 | A state's dot or colour | `src/ui/state.tsx` |
 | An error the user should see | `notifyError` / `failed` (`src/toast.tsx`) |
 | Icons | `src/icons.tsx` (the app's own 16px set), passed to a component's `icon` |

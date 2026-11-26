@@ -472,11 +472,13 @@ class Store:
 
     def last_attempt(self, node: str, params_key: str = "") -> dict[str, Any] | None:
         """The latest run that executed the node's code: one that succeeded or
-        failed. Runs that were cached or skipped, or are still queued, didn't
-        try, so they say nothing about whether the node works."""
+        failed. Runs that were cached or skipped, are still queued, or were
+        cancelled before they started didn't try, so they say nothing about
+        whether the node works."""
         rows = self._q(
             "select id,status,queued_at,error from runs where project=? and node=? and params_key=? "
-            "and status in ('success','failed') order by queued_at desc limit 1",
+            "and status in ('success','failed') and not (status='failed' and error='cancelled' and started_at is null) "
+            "order by queued_at desc limit 1",
             (self.scope, node, params_key),
         )
         return _row(rows[0]) if rows else None

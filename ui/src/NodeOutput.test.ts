@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GraphNode } from "./api";
-import { chartBrush, outputPart, pct, selectedRows, selectionWhere } from "./NodeOutput";
+import { chartBrush, isNumeric, outputPart, pct, rowsSource, selectedRows, selectionWhere } from "./NodeOutput";
 
 const node = (kind: GraphNode["output_kind"], parts: string[] = []): GraphNode =>
   ({ name: "n", output_kind: kind, schema: parts.map((name) => ({ name, type: "table" })) }) as GraphNode;
@@ -17,6 +17,41 @@ describe("outputPart", () => {
 
   it("goes back to the first when the picked one is gone", () => {
     expect(outputPart(node("multi", ["a", "c"]), "b").shown).toBe("a");
+  });
+
+  it("opens a charted node on the output its chart draws: its first table", () => {
+    const fit = {
+      ...node("multi"),
+      chart: { mark: "bar" },
+      schema: [
+        { name: "metrics", type: "json" },
+        { name: "coefs", type: "table" },
+        { name: "preds", type: "table" },
+      ],
+    } as GraphNode;
+    expect(outputPart(fit, null).shown).toBe("coefs");
+    expect(outputPart(fit, "metrics").shown).toBe("metrics");
+    expect(outputPart({ ...fit, chart: null }, null).shown).toBe("metrics");
+  });
+});
+
+describe("isNumeric", () => {
+  it("knows DuckDB's and Arrow's number types", () => {
+    for (const t of ["INTEGER", "BIGINT", "UTINYINT", "HUGEINT", "DOUBLE", "FLOAT", "DECIMAL(18,3)", "Int64", "Uint8", "Float64"]) expect(isNumeric(t), t).toBe(true);
+  });
+  it("does not take a type that only starts like one for a number", () => {
+    for (const t of ["INTERVAL", "VARCHAR", "TIMESTAMP", "DATE", "BOOLEAN", "INTEGER[]", "POINT_2D"]) expect(isNumeric(t), t).toBe(false);
+  });
+});
+
+describe("rowsSource", () => {
+  it("serves rows that are already here, and how wide their columns are", () => {
+    const src = rowsSource([{ name: "ticker", type: "VARCHAR" }, { name: "n", type: "BIGINT" }], [["AAPL", 1], ["a-much-longer-name", 1234567]]);
+    expect(src.total).toBe(2);
+    expect(src.row(1)).toEqual(["a-much-longer-name", 1234567]);
+    expect(src.row(2)).toBeUndefined();
+    // The header's own text counts, and a number as the grid writes it ("1,234,567").
+    expect(src.chars).toEqual([18, 9]);
   });
 });
 

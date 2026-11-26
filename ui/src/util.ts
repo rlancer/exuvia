@@ -68,6 +68,9 @@ export function pressable(fn: () => void) {
   } as const;
 }
 
+/** How much of a description `summary` reads, in characters. */
+const SUMMARY_READ = 2000;
+
 /**
  * A Markdown text's first paragraph as one line of plain text: what a node's
  * card shows of its docstring, where there is no room to render it. The marks
@@ -76,7 +79,9 @@ export function pressable(fn: () => void) {
  */
 export function summary(md: string): string {
   const lines: string[] = [];
-  for (const raw of md.trim().split("\n")) {
+  // A card shows two lines of it: no more is read than could be shown, so a
+  // very long first paragraph costs nothing to draw.
+  for (const raw of md.trim().slice(0, SUMMARY_READ).split("\n")) {
     const line = raw.trim();
     if (line.startsWith("```") || line.startsWith("~~~")) {
       if (lines.length) break;

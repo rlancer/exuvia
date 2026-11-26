@@ -108,6 +108,29 @@ def test_the_proxy_hint_names_the_proxy_without_its_password(monkeypatch):
     assert "trust store" in proxy_hint("https://exuvia.example.com", ssl.SSLCertVerificationError("CERTIFICATE_VERIFY_FAILED"))
 
 
+def test_a_proxy_without_a_scheme_keeps_its_password_too():
+    from exuvia.nethttp import _safe
+
+    assert _safe("user:secret@proxy:8080") == "user:***@proxy:8080"
+    assert _safe("http://user:pw@proxy.invalid:3128") == "http://user:***@proxy.invalid:3128"
+    assert _safe("http://proxy:3128") == "http://proxy:3128" and _safe("proxy:3128") == "proxy:3128"
+
+
+def test_the_ui_serves_only_its_own_files(tmp_path):
+    """The route that serves the built UI needs no token: a path that climbs
+    out of the UI's folder must name nothing."""
+    from exuvia.http_util import static_file
+
+    ui = tmp_path / "static"
+    (ui / "assets").mkdir(parents=True)
+    (ui / "index.html").write_text("app")
+    (ui / "assets" / "app.js").write_text("js")
+    (tmp_path / "secret.env").write_text("TOKEN=1")
+    assert static_file(ui, "assets/app.js") == (ui / "assets" / "app.js").resolve()
+    for path in ("../secret.env", "assets/../../secret.env", "/etc/passwd", "../../../../../../etc/passwd", "", "assets", "nope.js"):
+        assert static_file(ui, path) is None, path
+
+
 def test_tools_over_http_behind_a_proxy(served):
     url, root = served
     listed = tool("--url", url)
@@ -181,3 +204,66 @@ def test_a_hub_with_its_token(tmp_path, monkeypatch):
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+
+
+def _fake(routes):
+    """A server that answers ``routes`` (path -> (status, JSON)) and drops
+    the connection on any other path."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            if self.path not in routes:
+                self.connection.close()
+                return
+            status, answer = routes[self.path]
+            body = json.dumps(answer).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return f"http://127.0.0.1:{server.server_port}", server
+
+
+def _run_tool(url, name=None):
+    import asyncio
+
+    from exuvia import toolcli
+
+    return asyncio.run(toolcli._run(url, None, name, {}, schema=False, raw=False))
+
+
+def test_a_server_that_goes_away_or_refuses_says_so_and_exits_2(capsys):
+    """No traceback: a hub that stops answering after its first reply, and a
+    workbench that turns the token away, are each one line and exit 2."""
+    url, hub = _fake({"/healthz": (200, {"mode": "hub"}), "/api/projects": (200, {"projects": []})})
+    try:
+        assert _run_tool(url) == 2  # /api/tools: the connection drops
+        assert "could not reach" in capsys.readouterr().err
+    finally:
+        hub.shutdown()
+    url, bench = _fake({"/healthz": (200, {"mode": "project"}), "/api/guide": (401, {"detail": "unauthorized"})})
+    try:
+        for name in (None, "guide"):
+            assert _run_tool(url, name) == 2
+            said = capsys.readouterr()
+            assert "HTTP 401" in said.err and said.out == ""
+    finally:
+        bench.shutdown()
+
+
+def test_the_guide_of_a_server_that_is_not_running_is_not_an_answer():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    guide = tool("--url", f"http://127.0.0.1:{port}", "guide")
+    assert guide.returncode == 2 and guide.stdout == "" and "could not reach exuvia" in guide.stderr
+    raw = tool("--url", f"http://127.0.0.1:{port}", "guide", "--json")
+    assert raw.returncode == 2 and json.loads(raw.stdout)["ok"] is False
