@@ -148,8 +148,24 @@ def test_multi_output_end_to_end(tmp_path):
 
     # ad-hoc SQL: each table part is <node>.<part>
     assert ws.query("select count(*) from fit.preds join fit.coefs on true")["rows"] == [[6]]
-    with pytest.raises(Exception):
+    # ... or "<node>.<part>" as one quoted name, as views and DuckDB's hint write it
+    assert ws.query('select count(*) from "fit.preds"')["rows"] == [[3]]
+    assert ws.query('select count(*) from "fit"."preds"')["rows"] == [[3]]
+    # the node alone, or a part without its node, names the tables to query
+    with pytest.raises(Exception, match=r"fit has several outputs, each a table of its own: query fit.coefs, fit.preds"):
         ws.query("select * from fit")
+    with pytest.raises(Exception, match=r"query it as fit.coefs"):
+        ws.query("select * from coefs")
+    with pytest.raises(Exception, match="nope"):
+        ws.query("select * from nope")
+
+
+def test_a_sql_node_reads_a_part_as_one_quoted_name(tmp_path):
+    fit_project(tmp_path)
+    write(tmp_path, "nodes/n.sql", 'select count(*) as n from "fit.preds"\n')
+    ws = Workspace(tmp_path)
+    assert run(ws, ["n"])["n"]["status"] == "success"
+    assert ws.preview("n")["rows"] == [[3]]
 
 
 def test_unchanged_parts_stop_the_cascade_and_changed_parts_run_it(tmp_path):

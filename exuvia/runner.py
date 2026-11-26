@@ -352,6 +352,9 @@ def _sql_inputs(con: Any, inputs: dict[str, Any], scratch: Path) -> None:
                     con.execute(
                         f'create view {name}."{part}" as select * from read_parquet({_sql_literal(local.as_posix())})'
                     )
+                    # and as one quoted name, "<dep>.<part>", as views write it
+                    alias = '"' + f"{dep}.{part}".replace('"', '""') + '"'
+                    con.execute(f'create view {alias} as select * from {name}."{part}"')
 
 
 def _without_trailing_terminators(sql: str) -> str:
