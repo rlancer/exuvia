@@ -1,4 +1,4 @@
-import { forwardRef, lazy, Suspense, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from "react";
+import { forwardRef, Suspense, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { colorVars, radiusVars, shadowVars, spacingVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { Banner } from "@astryxdesign/core/Banner";
@@ -19,6 +19,7 @@ import { chatKey, itemsOf, type Item } from "./chat";
 import { AgentMcpDialog } from "./AgentMcp";
 import { IconChevronRight, IconClock, IconFolder, IconPlug, IconPlus, IconSpark } from "./icons";
 import { ago } from "./util";
+import { Markdown } from "./ui/Markdown";
 
 // How many saved chats a new chat lists.
 const RECENT = 8;
@@ -98,9 +99,6 @@ function toolLabel(it: Extract<Item, { kind: "tool" }>): string {
     }
   }
 }
-
-// The Markdown renderer is fetched with the agent's first reply: a chat nobody opens costs nothing.
-const Markdown = lazy(() => import("@astryxdesign/core/Markdown").then((m) => ({ default: m.Markdown })));
 
 /** A run of the agent's steps, one after the other, as Astryx's list of tool calls. */
 type Tool = Extract<Item, { kind: "tool" }>;

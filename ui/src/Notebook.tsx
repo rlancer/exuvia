@@ -19,6 +19,7 @@ import { notebook, type Cell, type Section } from "./notebookOrder";
 import { ago, fmtNum } from "./util";
 import { failed } from "./toast";
 import { IconChevronRight, IconCode, IconLayers, IconPlay, IconWindow } from "./icons";
+import { Markdown } from "./ui/Markdown";
 import { StateDot, statusOf, statusText } from "./ui/state";
 
 const PinnedView = lazy(() => import("./PinnedView"));
@@ -232,7 +233,14 @@ const NodeCell = memo(function NodeCell(props: {
       </div>
       {busy && <div {...stylex.props(styles.bar)} />}
       <div {...stylex.props(styles.cellBody)}>
-        {node.description ? <Text xstyle={styles.prose}>{node.description}</Text> : null}
+        {node.description ? (
+          // A docstring (or a SQL node's header comment) is Markdown, as a notebook's text cell is.
+          <Suspense fallback={<Text xstyle={styles.prose}>{node.description}</Text>}>
+            <Markdown density="compact" headingLevelStart={4} contentWidth="75ch">
+              {node.description}
+            </Markdown>
+          </Suspense>
+        ) : null}
         {node.deps.length > 0 && (
           <Text type="supporting" color="secondary">
             reads{" "}

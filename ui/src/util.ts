@@ -104,3 +104,42 @@ export function pressable(fn: () => void) {
     },
   } as const;
 }
+
+/**
+ * A Markdown text's first paragraph as one line of plain text: what a node's
+ * card shows of its docstring, where there is no room to render it. The marks
+ * go (`code`, **bold**, _emphasis_, [links](…), a heading's #, a list's -) and
+ * their words stay; an underscore inside a name (rolling_vol) is not emphasis.
+ */
+export function summary(md: string): string {
+  const lines: string[] = [];
+  for (const raw of md.trim().split("\n")) {
+    const line = raw.trim();
+    if (line.startsWith("```") || line.startsWith("~~~")) {
+      if (lines.length) break;
+      continue;
+    }
+    if (!line) {
+      if (lines.length) break;
+      continue;
+    }
+    lines.push(line.replace(/^#{1,6}\s+/, "").replace(/^>\s?/, "").replace(/^([-*+]|\d+[.)])\s+/, ""));
+  }
+  // Code spans keep their text as written; the marks are taken off around them.
+  return lines
+    .join(" ")
+    .split(/(`+[^`]*`+)/)
+    .map((part, i) =>
+      i % 2
+        ? part.replace(/^`+|`+$/g, "")
+        : part
+            .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+            .replace(/(\*\*|__)(?=\S)(.+?)(?<=\S)\1/g, "$2")
+            .replace(/(^|[^\w*])\*(?=\S)([^*]+?)(?<=\S)\*(?!\w)/g, "$1$2")
+            .replace(/(^|[^\w])_(?=\S)([^_]+?)(?<=\S)_(?!\w)/g, "$1$2")
+            .replace(/~~(.+?)~~/g, "$1"),
+    )
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}

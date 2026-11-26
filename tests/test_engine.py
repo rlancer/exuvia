@@ -43,6 +43,24 @@ def run(ws, *a, **k):
     return asyncio.run(go())
 
 
+def test_sql_description_keeps_its_markdown(tmp_path):
+    """A SQL node's header comment is Markdown, as a docstring is: its line
+    breaks, blank lines and a nested item's indent survive; its settings don't."""
+    text = (
+        "-- Latest vol by **sector**.\n"
+        "-- schedule: */30 9-16 * * 1-5\n"
+        "--\n"
+        "-- - one\n"
+        "--   - nested\n"
+        "--\n"
+        "select 1 as x\n"
+    )
+    write(tmp_path, "s.sql", text)
+    node = Project(tmp_path).load().nodes["s"]
+    assert node.schedule == "*/30 9-16 * * 1-5"
+    assert node.description == "Latest vol by **sector**.\n\n- one\n  - nested"
+
+
 def test_static_parse_and_deps(tmp_path):
     py(tmp_path, "a")
     py(tmp_path, "b", params="a", kw='schedule="*/5 * * * *", cascade=False')
