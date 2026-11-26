@@ -38,7 +38,7 @@ from . import _STARTED, __version__, about as about_mod, auth, dataapi, mcp_http
 from .activity import ActivityStore
 from .datakeys import DataKeyStore
 from .agent import READ_TOOLS, TOOLS, Agent
-from .arrowstream import MEDIA_TYPE as ARROW_STREAM, ArrowStream, wants_arrow
+from .arrowstream import ArrowStream, wants_arrow
 from .envvars import EnvError, public as envvars_public
 from .exports import ExportError, check_format, code_archive, file_response, file_stem, json_response, slug, table_response, zip_response
 from .npm import NpmError
@@ -47,6 +47,7 @@ from .project import NODE_NAME, PARAM_TYPES, coerce_param
 from .pushing import format_of, max_bytes
 from .report import graph_report, node_report
 from .groups import open_groups
+from .http_util import FastJSON, arrow_response, need_partitioned, partition_range, query_params, resolve_params
 from .sharing import GRANT_ROLES, LINK_COOKIE, MAX_LINK_DAYS, at_least, looks_like_link, open_sharing
 from .store import clean_origin
 from .agent_mcp import CALLBACK_PATH, McpServers, finish_sign_in, open_mcp_servers, private_allowed, probe, sign_in
@@ -306,10 +307,6 @@ def _sse(event: dict[str, Any]) -> str:
     return f"data: {json.dumps(event, default=str)}\n\n"
 
 
-def _arrow(stream: ArrowStream) -> StreamingResponse:
-    return StreamingResponse(stream, media_type=ARROW_STREAM, headers={"Cache-Control": "no-store"})
-
-
 def _export_format(fmt: str, allow_zip: bool = False) -> str:
     if allow_zip and (fmt or "").lower() == "zip":
         return "zip"
@@ -332,23 +329,6 @@ def _stream_meta(stream: ArrowStream) -> dict[str, Any]:
     return json.loads(raw) if raw else {}
 
 
-def _partition_range(raw: str | None) -> tuple[str | None, str | None] | None:
-    """``?partitions=`` on a partitioned output's data and export routes:
-    ``lo..hi`` (either end may be left out) or a single value."""
-    if raw is None or raw == "":
-        return None
-    lo, sep, hi = raw.partition("..")
-    return (lo or None, hi or None) if sep else (raw, raw)
-
-
-def _need_partitioned(ws: Workspace, name: str, partitions: Any, run_id: str | None) -> None:
-    """``?partitions=`` only means something for a partitioned node: say so
-    rather than answer with every row."""
-    node = ws.graph.nodes.get(name)
-    if partitions is not None and run_id is None and node is not None and not node.partition_by:
-        raise HTTPException(400, f"{name} is not partitioned: leave out partitions")
-
-
 def _export_output(
     ws: Workspace,
     name: str,
@@ -364,7 +344,7 @@ def _export_output(
     (``fmt`` zip) or, with ``part``, one of them like an output of its own.
     ``partitions`` keeps a range of a partitioned output's partitions."""
     fmt = _export_format(fmt, allow_zip=True)
-    _need_partitioned(ws, name, partitions, run_id)
+    need_partitioned(ws, name, partitions, run_id)
     stream = (
         None if fmt == "zip"
         else ws.preview_arrow(name, params=params, run_id=run_id, part=part, partitions=partitions)
@@ -393,26 +373,6 @@ def _export_output(
     if kind == "table" and fmt == "zip":
         raise HTTPException(400, "zip is for a node with several outputs: pick csv, xlsx, parquet or json")
     raise HTTPException(404, f"{name} has no output yet for these parameters")
-
-
-def _query_params(raw: str | None) -> dict[str, Any] | None:
-    """GET routes take run parameters as a JSON object in ``?params=``."""
-    if not raw:
-        return None
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise HTTPException(400, "`params` must be a JSON object") from e
-    if not isinstance(value, dict):
-        raise HTTPException(400, "`params` must be a JSON object")
-    return value
-
-
-def _resolve(ws: Workspace, params: dict[str, Any] | None) -> dict[str, Any]:
-    try:
-        return ws.resolve_params(params)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
 
 
 def _date_range(start: str, end: str, weekdays: bool) -> list[str]:
@@ -490,7 +450,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
 
     @r.get("/project")
     def project(params: str | None = None, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
-        return ctx.ws.snapshot(_resolve(ctx.ws, _query_params(params)))
+        return ctx.ws.snapshot(resolve_params(ctx.ws, query_params(params)))
 
     @r.patch("/project")
     def settings(body: SettingsReq, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
@@ -505,7 +465,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
     def params_list(ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         """Declared parameters, their current values, and every value run so far."""
         ws = ctx.ws
-        now, seen = _resolve(ws, None), ws.param_values()
+        now, seen = resolve_params(ws, None), ws.param_values()
         return {
             "params": [
                 {"name": n, **spec, "value": now.get(n), "values": seen.get(n, [])}
@@ -743,12 +703,12 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
     def views_list(params: str | None = None, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         """Every view with its state for one parameter set (the same entries
         as ``views`` in ``GET /project``)."""
-        return {"views": ctx.ws.views(_resolve(ctx.ws, _query_params(params)))}
+        return {"views": ctx.ws.views(resolve_params(ctx.ws, query_params(params)))}
 
     @r.get("/views/{name}")
     def view_get(name: str, params: str | None = None, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         """One view: its entry, the parsed manifest and every file's source."""
-        return _view_call(ctx.ws.read_view, name, _resolve(ctx.ws, _query_params(params)))
+        return _view_call(ctx.ws.read_view, name, resolve_params(ctx.ws, query_params(params)))
 
     @r.put("/views/{name}")
     def view_put(name: str, body: dict[str, Any] = Body(...), ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
@@ -831,7 +791,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         cannot open any other file, the network or an extension."""
         try:
             if wants_arrow(request.headers.get("accept")):
-                return _arrow(ctx.ws.view_query_arrow(name, body.sql, limit=body.limit, params=body.params))
+                return arrow_response(ctx.ws.view_query_arrow(name, body.sql, limit=body.limit, params=body.params))
             rows = 500 if body.limit is None else min(body.limit, 5000)
             return ctx.ws.view_query(name, body.sql, limit=rows, params=body.params)
         except KeyError as e:
@@ -849,7 +809,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         the stored outputs; the runs' events replace them as they land.
         Anyone who can open the view may call it: a live node's author
         asked for it to run when the view is looked at."""
-        params = _resolve(ctx.ws, body.params)
+        params = resolve_params(ctx.ws, body.params)
         try:
             res = ctx.ws.refresh_view(name, params)
         except KeyError as e:
@@ -877,8 +837,8 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
             raise HTTPException(404, f"no view {name}") from e
         except PermissionError as e:
             raise HTTPException(403, str(e)) from e
-        resolved = _resolve(ctx.ws, _query_params(params))
-        return _export_output(ctx.ws, node, format, resolved, None, part, filename, _partition_range(partitions))
+        resolved = resolve_params(ctx.ws, query_params(params))
+        return _export_output(ctx.ws, node, format, resolved, None, part, filename, partition_range(partitions))
 
     @r.post("/views/{name}/query/export", response_model=None)
     def view_query_export(name: str, body: QueryExport, ctx: Ctx = Depends(get_ctx)) -> Any:
@@ -900,7 +860,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
             raise HTTPException(400, f"{name} is a push node: its output is uploaded with `exuvia push`, not run here")
         if body.full_refresh and node is not None and not node.partition_by:
             raise HTTPException(400, f"{name} is not partitioned: a full refresh is for nodes with partition_by")
-        params = _resolve(ctx.ws, body.params)
+        params = resolve_params(ctx.ws, body.params)
         task = asyncio.create_task(
             ctx.ws.run(
                 [name], params=params, force={name} if body.force else set(),
@@ -979,7 +939,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         """Bring the graph (or ``targets``) up to date for one parameter set.
         Only stale nodes run unless ``force``."""
         ws = ctx.ws
-        params = _resolve(ws, body.params)
+        params = resolve_params(ws, body.params)
         if body.targets is None:
             st = ws.status(params)
             targets = list(st) if body.force else [n for n, s in st.items() if s["state"] in ("stale", "new", "failed")]
@@ -1076,20 +1036,20 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         either end optional, or one value) keeps those partitions and reads
         only the files that hold them."""
         _need(ctx.ws, name)
-        resolved = _resolve(ctx.ws, _query_params(params))
-        rng = _partition_range(partitions)
-        _need_partitioned(ctx.ws, name, rng, run_id)
+        resolved = resolve_params(ctx.ws, query_params(params))
+        rng = partition_range(partitions)
+        need_partitioned(ctx.ws, name, rng, run_id)
         if wants_arrow(request.headers.get("accept")):
             stream = ctx.ws.preview_arrow(
                 name, limit=limit, offset=offset, params=resolved, run_id=run_id, part=part, partitions=rng
             )
             if stream is not None:
-                return _arrow(stream)
+                return arrow_response(stream)
         rows = 200 if limit is None else min(limit, 5000)
         try:
-            return ctx.ws.preview(
+            return FastJSON(ctx.ws.preview(
                 name, limit=rows, offset=offset, params=resolved, run_id=run_id, part=part, partitions=rng
-            )
+            ))
         except KeyError as e:
             raise HTTPException(404, str(e.args[0])) from e
 
@@ -1104,7 +1064,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         output's id, which changes only when its data does. 404 for an
         output that isn't partitioned."""
         _need(ctx.ws, name)
-        out = ctx.ws.partitions_of(name, _resolve(ctx.ws, _query_params(params)), run_id)
+        out = ctx.ws.partitions_of(name, resolve_params(ctx.ws, query_params(params)), run_id)
         if out is None:
             raise HTTPException(404, f"{name} has no partitioned output for these parameters")
         return out
@@ -1129,8 +1089,8 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         sheet's 1,048,575 rows: a bigger table is a 413."""
         _need(ctx.ws, name)
         return _export_output(
-            ctx.ws, name, format, _resolve(ctx.ws, _query_params(params)), run_id, part, filename,
-            _partition_range(partitions),
+            ctx.ws, name, format, resolve_params(ctx.ws, query_params(params)), run_id, part, filename,
+            partition_range(partitions),
         )
 
     @r.api_route("/artifacts/{node}/{filename}", methods=["GET", "HEAD"], response_model=None)
@@ -1303,9 +1263,9 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         every row, or of ``limit`` rows when given."""
         try:
             if wants_arrow(request.headers.get("accept")):
-                return _arrow(ctx.ws.query_arrow(body.sql, limit=body.limit, params=body.params))
+                return arrow_response(ctx.ws.query_arrow(body.sql, limit=body.limit, params=body.params))
             rows = 500 if body.limit is None else min(body.limit, 5000)
-            return ctx.ws.query(body.sql, limit=rows, params=body.params)
+            return FastJSON(ctx.ws.query(body.sql, limit=rows, params=body.params))
         except Exception as e:
             raise HTTPException(400, f"{type(e).__name__}: {e}") from e
 

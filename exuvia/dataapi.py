@@ -28,7 +28,6 @@ sends can change a connection other requests share.
 from __future__ import annotations
 
 import asyncio
-import json
 import threading
 import time
 from collections import OrderedDict
@@ -36,12 +35,12 @@ from typing import Any, Callable, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Security
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__, auth
 from .arrowstream import wants_arrow
+from .http_util import FastJSON, arrow_response, need_partitioned, partition_range, query_params, resolve_params
 from .datakeys import MAX_PROJECTS, DataKey, DataKeyStore, clean_projects, looks_like_key
 from .sharing import at_least
 from .workspace import Workspace, lock_outputs, outputs_connection, output_parts
@@ -162,17 +161,6 @@ with `Accept: application/vnd.apache.arrow.stream`. The key never changes
 anything and never reads more than the person who made it can open."""
 
 
-class FastJSON(JSONResponse):
-    """JSON written straight from an answer whose values are already JSON
-    (``Workspace._jsonable``), skipping FastAPI's ``jsonable_encoder``, which
-    walks every value again and took over half of a large answer's time."""
-
-    media_type = "application/json"
-
-    def render(self, content: Any) -> bytes:
-        return json.dumps(content, ensure_ascii=False, allow_nan=False, separators=(",", ":"), default=str).encode()
-
-
 # A request's data key and the projects it may read now.
 Access = tuple[DataKey, tuple[str, ...]]
 
@@ -279,7 +267,6 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
     on a project, ``is_admin`` whether the request is an admin's or the
     operator's."""
     from .hub import PROJECT_ID
-    from .server import _need_partitioned, _partition_range, _query_params, _resolve
 
     store: DataKeyStore = hub.data_keys
     connections = QueryConnections()
@@ -438,21 +425,19 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         """A node's output: JSON rows, or with `Accept:
         application/vnd.apache.arrow.stream` an Arrow stream of every row.
         A JSON output is answered as JSON whatever `Accept` says."""
-        from .server import _arrow
-
         projects = access[1]
         ws = await workspace(project, projects)
         if node not in ws.graph.nodes:
             raise HTTPException(404, f"no node {node} in project {project}")
-        resolved = _resolve(ws, _query_params(params))
-        rng = _partition_range(partitions)
-        _need_partitioned(ws, node, rng, None)
+        resolved = resolve_params(ws, query_params(params))
+        rng = partition_range(partitions)
+        need_partitioned(ws, node, rng, None)
 
         def read() -> Any:
             if wants_arrow(request.headers.get("accept")):
                 stream = ws.preview_arrow(node, limit=limit, offset=offset, params=resolved, part=part, partitions=rng)
                 if stream is not None:
-                    return _arrow(stream)
+                    return arrow_response(stream)
             rows = 200 if limit is None else min(limit, JSON_MAX)
             try:
                 return FastJSON(ws.preview(node, limit=rows, offset=offset, params=resolved, part=part, partitions=rng))
@@ -469,8 +454,6 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         parameter set it ran with. JSON: the first `limit` rows (500 unless
         given, 5000 at most). With `Accept:
         application/vnd.apache.arrow.stream`: every row unless `limit`."""
-        from .server import _arrow
-
         projects = access[1]
         if body.projects is not None:
             missing = [p for p in body.projects if p not in projects]
@@ -487,7 +470,7 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
                 cur = connections.cursor(workspaces)
                 check_select(cur, body.sql)
                 if wants_arrow(request.headers.get("accept")):
-                    return _arrow(Workspace._query_arrow(cur, body.sql, body.limit))
+                    return arrow_response(Workspace._query_arrow(cur, body.sql, body.limit))
                 rows = JSON_ROWS if body.limit is None else min(body.limit, JSON_MAX)
                 return FastJSON({**Workspace._query(cur, body.sql, rows), "projects": chosen})
             except HTTPException:
