@@ -12,7 +12,7 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { api, type GraphNode, type Preview, type Project, type ProjectView } from "./api";
 import { useAccess } from "./Access";
-import { DatasetSummary, DataTable, NodeChart, OutputPicker, useNodePreview, useOutputPart, useTableStats, type ChartSelection } from "./NodeOutput";
+import { DatasetSummary, DataTable, NodeChart, OutputPicker, SelectionText, useNodePreview, useOutputPart, useSelectedRows, useTableStats, type ChartSelection } from "./NodeOutput";
 import { notebook, type Cell, type Section } from "./notebookOrder";
 import { ago, fmtNum } from "./util";
 import { failed } from "./toast";
@@ -25,8 +25,7 @@ const PinnedView = lazy(() => import("./PinnedView"));
 
 /** Rows an output's preview shows: enough to see its shape. */
 const PREVIEW_ROWS = 8;
-/** How many of a chart's selected rows a cell shows. */
-const SELECTED_ROWS = 200;
+
 /** A pinned view's header, above the height its manifest names (as on the canvas). */
 const PIN_HEAD = 38;
 
@@ -297,6 +296,8 @@ function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
   // Clear draws the chart again (`chartKey`), with nothing selected.
   const [chartKey, setChartKey] = useState(0);
   useEffect(() => setSel(null), [node.name, shown]);
+  // The selection's rows in the whole output (the charted ones until those are read).
+  const picked = useSelectedRows(node, shown, sel);
   const { preview, failed } = useNodePreview(node, PREVIEW_ROWS, shown);
   // A read that failed shows as no output.
   const p: Preview | null = failed ? { kind: null } : preview;
@@ -326,17 +327,16 @@ function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
         {picker}
         {chartBox}
         <div {...stylex.props(styles.output, styles.table)}>
-          {sel ? (
-            <DataTable columns={sel.columns} rows={sel.rows.slice(0, SELECTED_ROWS)} stats={stats} />
+          {picked ? (
+            <DataTable columns={picked.columns} rows={picked.rows} stats={stats} />
           ) : (
             <DataTable columns={p.columns} rows={p.rows} stats={stats} />
           )}
         </div>
-        {sel ? (
+        {sel && picked ? (
           <HStack gap={2} vAlign="center">
             <Text type="supporting" color="secondary" hasTabularNumbers>
-              {sel.rows.length > SELECTED_ROWS ? `First ${fmtNum(SELECTED_ROWS)} of ` : ""}
-              {fmtNum(sel.rows.length)} selected of {fmtNum(sel.of)} charted rows
+              <SelectionText sel={sel} picked={picked} />
             </Text>
             <Button
               size="sm"

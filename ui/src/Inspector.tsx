@@ -28,7 +28,7 @@ import { useAccess } from "./Access";
 import { codeGroup, DownloadMenu, outputGroups, tableItems } from "./Export";
 import { nodeExportUrl, saveQuery, saveUrl } from "./download";
 import { CodeEditor } from "./ui/CodeEditor";
-import { chartBrush, DatasetSummary, DataTable, NodeChart, OutputPicker, useNodePreview, useOutputPart, useTableStats, type ChartSelection } from "./NodeOutput";
+import { chartBrush, DatasetSummary, DataTable, NodeChart, OutputPicker, SelectionText, useNodePreview, useOutputPart, useSelectedRows, useTableStats, type ChartSelection } from "./NodeOutput";
 import { StateDot, statusOf, statusText } from "./ui/state";
 import { useColorMode } from "./theme/colorMode";
 
@@ -373,9 +373,6 @@ export function Inspector(props: {
   );
 }
 
-/** How many of a chart's selected rows the table shows. */
-const SELECTED_ROWS = 1000;
-
 function DataTab({ node, dark }: { node: GraphNode; dark: boolean }) {
   // A node with several outputs shows one at a time.
   const { parts, shown, pick } = useOutputPart(node);
@@ -389,6 +386,8 @@ function DataTab({ node, dark }: { node: GraphNode; dark: boolean }) {
   // Another output, or another node: nothing is selected.
   useEffect(() => setSel(null), [node.name, shown]);
   const brush = hasChart ? chartBrush(node.chart) : null;
+  // The selection's rows in the whole output (the charted ones until those are read).
+  const picked = useSelectedRows(node, shown, sel);
   const multi = node.output_kind === "multi";
   const { preview: p } = useNodePreview(node, 300, shown);
   const isTable = p?.kind === "table";
@@ -436,18 +435,17 @@ function DataTab({ node, dark }: { node: GraphNode; dark: boolean }) {
           </div>
         )}
         <div {...stylex.props(styles.scroll)}>
-          {sel ? (
-            <DataTable columns={sel.columns} rows={sel.rows.slice(0, SELECTED_ROWS)} stats={stats} />
+          {picked ? (
+            <DataTable columns={picked.columns} rows={picked.rows} stats={stats} />
           ) : (
             <DataTable columns={p.columns} rows={p.rows} stats={stats} />
           )}
         </div>
         <div {...stylex.props(styles.foot)}>
-          {sel ? (
+          {sel && picked ? (
             <>
               <Text type="supporting" color="secondary" maxLines={1} hasTabularNumbers xstyle={styles.footText}>
-                {sel.rows.length > SELECTED_ROWS ? `first ${fmtNum(SELECTED_ROWS)} of ` : ""}
-                {fmtNum(sel.rows.length)} selected of {fmtNum(sel.of)} charted rows
+                <SelectionText sel={sel} picked={picked} />
               </Text>
               <Button
                 size="sm"
