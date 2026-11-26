@@ -590,25 +590,26 @@ class RemoteBackend:
     def offline_message(self, e: Exception) -> str:
         from urllib.parse import urlsplit
 
+        from .nethttp import loopback, proxy_hint
+
         base = self.api.removesuffix("/api")
         url = urlsplit(base)
-        if url.path.strip("/"):  # a hub project: there is no one command to give
-            how = "Ask the user to start that exuvia server"
-        else:
+        if loopback(url.hostname) and not url.path.strip("/"):  # a workbench on this machine: say how to start it
             port = f" --port {url.port}" if url.port else ""
             how = (
                 f"Start it in the background with `exuvia serve <project folder>{port}` "
-                "(or `uvx exuvia serve ...`), or ask the user to"
+                "(or `uvx exuvia serve ...`), or ask the user to, then call the tool again."
             )
-        from .nethttp import proxy_hint
-
+            return (
+                f"could not reach exuvia at {base} ({type(e).__name__}): the workbench these tools "
+                f"relay to is not running. {how}"
+            )
+        # Another machine, or a hub project: it cannot be started from here.
+        how = "Ask the user to check that the exuvia server at that address is up and reachable, then call the tool again."
         hint = proxy_hint(base, e)
-        if hint:  # another machine, and the proxy or TLS may be what failed, not the workbench
-            return f"could not reach exuvia at {base} ({type(e).__name__}).{hint} If that is not it: {how}, then call the tool again."
-        return (
-            f"could not reach exuvia at {base} ({type(e).__name__}): the workbench these tools "
-            f"relay to is not running. {how}, then call the tool again."
-        )
+        if hint:  # the proxy or TLS may be what failed, not the server
+            return f"could not reach exuvia at {base} ({type(e).__name__}).{hint} If that is not it: {how[0].lower()}{how[1:]}"
+        return f"could not reach exuvia at {base} ({type(e).__name__}): the server at that address is unreachable. {how}"
 
     async def stop(self) -> None:
         await self.http.aclose()
