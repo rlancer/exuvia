@@ -716,3 +716,41 @@ def test_remote_backend_suggests_starting_only_a_local_workbench(url, start, mon
     assert said.startswith(f"could not reach exuvia at {url}")
     assert ("`exuvia serve" in said) == start
     assert ("unreachable" in said) != start
+
+
+def test_backends_share_one_tool_call_layer(served):
+    """list_tools puts the guide first; call() answers the guide as any other
+    tool, with a ToolResult that says whether the server did not answer."""
+    from exuvia.mcp_server import ToolResult
+    from exuvia.remote import Unreachable
+
+    url, _ = served
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        down = f"http://127.0.0.1:{s.getsockname()[1]}"
+
+    async def go():
+        up, gone = RemoteBackend(url), RemoteBackend(down)
+        try:
+            listed = await up.list_tools()
+            bare = await up.list_tools(include_guide=False)
+            guide = await up.call("guide", {})
+            nodes = await up.call("list_nodes", {})
+            missing = await gone.call("list_nodes", {})
+            try:
+                await gone.list_tools(live=True)
+                live = None
+            except Unreachable as e:
+                live = e
+            return listed, bare, guide, nodes, missing, live, await gone.list_tools()
+        finally:
+            await up.stop()
+            await gone.stop()
+
+    listed, bare, guide, nodes, missing, live, fallback = asyncio.run(go())
+    assert listed[0]["name"] == "guide" and [t["name"] for t in listed[1:]] == [t["name"] for t in bare]
+    assert isinstance(guide, ToolResult) and guide.ok and "exuvia" in guide.text and not guide.unreachable
+    assert nodes.ok and not nodes.unreachable
+    assert not missing.ok and missing.unreachable and missing.text.startswith("could not reach exuvia")
+    assert isinstance(live, Unreachable)  # toolcli: not this install's list when the server is down
+    assert {t["name"] for t in fallback} == {"guide"} | {t["name"] for t in TOOLS}  # the stdio relay still starts

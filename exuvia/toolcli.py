@@ -142,22 +142,6 @@ class _quiet:
         sys.stdout = self.out
 
 
-async def _tool_list(backend: Any) -> list[dict[str, Any]]:
-    from .mcp_server import GUIDE_TOOL, RemoteBackend
-    from .remote import Unreachable
-
-    if isinstance(backend, RemoteBackend):
-        try:
-            await backend._load_guide()  # not this install's list when the server is down
-        except Unreachable as e:
-            raise _Unreachable(backend.offline_message(e)) from None
-    return [getattr(backend, "guide_tool", GUIDE_TOOL), *await backend.tools()]
-
-
-class _Unreachable(Exception):
-    pass
-
-
 async def _run(url: str | None, project: str | None, name: str | None, tool_input: dict[str, Any],
                *, schema: bool, raw: bool, allow_http: bool = False) -> int:
     try:
@@ -165,9 +149,11 @@ async def _run(url: str | None, project: str | None, name: str | None, tool_inpu
     except RuntimeError as e:  # a hub that is not answering or turned the token away, an older server
         print(f"exuvia tool: {e}", file=sys.stderr)
         return 2
+    from .remote import Unreachable
+
     try:
         if name is None or schema:
-            tools = await _tool_list(backend)
+            tools = await backend.list_tools(live=True)  # not this install's list when the server is down
             if name is None:
                 for t in tools:
                     print(f"{t['name']}\n    {_first_sentence(t['description'])}")
@@ -179,23 +165,19 @@ async def _run(url: str | None, project: str | None, name: str | None, tool_inpu
             print(json.dumps({k: tool[k] for k in ("name", "description", "input_schema")}, indent=2))
             return 0
         with _quiet():
-            if name == "guide":
-                guide = getattr(backend, "guide", None)
-                ok, text = await guide(tool_input) if guide else (True, await backend.instructions())
-            else:
-                ok, text = await backend.call(name, tool_input)
-    except _Unreachable as e:
-        print(f"exuvia tool: {e}", file=sys.stderr)
+            res = await backend.call(name, tool_input)
+    except Unreachable as e:
+        print(f"exuvia tool: {backend.unreachable(e)}", file=sys.stderr)
         return 2
     finally:
         await backend.stop()
     if raw:
-        print(json.dumps({"ok": ok, "text": text}))
+        print(json.dumps({"ok": res.ok, "text": res.text}))
     else:
-        print(text, file=sys.stdout if ok else sys.stderr)
-    if not ok and text.startswith("could not reach"):
+        print(res.text, file=sys.stdout if res.ok else sys.stderr)
+    if res.unreachable:
         return 2
-    return 0 if ok else 1
+    return 0 if res.ok else 1
 
 
 def _first_sentence(text: str) -> str:

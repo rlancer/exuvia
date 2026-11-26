@@ -37,9 +37,10 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
-from typing import Any, Protocol
+from dataclasses import dataclass
+from typing import Any
 
 ORIGIN = "mcp"
 GUIDE_TOOL = {
@@ -514,13 +515,61 @@ def url_elicitation(text: str) -> tuple[str, str] | None:
     return f"Set the secret {res['name']} in exuvia{why}. You enter it in exuvia, not here.", res["workbench"]
 
 
-class Backend(Protocol):
-    async def instructions(self) -> str: ...
-    async def tools(self) -> list[dict[str, Any]]: ...
-    async def call(self, name: str, args: dict[str, Any]) -> tuple[bool, str]: ...
+@dataclass(frozen=True)
+class ToolResult:
+    """What a tool call answered. ``unreachable``: the exuvia it relays to
+    did not answer, so ``text`` says that, not what the tool would say.
+    Unpacks as ``ok, text``."""
+
+    ok: bool
+    text: str
+    unreachable: bool = False
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter((self.ok, self.text))
 
 
-class LocalBackend:
+class Backend:
+    """The tool-call layer the MCP server (build_server) and ``exuvia tool``
+    (toolcli.py) share. A backend says what it offers (``instructions``,
+    ``tools``) and answers ``call_tool``; ``guide`` is the guide tool's
+    answer (by default the instructions)."""
+
+    guide_tool: dict[str, Any] = GUIDE_TOOL
+
+    async def instructions(self) -> str:
+        raise NotImplementedError
+
+    async def tools(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    async def call_tool(self, name: str, args: dict[str, Any]) -> tuple[bool, str] | ToolResult:
+        raise NotImplementedError
+
+    async def guide(self, args: dict[str, Any]) -> tuple[bool, str] | ToolResult:
+        return True, await self.instructions()
+
+    async def list_tools(self, include_guide: bool = True, *, live: bool = False) -> list[dict[str, Any]]:
+        """Every tool, the guide first unless ``include_guide`` is false.
+        ``live``: a relay's list as its server has it now, or
+        remote.Unreachable (not this install's list when it is down)."""
+        tools = await self.tools()
+        return [self.guide_tool, *tools] if include_guide else tools
+
+    async def call(self, name: str, args: dict[str, Any]) -> ToolResult:
+        """Call tool ``name``, the guide included."""
+        res = await (self.guide(args) if name == self.guide_tool["name"] else self.call_tool(name, args))
+        return res if isinstance(res, ToolResult) else ToolResult(*res)
+
+    def unreachable(self, e: Exception) -> str:
+        """What to say when the exuvia a relay calls did not answer
+        (remote.Unreachable ``e``); each relay words its own advice."""
+        from .remote import unreachable
+
+        return unreachable(getattr(e, "url", ""), e)
+
+
+class LocalBackend(Backend):
     """A project opened in this process."""
 
     def __init__(self, root: Path):
@@ -544,7 +593,7 @@ class LocalBackend:
 
         return TOOLS
 
-    async def call(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
+    async def call_tool(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
         ok, text, _ = await self.agent.call_tool(name, args, ORIGIN)
         if ok and name == "request_secret":
             import shlex
@@ -553,7 +602,7 @@ class LocalBackend:
         return ok, text
 
 
-class _Relay:
+class _Relay(Backend):
     """What RemoteBackend and HubBackend share: one client for the running
     exuvia (remote.connect) and one way to ask it something."""
 
@@ -567,28 +616,22 @@ class _Relay:
                             timeout=httpx.Timeout(REMOTE_TIMEOUT, connect=10.0))
         self.url = self.http.where
 
-    def unreachable(self, e: Exception) -> str:
-        """What a tool answers when the server did not (each backend words its own advice)."""
-        from .remote import unreachable
-
-        return unreachable(self.url, e)
-
     async def stop(self) -> None:
         await self.http.aclose()
 
-    async def _request(self, method: str, url: str, *, json: Any = None, also: tuple[int, ...] = ()) -> tuple[bool, Any]:
-        """``(True, response)`` when the server answered 200 (or a status in
-        ``also``); ``(False, why)`` when it did not answer or answered
-        another status."""
+    async def _request(self, method: str, url: str, *, json: Any = None, also: tuple[int, ...] = ()) -> Any:
+        """The response when the server answered 200 (or a status in
+        ``also``); a failed ToolResult saying why when it did not answer or
+        answered another status."""
         from .remote import Unreachable
 
         try:
             r = await self.http.request(method, url, json=json)
         except Unreachable as e:
-            return False, self.unreachable(e)
+            return ToolResult(False, self.unreachable(e), unreachable=True)
         if r.status_code != 200 and r.status_code not in also:
-            return False, f"HTTP {r.status_code}: {r.text[:2000]}"
-        return True, r
+            return ToolResult(False, f"HTTP {r.status_code}: {r.text[:2000]}")
+        return r
 
 
 class RemoteBackend(_Relay):
@@ -668,21 +711,31 @@ class RemoteBackend(_Relay):
 
             return TOOLS
 
-    async def call(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
+    async def list_tools(self, include_guide: bool = True, *, live: bool = False) -> list[dict[str, Any]]:
+        """As Backend.list_tools. Without ``live``, this install's list
+        stands in while the server is down, so the relay can start."""
+        if live:
+            await self._load_guide()
+        return await super().list_tools(include_guide)
+
+    async def call_tool(self, name: str, args: dict[str, Any]) -> tuple[bool, str] | ToolResult:
         if name == "version":
             return await relay_version(await self._post(name, args), self.api.removesuffix("/api"), args)
-        ok, text = await self._post(name, args)
+        res = await self._post(name, args)
+        if not res.ok:
+            return res
+        ok, text = res
         if ok and name == "request_secret":
             base = self.api.removesuffix("/api")
             text = secret_request_links(text, base, f"--url {base}")
         return ok, text
 
-    async def _post(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
-        ok, r = await self._request("POST", f"{self.api}/tools/{name}", json=args)
-        if not ok:
-            return False, r
+    async def _post(self, name: str, args: dict[str, Any]) -> ToolResult:
+        r = await self._request("POST", f"{self.api}/tools/{name}", json=args)
+        if isinstance(r, ToolResult):
+            return r
         body = r.json()
-        return bool(body.get("ok")), str(body.get("text", ""))
+        return ToolResult(bool(body.get("ok")), str(body.get("text", "")))
 
 
 class HubBackend(_Relay):
@@ -737,14 +790,15 @@ class HubBackend(_Relay):
     async def tools(self) -> list[dict[str, Any]]:
         return hub_tool_list(with_local_tools(self._project_tools or []))
 
-    async def _projects(self) -> tuple[bool, dict[str, Any] | str]:
-        ok, r = await self._request("GET", f"{self.url}/api/projects")
-        return (True, r.json()) if ok else (False, r)
+    async def _projects(self) -> dict[str, Any] | ToolResult:
+        """The hub's project listing, or a failed ToolResult saying why not."""
+        r = await self._request("GET", f"{self.url}/api/projects")
+        return r if isinstance(r, ToolResult) else r.json()
 
     async def _hub_about(self) -> tuple[bool, str]:
         """The hub's own version, as its help menu shows it (``GET /api/about``)."""
-        ok, r = await self._request("GET", f"{self.url}/api/about")
-        return (True, r.text) if ok else (False, r)
+        r = await self._request("GET", f"{self.url}/api/about")
+        return (False, r.text) if isinstance(r, ToolResult) else (True, r.text)
 
     async def _api(self, method: str, path: str, body: Any, query: dict[str, Any] | None) -> tuple[int, Any]:
         r = await self.http.request(method, self.url + path, json=body, params=query)
@@ -754,21 +808,21 @@ class HubBackend(_Relay):
             return r.status_code, r.text
 
     async def instructions(self) -> str:
-        ok, listing = await self._projects()
-        return hub_instructions(self.url, listing["projects"] if ok else str(listing))  # type: ignore[index]
+        listing = await self._projects()
+        return hub_instructions(self.url, listing.text if isinstance(listing, ToolResult) else listing["projects"])
 
-    async def guide(self, args: dict[str, Any]) -> tuple[bool, str]:
+    async def guide(self, args: dict[str, Any]) -> tuple[bool, str] | ToolResult:
         project = args.get("project")
         if not project:
             return True, await self.instructions()
-        ok, r = await self._request("GET", f"{self.url}/p/{project}/api/guide", also=(404,))
-        if not ok:
-            return False, r
+        r = await self._request("GET", f"{self.url}/p/{project}/api/guide", also=(404,))
+        if isinstance(r, ToolResult):
+            return r
         if r.status_code == 404:
             return False, f"no project {project} on this hub: list_projects shows them"
         return True, r.json()["instructions"]
 
-    async def call(self, name: str, args: dict[str, Any]) -> tuple[bool, str]:
+    async def call_tool(self, name: str, args: dict[str, Any]) -> tuple[bool, str] | ToolResult:
         import json
 
         from .hub import PROJECT_ID
@@ -776,8 +830,8 @@ class HubBackend(_Relay):
 
         try:
             if name == "list_projects":
-                ok, listing = await self._projects()
-                return ok, json.dumps(listing, indent=1) if ok else str(listing)
+                listing = await self._projects()
+                return listing if isinstance(listing, ToolResult) else (True, json.dumps(listing, indent=1))
             if name == "version":  # the hub's and this machine's
                 return await relay_version(await self._hub_about(), self.url, args)
             if name in PROJECT_FREE:  # the docs of this install, which may be a different version than the hub
@@ -788,11 +842,11 @@ class HubBackend(_Relay):
             project = args.pop("project", None)
             if not isinstance(project, str) or not PROJECT_ID.match(project):
                 return False, NO_PROJECT
-            ok, r = await self._request("POST", f"{self.url}/p/{project}/api/tools/{name}", json=args, also=(404,))
+            r = await self._request("POST", f"{self.url}/p/{project}/api/tools/{name}", json=args, also=(404,))
         except Unreachable as e:  # from hub_api_call
-            return False, self.unreachable(e)
-        if not ok:
-            return False, r
+            return ToolResult(False, self.unreachable(e), unreachable=True)
+        if isinstance(r, ToolResult):
+            return r
         if r.status_code == 404:
             if "no project" in r.text:
                 return False, f"no project {project} on this hub: list_projects shows them"
@@ -921,18 +975,15 @@ def build_server(backend: Backend, instructions: str | Callable[[], str], *, eli
     else:
         server_cls = Server
 
-    guide_tool = getattr(backend, "guide_tool", GUIDE_TOOL)
-
     async def list_tools(_ctx: Any, _params: Any) -> types.ListToolsResult:
-        defs = [guide_tool, *await backend.tools()]
+        defs = await backend.list_tools()
         return types.ListToolsResult(
             tools=[types.Tool(name=t["name"], description=t["description"], input_schema=t["input_schema"]) for t in defs]
         )
 
     async def call_tool(ctx: Any, params: types.CallToolRequestParams) -> Any:
-        if params.name == guide_tool["name"]:
-            guide = getattr(backend, "guide", None)
-            ok, text = await guide(params.arguments or {}) if guide else (True, await backend.instructions())
+        if params.name == backend.guide_tool["name"]:
+            ok, text = await backend.call(params.name, params.arguments or {})
         else:
             ok, text = await _with_heartbeat(ctx, backend.call(params.name, params.arguments or {}))
             if ok and params.name == "request_secret" and elicit:
