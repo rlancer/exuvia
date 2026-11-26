@@ -28,15 +28,19 @@ sends can change a connection other requests share.
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
-from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Security
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, ConfigDict, Field
 
-from . import auth
+from . import __version__, auth
 from .arrowstream import wants_arrow
 from .datakeys import MAX_PROJECTS, DataKey, DataKeyStore, clean_projects, looks_like_key
 from .sharing import at_least
@@ -63,14 +67,119 @@ class DataKeyPatch(BaseModel):
 
 
 class DataQueryReq(BaseModel):
-    sql: str
-    limit: int | None = None
-    projects: list[str] | None = None  # the projects to attach; default: those the SQL names
+    sql: str = Field(description='One SELECT (or EXPLAIN). Each project is a catalog: `"sales".orders`.')
+    limit: int | None = Field(None, description="Rows to return. JSON: 500 unless given, 5000 at most. Arrow: every row unless given.")
+    projects: list[str] | None = Field(
+        None, description="The projects to attach. Default: the key's projects whose id appears in `sql`."
+    )
 
 
-def _bearer(request: Request) -> str:
-    header = request.headers.get("authorization", "")
-    return header[7:].strip() if header[:7].lower() == "bearer " else ""
+# -- the answers, typed for the data API's OpenAPI spec -----------------------------------
+class Column(BaseModel):
+    name: str
+    type: str = Field(description="The DuckDB type (query answers) or the pandas dtype the run recorded (node listings).")
+
+
+class Part(BaseModel):
+    name: str
+    kind: str | None = Field(None, description="`table` or `json`.")
+    rows: int | None = None
+
+
+class DataNode(BaseModel):
+    name: str
+    description: str | None = Field(None, description="The node's docstring.")
+    kind: Literal["table", "multi", "json", "none"] | None = Field(
+        None, description="Its current output (default parameters): null before its first successful run."
+    )
+    rows: int | None = None
+    columns: list[Column] | None = Field(None, description="For a table output.")
+    parts: list[Part] | None = Field(None, description="For a node with several outputs: each is `<project>.<node>.<part>`.")
+    run_id: str | None = None
+    artifact_id: str | None = Field(None, description="The stored output's content hash: it changes when the data does.")
+    finished_at: float | None = Field(None, description="When the run that made it finished (Unix seconds).")
+    partitioned: bool
+    history: bool = Field(description="Whether `<project>.<node>__runs` exists: its output for every parameter set it ran with.")
+
+
+class DataProject(BaseModel):
+    id: str = Field(description="The project id, which is also its catalog name in SQL.")
+    name: str
+    nodes: list[DataNode]
+
+
+class KeyRef(BaseModel):
+    id: str
+    name: str
+
+
+class DataProjects(BaseModel):
+    key: KeyRef
+    projects: list[DataProject]
+
+
+class QueryAnswer(BaseModel):
+    columns: list[Column]
+    rows: list[list[Any]] = Field(description="Values as JSON: decimals as numbers, dates and times as ISO 8601 text, NaN as null.")
+    projects: list[str] = Field(description="The projects that were attached.")
+
+
+class NodeOutput(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    kind: Literal["table", "multi", "json", "none"] | None
+    columns: list[Column] | None = None
+    rows: list[list[Any]] | None = Field(None, description="For a table: the first `limit` rows from `offset`.")
+    total: int | None = Field(None, description="For a table: how many rows it has.")
+    value: Any = Field(None, description="For a JSON output: the value.")
+    parts: list[Part] | None = Field(None, description="For a node with several outputs, without `part`.")
+    run_id: str | None = None
+    run_params: dict[str, Any] | None = None
+    finished_at: float | None = None
+
+
+class Problem(BaseModel):
+    detail: str
+
+
+ARROW_DOC = {"application/vnd.apache.arrow.stream": {"schema": {"type": "string", "format": "binary"}}}
+PROBLEMS: dict[int | str, dict[str, Any]] = {
+    400: {"model": Problem, "description": "Bad SQL, a statement that isn't a SELECT, or bad parameters."},
+    401: {"model": Problem, "description": "No data key, or an unknown or revoked one."},
+    403: {"model": Problem, "description": "The person who made the key can no longer sign in."},
+    404: {"model": Problem, "description": "A project the key does not read, or a node it does not have."},
+}
+SPEC_DESCRIPTION = """Read-only access to the outputs of the hub projects a data key reads.
+
+Send the key as `Authorization: Bearer exd_...` (people make keys in the hub's
+account menu, **Data API keys**). Start with `GET /api/data/projects` to see the
+projects and their nodes, then read a node's output, or run one SQL `SELECT`
+across projects with `POST /api/data/query`: each project is a DuckDB catalog
+named after it (`"sales".orders`, `"sales".orders__runs`, `"sales".prices.close`).
+
+Every data route answers JSON, or an Arrow IPC stream (typed columns, every row)
+with `Accept: application/vnd.apache.arrow.stream`. The key never changes
+anything and never reads more than the person who made it can open."""
+
+
+class FastJSON(JSONResponse):
+    """JSON written straight from an answer whose values are already JSON
+    (``Workspace._jsonable``), skipping FastAPI's ``jsonable_encoder``, which
+    walks every value again and took over half of a large answer's time."""
+
+    media_type = "application/json"
+
+    def render(self, content: Any) -> bytes:
+        return json.dumps(content, ensure_ascii=False, allow_nan=False, separators=(",", ":"), default=str).encode()
+
+
+# A request's data key and the projects it may read now.
+Access = tuple[DataKey, tuple[str, ...]]
+
+bearer = HTTPBearer(
+    scheme_name="dataKey", bearerFormat="exd_...", auto_error=False,
+    description="A data API key, made in the hub's account menu (Data API keys).",
+)
 
 
 def check_select(cur: Any, sql: str) -> None:
@@ -274,8 +383,10 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
             access_cache[key.id] = (tuple(out), now)
         return tuple(out)
 
-    async def key_projects(request: Request) -> tuple[DataKey, tuple[str, ...]]:
-        token = _bearer(request)
+    async def key_projects(
+        creds: HTTPAuthorizationCredentials | None = Security(bearer),
+    ) -> Access:
+        token = creds.credentials.strip() if creds else ""
         if not looks_like_key(token):
             raise HTTPException(401, "send a data key: Authorization: Bearer exd_... (make one in the hub's account menu, Data API keys)")
         key = await asyncio.to_thread(store.by_key, token)
@@ -288,38 +399,48 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
             raise HTTPException(404, f"this key does not read a project {project}")
         return (await hub.get(project)).ws
 
-    @app.get(PREFIX + "projects")
-    async def data_projects(request: Request) -> dict[str, Any]:
-        """The projects this key reads, each with its tables."""
-        key, projects = await key_projects(request)
+    # The answers are written as JSON directly (FastJSON); `responses` only
+    # documents them, so FastAPI neither validates nor re-encodes them.
+    route = {"tags": ["data"], "response_model": None, "response_class": FastJSON}
+
+    @app.get(PREFIX + "projects", responses={200: {"model": DataProjects}, **PROBLEMS}, **route)
+    async def data_projects(access: Access = Depends(key_projects)) -> Any:
+        """The projects this key reads, each with its nodes and their current
+        outputs: the place to start."""
+        key, projects = access
         out = []
         for pid in projects:
             ws = (await hub.get(pid)).ws
             out.append({"id": pid, "name": ws.project.name, "nodes": await asyncio.to_thread(describe, ws)})
-        return {"key": {"id": key.id, "name": key.name}, "projects": out}
+        return FastJSON({"key": {"id": key.id, "name": key.name}, "projects": out})
 
-    @app.get(PREFIX + "projects/{project}")
-    async def data_project(project: str, request: Request) -> dict[str, Any]:
-        _, projects = await key_projects(request)
-        ws = await workspace(project, projects)
-        return {"id": project, "name": ws.project.name, "nodes": await asyncio.to_thread(describe, ws)}
+    @app.get(PREFIX + "projects/{project}", responses={200: {"model": DataProject}, **PROBLEMS}, **route)
+    async def data_project(project: str, access: Access = Depends(key_projects)) -> Any:
+        """One of the key's projects, with its nodes."""
+        ws = await workspace(project, access[1])
+        return FastJSON({"id": project, "name": ws.project.name, "nodes": await asyncio.to_thread(describe, ws)})
 
-    @app.get(PREFIX + "projects/{project}/nodes/{node}", response_model=None)
+    @app.get(
+        PREFIX + "projects/{project}/nodes/{node}",
+        responses={200: {"model": NodeOutput, "content": ARROW_DOC}, **PROBLEMS}, **route,
+    )
     async def data_node(
         project: str,
         node: str,
         request: Request,
-        limit: int | None = None,
+        limit: int | None = Query(None, description="JSON: 200 rows unless given, 5000 at most. Arrow: every row unless given."),
         offset: int = 0,
-        params: str | None = None,
-        part: str | None = None,
-        partitions: str | None = None,
+        params: str | None = Query(None, description="Run parameters as a JSON object; default: the project's defaults."),
+        part: str | None = Query(None, description="One output of a node with several."),
+        partitions: str | None = Query(None, description="For a partitioned node: `lo..hi` (either end optional) or one value."),
+        access: Access = Depends(key_projects),
     ) -> Any:
-        """A node's output, as ``GET /p/{project}/api/nodes/{node}/data``
-        answers it: JSON rows, or an Arrow stream of every row."""
+        """A node's output: JSON rows, or with `Accept:
+        application/vnd.apache.arrow.stream` an Arrow stream of every row.
+        A JSON output is answered as JSON whatever `Accept` says."""
         from .server import _arrow
 
-        _, projects = await key_projects(request)
+        projects = access[1]
         ws = await workspace(project, projects)
         if node not in ws.graph.nodes:
             raise HTTPException(404, f"no node {node} in project {project}")
@@ -334,22 +455,23 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
                     return _arrow(stream)
             rows = 200 if limit is None else min(limit, JSON_MAX)
             try:
-                return ws.preview(node, limit=rows, offset=offset, params=resolved, part=part, partitions=rng)
+                return FastJSON(ws.preview(node, limit=rows, offset=offset, params=resolved, part=part, partitions=rng))
             except KeyError as e:
                 raise HTTPException(404, str(e.args[0])) from e
 
         return await asyncio.to_thread(read)
 
-    @app.post(PREFIX + "query", response_model=None)
-    async def data_query(body: DataQueryReq, request: Request) -> Any:
-        """One DuckDB SELECT across the key's projects: each project is a
-        catalog, so ``"<project>".<node>`` (and ``"<project>".<node>.<part>``,
-        ``"<project>".<node>__runs``). JSON: the first ``limit`` rows (500
-        unless given, 5000 at most); with ``Accept:
-        application/vnd.apache.arrow.stream``, every row unless ``limit``."""
+    @app.post(PREFIX + "query", responses={200: {"model": QueryAnswer, "content": ARROW_DOC}, **PROBLEMS}, **route)
+    async def data_query(body: DataQueryReq, request: Request, access: Access = Depends(key_projects)) -> Any:
+        """One DuckDB SELECT across the key's projects. Each project is a
+        catalog: `"<project>".<node>`, `"<project>".<node>.<part>` for one
+        output of a node with several, `"<project>".<node>__runs` for every
+        parameter set it ran with. JSON: the first `limit` rows (500 unless
+        given, 5000 at most). With `Accept:
+        application/vnd.apache.arrow.stream`: every row unless `limit`."""
         from .server import _arrow
 
-        _, projects = await key_projects(request)
+        projects = access[1]
         if body.projects is not None:
             missing = [p for p in body.projects if p not in projects]
             if missing:
@@ -367,10 +489,28 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
                 if wants_arrow(request.headers.get("accept")):
                     return _arrow(Workspace._query_arrow(cur, body.sql, body.limit))
                 rows = JSON_ROWS if body.limit is None else min(body.limit, JSON_MAX)
-                return {**Workspace._query(cur, body.sql, rows), "projects": chosen}
+                return FastJSON({**Workspace._query(cur, body.sql, rows), "projects": chosen})
             except HTTPException:
                 raise
             except Exception as e:
                 raise HTTPException(400, str(e) if type(e) is ValueError else f"{type(e).__name__}: {e}") from e
 
         return await asyncio.to_thread(run)
+
+    spec_cache: dict[str, dict[str, Any]] = {}
+
+    @app.get(PREFIX + "openapi.json", include_in_schema=False)
+    def data_spec(request: Request) -> Any:
+        """The data API's own OpenAPI spec: only the routes a data key can
+        use. No key needed, so an agent can read it before it has one."""
+        base = str(request.base_url).rstrip("/")
+        spec = spec_cache.get(base)
+        if spec is None:
+            routes = [r for r in app.routes if getattr(r, "path", "").startswith(PREFIX)]
+            spec = get_openapi(
+                title="exuvia data API", version=__version__, description=SPEC_DESCRIPTION,
+                routes=routes, servers=[{"url": base}],
+            )
+            spec["security"] = [{"dataKey": []}]
+            spec_cache[base] = spec
+        return spec

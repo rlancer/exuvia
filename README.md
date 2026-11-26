@@ -3122,8 +3122,15 @@ curl -s https://hub.example.com/api/data/query \
   -d '{"sql": "select a.name, sum(o.amount) from \"sales\".orders o join crm.accounts a using (account) group by 1"}'
 ```
 
+**For agents and code generators**, the data API has an OpenAPI spec of
+its own at `GET /api/data/openapi.json`: only the routes a key can use, the
+`exd_` bearer scheme, typed answers and errors, and the Arrow option. It
+needs no key, so hand an agent the hub's URL and a key and it can find the
+rest. (`/openapi.json` and `/docs` cover the whole HTTP API.)
+
 | Route | |
 |---|---|
+| `GET /api/data/openapi.json` | the data API's OpenAPI spec (no key needed) |
 | `GET /api/data/projects` | the projects the key reads, each with its nodes: `kind` (`table`, `multi`, `json`, or null before a run), `rows`, `columns`, `parts`, `partitioned`, `history` (whether `<node>__runs` exists) and the current `run_id` / `artifact_id` |
 | `GET /api/data/projects/{project}` | one of them |
 | `GET /api/data/projects/{project}/nodes/{node}` | a node's output, as `/api/nodes/{name}/data` answers it (`limit`, `offset`, `params`, `part`, `partitions`; JSON or Arrow) |

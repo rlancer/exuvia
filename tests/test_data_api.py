@@ -217,3 +217,29 @@ def test_a_hub_nobody_signs_in_to_still_needs_a_key(tmp_path, monkeypatch):
         assert key["owner_id"] is None
         r = client.post("/api/data/query", json={"sql": "select name from crm.accounts order by 1"}, headers=bearer(key))
         assert r.json()["rows"] == [["Acme"], ["Globex"]]
+
+
+def test_the_data_api_publishes_its_own_spec(hub):
+    spec = hub.get("/api/data/openapi.json").json()  # no key needed: an agent reads it first
+    assert spec["info"]["title"] == "exuvia data API"
+    assert sorted(spec["paths"]) == [
+        "/api/data/projects", "/api/data/projects/{project}", "/api/data/projects/{project}/nodes/{node}", "/api/data/query",
+    ]
+    assert spec["components"]["securitySchemes"]["dataKey"] == {
+        "type": "http", "scheme": "bearer", "bearerFormat": "exd_...",
+        "description": "A data API key, made in the hub's account menu (Data API keys).",
+    }
+    assert spec["security"] == [{"dataKey": []}] and spec["servers"] == [{"url": "http://testserver"}]
+    query = spec["paths"]["/api/data/query"]["post"]
+    ok = query["responses"]["200"]["content"]
+    assert ok["application/json"]["schema"] == {"$ref": "#/components/schemas/QueryAnswer"}
+    assert "application/vnd.apache.arrow.stream" in ok
+    assert {"400", "401", "403", "404"} <= set(query["responses"])
+    node = spec["components"]["schemas"]["DataNode"]["properties"]
+    assert {"kind", "columns", "parts", "history", "artifact_id"} <= set(node)
+    # The answers match the models they are documented with.
+    from exuvia.dataapi import DataProjects, QueryAnswer
+
+    key = make_key(hub, ["sales", "crm"])
+    DataProjects.model_validate(hub.get("/api/data/projects", headers=bearer(key)).json())
+    QueryAnswer.model_validate(hub.post("/api/data/query", json={"sql": JOIN}, headers=bearer(key)).json())
