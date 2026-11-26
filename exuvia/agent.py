@@ -380,18 +380,18 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "set_group",
+        "name": "set_stage",
         "description": (
-            "Create or change a group: a stage of the graph (ingest, features, reports, ...) drawn as one "
+            "Create or change a stage: one step of the graph (ingest, features, reports, ...) drawn as one "
             "labelled region on the canvas, which the user can collapse into a single card with the stage's "
             "combined state. Stored in exuvia.json; no node file changes, so nothing goes stale. `nodes` is the "
-            "whole list of the group's nodes (a node moves out of any other group); delete_group removes one. "
-            "Group a graph once it has more than about ten nodes, by what each step is for."
+            "whole list of the stage's nodes (a node moves out of any other stage); delete_stage removes one. "
+            "Split a graph into stages once it has more than about ten nodes, by what each step is for."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "snake_case group name, e.g. ingest"},
+                "name": {"type": "string", "description": "snake_case stage name, e.g. ingest"},
                 "nodes": {"type": "array", "items": {"type": "string"}, "description": "node names, in no order"},
                 "title": {"type": "string", "description": "the label on the canvas; default the name"},
                 "description": {"type": "string", "description": "what the stage does, one sentence"},
@@ -401,8 +401,8 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "delete_group",
-        "description": "Remove a group from the canvas. Its nodes stay; they are just no longer grouped.",
+        "name": "delete_stage",
+        "description": "Remove a stage from the canvas. Its nodes stay; they are just no longer in a stage.",
         "input_schema": {
             "type": "object",
             "properties": {"name": {"type": "string"}},
@@ -805,9 +805,9 @@ def rolling_vol(returns):
 - The canvas draws every view as a small card under the nodes it reads. `canvas: true` in the manifest (write_view) pins the view on the canvas instead, rendered live in a card (`{"width": 560, "height": 360}` sets its size): for an overview of what the whole graph does, such as a status board or a summary of the latest results.
 - Only write views when the user asks for one.
 
-## Groups
-- A group is a stage of the graph (ingest, features, models, reports): one labelled region on the canvas that the user can collapse into a single card with the stage's combined state, so a large graph reads as a few steps. Groups are stored in exuvia.json and change no node file, so grouping never makes an output stale.
-- set_group sets a group's whole list of nodes (a node is in at most one group, and moves out of any other); delete_group removes the group and keeps its nodes. When a graph grows past about ten nodes, or the user asks to organise it, group the nodes by what each step is for, and put each new node in its stage.
+## Stages
+- A stage is one step of the graph (ingest, features, models, reports): one labelled region on the canvas that the user can collapse into a single card with the stage's combined state, so a large graph reads as a few steps. Stages are stored in exuvia.json and change no node file, so arranging nodes in stages never makes an output stale.
+- set_stage sets a stage's whole list of nodes (a node is in at most one stage, and moves out of any other); delete_stage removes the stage and keeps its nodes. When a graph grows past about ten nodes, or the user asks to organise it, split the nodes into stages by what each step is for, and put each new node in its stage.
 
 ## When exuvia itself is the problem
 - If a tool fails on valid input, exuvia contradicts this guide, this guide is wrong or unclear, or the user needs something exuvia cannot do, say so plainly and offer to report it with report_issue. The maintainers want these reports and the project is young, so do not stay quiet about a rough edge. Do not use it for errors in the user's own nodes or data: fix those.
@@ -912,7 +912,7 @@ class Agent:
                     k: n.get(k)
                     for k in (
                         "name", "kind", "deps", "helpers", "description", "schedule", "cascade", "params", "run_params",
-                        "group", "state", "reason", "rows", "schema",
+                        "stage", "state", "reason", "rows", "schema",
                     )
                     if n.get(k) not in (None, [], "")
                 }
@@ -1043,11 +1043,11 @@ class Agent:
                 return False, str(e), {}
             ws.set_param(args["name"], spec)
             return True, json.dumps({"defined": args["name"], **spec, "value_now": ws.resolve_params()[args["name"]]}), {}
-        if name in ("set_group", "delete_group"):
-            if name == "delete_group" and args["name"] not in ws.graph.groups:
-                return False, f"no group named {args['name']}", {}
+        if name in ("set_stage", "delete_stage"):
+            if name == "delete_stage" and args["name"] not in ws.graph.stages:
+                return False, f"no stage named {args['name']}", {}
             try:
-                out = ws.set_group(args["name"], args.get("nodes") if name == "set_group" else None,
+                out = ws.set_stage(args["name"], args.get("nodes") if name == "set_stage" else None,
                                    args.get("title"), args.get("description"))
             except ValueError as e:
                 return False, str(e), {}

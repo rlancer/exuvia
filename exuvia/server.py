@@ -183,7 +183,7 @@ class ScheduleReq(BaseModel):
     cron: str | None = None  # "" turns the schedule off; null drops the override
 
 
-class GroupReq(BaseModel):
+class StageReq(BaseModel):
     nodes: list[str] = []
     title: str | None = None
     description: str | None = None
@@ -531,24 +531,24 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         ctx.ws.set_param(name, None)
         return params_list(ctx)
 
-    # -- groups: the canvas's stages (exuvia.json `groups`) -------------------
-    @r.get("/groups")
-    def groups_list(ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
-        return {"groups": [g.to_dict() for g in ctx.ws.graph.groups.values()]}
+    # -- stages: steps of the graph on the canvas (exuvia.json `stages`) -------
+    @r.get("/stages")
+    def stages_list(ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        return {"stages": [g.to_dict() for g in ctx.ws.graph.stages.values()]}
 
-    @r.put("/groups/{name}")
-    def group_put(name: str, body: GroupReq, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
-        """Create or change a group; its nodes move out of any other group."""
+    @r.put("/stages/{name}")
+    def stage_put(name: str, body: StageReq, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """Create or change a stage; its nodes move out of any other stage."""
         try:
-            return ctx.ws.set_group(name, body.nodes, body.title, body.description)
+            return ctx.ws.set_stage(name, body.nodes, body.title, body.description)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
 
-    @r.delete("/groups/{name}")
-    def group_delete(name: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
-        if name not in ctx.ws.graph.groups:
-            raise HTTPException(404, f"no group named {name}")
-        return ctx.ws.set_group(name, None)
+    @r.delete("/stages/{name}")
+    def stage_delete(name: str, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        if name not in ctx.ws.graph.stages:
+            raise HTTPException(404, f"no stage named {name}")
+        return ctx.ws.set_stage(name, None)
 
     # -- environment variables (envvars.py) -------------------------------------
     @r.get("/env")

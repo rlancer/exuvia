@@ -1,3 +1,8 @@
 {
-  "name": "markets demo"
+  "name": "markets demo",
+  "stages": {
+    "ingest": {"title": "Ingest", "description": "The tickers and their daily closes", "nodes": ["universe", "prices"]},
+    "features": {"title": "Features", "description": "Returns and realized vol", "nodes": ["returns", "rolling_vol"]},
+    "reports": {"title": "Reports", "nodes": ["sector_summary"]}
+  }
 }

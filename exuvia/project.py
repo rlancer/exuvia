@@ -103,9 +103,9 @@ class Node:
     # (0, from ``live=True``: every time).
     live: float | None = None
     schedule_source: str | None = None  # "code" | "config" (exuvia.json `schedules`)
-    # The stage it belongs to on the canvas (exuvia.json `groups`). Kept out
-    # of the node file so grouping nodes never changes their code hash.
-    group: str | None = None
+    # The stage it belongs to on the canvas (exuvia.json `stages`). Kept out
+    # of the node file so arranging nodes in stages never changes their code hash.
+    stage: str | None = None
     helpers: list[str] = field(default_factory=list)  # lib/ files it imports, directly or not
     code_hash: str = ""  # the node file plus every helper it imports
     parse_error: str | None = None
@@ -139,9 +139,9 @@ class View:
 
 
 @dataclass
-class Group:
-    """A stage of the graph on the canvas: a name, what it is for and the
-    nodes in it (``exuvia.json`` ``groups``). ``missing`` lists nodes it
+class Stage:
+    """A step of the graph on the canvas: a name, what it is for and the
+    nodes in it (``exuvia.json`` ``stages``). ``missing`` lists nodes it
     names that do not exist (any more); ``problem`` says what else is wrong."""
 
     name: str
@@ -159,7 +159,7 @@ class Group:
 class Graph:
     nodes: dict[str, Node]
     views: dict[str, View] = field(default_factory=dict)
-    groups: dict[str, Group] = field(default_factory=dict)
+    stages: dict[str, Stage] = field(default_factory=dict)
 
     def readers(self, name: str) -> list[str]:
         """Views that read node ``name``'s output."""
@@ -392,39 +392,39 @@ class Project:
                         _validate_cron(n.schedule)
                     except ValueError as e:
                         n.parse_error = str(e)
-        graph.groups = self.parse_groups(graph.nodes)
+        graph.stages = self.parse_stages(graph.nodes)
         graph.views = {v.name: v for v in (self.parse_view(name, names) for name in self.view_names())}
         return graph
 
-    def parse_groups(self, nodes: dict[str, Node]) -> dict[str, Group]:
-        """The canvas's stages from ``exuvia.json`` ``groups``, in the order
-        written, and each node's ``group``. A node named by two groups is in
-        the first; the second reports it. A group that is malformed is listed
+    def parse_stages(self, nodes: dict[str, Node]) -> dict[str, Stage]:
+        """The canvas's stages from ``exuvia.json`` ``stages``, in the order
+        written, and each node's ``stage``. A node named by two stages is in
+        the first; the second reports it. A stage that is malformed is listed
         with its ``problem`` and holds nothing."""
-        raw = self.config.get("groups")
-        out: dict[str, Group] = {}
+        raw = self.config.get("stages")
+        out: dict[str, Stage] = {}
         if not isinstance(raw, dict):
             return out
         for name, spec in raw.items():
-            group = Group(name=str(name), title=str(name))
-            out[group.name] = group
-            clean, problem = check_group(name, spec)
+            stage = Stage(name=str(name), title=str(name))
+            out[stage.name] = stage
+            clean, problem = check_stage(name, spec)
             if problem:
-                group.problem = problem
+                stage.problem = problem
                 continue
-            group.title, group.description = clean["title"] or group.name, clean["description"]
+            stage.title, stage.description = clean["title"] or stage.name, clean["description"]
             taken: list[str] = []
             for n in clean["nodes"]:
                 node = nodes.get(n)
                 if node is None:
-                    group.missing.append(n)
-                elif node.group is not None:
-                    taken.append(f"{n} (in {node.group})")
+                    stage.missing.append(n)
+                elif node.stage is not None:
+                    taken.append(f"{n} (in {node.stage})")
                 else:
-                    node.group = group.name
-                    group.nodes.append(n)
+                    node.stage = stage.name
+                    stage.nodes.append(n)
             if taken:
-                group.problem = f"Already in another group: {', '.join(taken)}."
+                stage.problem = f"Already in another stage: {', '.join(taken)}."
         return out
 
     def path_for(self, name: str) -> Path | None:
@@ -1073,35 +1073,35 @@ def view_canvas(value: Any) -> dict[str, int] | None:
     )
 
 
-GROUP_TITLE_MAX = 64
-GROUP_DESCRIPTION_MAX = 500
+STAGE_TITLE_MAX = 64
+STAGE_DESCRIPTION_MAX = 500
 
 
-def check_group(name: Any, spec: Any) -> tuple[dict[str, Any], str | None]:
-    """One entry of ``exuvia.json`` ``groups`` with defaults filled in, and
+def check_stage(name: Any, spec: Any) -> tuple[dict[str, Any], str | None]:
+    """One entry of ``exuvia.json`` ``stages`` with defaults filled in, and
     what is wrong with it. ``spec`` is ``{"title", "description", "nodes"}``,
     or the list of nodes alone."""
     clean: dict[str, Any] = {"title": "", "description": "", "nodes": []}
     if not isinstance(name, str) or not NODE_NAME.match(name):
-        return clean, "Group names are snake_case identifiers, like node names (e.g. ingest)."
+        return clean, "Stage names are snake_case identifiers, like node names (e.g. ingest)."
     if isinstance(spec, list):
         spec = {"nodes": spec}
     if not isinstance(spec, dict):
-        return clean, 'A group is {"title", "description", "nodes"} or a list of node names.'
+        return clean, 'A stage is {"title", "description", "nodes"} or a list of node names.'
     unknown = sorted(str(k) for k in spec if k not in clean)
     if unknown:
-        return clean, f"Unknown key(s) in group {name}: {', '.join(unknown)} (allowed: title, description, nodes)."
-    for key, limit in (("title", GROUP_TITLE_MAX), ("description", GROUP_DESCRIPTION_MAX)):
+        return clean, f"Unknown key(s) in stage {name}: {', '.join(unknown)} (allowed: title, description, nodes)."
+    for key, limit in (("title", STAGE_TITLE_MAX), ("description", STAGE_DESCRIPTION_MAX)):
         value = spec.get(key)
         if value is None:
             continue
         if not isinstance(value, str) or len(value) > limit:
-            return clean, f"`{key}` of group {name} must be text of at most {limit} characters."
+            return clean, f"`{key}` of stage {name} must be text of at most {limit} characters."
         clean[key] = value.strip()
     nodes = spec.get("nodes")
     if nodes is not None:
         if not isinstance(nodes, list) or not all(isinstance(n, str) and NODE_NAME.match(n) for n in nodes):
-            return clean, f'`nodes` of group {name} must be a list of node names, e.g. ["prices", "returns"].'
+            return clean, f'`nodes` of stage {name} must be a list of node names, e.g. ["prices", "returns"].'
         clean["nodes"] = list(dict.fromkeys(nodes))
     return clean, None
 

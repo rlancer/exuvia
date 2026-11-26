@@ -1,4 +1,4 @@
-"""The canvas's overview: groups (stages of the graph, kept in exuvia.json)
+"""The canvas's overview: stages (stages of the graph, kept in exuvia.json)
 and views pinned on the canvas (``canvas`` in view.json)."""
 
 import json
@@ -19,86 +19,86 @@ def config(root, **extra):
     (root / "exuvia.json").write_text(json.dumps(cfg), encoding="utf-8")
 
 
-# -- groups -----------------------------------------------------------------------
-def test_groups_are_read_from_the_config_in_order(tmp_path):
+# -- stages -----------------------------------------------------------------------
+def test_stages_are_read_from_the_config_in_order(tmp_path):
     root = project(tmp_path)
-    config(root, groups={
+    config(root, stages={
         "ingest": {"title": "Ingest", "description": "Raw data in", "nodes": ["prices", "gone"]},
         "ref": ["universe", "prices"],  # the short form; prices is in ingest already
         "Bad-Name": ["universe"],
         "odd": {"nodes": ["universe"], "colour": "red"},
     })
     g = Project(root).load()
-    assert list(g.groups) == ["ingest", "ref", "Bad-Name", "odd"]
-    ingest = g.groups["ingest"]
+    assert list(g.stages) == ["ingest", "ref", "Bad-Name", "odd"]
+    ingest = g.stages["ingest"]
     assert (ingest.title, ingest.description, ingest.nodes, ingest.missing) == ("Ingest", "Raw data in", ["prices"], ["gone"])
     assert ingest.problem is None
-    ref = g.groups["ref"]
-    assert ref.title == "ref" and ref.nodes == ["universe"] and ref.problem == "Already in another group: prices (in ingest)."
-    assert "snake_case" in g.groups["Bad-Name"].problem and g.groups["Bad-Name"].nodes == []
-    assert "Unknown key(s) in group odd: colour" in g.groups["odd"].problem
-    assert g.nodes["prices"].group == "ingest" and g.nodes["universe"].group == "ref"
+    ref = g.stages["ref"]
+    assert ref.title == "ref" and ref.nodes == ["universe"] and ref.problem == "Already in another stage: prices (in ingest)."
+    assert "snake_case" in g.stages["Bad-Name"].problem and g.stages["Bad-Name"].nodes == []
+    assert "Unknown key(s) in stage odd: colour" in g.stages["odd"].problem
+    assert g.nodes["prices"].stage == "ingest" and g.nodes["universe"].stage == "ref"
 
 
-def test_grouping_changes_no_node_and_no_code_hash(tmp_path):
+def test_arranging_stages_changes_no_node_and_no_code_hash(tmp_path):
     ws = Workspace(project(tmp_path))
     before = {n.name: n.code_hash for n in ws.graph.nodes.values()}
-    ws.set_group("ingest", ["prices", "universe"], title="Ingest")
+    ws.set_stage("ingest", ["prices", "universe"], title="Ingest")
     assert {n.name: n.code_hash for n in ws.graph.nodes.values()} == before
-    assert json.loads((tmp_path / "exuvia.json").read_text())["groups"] == {
+    assert json.loads((tmp_path / "exuvia.json").read_text())["stages"] == {
         "ingest": {"title": "Ingest", "nodes": ["prices", "universe"]},
     }
 
 
-def test_set_group_moves_nodes_and_keeps_what_it_is_not_given(tmp_path):
+def test_set_stage_moves_nodes_and_keeps_what_it_is_not_given(tmp_path):
     ws = Workspace(project(tmp_path))
-    ws.set_group("ingest", ["prices", "universe"], title="Ingest", description="Raw data")
-    out = ws.set_group("ref", ["universe"])
-    assert [(g["name"], g["nodes"]) for g in out["groups"]] == [("ingest", ["prices"]), ("ref", ["universe"])]
-    ws.set_group("ingest", ["prices"])  # no title or description given: both kept
-    assert ws.graph.groups["ingest"].title == "Ingest" and ws.graph.groups["ingest"].description == "Raw data"
-    ws.set_group("ingest", ["prices"], title="")  # an empty title falls back to the name
-    assert ws.graph.groups["ingest"].title == "ingest"
-    ws.set_group("ingest", None)
-    ws.set_group("ref", None)
-    assert "groups" not in json.loads((tmp_path / "exuvia.json").read_text())
+    ws.set_stage("ingest", ["prices", "universe"], title="Ingest", description="Raw data")
+    out = ws.set_stage("ref", ["universe"])
+    assert [(g["name"], g["nodes"]) for g in out["stages"]] == [("ingest", ["prices"]), ("ref", ["universe"])]
+    ws.set_stage("ingest", ["prices"])  # no title or description given: both kept
+    assert ws.graph.stages["ingest"].title == "Ingest" and ws.graph.stages["ingest"].description == "Raw data"
+    ws.set_stage("ingest", ["prices"], title="")  # an empty title falls back to the name
+    assert ws.graph.stages["ingest"].title == "ingest"
+    ws.set_stage("ingest", None)
+    ws.set_stage("ref", None)
+    assert "stages" not in json.loads((tmp_path / "exuvia.json").read_text())
     for bad in (("Bad", ["prices"]), ("ok", ["nope"])):
         try:
-            ws.set_group(*bad)
+            ws.set_stage(*bad)
         except ValueError:
             continue
         raise AssertionError(bad)
 
 
-def test_group_routes_and_snapshot(tmp_path):
+def test_stage_routes_and_snapshot(tmp_path):
     with TestClient(create_app(project(tmp_path))) as client:
-        r = client.put("/api/groups/ingest", json={"nodes": ["prices"], "title": "Ingest"})
-        assert r.status_code == 200 and r.json()["groups"][0]["nodes"] == ["prices"]
-        assert client.put("/api/groups/x", json={"nodes": ["nope"]}).status_code == 400
+        r = client.put("/api/stages/ingest", json={"nodes": ["prices"], "title": "Ingest"})
+        assert r.status_code == 200 and r.json()["stages"][0]["nodes"] == ["prices"]
+        assert client.put("/api/stages/x", json={"nodes": ["nope"]}).status_code == 400
         snap = client.get("/api/project").json()
-        assert snap["groups"] == [
+        assert snap["stages"] == [
             {"name": "ingest", "title": "Ingest", "description": "", "nodes": ["prices"], "missing": [], "problem": None},
         ]
-        assert {n["name"]: n["group"] for n in snap["nodes"]} == {"prices": "ingest", "universe": None}
-        assert client.get("/api/groups").json()["groups"][0]["name"] == "ingest"
-        assert client.delete("/api/groups/ingest").status_code == 200
-        assert client.delete("/api/groups/ingest").status_code == 404
+        assert {n["name"]: n["stage"] for n in snap["nodes"]} == {"prices": "ingest", "universe": None}
+        assert client.get("/api/stages").json()["stages"][0]["name"] == "ingest"
+        assert client.delete("/api/stages/ingest").status_code == 200
+        assert client.delete("/api/stages/ingest").status_code == 404
 
 
-def test_agent_group_tools(tmp_path):
+def test_agent_stage_tools(tmp_path):
     agent = Agent(Workspace(project(tmp_path)))
-    assert {"set_group", "delete_group"} <= {t["name"] for t in TOOLS}
-    ok, text, _ = call(agent, "set_group", {"name": "ingest", "nodes": ["prices", "universe"], "title": "Ingest"})
-    assert ok and json.loads(text)["groups"][0]["nodes"] == ["prices", "universe"]
+    assert {"set_stage", "delete_stage"} <= {t["name"] for t in TOOLS}
+    ok, text, _ = call(agent, "set_stage", {"name": "ingest", "nodes": ["prices", "universe"], "title": "Ingest"})
+    assert ok and json.loads(text)["stages"][0]["nodes"] == ["prices", "universe"]
     ok, text, _ = call(agent, "list_nodes", {})
-    assert ok and {n["name"]: n.get("group") for n in json.loads(text)} == {"prices": "ingest", "universe": "ingest"}
-    ok, text, _ = call(agent, "set_group", {"name": "x", "nodes": ["nope"]})
+    assert ok and {n["name"]: n.get("stage") for n in json.loads(text)} == {"prices": "ingest", "universe": "ingest"}
+    ok, text, _ = call(agent, "set_stage", {"name": "x", "nodes": ["nope"]})
     assert not ok and "no node named nope" in text
-    ok, _, _ = call(agent, "delete_group", {"name": "ingest"})
-    assert ok and not agent.ws.graph.groups
-    ok, text, _ = call(agent, "delete_group", {"name": "ingest"})
-    assert not ok and text == "no group named ingest"
-    assert "## Groups" in agent.instructions()
+    ok, _, _ = call(agent, "delete_stage", {"name": "ingest"})
+    assert ok and not agent.ws.graph.stages
+    ok, text, _ = call(agent, "delete_stage", {"name": "ingest"})
+    assert not ok and text == "no stage named ingest"
+    assert "## Stages" in agent.instructions()
 
 
 # -- views pinned on the canvas ------------------------------------------------------

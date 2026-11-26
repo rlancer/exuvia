@@ -73,6 +73,8 @@ export interface GraphNode {
   cascade: boolean;
   chart: Record<string, unknown> | null;
   tags: string[];
+  /** The stage (stage) it is in on the canvas: exuvia.json `stages`. */
+  stage?: string | null;
   parse_error: string | null;
   line: number;
   state: State;
@@ -220,6 +222,8 @@ export interface ProjectView {
   runtime: "react";
   entry: string;
   reads: string[];
+  /** Pinned on the canvas, rendered live in a card this size; null: a small card under what it reads. */
+  canvas?: { width: number; height: number } | null;
   files: string[];
   hash: string;
   parse_error: string | null;
@@ -246,12 +250,24 @@ export interface ProjectParam {
   value: unknown;
 }
 
+/** A stage of the graph on the canvas (exuvia.json `stages`): nodes drawn in one region that collapses into a card. */
+export interface NodeStage {
+  name: string;
+  title: string;
+  description: string;
+  nodes: string[];
+  /** Nodes it names that do not exist. */
+  missing: string[];
+  problem: string | null;
+}
+
 export interface Project {
   name: string;
   root: string;
   params: ProjectParam[];
   nodes: GraphNode[];
   views: ProjectView[];
+  stages?: NodeStage[];
 }
 
 /** `GET /api/views/{name}`: a view with every file's source. */

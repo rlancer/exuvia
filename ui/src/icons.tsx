@@ -78,3 +78,12 @@ export const IconExpand = icon(<path d="M9.5 2.5h4v4M13.5 2.5 9 7M6.5 13.5h-4v-4
 export const IconSliders = icon(<path d="M2.5 4h6M11.5 4h2M2.5 8h2M7.5 8h6M2.5 12h7M12.5 12h1M10 2.5v3M6 6.5v3M11 10.5v3" />);
 /** Copy: two sheets. */
 export const IconCopy = icon(<path d="M5.5 5.5V3a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-.5.5h-2.5M3 5.5h7a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5V6a.5.5 0 0 1 .5-.5z" />);
+/** Stages: layers stacked, for stages of nodes. */
+export const IconLayers = icon(<path d="M8 2.2 1.8 5.4 8 8.6l6.2-3.2L8 2.2zM1.8 8.2 8 11.4l6.2-3.2M1.8 10.9 8 14.1l6.2-3.2" />);
+/** A view: a window with its bar. */
+export const IconWindow = icon(<path d="M2.5 3.2h11a.7.7 0 0 1 .7.7v8.2a.7.7 0 0 1-.7.7h-11a.7.7 0 0 1-.7-.7V3.9a.7.7 0 0 1 .7-.7zM1.8 6h12.4" />);
+/** What the graph is doing: a pulse line. */
+export const IconActivity = icon(<path d="M1.5 8.5h3l1.8-4.5 3.4 8 1.8-3.5h3" />);
+/** Fold a stage into one card, or open it out. */
+export const IconCollapse = icon(<path d="M4.5 2.5 8 6l3.5-3.5M4.5 13.5 8 10l3.5 3.5" />);
+export const IconUncollapse = icon(<path d="M4.5 5.5 8 2l3.5 3.5M4.5 10.5 8 14l3.5-3.5" />);
