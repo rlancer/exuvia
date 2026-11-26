@@ -1053,6 +1053,26 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         except KeyError as e:
             raise HTTPException(404, str(e.args[0])) from e
 
+    @r.get("/nodes/{name}/stats")
+    def node_stats(
+        name: str,
+        params: str | None = None,
+        run_id: str | None = None,
+        part: str | None = None,
+        ctx: Ctx = Depends(get_ctx),
+    ) -> dict[str, Any]:
+        """A table output's overview, from its Parquet footers alone (no row
+        is read): ``rows``, ``files``, ``row_groups``, ``bytes`` on disk,
+        ``uncompressed_bytes``, ``compression``, ``created_by``, and
+        ``columns``, each with its ``type``, ``nulls``, ``min``, ``max`` and
+        ``bytes``. A figure the writer did not record is null. ``part`` picks
+        one output of a node with several. 404 when it is not a table."""
+        _need(ctx.ws, name)
+        out = ctx.ws.table_stats(name, resolve_params(ctx.ws, query_params(params)), run_id, part)
+        if out is None:
+            raise HTTPException(404, f"{name} has no table output{f' {part!r}' if part else ''} for these parameters")
+        return out
+
     @r.get("/nodes/{name}/partitions")
     def partitions_of(
         name: str, params: str | None = None, run_id: str | None = None, ctx: Ctx = Depends(get_ctx)

@@ -28,6 +28,19 @@ export function fmtNum(n?: number | null): string {
   return n == null ? "" : n.toLocaleString();
 }
 
+/** A size in bytes, in the largest unit that keeps it at 1 or more: "812 B", "4.2 MB". */
+export function fmtBytes(n?: number | null): string {
+  if (n == null) return "";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${i === 0 ? v : v.toLocaleString(undefined, { maximumFractionDigits: v < 10 ? 1 : 0 })} ${units[i]}`;
+}
+
 export function fmtCell(v: unknown): string {
   if (v == null) return "∅";
   if (typeof v === "number") {

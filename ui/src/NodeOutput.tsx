@@ -3,8 +3,10 @@ import * as stylex from "@stylexjs/stylex";
 import { colorVars, fontWeightVars, spacingVars, textSizeVars, typeScaleVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { Banner } from "@astryxdesign/core/Banner";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
-import { api, type Column, type GraphNode, type Preview } from "./api";
-import { fmtCell } from "./util";
+import { Text } from "@astryxdesign/core/Text";
+import { Tooltip } from "@astryxdesign/core/Tooltip";
+import { api, type Column, type ColumnStats, type GraphNode, type Preview, type TableStats } from "./api";
+import { fmtBytes, fmtCell, fmtNum } from "./util";
 
 /*
  * What a node made, shown wherever it is shown: the inspector's Data and
@@ -31,6 +33,64 @@ export function useNodePreview(node: GraphNode, limit: number, part: string | nu
     };
   }, [node.name, node.artifact_id, limit, part, enabled]);
   return state;
+}
+
+/**
+ * A table output's (or one output's, `part`) overview from its Parquet
+ * footers (GET /nodes/{name}/stats: no row is read, so it is as quick for
+ * ten million rows as for ten), read again when the node makes a new one.
+ * Null until it comes, and when the output has none (it is not a table).
+ */
+export function useTableStats(node: GraphNode, part: string | null | undefined, enabled = true): TableStats | null {
+  const [stats, setStats] = useState<TableStats | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let live = true;
+    api.stats(node.name, part ?? undefined).then(
+      (s) => live && setStats(s),
+      () => live && setStats(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [node.name, node.artifact_id, part, enabled]);
+  return stats;
+}
+
+/** A share as a percentage, never rounded to 0% or 100% when it is neither. */
+export function pct(part: number, whole: number): string {
+  if (whole <= 0) return "";
+  const f = part / whole;
+  if (f === 0 || f === 1) return `${f * 100}%`;
+  if (f < 0.01) return "<1%";
+  if (f > 0.99) return ">99%";
+  return `${Math.round(f * 100)}%`;
+}
+
+/**
+ * The whole output in one line, as the footers have it and in Data Wrangler's
+ * words: its shape, its missing values and the columns they are in, its size
+ * on disk and how it is compressed (the rest in a tooltip).
+ */
+export function DatasetSummary({ stats: s }: { stats: TableStats }) {
+  const known = s.columns.filter((c) => c.nulls != null);
+  const missing = known.reduce((n, c) => n + (c.nulls ?? 0), 0);
+  const withMissing = known.filter((c) => (c.nulls ?? 0) > 0).length;
+  const cells = known.length * s.rows;
+  const detail = [
+    `${fmtBytes(s.uncompressed_bytes)} uncompressed`,
+    `${fmtNum(s.row_groups)} row group${s.row_groups === 1 ? "" : "s"}${s.files > 1 ? ` in ${fmtNum(s.files)} files` : ""}`,
+    ...s.created_by.map((w) => `written by ${w}`),
+  ];
+  return (
+    <Tooltip content={detail.join(" · ")}>
+      <Text type="supporting" color="secondary" maxLines={2} hasTabularNumbers>
+        {`Data shape ${fmtNum(s.rows)} rows × ${fmtNum(s.columns.length)} columns`}
+        {` · Missing values ${fmtNum(missing)} (${pct(missing, cells)}${withMissing ? `, in ${withMissing} column${withMissing === 1 ? "" : "s"}` : ""})`}
+        {` · ${fmtBytes(s.bytes)} ${s.compression.map((c) => c.toLowerCase()).join(", ") || "uncompressed"}`}
+      </Text>
+    </Tooltip>
+  );
 }
 
 /**
@@ -65,7 +125,9 @@ export function OutputPicker({ node, parts, shown, onPick }: { node: GraphNode; 
  * column is as wide as what is in it, up to a width past which a cell is cut
  * short and shows whole when pointed at.
  */
-export function DataTable({ columns, rows }: { columns: Column[]; rows: unknown[][] }) {
+export function DataTable({ columns, rows, stats }: { columns: Column[]; rows: unknown[][]; stats?: TableStats | null }) {
+  // Each column's quick insights (its missing values and range), from the footers.
+  const insights = useMemo(() => new Map((stats?.columns ?? []).map((c) => [c.name, c])), [stats]);
   const numeric = useMemo(
     () => columns.map((c) => /int|float|double|decimal|numeric|bigint|real/i.test(c.type)),
     [columns],
@@ -79,9 +141,10 @@ export function DataTable({ columns, rows }: { columns: Column[]; rows: unknown[
       <thead>
         <tr>
           {columns.map((c, j) => (
-            <th key={c.name} {...stylex.props(grid.cell, grid.head, numeric[j] && grid.num)}>
+            <th key={c.name} {...stylex.props(grid.cell, grid.head, numeric[j] && grid.num, stats && grid.withInsights)}>
               {c.name}
               <span {...stylex.props(grid.type)}>{c.type.toLowerCase()}</span>
+              {stats && <Insights col={insights.get(c.name)} rows={stats.rows} />}
             </th>
           ))}
         </tr>
@@ -98,6 +161,46 @@ export function DataTable({ columns, rows }: { columns: Column[]; rows: unknown[
         ))}
       </tbody>
     </table>
+  );
+}
+
+/** A string bound as the grid shows a cell, with a time's `T` as a space. */
+const bound = (v: unknown) => (typeof v === "string" && /^\d{4}-\d\d-\d\dT\d/.test(v) ? fmtCell(v).replace("T", " ") : fmtCell(v));
+
+/**
+ * A column header's quick insights, laid out as Data Wrangler lays them out
+ * (a label at the start, its value at the end): how many values are missing,
+ * and the smallest and largest. Only what the footers say: what they do not
+ * (a nested column, a writer that kept no statistics) is left out, not
+ * guessed, and nothing that needs the rows (distinct values, a histogram).
+ */
+function Insights({ col, rows }: { col: ColumnStats | undefined; rows: number }) {
+  if (!col) return null;
+  const min = col.min == null ? null : bound(col.min);
+  const max = col.max == null ? null : bound(col.max);
+  return (
+    <>
+      {col.nulls != null && (
+        <span {...stylex.props(grid.insight)}>
+          <span {...stylex.props(grid.side, grid.label)}>Missing:</span>
+          <span {...stylex.props(grid.side, grid.end)}>{`${fmtNum(col.nulls)} (${pct(col.nulls, rows)})`}</span>
+        </span>
+      )}
+      {(
+        [
+          ["Min:", min],
+          ["Max:", max],
+        ] as const
+      ).map(
+        ([label, v]) =>
+          v != null && (
+            <span key={label} {...stylex.props(grid.insight)} title={`${label} ${v}`}>
+              <span {...stylex.props(grid.side, grid.label)}>{label}</span>
+              <span {...stylex.props(grid.side, grid.end)}>{v}</span>
+            </span>
+          ),
+      )}
+    </>
   );
 }
 
@@ -237,4 +340,20 @@ const grid = stylex.create({
   // A column's type, under its name.
   type: { display: "block", color: colorVars["--color-text-secondary"], fontWeight: fontWeightVars["--font-weight-normal"] },
   num: { textAlign: "end", fontVariantNumeric: "tabular-nums" },
+  // An insight takes its column's width from the rows (width 0, then all of
+  // it) instead of widening it; a long one is cut short and shows whole when pointed at.
+  insight: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: spacingVars["--spacing-2"],
+    width: 0,
+    minWidth: "100%",
+    color: colorVars["--color-text-secondary"],
+    fontWeight: fontWeightVars["--font-weight-normal"],
+  },
+  // As wide as Data Wrangler's columns, so the insights read whole.
+  withInsights: { minWidth: "200px" },
+  side: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  label: { flexShrink: 0 },
+  end: { marginInlineStart: "auto", textAlign: "end" },
 });

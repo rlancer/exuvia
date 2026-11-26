@@ -3358,6 +3358,7 @@ headlessly or iframe the UI:
 | `POST /api/run-stale` | refresh everything stale |
 | `POST/GET/DELETE /api/backfill` | replay a list or date range of parameter values |
 | `GET /api/nodes/{name}/data` | a node's output (`?params=` or `?run_id=`, `?limit=`, `?offset=`): JSON rows, or an Arrow stream (see "Binary data"). For a node with several outputs, `kind: "multi"` and its `parts`; `?part=` reads one |
+| `GET /api/nodes/{name}/stats` | a table output's overview from its Parquet footers alone, no row read (`?params=`, `?run_id=`, `?part=` as for `/data`): `rows`, `files`, `row_groups`, `bytes` on disk, `uncompressed_bytes`, `compression`, `created_by`, and per column its `type`, `nulls`, `min`, `max` and `bytes`; a figure the writer did not record is `null`. What the Data tab shows over its rows: each column header's missing values, min and max, and the output's shape, missing values and size |
 | `GET /api/nodes/{name}/export` | a node's whole output as a file to save (see "Downloads"): `?format=` `csv`, `xlsx`, `parquet` or `json` (`json` only, for a JSON output), or `zip` for every output of a node with several; `?params=`, `?run_id=` and `?part=` pick the output as for `/data`; `?filename=` names it |
 | `GET/HEAD /api/artifacts/{node}/{artifact_id}.parquet` (or `.json`, `.zip`) | the stored file of one output, byte for byte, with `Range` support (see "Binary data") |
 | `GET/HEAD /api/artifacts/{node}/{artifact_id}/{part}.parquet` (or `.json`) | one output of a node with several, as a file of its own |
