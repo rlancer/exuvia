@@ -60,19 +60,16 @@ variables from the database every time.
 
 from __future__ import annotations
 
-import sqlite3
 import threading
 import time
 import uuid
-import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .auth import Identity
-from .db import Database, database_url, scope_prefix, shared_database
+from .db import Database, HubRecordStore, database_url, scope_prefix, shared_database
 from .sharing import GRANT_ROLES, RANK, _clean_email, email_principal, higher, user_principal
-from .store import SCHEMA_LOCK_KEY
 from .users import SEEN_EVERY, UserStore
 
 ROLES = ("viewer", "editor", "owner")
@@ -130,22 +127,6 @@ TABLES = {
 }
 INDEXES = ("create index if not exists project_group_projects_group on project_group_projects(scope, group_id)",)
 
-_prepared: "weakref.WeakSet[Any]" = weakref.WeakSet()
-
-
-def _prepare(db: Database) -> None:
-    """Create the tables once per database (see users._prepare)."""
-    if db in _prepared:
-        return
-    if not all(db.columns(t) for t in TABLES):
-        with db.transaction():
-            if db.dialect == "postgres":
-                db.query(f"select pg_advisory_xact_lock({SCHEMA_LOCK_KEY})")
-            for ddl in (*TABLES.values(), *INDEXES):
-                db.query(ddl)
-    _prepared.add(db)
-
-
 def clean_name(name: str) -> str:
     name = " ".join((name or "").split())
     if not name:
@@ -164,13 +145,13 @@ class Snapshot:
     project_group: dict[str, str] = field(default_factory=dict)  # project -> group
 
 
-class GroupStore:
+class GroupStore(HubRecordStore):
+    TABLES, INDEXES = TABLES, INDEXES
+    ARCHIVE_WHAT = "groups"
+
     def __init__(self, db: Database, scope: str = "", owns_db: bool = False, users: UserStore | None = None):
-        self.db = db
-        self.scope = scope
+        super().__init__(db, scope, owns_db)
         self.users = users
-        self._owns_db = owns_db
-        _prepare(db)
         self._lock = threading.Lock()
         self._snap: tuple[Snapshot, float] | None = None
         self._generation = 0  # one more for each change, so a read begun before it is not kept
@@ -179,12 +160,8 @@ class GroupStore:
     def people(self) -> bool:
         return self.users is not None
 
-    def close(self) -> None:
-        if self._owns_db:
-            self.db.close()
-
-    def _q(self, sql: str, args: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-        return self.db.query(sql, args)
+    def _replaced(self, data: dict[str, list[dict[str, Any]]]) -> None:
+        self._changed()
 
     def _changed(self) -> None:
         with self._lock:
@@ -474,42 +451,6 @@ class GroupStore:
 
     def hub_vars(self) -> "HubVars":
         return HubVars(self)
-
-    # -- hub export / import -------------------------------------------------------------
-    def dump_to(self, target: Path) -> None:
-        """This scope's groups as tables in a SQLite file (the hub export's
-        ``hub.db``, beside the user list and sharing)."""
-        con = sqlite3.connect(target)
-        try:
-            for ddl in (*TABLES.values(), *INDEXES):
-                con.execute(ddl)
-            for table in TABLES:
-                con.execute(f"delete from {table}")
-                for r in self._q(f"select * from {table} where scope=?", (self.scope,)):
-                    con.execute(f"insert into {table} ({', '.join(r)}) values ({', '.join('?' * len(r))})", tuple(r.values()))
-            con.commit()
-        finally:
-            con.close()
-
-    def replace_from(self, source: Path) -> None:
-        """Replace this scope's groups with an archive's (none, from a hub
-        before groups)."""
-        con = sqlite3.connect(source)
-        con.row_factory = sqlite3.Row
-        try:
-            present = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
-            data = {t: [dict(r) for r in con.execute(f"select * from {t}")] if t in present else [] for t in TABLES}
-        except sqlite3.OperationalError as e:
-            raise ValueError(f"the archive's groups are unreadable: {e}") from e
-        finally:
-            con.close()
-        with self.db.transaction():
-            for table, rows in data.items():
-                self._q(f"delete from {table} where scope=?", (self.scope,))
-                for r in rows:
-                    r["scope"] = self.scope
-                    self._q(f"insert into {table} ({', '.join(r)}) values ({', '.join('?' * len(r))})", tuple(r.values()))
-        self._changed()
 
 
 class GroupVars:

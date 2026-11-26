@@ -25,17 +25,13 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-import sqlite3
 import threading
 import time
 import uuid
-import weakref
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-from .db import Database
-from .store import SCHEMA_LOCK_KEY
+from .db import Database, HubRecordStore
 
 PREFIX = "exd_"
 MAX_NAME = 80
@@ -73,22 +69,6 @@ INDEXES = (
 )
 COLS = "id, owner_id, name, hint, created_at, last_used"
 
-_prepared: "weakref.WeakSet[Any]" = weakref.WeakSet()
-
-
-def _prepare(db: Database) -> None:
-    """Create the tables once per database (see users._prepare)."""
-    if db in _prepared:
-        return
-    if not all(db.columns(t) for t in TABLES):
-        with db.transaction():
-            if db.dialect == "postgres":
-                db.query(f"select pg_advisory_xact_lock({SCHEMA_LOCK_KEY})")
-            for ddl in (*TABLES.values(), *INDEXES):
-                db.query(ddl)
-    _prepared.add(db)
-
-
 def _hash(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
 
@@ -117,22 +97,18 @@ class DataKey:
     projects: tuple[str, ...]
 
 
-class DataKeyStore:
+class DataKeyStore(HubRecordStore):
+    TABLES, INDEXES = TABLES, INDEXES
+    ARCHIVE_WHAT = "data keys"
+
     def __init__(self, db: Database, scope: str = "", owns_db: bool = False):
-        self.db = db
-        self.scope = scope
-        self._owns_db = owns_db
-        _prepare(db)
+        super().__init__(db, scope, owns_db)
         self._lock = threading.Lock()
         # hash -> (key or None, when read)
         self._seen: dict[str, tuple[DataKey | None, float]] = {}
 
-    def close(self) -> None:
-        if self._owns_db:
-            self.db.close()
-
-    def _q(self, sql: str, args: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-        return self.db.query(sql, args)
+    def _replaced(self, data: dict[str, list[dict[str, Any]]]) -> None:
+        self._changed()
 
     def _changed(self) -> None:
         with self._lock:
@@ -239,37 +215,4 @@ class DataKeyStore:
         self._q("delete from data_key_projects where scope=? and project=?", (self.scope, project))
         self._changed()
 
-    # -- hub export / import --------------------------------------------------------
-    def dump_to(self, target: Path) -> None:
-        """This scope's keys as tables in a SQLite file (the hub export's ``hub.db``)."""
-        con = sqlite3.connect(target)
-        try:
-            for ddl in (*TABLES.values(), *INDEXES):
-                con.execute(ddl)
-            for table in TABLES:
-                con.execute(f"delete from {table}")
-                for r in self._q(f"select * from {table} where scope=?", (self.scope,)):
-                    con.execute(f"insert into {table} ({', '.join(r)}) values ({', '.join('?' * len(r))})", tuple(r.values()))
-            con.commit()
-        finally:
-            con.close()
 
-    def replace_from(self, source: Path) -> None:
-        """Replace this scope's keys with an archive's (none, for an archive
-        from before data keys)."""
-        con = sqlite3.connect(source)
-        con.row_factory = sqlite3.Row
-        try:
-            present = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
-            data = {t: [dict(r) for r in con.execute(f"select * from {t}")] if t in present else [] for t in TABLES}
-        except sqlite3.OperationalError as e:
-            raise ValueError(f"the archive's data keys are unreadable: {e}") from e
-        finally:
-            con.close()
-        with self.db.transaction():
-            for table, rows in data.items():
-                self._q(f"delete from {table} where scope=?", (self.scope,))
-                for r in rows:
-                    r["scope"] = self.scope
-                    self._q(f"insert into {table} ({', '.join(r)}) values ({', '.join('?' * len(r))})", tuple(r.values()))
-        self._changed()

@@ -45,19 +45,16 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
-import sqlite3
 import threading
 import time
 import uuid
-import weakref
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from . import auth
 from .auth import Identity
-from .db import Database, database_url, scope_prefix, shared_database
-from .store import SCHEMA_LOCK_KEY
+from .db import Database, HubRecordStore, database_url, scope_prefix, shared_database
 from .users import SEEN_EVERY, UserStore
 
 ROLES = ("viewer", "editor", "owner")
@@ -118,22 +115,6 @@ INDEXES = (
     "create index if not exists project_links_project on project_links(scope, project)",
 )
 LINK_COLS = "id, name, hint, created_at, created_by, expires_at, last_used"
-
-_prepared: "weakref.WeakSet[Any]" = weakref.WeakSet()
-
-
-def _prepare(db: Database) -> None:
-    """Create the tables once per database (see users._prepare)."""
-    if db in _prepared:
-        return
-    if not all(db.columns(t) for t in TABLES):
-        with db.transaction():
-            if db.dialect == "postgres":
-                db.query(f"select pg_advisory_xact_lock({SCHEMA_LOCK_KEY})")
-            for ddl in (*TABLES.values(), *INDEXES):
-                db.query(ddl)
-    _prepared.add(db)
-
 
 def _configured_general() -> str | None:
     """``EXUVIA_DEFAULT_ACCESS``, when it is set."""
@@ -211,16 +192,16 @@ class Rules:
         return role
 
 
-class SharingStore:
+class SharingStore(HubRecordStore):
+    TABLES, INDEXES = TABLES, INDEXES
+    ARCHIVE_WHAT = "sharing settings"
+
     def __init__(self, db: Database, scope: str = "", owns_db: bool = False, users: UserStore | None = None):
-        self.db = db
-        self.scope = scope
+        super().__init__(db, scope, owns_db)
         self.users = users
-        self._owns_db = owns_db
         # The hub's groups (groups.py): a group role is also a role on each
         # project in the group. Set by create_hub_app.
         self.groups: Any = None
-        _prepare(db)
         self._lock = threading.Lock()
         self._rules: dict[str, tuple[Rules, float]] = {}
         # Link tokens answered from memory: hash -> (project or None, expires_at, when read).
@@ -231,12 +212,8 @@ class SharingStore:
         """Whether people can be named (the server keeps a user list)."""
         return self.users is not None
 
-    def close(self) -> None:
-        if self._owns_db:
-            self.db.close()
-
-    def _q(self, sql: str, args: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-        return self.db.query(sql, args)
+    def _replaced(self, data: dict[str, list[dict[str, Any]]]) -> None:
+        self._changed()
 
     def _changed(self, project: str | None = None) -> None:
         with self._lock:
@@ -592,42 +569,6 @@ class SharingStore:
         if req is None:
             raise KeyError(uid)
         return self.grant(project, role or req["role"], user_id=uid, by=by)
-
-    # -- hub export / import --------------------------------------------------------------
-    def dump_to(self, target: Path) -> None:
-        """This scope's sharing as tables in a SQLite file (the hub export's
-        ``hub.db``, beside the user list)."""
-        con = sqlite3.connect(target)
-        try:
-            for ddl in (*TABLES.values(), *INDEXES):
-                con.execute(ddl)
-            for table in TABLES:
-                con.execute(f"delete from {table}")
-                for r in self._q(f"select * from {table} where scope=?", (self.scope,)):
-                    con.execute(f"insert into {table} ({', '.join(r)}) values ({', '.join('?' * len(r))})", tuple(r.values()))
-            con.commit()
-        finally:
-            con.close()
-
-    def replace_from(self, source: Path) -> None:
-        """Replace this scope's sharing with an archive's. An archive from
-        before sharing has none: every project follows the hub's default."""
-        con = sqlite3.connect(source)
-        con.row_factory = sqlite3.Row
-        try:
-            present = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
-            data = {t: [dict(r) for r in con.execute(f"select * from {t}")] if t in present else [] for t in TABLES}
-        except sqlite3.OperationalError as e:
-            raise ValueError(f"the archive's sharing settings are unreadable: {e}") from e
-        finally:
-            con.close()
-        with self.db.transaction():
-            for table, rows in data.items():
-                self._q(f"delete from {table} where scope=?", (self.scope,))
-                for r in rows:
-                    r["scope"] = self.scope
-                    self._q(f"insert into {table} ({', '.join(r)}) values ({', '.join('?' * len(r))})", tuple(r.values()))
-        self._changed()
 
 
 def open_sharing(local: Path, users: UserStore | None) -> SharingStore:

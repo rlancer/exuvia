@@ -30,7 +30,7 @@ import weakref
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable
 
-from .db import Database, SQLiteDatabase, database_url, scope_prefix, shared_database
+from .db import SCHEMA_LOCK_KEY, Database, SQLiteDatabase, database_url, scope_prefix, shared_database
 
 if TYPE_CHECKING:
     from .project import Project
@@ -271,9 +271,6 @@ def revision_id() -> str:
 
 _prepared: "weakref.WeakSet[Any]" = weakref.WeakSet()
 
-# Postgres advisory lock key that serializes schema creation and upgrades
-# across processes. Any fixed 64-bit value works; this one is "exuvia" in hex.
-SCHEMA_LOCK_KEY = 0x657875766961
 
 
 def prepare(db: Database) -> None:
