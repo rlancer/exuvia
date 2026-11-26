@@ -16,7 +16,8 @@ nodes: API keys and the like, set in the workbench (see ``envvars.py``).
 Code revisions record every version of the project's files (node files,
 ``exuvia.json``, ``AGENTS.md``) as it was saved. The text is kept once per
 content hash in ``code_blobs``, keyed by the same hash runs record in
-``code_hash``, so the exact source behind any run can be looked up.
+``code_hash``, so the exact source behind any run can be looked up. A code
+tag (``code_tags``) names the whole project's code as of one revision.
 """
 
 from __future__ import annotations
@@ -112,6 +113,19 @@ TABLES = {
     author text,               -- the signed-in person who saved it, by name (see auth.py); null when nobody was
     author_user text,          -- the same person's user id (users.py)
     primary key (project, id)
+)""",
+    # A name for the whole project's code as of one revision (git's tags):
+    # every file's latest revision up to and including it. Never moved: a
+    # tag is deleted and made again instead, so a name always meant one thing.
+    "code_tags": """create table if not exists code_tags (
+    project text not null default '',
+    name text not null,        -- v1, q3-review, ...: one per project (see workspace.TAG_NAME)
+    revision text not null,    -- code_revisions.id: the last revision of the save it was made at
+    message text,              -- what it marks, in words
+    author text,               -- the signed-in person who made it, by name (see auth.py)
+    author_user text,          -- the same person's user id (users.py)
+    created_at double precision not null,
+    primary key (project, name)
 )""",
     "env_vars": """create table if not exists env_vars (
     project text not null default '',
@@ -789,6 +803,97 @@ class Store:
         """The text with this content hash, if any revision recorded it."""
         rows = self._q("select source from code_blobs where project=? and hash=?", (self.scope, digest))
         return rows[0]["source"] if rows else None
+
+    def code_revision(self, rid: str) -> dict[str, Any] | None:
+        rows = self._q(
+            "select id, path, node, view_name, hash, origin, author, author_user, saved_at from code_revisions "
+            "where project=? and id=?",
+            (self.scope, rid),
+        )
+        if not rows:
+            return None
+        rows[0]["view"] = rows[0].pop("view_name")
+        return rows[0]
+
+    def save_end(self, rid: str) -> str | None:
+        """The last revision of the save revision ``rid`` belongs to (the
+        files one save recorded share its time, origin and author, as
+        ``exuvia mirror`` groups them into one commit); None when there is no
+        revision ``rid``. With no ``rid``, the project's latest revision."""
+        if not rid:
+            rows = self._q(
+                "select id from code_revisions where project=? order by saved_at desc, id desc limit 1", (self.scope,)
+            )
+            return rows[0]["id"] if rows else None
+        r = self.code_revision(rid)
+        if r is None:
+            return None
+        rows = self._q(
+            "select id from code_revisions where project=? and saved_at=? and origin=? "
+            "and coalesce(author, '')=? and coalesce(author_user, '')=? order by id desc limit 1",
+            (self.scope, r["saved_at"], r["origin"], r["author"] or "", r["author_user"] or ""),
+        )
+        return rows[0]["id"]
+
+    def code_at(self, rid: str) -> dict[str, dict[str, Any]]:
+        """The project's code as of revision ``rid``: each file's latest
+        revision up to and including it, by path, leaving out files deleted
+        by then. Empty when there is no revision ``rid``."""
+        r = self.code_revision(rid)
+        if r is None:
+            return {}
+        t = r["saved_at"]
+        rows = self._q(
+            "select id, path, node, view_name, hash, origin, author, author_user, saved_at from (select *, row_number() "
+            "over (partition by path order by saved_at desc, id desc) rn from code_revisions where project=? "
+            "and (saved_at < ? or (saved_at = ? and id <= ?))) upto where rn=1 and hash is not null order by path",
+            (self.scope, t, t, rid),
+        )
+        out = {}
+        for row in rows:
+            row["view"] = row.pop("view_name")
+            out[row["path"]] = row
+        return out
+
+    # -- code tags ----------------------------------------------------------
+    def create_tag(
+        self,
+        name: str,
+        revision: str,
+        message: str | None = None,
+        author: str | None = None,
+        author_user: str | None = None,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Name the code as of ``revision``. ValueError when the name is taken."""
+        with self.db.transaction():
+            if self._q("select 1 from code_tags where project=? and name=?", (self.scope, name)):
+                raise ValueError(f"there is already a tag {name}: delete it first to tag another version with that name")
+            self._q(
+                "insert into code_tags(project, name, revision, message, author, author_user, created_at) "
+                "values(?,?,?,?,?,?,?)",
+                (self.scope, name, revision, message or None, author, author_user, time.time() if now is None else now),
+            )
+        tag = self.code_tag(name)
+        assert tag is not None
+        return tag
+
+    def code_tags(self) -> list[dict[str, Any]]:
+        """Every tag, newest first, with when its revision was saved."""
+        return self._q(
+            "select t.name, t.revision, t.message, t.author, t.author_user, t.created_at, r.saved_at "
+            "from code_tags t left join code_revisions r on r.project = t.project and r.id = t.revision "
+            "where t.project=? order by t.created_at desc, t.name",
+            (self.scope,),
+        )
+
+    def code_tag(self, name: str) -> dict[str, Any] | None:
+        return next((t for t in self.code_tags() if t["name"] == name), None)
+
+    def delete_tag(self, name: str) -> bool:
+        had = bool(self._q("select 1 from code_tags where project=? and name=?", (self.scope, name)))
+        self._q("delete from code_tags where project=? and name=?", (self.scope, name))
+        return had
 
 
 def _dump(obj: Any) -> Any:

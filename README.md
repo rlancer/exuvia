@@ -1364,7 +1364,9 @@ it at start.
   Revisions are keyed by the same hash each run records, so every output can
   show the exact code that produced it, and any version can be restored (a
   restore is itself a revision). The agent has `list_revisions`,
-  `read_revision`, `restore_node` and `restore_view_file`.
+  `read_revision`, `restore_node` and `restore_view_file`. A
+  [tag](#tags-a-name-for-one-version-of-the-whole-project) names the whole
+  project's code at one save.
 
 **Browsing and restoring code.** The workbench shows the same history in
 three places:
@@ -1387,6 +1389,35 @@ confirmation) makes a node's or a view file's version current again through
 also brings back a deleted node, file or view. Other files (`lib/`,
 `exuvia.json`, `AGENTS.md`, `pyproject.toml`) can be read and compared there
 but not restored from the workbench.
+
+### Tags: a name for one version of the whole project
+
+Revisions are kept per file, so "the code as it was when we showed the Q3
+numbers" is many versions of many files. A **tag** names all of them at once,
+as a git tag names a commit: every node, view, `lib/` helper and config file
+as it was at one save. Tag before a big change, or for the version behind
+numbers someone was shown, then find it and compare it by name later.
+
+- **Making one.** **New tag** in the side panel's **History** tab, under
+  **Tags**, tags the code as it is now. A name is letters, digits, `.`, `_`
+  and `-` (up to 64): `v1`, `v1.2.0`, `q3-review`. A message is optional. The
+  agent has `create_tag`, and `POST /api/code/tags` takes
+  `{"name", "message", "revision"}`, where `revision` (an id from
+  `GET /api/code/revisions`) tags an earlier save instead of now.
+- **A name never moves.** Tagging a taken name fails; delete the tag and make
+  it again to point the name elsewhere. Deleting a tag removes only the name:
+  the code it named stays in the history.
+- **Comparing.** Picking a tag opens it next to the graph: the files that
+  differ from the code now (`changed`, `deleted` since, or `new` since), or all
+  of them, and each one's diff from the tag to now. **Restore this version**
+  makes a node's or a view file's version at the tag current again (a restore,
+  recorded like any other). The agent has `list_tags` and `read_tag` (the
+  same comparison, or one file's text at the tag with `path`).
+- **In git.** `exuvia mirror` makes each tag an annotated git tag of the same
+  name on the commit of that save, and pushes it with the branch (see below).
+- Tags are code only. A tag does not keep outputs: a run records the code it
+  ran (`code_hash`), so the runs behind a tag's version of a node are the ones
+  with that file's hash.
 
 ### The history in git: `exuvia mirror`, for code backups
 
@@ -1426,6 +1457,13 @@ exuvia mirror ../sales-code --project .
   folder with `--remote` picks up from the remote's branch. The committer is
   always `exuvia` and every date comes from the revisions, so mirroring the
   same history again makes the same commit hashes.
+- Each [tag](#tags-a-name-for-one-version-of-the-whole-project) becomes an
+  annotated git tag of the same name on the commit of the save it was made
+  at, tagged by whoever made it, on its date, with an `Exuvia-Revision:`
+  trailer, and is pushed along with the branch. Mirroring again makes the
+  same tag objects. A git tag of that name already on another commit (a tag
+  deleted and made again in exuvia) is left as it is, here and on the
+  remote, with a line saying so: delete it in git to have it made again.
 - It is one way: it never force-pushes, and it stops when the branch holds a
   commit it did not make. Edit the code in exuvia, not in the mirror.
 
@@ -3182,6 +3220,10 @@ headlessly or iframe the UI:
 | `GET /api/nodes/{name}/history` | the node's stored output per parameter set (with the `code_hash` each was computed with) |
 | `GET /api/code/revisions` | saved versions of the code, newest first (`?node=` for one node, `?view=` for one view's files, deleted ones included); each says how it was saved (`origin`), by whom (`author`, with `EXUVIA_AUTH=headers`) and whether it is current. `?after=<revision id>` instead pages through every revision oldest first from the one after it (`?after=` with no id: from the first; `limit` up to 1000), as `exuvia mirror` reads them |
 | `GET /api/code/blobs/{hash}` | the text of one saved version |
+| `GET /api/code/tags` | every tag, newest first: `name`, `revision`, `message`, `author`, `created_at`, how many `files` it holds and how many of them differ from the code now (`changed_since`) |
+| `POST /api/code/tags` | tag the code as it is now: `{"name", "message"}`, or an earlier save with `"revision"`; 409 when the name is taken |
+| `GET /api/code/tags/{name}` | a tag and every file it holds beside the file now (`status`: `same`, `changed`, `deleted` or `added` since; `hash` is its version at the tag); `?path=` for one file's text at the tag |
+| `DELETE /api/code/tags/{name}` | remove a tag; the code it named stays in the history |
 | `GET /api/code/archive` | the project's code as a .zip (nodes, `lib/` helpers, views, `exuvia.json`, `pyproject.toml`, `uv.lock`, `package.json`; never `.env` or outputs); `?node=` for one node and the helpers it imports, `?view=` for one view |
 | `POST /api/nodes/{name}/restore` | make a saved version (`{hash}`) current again; brings back a deleted node |
 | `GET /api/runs/{run_id}/source` | the exact code a run executed |

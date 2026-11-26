@@ -281,6 +281,36 @@ export interface CodeRevision {
   current: boolean;
 }
 
+/** A name for the whole project's code at one save (`GET /api/code/tags`; exuvia/store.py code_tags). */
+export interface CodeTag {
+  name: string;
+  /** The revision it was made at: every file's latest revision up to this one is the tag's. */
+  revision: string;
+  message: string | null;
+  author: string | null;
+  /** Unix seconds. */
+  created_at: number;
+  /** When the tagged revision was saved. */
+  saved_at: number | null;
+  /** How many files it holds, and how many differ from the code now (changed, deleted or added since). */
+  files: number;
+  changed_since: number;
+}
+
+/** One file of a tag beside the file now (`GET /api/code/tags/{name}`). */
+export interface TagFile {
+  path: string;
+  node: string | null;
+  view: string | null;
+  /** Its version at the tag; null for a file `added` since. */
+  hash: string | null;
+  revision: string | null;
+  saved_at: number | null;
+  /** Its text now; null when it is `deleted` since. */
+  current_hash: string | null;
+  status: "same" | "changed" | "deleted" | "added";
+}
+
 export interface Preview {
   kind: "table" | "json" | "multi" | "pickle" | "none" | null;
   /** For `kind: "multi"`: the parts, each read with `part`. */
@@ -457,6 +487,15 @@ export const api = {
   /** The same for one file of a view; `path` is relative to the view's folder. */
   restoreViewFile: (name: string, path: string, hash: string) =>
     req<ProjectView>("POST", `/api/views/${name}/restore`, { path, hash }),
+  /** Every tag, newest first. */
+  codeTags: () => req<CodeTag[]>("GET", "/api/code/tags"),
+  /** One tag and every file it holds beside the file now. */
+  codeTag: (name: string) =>
+    req<Omit<CodeTag, "files" | "changed_since"> & { files: TagFile[] }>("GET", `/api/code/tags/${encodeURIComponent(name)}`),
+  /** Tag the code as it is now (or as of `revision`). */
+  createTag: (name: string, message?: string, revision?: string) =>
+    req<CodeTag>("POST", "/api/code/tags", { name, message: message || null, revision: revision ?? null }),
+  deleteTag: (name: string) => req<{ ok: boolean }>("DELETE", `/api/code/tags/${encodeURIComponent(name)}`),
   packages: () => req<PackagesState>("GET", "/api/packages"),
   /** Add requirements and/or remove packages; a list that does not resolve is an error and changes nothing. */
   packagesEdit: (b: { add?: string[]; remove?: string[] }) => req<PackagesState>("POST", "/api/packages", b),

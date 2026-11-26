@@ -18,6 +18,7 @@ import { Canvas } from "./Canvas";
 import { Inspector, Overview } from "./Inspector";
 import { SidePanel, SideRail, type AgentHandle, type SideTab } from "./AgentPanel";
 import { HistoryBrowser, HistoryRail } from "./History";
+import { TagBrowser } from "./Tags";
 import type { OpenView } from "./Views";
 import { FileTree, HelperEditor } from "./Files";
 import { Schedule } from "./Schedule";
@@ -28,7 +29,7 @@ import { HelpMenu } from "./Help";
 import { HubNav } from "./HubNav";
 import { useColorMode } from "./theme/colorMode";
 import { Brand, Mark } from "./Brand";
-import { IconClock, IconClose, IconKey, IconMoon, IconPackage, IconPlay, IconPlus, IconShare, IconSun } from "./icons";
+import { IconClock, IconClose, IconKey, IconTag, IconMoon, IconPackage, IconPlay, IconPlus, IconShare, IconSun } from "./icons";
 import { StateDot } from "./ui/state";
 import { failed, Toasts } from "./toast";
 import { appViewOf } from "./appMode";
@@ -175,6 +176,10 @@ function Workbench() {
   const [showCode, setShowCode] = useState(0);
   const [treePath, setTreePath] = useState<string | null>(null);
   const [rev, setRev] = useState<CodeRevision | null>(null);
+  // The tag open in the main area's history, in place of a revision.
+  const [tag, setTag] = useState<string | null>(null);
+  // Counts tags made or deleted (here or by anyone else): the Tags list is read again.
+  const [tagTick, setTagTick] = useState(0);
   const [sideTabKept, setSideTabState] = useState<SideTab>(sideStartsOn);
   // A viewer has no agent (it changes the project): the panel opens on Files.
   const sideTab: SideTab = !canEdit && sideTabKept === "agent" ? "files" : sideTabKept;
@@ -232,6 +237,7 @@ function Workbench() {
       if (e.type === "log") setLogs((l) => ({ ...l, [e.run_id]: (l[e.run_id] ?? "") + e.text }));
       if (e.type === "packages" || e.type === "hello") refreshPkgs();
       if (e.type === "env" || e.type === "hello") refreshEnv();
+      if (e.type === "tags") setTagTick((n) => n + 1);
     };
     const tick = setInterval(refreshSoon, 30_000); // keeps "next run in…" honest
     return () => {
@@ -300,6 +306,13 @@ function Workbench() {
   /** A revision picked in the side panel's History tab: that file's versions in the main area. */
   const openRev = (r: CodeRevision) => {
     setRev(r);
+    setTag(null);
+    setMode("history");
+    if (narrow()) setAgentOpen(false);
+  };
+  /** A tag picked in the History tab's Tags list: its files beside the code now, in the main area. */
+  const openTag = (name: string) => {
+    setTag(name);
     setMode("history");
     if (narrow()) setAgentOpen(false);
   };
@@ -309,7 +322,7 @@ function Workbench() {
   };
   const toGraph = () => setMode("graph");
   const treeCurrent =
-    mode === "graph" ? (sel?.path ?? null) : mode === "helper" ? helper : mode === "history" ? (rev?.path ?? null) : treePath?.startsWith("views/") ? treePath : null;
+    mode === "graph" ? (sel?.path ?? null) : mode === "helper" ? helper : mode === "history" ? (tag ? null : (rev?.path ?? null)) : treePath?.startsWith("views/") ? treePath : null;
 
   const askAI = (prompt: string) => {
     setSideTab("agent");
@@ -439,15 +452,29 @@ function Workbench() {
               ) : mode === "history" ? (
                 <section {...stylex.props(styles.wide)}>
                   <div {...stylex.props(styles.wideHead)}>
-                    <IconClock />
-                    <Heading level={4} accessibilityLevel={2}>Code history</Heading>
+                    {tag ? <IconTag /> : <IconClock />}
+                    <Heading level={4} accessibilityLevel={2}>{tag ? `Tag ${tag}` : "Code history"}</Heading>
                     <Text type="supporting" color="secondary" maxLines={1} xstyle={styles.wideHint}>
-                      Every saved version of the code. Pick one to compare it and restore it.
+                      {tag ? "The code as tagged, beside the code now." : "Every saved version of the code. Pick one to compare it and restore it."}
                     </Text>
                     <span {...stylex.props(styles.grow)} />
+                    {tag && <Button size="sm" variant="ghost" label="All history" tooltip="Every saved version of the code" onClick={() => setTag(null)} />}
                     <IconButton variant="ghost" size="sm" label="Close the history" tooltip="Close and go back to the graph" icon={<IconClose />} onClick={toGraph} />
                   </div>
-                  <HistoryBrowser filter={{}} tick={codeTick} dark={dark} layout="side" path={rev?.path} rev={rev?.id} deletedFilter onRestored={() => refresh()} />
+                  {tag ? (
+                    <TagBrowser
+                      name={tag}
+                      tick={codeTick}
+                      dark={dark}
+                      onRestored={() => refresh()}
+                      onDeleted={() => {
+                        setTag(null);
+                        setTagTick((n) => n + 1);
+                      }}
+                    />
+                  ) : (
+                    <HistoryBrowser filter={{}} tick={codeTick} dark={dark} layout="side" path={rev?.path} rev={rev?.id} deletedFilter onRestored={() => refresh()} />
+                  )}
                 </section>
               ) : mode === "schedule" ? (
                 <Schedule tick={project} onOpenNode={openNode} />
@@ -518,7 +545,16 @@ function Workbench() {
                 tab={sideTab}
                 onTab={setSideTab}
                 files={<FileTree project={project} current={treeCurrent} onOpen={openFile} />}
-                history={<HistoryRail tick={codeTick} current={mode === "history" ? (rev?.id ?? null) : null} onOpen={openRev} />}
+                history={
+                  <HistoryRail
+                    tick={codeTick}
+                    tagTick={tagTick}
+                    current={mode === "history" && !tag ? (rev?.id ?? null) : null}
+                    onOpen={openRev}
+                    currentTag={mode === "history" ? tag : null}
+                    onOpenTag={openTag}
+                  />
+                }
               />
             ) : (
               <SideRail agent={canEdit} bar={sheet} onOpen={openSide} />

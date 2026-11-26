@@ -124,7 +124,8 @@ TOOLS: list[dict[str, Any]] = [
             "List the saved versions of one node's code (`name`), or of every file of one view (`view`), newest "
             "first: path, hash, who saved it (agent, api, file, template, restore, ...), when, and whether it is "
             "the current code. Read an old version with read_revision; bring it back with restore_node or "
-            "restore_view_file. The whole project's history as git commits, on GitHub or any git remote, is the "
+            "restore_view_file. A name for the whole project's code at one point is a tag (list_tags, "
+            "create_tag). The whole project's history as git commits, on GitHub or any git remote, is the "
             "`exuvia mirror` command the user runs (see docs)."
         ),
         "input_schema": {
@@ -156,6 +157,63 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {"name": {"type": "string"}, "hash": {"type": "string"}},
             "required": ["name", "hash"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_tags",
+        "description": (
+            "List the project's tags, newest first: each names the whole project's code (every node, view, lib/ "
+            "file and config file) as it was at one save, like a git tag. Each gives its name, message, who made "
+            "it and when, how many files it holds and how many differ from the code now. read_tag shows one."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "read_tag",
+        "description": (
+            "Without `path`: every file tag `name` holds beside the file now, with `status` same, changed, "
+            "deleted (gone since the tag) or added (new since), and the `hash` of its version at the tag "
+            "(restore_node or restore_view_file take it to bring that version back). With `path` (e.g. "
+            "nodes/prices.py): that file's full source as the tag holds it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "the tag"},
+                "path": {"type": "string", "description": "a project-relative file path"},
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "create_tag",
+        "description": (
+            "Tag the whole project's code as it is now (or as of `revision`, an id from list_revisions), so this "
+            "version can be found, compared and mirrored to git by name later: e.g. before a big change, or for "
+            "the version behind numbers someone was shown. Only when the user asked for it. Names are short: "
+            "letters, digits, '.', '_' and '-', e.g. v1, v1.2.0, q3-review. A name is never moved: to point it "
+            "elsewhere, delete_tag then create_tag."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "message": {"type": "string", "description": "what this version is, in a sentence"},
+                "revision": {"type": "string", "description": "a revision id; the code now when left out"},
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "delete_tag",
+        "description": "Remove a tag. The code it named stays in the history. Only when the user asked for it.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
             "additionalProperties": False,
         },
     },
@@ -554,7 +612,7 @@ VIEW_TOOLS = {
 # Tools that change nothing in the project: all a viewer of a shared hub
 # project may call (sharing.py). Every other tool needs an editor.
 READ_TOOLS = frozenset({
-    "list_nodes", "read_node", "list_files", "read_file", "list_revisions", "read_revision",
+    "list_nodes", "read_node", "list_files", "read_file", "list_revisions", "read_revision", "list_tags", "read_tag",
     "list_views", "read_view", "query_data", "list_runs", "read_run", "list_packages", "list_env",
     "report_issue", "version",
 })
@@ -855,6 +913,8 @@ class Agent:
             if not revs:
                 return False, f"no saved versions of {view or node}", {}
             return True, json.dumps(revs, default=str), {"view": view} if view else {"node": node}
+        if name in ("list_tags", "read_tag", "create_tag", "delete_tag"):
+            return self._tag_tool(name, args)
         if name in VIEW_TOOLS:
             return self._view_tool(name, args)
         if name == "restore_node":
@@ -1071,6 +1131,35 @@ class Agent:
         if name == "report_issue":
             return True, json.dumps(feedback.draft(args["title"], args["details"], args.get("kind") or "bug", origin)), {}
         return False, f"unknown tool {name}", {}
+
+    def _tag_tool(self, name: str, args: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
+        ws = self.ws
+
+        def when(t: dict[str, Any]) -> dict[str, Any]:
+            out = {k: v for k, v in t.items() if k not in ("created_at", "saved_at", "author_user") and v is not None}
+            out["created"] = _utc(t.get("created_at"))
+            return out
+
+        try:
+            if name == "list_tags":
+                tags = ws.code_tags()
+                if not tags:
+                    return True, "no tags yet: create_tag names the code as it is now", {}
+                return True, json.dumps([when(t) for t in tags]), {}
+            if name == "read_tag":
+                if args.get("path"):
+                    return True, ws.tag_source(args["name"], args["path"]), {}
+                tag = ws.code_tag(args["name"])
+                files = [{k: v for k, v in f.items() if k != "saved_at" and v is not None} for f in tag.pop("files")]
+                return True, json.dumps({**when(tag), "files": files}), {}
+            if name == "create_tag":
+                return True, json.dumps(when(ws.create_tag(args["name"], args.get("message"), args.get("revision")))), {}
+            ws.delete_tag(args["name"])  # delete_tag
+            return True, f"deleted tag {args['name']}", {}
+        except KeyError as e:
+            return False, str(e.args[0]), {}
+        except ValueError as e:
+            return False, str(e), {}
 
     def _view_tool(self, name: str, args: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
         ws = self.ws

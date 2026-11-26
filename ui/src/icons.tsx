@@ -34,6 +34,7 @@ export const IconPlay = icon(<path d="M4.5 2.8v10.4a.6.6 0 0 0 .92.5l8.1-5.2a.6.
 export const IconPlus = icon(<path d="M8 3v10M3 8h10" />);
 export const IconClose = icon(<path d="M3.5 3.5l9 9M12.5 3.5l-9 9" />);
 export const IconTrash = icon(<path d="M2.5 4.5h11M6.5 4.5V3a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 .5.5v1.5M4 4.5l.6 8.1a1 1 0 0 0 1 .9h4.8a1 1 0 0 0 1-.9l.6-8.1M6.6 7v4M9.4 7v4" />);
+export const IconTag = icon(<path d="M2.5 3.3v3.9a1 1 0 0 0 .3.7l5.6 5.6a1 1 0 0 0 1.4 0l3.4-3.4a1 1 0 0 0 0-1.4L7.6 3.1a1 1 0 0 0-.7-.3H3a.5.5 0 0 0-.5.5zM5.4 5.4h.01" />);
 export const IconClock = icon(<path d="M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM8 4.8V8l2.1 1.4" />);
 export const IconSun = icon(<path d="M8 5.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6zM8 1.5v1.3M8 13.2v1.3M1.5 8h1.3M13.2 8h1.3M3.4 3.4l.9.9M11.7 11.7l.9.9M3.4 12.6l.9-.9M11.7 4.3l.9-.9" />);
 export const IconMoon = icon(<path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1z" />);
