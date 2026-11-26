@@ -225,6 +225,24 @@ shows (as plain text), then put any detail in paragraphs or `-` lists. An
 indented line is a code block in Markdown, so Google- or NumPy-style
 `Args:` sections show as code; write them as a list instead.
 
+Maths is LaTeX, typeset by [KaTeX](https://katex.org): `$…$` inside a
+sentence, `$$…$$` on lines of its own for a displayed formula. A dollar
+that isn't maths stays as written: a price ("$5 to $10"), a SQL parameter
+(`$as_of`), anything in backticks. In Python, write a docstring with maths
+as a raw string (`r"""…"""`): in a plain one, `\frac`, `\times` or `\beta`
+reach the notebook as a form feed, a tab or a backspace. Keep maths out of the
+first sentence, which the canvas shows as plain text.
+
+```python
+r"""Daily excess return of the index over SOFR, compounded from 100.
+
+$$
+r_t = \frac{E_t}{E_{t-1}} - 1 - r^{\text{SOFR}}_{t-1}\,\delta_t,
+\qquad \delta_t = \frac{\text{days}_t}{360}
+$$
+"""
+```
+
 The graph is read **statically** (`ast` for Python, identifier matching for
 SQL), so a broken node still shows up in the graph with its error, and nothing
 runs until you ask.
