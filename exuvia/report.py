@@ -12,7 +12,7 @@ import asyncio
 from typing import Any
 
 from .packages import missing_package
-from .workspace import Workspace
+from .workspace import OK, Workspace
 
 LOG_TAIL_LINES = 40
 PRINTED_LINES = 30
@@ -56,7 +56,7 @@ async def node_report(
     (succeeded, report)."""
     run = finals.get(target) or ws.store.last_run(target, ws.node_params(target, params)[1])
     summary = {n: (r or {}).get("status") for n, r in finals.items()}
-    if not run or run.get("status") != "success":
+    if not run or run.get("status") not in OK:
         out = {
             "runs": summary,
             "run_id": (run or {}).get("id"),
@@ -73,7 +73,11 @@ async def node_report(
         return False, out
     # Off the loop: reading an output may download it first.
     preview = await asyncio.to_thread(ws.preview, target, limit=head, params=params)
-    out: dict[str, Any] = {"runs": summary, "run_id": run.get("id"), "rows": run.get("rows"), "schema": run.get("schema")}
+    # A cached run made nothing: the output's shape is the run that made it.
+    made = run
+    if run.get("status") == "cached":
+        made = ws.store.last_success(target, ws.node_params(target, params)[1]) or run
+    out: dict[str, Any] = {"runs": summary, "run_id": run.get("id"), "rows": made.get("rows"), "schema": made.get("schema")}
     if run.get("params"):
         out["run_params"] = run["params"]
     if preview.get("kind") == "multi":
@@ -101,6 +105,6 @@ def graph_report(ws: Workspace, finals: dict[str, Any]) -> tuple[bool, dict[str,
     failed = [
         {"node": n, "run_id": (r or {}).get("id"), "error": (r or {}).get("error"), **_log_tail(ws, r)}
         for n, r in finals.items()
-        if (r or {}).get("status") != "success"
+        if (r or {}).get("status") not in OK
     ]
     return not failed, {"runs": summary, "failed": failed}
