@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { colorVars, spacingVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { ReactFlowProvider } from "@xyflow/react";
@@ -34,6 +34,7 @@ import { IconClock, IconClose, IconGraph, IconKey, IconNotebook, IconTag, IconMo
 import { StateDot } from "./ui/state";
 import { failed, Toasts } from "./toast";
 import { appViewOf } from "./appMode";
+import { barLayout } from "./barLayout";
 import { format, landing, parse, routeOf, type Layout, type Mode, type Route } from "./route";
 import { oneOf, usePersisted } from "./ui/usePersisted";
 
@@ -62,6 +63,24 @@ const appView = appViewOf(location.search);
 const start = landing(parse(location.hash));
 /** Leave the address at a route; the graph's is the page's own, with no `#`. */
 const goTo = (r: Route) => history.replaceState(null, "", format(r) || location.pathname + location.search);
+
+/** The states the project's bar counts, in its order. */
+const COUNTED = ["fresh", "stale", "new", "failed", "error", "running"] as const;
+
+/** An element's width, as it is laid out now and whenever it changes. */
+function useWidth<T extends HTMLElement>(): [(el: T | null) => void, number] {
+  const [el, setEl] = useState<T | null>(null);
+  const [width, setWidth] = useState(() => window.innerWidth);
+  useLayoutEffect(() => {
+    if (!el) return;
+    setWidth(el.clientWidth);
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setWidth(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [el]);
+  return [setEl, width];
+}
 
 /** A narrow window, where the side panel is a sheet over the main area. */
 const narrow = () => window.matchMedia("(max-width: 1100px)").matches;
@@ -298,6 +317,10 @@ function Workbench() {
   const compact = useMediaQuery("(max-width: 900px)");
   // A phone: the bar keeps its tabs' words before anything that can be told another way.
   const phone = useMediaQuery("(max-width: 560px)");
+  // The project's bar shows the richest layout that fits its width (barLayout.ts).
+  const [barRef, barPx] = useWidth<HTMLDivElement>();
+  const countedStates = COUNTED.filter((s) => counts[s]).length;
+  const fit = barLayout(barPx, { states: mode === "graph" ? countedStates : 0, buttons: canEdit && mode === "graph", toggle: mode === "graph" && nodes.length > 0 && !phone });
   const sheet = useMediaQuery("(max-width: 1100px)");
   const openNode = (name: string) => {
     setMode("graph");
@@ -359,8 +382,8 @@ function Workbench() {
           <div {...stylex.props(styles.workspace, !agentOpen && styles.workspaceRail)}>
             <div {...stylex.props(styles.main)}>
               {/* The project's bar: its two faces, and what the graph is doing and can be told to do. */}
-              <div {...stylex.props(styles.bar, styles.workBar)}>
-                <TabList role="tablist" value={mode === "views" || mode === "graph" || mode === "schedule" ? mode : ""} onChange={(v) => setMode(v as Mode)} xstyle={styles.modes}>
+              <div ref={barRef} {...stylex.props(styles.bar, styles.workBar)}>
+                <TabList role="tablist" value={mode === "views" || mode === "graph" || mode === "schedule" ? mode : ""} onChange={(v) => setMode(v as Mode)} xstyle={[styles.modes, phone && styles.modesScroll]}>
                   <Tab value="graph" label="Graph" />
                   <Tab value="views" label="Views" endContent={project?.views.length && !phone ? <Badge label={project.views.length} /> : undefined} />
                   <Tab value="schedule" label="Schedule" endContent={scheduled && !phone ? <Badge label={scheduled} /> : undefined} />
@@ -377,16 +400,17 @@ function Workbench() {
                     />
                   ) : (
                     <SegmentedControl size="sm" value={layout} onChange={(v) => setLayout(v as Layout)} label="Show the graph as">
-                      <SegmentedControlItem value="canvas" label="Canvas" icon={<IconGraph />} isLabelHidden={compact} />
-                      <SegmentedControlItem value="notebook" label="Notebook" icon={<IconNotebook />} isLabelHidden={compact} />
+                      <SegmentedControlItem value="canvas" label="Canvas" icon={<IconGraph />} isLabelHidden={!fit.toggleLabels} />
+                      <SegmentedControlItem value="notebook" label="Notebook" icon={<IconNotebook />} isLabelHidden={!fit.toggleLabels} />
                     </SegmentedControl>
                   ))}
                 <span {...stylex.props(styles.grow)} />
                 {!conn && <Badge variant="error" label="Reconnecting…" />}
                 {/* The graph's own state and actions: with the graph, not with the views. */}
                 {mode === "graph" && (<>
+                {fit.counts && !phone && (
                 <HStack gap={3} vAlign="center" xstyle={styles.counts}>
-                  {(["fresh", "stale", "new", "failed", "error", "running"] as const).map((s) =>
+                  {COUNTED.map((s) =>
                     counts[s] ? (
                       <HStack key={s} gap={1.5} vAlign="center">
                         <StateDot state={s} />
@@ -397,12 +421,13 @@ function Workbench() {
                     ) : null,
                   )}
                 </HStack>
+                )}
                 {canEdit && (
                   <HStack gap={1} vAlign="center">
                     <Button
                       label="Packages"
                       icon={<IconPackage />}
-                      isIconOnly={compact}
+                      isIconOnly={!fit.buttonLabels}
                       tooltip={pkgs?.requests.length ? "The agent is waiting for you to approve packages" : "The packages your nodes import"}
                       endContent={
                         pkgs?.requests.length ? (
@@ -418,17 +443,17 @@ function Workbench() {
                     <Button
                       label="Environment"
                       icon={<IconKey />}
-                      isIconOnly={compact}
+                      isIconOnly={!fit.buttonLabels}
                       tooltip={envRequests ? "The agent is waiting for you to set a secret" : "API keys, tokens and settings your nodes read from os.environ"}
                       endContent={envRequests ? <Badge variant="info" label={envRequests} /> : undefined}
                       onClick={() => setEnvOpen({})}
                     />
-                    <Button label="New node" icon={<IconPlus />} isIconOnly={compact} tooltip="Add a node to the graph" onClick={() => setNewOpen(true)} />
+                    <Button label="New node" icon={<IconPlus />} isIconOnly={!fit.buttonLabels} tooltip="Add a node to the graph" onClick={() => setNewOpen(true)} />
                     <Button
                       label="Run stale"
                       variant={staleCount ? "primary" : "secondary"}
                       icon={<IconPlay />}
-                      isIconOnly={compact}
+                      isIconOnly={!fit.buttonLabels}
                       isDisabled={!staleCount}
                       tooltip={staleCount ? "Run every stale, new, or failed node" : "Every node is up to date"}
                       endContent={staleCount ? <Badge label={staleCount} /> : undefined}
@@ -620,7 +645,9 @@ function Workbench() {
  *              the graph: canvas | inspector
  *   <= 1100px  one column: canvas over inspector; the side panel is a bar
  *              along the bottom that opens as a sheet over them
- *   <= 900px   the bars' buttons lose their words (`compact`)
+ *   <= 900px   the app bar's buttons lose their words (`compact`)
+ *   the project's bar, by its own width: Canvas | Notebook, then its
+ *              buttons, lose their words, then the state counts go (`fit`)
  *   <= 560px   the tabs lose their counts and Canvas | Notebook is one
  *              button (`phone`); on the smallest phones the tabs scroll
  */
@@ -649,12 +676,14 @@ const styles = stylex.create({
   appBar: { paddingBlock: spacingVars["--spacing-2"] },
   // The tabs sit on the bar's bottom edge, so the bar itself has no padding there.
   workBar: { paddingBlock: 0, minHeight: "40px" },
-  // The tabs give way last, and scroll rather than be cut off.
-  modes: { alignSelf: "flex-end", minWidth: 0, overflowX: "auto", scrollbarWidth: "none" },
+  // The tabs keep their words: what is beside them gives way first (barLayout.ts).
+  modes: { alignSelf: "flex-end", flexShrink: 0 },
+  // On the smallest phones they scroll rather than be cut off.
+  modesScroll: { flexShrink: 1, minWidth: 0, overflowX: "auto", scrollbarWidth: "none" },
   grow: { flexGrow: 1 },
   rule: { alignSelf: "stretch", marginBlock: spacingVars["--spacing-1"] },
-  // The state counts are on the canvas's nodes too: the first thing to go.
-  counts: { display: { default: "flex", "@media (max-width: 700px)": "none" } },
+  // The state counts are on the canvas's nodes too: the last of the bar's layouts leaves them out.
+  counts: { flexShrink: 0, whiteSpace: "nowrap" },
   workspace: {
     display: "grid",
     gridTemplateColumns: { default: "minmax(0, 1fr) 340px", [NARROW]: "minmax(0, 1fr)" },
