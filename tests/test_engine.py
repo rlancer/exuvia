@@ -128,6 +128,26 @@ def test_failure_skips_downstream_and_reports_error(tmp_path):
     assert ws.status()["a"]["state"] == "failed"
 
 
+def test_a_cached_run_reports_as_succeeded(tmp_path):
+    # #158: a run that finds its output already current ends "cached"; what
+    # reads it runs, and run_node / the REST run routes report it as
+    # succeeded, with the shape of the run that made the output.
+    from exuvia.report import graph_report, node_report
+
+    py(tmp_path, "a")
+    py(tmp_path, "b", params="a", body="return a")
+    py(tmp_path, "c", params="b", body="return b.assign(y=1)")
+    ws = Workspace(tmp_path)
+    run(ws, ["c"])
+    finals = run(ws, ["b", "c"], recheck={"b"}, force={"c"})
+    assert {n: r["status"] for n, r in finals.items()} == {"b": "cached", "c": "success"}
+
+    ok, report = graph_report(ws, finals)
+    assert ok and report["failed"] == []
+    ok, report = asyncio.run(node_report(ws, "b", {}, finals))
+    assert ok and report["rows"] == 2 and report["head"] == [{"x": 1}, {"x": 2}]
+
+
 def test_failed_upstream_with_a_good_output_does_not_block_downstream(tmp_path):
     # `src` is a slow source that fetches (here: reads a file) on its own
     # schedule; `fast` runs often and reads it. When a refresh of `src`

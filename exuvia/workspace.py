@@ -85,6 +85,9 @@ _ALL_ROWS = 2**62  # the limit of an offset-only read
 QUEUED_RECHECK_S = 30
 # What _execute returns for a failed attempt that will be tried again.
 RETRY = "retry"
+# Run statuses that leave a node's output good to read: "cached" is a run
+# that found its output already current, as good as one that just made it.
+OK = ("success", "cached")
 # Project files besides nodes/ whose versions are kept as code revisions.
 VERSIONED_FILES = ("exuvia.json", "AGENTS.md", "pyproject.toml", "package.json")
 
@@ -953,9 +956,8 @@ class Workspace:
                 for d in deps_in_plan
             ]
             run_id, key = run_ids[name], keys[name]
-            # A cached upstream has a current output, as good as a new one.
-            if any(r not in ("success", "cached") for r in results):
-                bad = [d for d, r in zip(deps_in_plan, results) if r not in ("success", "cached")]
+            bad = [d for d, r in zip(deps_in_plan, results) if r not in OK]
+            if bad:
                 return self._finish(run_id, name, key, status="skipped", error=f"upstream failed: {', '.join(bad)}")
             lock = self._node_locks.setdefault((name, key), asyncio.Lock())
             node = g.nodes[name]
