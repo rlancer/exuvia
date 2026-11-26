@@ -70,7 +70,7 @@ from .keys import KeyViolation, enforce_file
 from .partitioned import Manifest, PartitionError, Writer, commit, in_range, prune, sort_values
 from .pushing import save_pushed
 from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Project, View, _hash, _validate_cron, check_stage
-from .runner import PART_EXT, PART_NAME
+from .runner import PART_EXT, PART_NAME, finite
 from .store import CodeChange, clean_origin, open_store
 
 MAX_PARALLEL = int(os.environ.get("EXUVIA_MAX_PARALLEL", "4"))
@@ -2087,7 +2087,8 @@ class Workspace:
                 **meta,
             }
         if kind == "json":
-            return {"kind": "json", "value": json.loads(Path(path or "").read_text(encoding="utf-8")), **meta}
+            # finite(): an output stored before NaN became null when written
+            return {"kind": "json", "value": finite(json.loads(Path(path or "").read_text(encoding="utf-8"))), **meta}
         return {"kind": "none", "value": None, **meta}
 
     def preview_arrow(

@@ -18,6 +18,7 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import json
+import math
 import os
 import re
 import shutil
@@ -210,9 +211,24 @@ def _json_default(obj: Any) -> Any:
     raise UnsupportedOutput(type(obj).__name__)
 
 
+def finite(value: Any) -> Any:
+    """``value`` with every NaN and ±Infinity float replaced by None: JSON
+    has no such numbers, and the routes that serve an output refuse them."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, list):
+        return [finite(v) for v in value]
+    if isinstance(value, dict):
+        return {k: finite(v) for k, v in value.items()}
+    return value
+
+
 def _to_json(value: Any) -> str:
+    """A JSON-compatible output as JSON text. NaN and ±Infinity (which
+    ``json.dumps`` would write as the non-JSON tokens NaN and Infinity)
+    become null."""
     try:
-        return json.dumps(value, default=_json_default)
+        text = json.dumps(value, default=_json_default)
     except (UnsupportedOutput, TypeError, ValueError) as e:
         raise TypeError(
             "A node must return a DataFrame (stored as Parquet), JSON-compatible data "
@@ -220,6 +236,9 @@ def _to_json(value: Any) -> str:
             "several named outputs (a dict, dataclass or pydantic model with DataFrame values), or None. "
             f"This one returned {type(value).__name__}, which contains something JSON cannot hold: {e}"
         ) from None
+    if "NaN" in text or "Infinity" in text:  # maybe a non-finite float: re-read and replace
+        text = json.dumps(finite(json.loads(text)), allow_nan=False)
+    return text
 
 
 def _table_schema(df: Any) -> list[dict[str, str]]:
