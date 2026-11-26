@@ -287,3 +287,16 @@ def test_table_outputs_use_the_current_parquet_format(tmp_path):
     assert any(enc in col.encodings for enc in ("RLE_DICTIONARY", "PLAIN"))
     # Data page v2 is what DuckDB (used by previews and SQL nodes) reads back too.
     assert ws.preview("a")["rows"] == [[1], [2]]
+
+
+def test_a_cached_upstream_does_not_skip_what_reads_it(tmp_path):
+    # issue #158: a node whose upstream ended `cached` in the same batch was
+    # skipped as "upstream failed"
+    py(tmp_path, "src")
+    py(tmp_path, "mid", params="src", body="return src")
+    py(tmp_path, "down", params="mid", body="return mid")
+    ws = Workspace(tmp_path)
+    run(ws, ["down"])
+    res = run(ws, ["mid", "down"], recheck={"mid"}, force={"down"})
+    assert res["mid"]["status"] == "cached"
+    assert res["down"]["status"] == "success", res["down"]["error"]

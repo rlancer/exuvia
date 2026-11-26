@@ -953,8 +953,9 @@ class Workspace:
                 for d in deps_in_plan
             ]
             run_id, key = run_ids[name], keys[name]
-            if any(r != "success" for r in results):
-                bad = [d for d, r in zip(deps_in_plan, results) if r != "success"]
+            # A cached upstream has a current output, as good as a new one.
+            if any(r not in ("success", "cached") for r in results):
+                bad = [d for d, r in zip(deps_in_plan, results) if r not in ("success", "cached")]
                 return self._finish(run_id, name, key, status="skipped", error=f"upstream failed: {', '.join(bad)}")
             lock = self._node_locks.setdefault((name, key), asyncio.Lock())
             node = g.nodes[name]
