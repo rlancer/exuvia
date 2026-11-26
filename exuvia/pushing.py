@@ -160,6 +160,7 @@ def push(
     import httpx
 
     from .envcli import check_url
+    from .nethttp import client_options, proxy_hint
 
     try:
         base = check_url(url, allow_http)
@@ -177,9 +178,9 @@ def push(
         headers["Authorization"] = f"Bearer {tok}"
     target = f"{base}/api/nodes/{quote(node, safe='')}/push"
     try:
-        r = httpx.post(target, params=query, content=data, headers=headers, timeout=timeout)
+        r = httpx.post(target, params=query, content=data, headers=headers, timeout=timeout, **client_options(base))
     except httpx.HTTPError as e:
-        raise PushError(f"could not reach exuvia at {base} ({type(e).__name__}): is it running?") from e
+        raise PushError(f"could not reach exuvia at {base} ({type(e).__name__}): is it running?{proxy_hint(base, e)}") from e
     if r.status_code == 401:
         raise PushError(
             f"{base} needs a token: set EXUVIA_API_TOKEN (or EXUVIA_API_TOKEN_FILE) to your own agent token "
@@ -202,6 +203,7 @@ def cancel_run(url: str, run_id: str, *, token: str | None = None, allow_http: b
     import httpx
 
     from .envcli import check_url
+    from .nethttp import client_options, proxy_hint
 
     try:
         base = check_url(url, allow_http)
@@ -212,9 +214,11 @@ def cancel_run(url: str, run_id: str, *, token: str | None = None, allow_http: b
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
     try:
-        r = httpx.post(f"{base}/api/runs/{quote(run_id, safe='')}/cancel", headers=headers, timeout=30.0)
+        r = httpx.post(
+            f"{base}/api/runs/{quote(run_id, safe='')}/cancel", headers=headers, timeout=30.0, **client_options(base)
+        )
     except httpx.HTTPError as e:
-        raise PushError(f"could not reach exuvia at {base} ({type(e).__name__}): is it running?") from e
+        raise PushError(f"could not reach exuvia at {base} ({type(e).__name__}): is it running?{proxy_hint(base, e)}") from e
     if r.status_code == 401:
         raise PushError(f"{base} needs a token: set EXUVIA_API_TOKEN (or EXUVIA_API_TOKEN_FILE)")
     if r.status_code >= 400:

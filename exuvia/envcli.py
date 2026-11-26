@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import ipaddress
 import os
 import sys
 from pathlib import Path
@@ -111,12 +110,9 @@ def check_url(url: str, allow_http: bool) -> str:
 
 
 def _loopback(host: str) -> bool:
-    if host == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
+    from .nethttp import loopback
+
+    return loopback(host)
 
 
 class Remote:
@@ -132,7 +128,9 @@ class Remote:
             self.url, base = f"{url} (the hub's variables)", f"{url}/api/hub"
         else:
             self.url, base = url, f"{url}/api"
-        self.http = httpx.Client(base_url=base, headers=headers, timeout=30.0)
+        from .nethttp import client_options
+
+        self.http = httpx.Client(base_url=base, headers=headers, timeout=30.0, **client_options(url))
 
     def _call(self, method: str, path: str, body: Any = None) -> dict[str, Any]:
         import httpx

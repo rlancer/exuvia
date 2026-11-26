@@ -71,7 +71,9 @@ class RemoteSource:
         headers = {"X-Exuvia-Origin": "mirror"}
         if tok:
             headers["Authorization"] = f"Bearer {tok}"
-        self.http = httpx.Client(base_url=f"{self.where}/api", headers=headers, timeout=60.0)
+        from .nethttp import client_options
+
+        self.http = httpx.Client(base_url=f"{self.where}/api", headers=headers, timeout=60.0, **client_options(self.where))
 
     def _get(self, path: str, **params: Any) -> Any:
         import httpx
