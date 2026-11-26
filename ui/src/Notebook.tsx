@@ -8,19 +8,18 @@ import { CodeBlock } from "@astryxdesign/core/CodeBlock";
 import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
 import { Link } from "@astryxdesign/core/Link";
-import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { api, type GraphNode, type Preview, type Project, type ProjectView } from "./api";
 import { useAccess } from "./Access";
-import { DataTable, NodeChart } from "./Inspector";
-import { countStates, STATE_ORDER } from "./canvasGraph";
+import { DataTable, NodeChart, OutputPicker, useNodePreview, useOutputPart } from "./NodeOutput";
 import { notebook, type Cell, type Section } from "./notebookOrder";
 import { ago, fmtNum } from "./util";
 import { failed } from "./toast";
 import { IconChevronRight, IconCode, IconLayers, IconPlay, IconWindow } from "./icons";
 import { Markdown } from "./ui/Markdown";
 import { StateDot, statusOf, statusText } from "./ui/state";
+import { nodeCard, StateCounts, stripeColor } from "./ui/nodeCard";
 
 const PinnedView = lazy(() => import("./PinnedView"));
 
@@ -153,23 +152,6 @@ function SectionBlock({ section, children }: { section: Section; children: React
   );
 }
 
-/** How many of a stage's nodes are in each state, worst first. */
-function StateCounts({ members }: { members: GraphNode[] }) {
-  const counts = countStates(members);
-  return (
-    <HStack gap={2} vAlign="center">
-      {STATE_ORDER.filter((s) => counts[s]).map((s) => (
-        <HStack key={s} gap={1} vAlign="center">
-          <StateDot state={s} label={`${counts[s]} ${s}`} />
-          <Text type="supporting" color="secondary" hasTabularNumbers>
-            {counts[s]}
-          </Text>
-        </HStack>
-      ))}
-    </HStack>
-  );
-}
-
 /** A node as a cell: its state and name, what it is for and reads, its code (folded), and the first rows of what it made. */
 const NodeCell = memo(function NodeCell(props: {
   cellRef: (el: HTMLElement | null) => void;
@@ -200,8 +182,8 @@ const NodeCell = memo(function NodeCell(props: {
       onClick={() => onSelect(node.name)}
     >
       {/* A node the agent or a run just touched: a ring that fades. Keyed so it plays again, without remounting the cell. */}
-      {props.flash > 0 && <span key={props.flash} {...stylex.props(styles.ring, styles.flash)} />}
-      <span {...stylex.props(styles.stripe, stripe[status])} />
+      {props.flash > 0 && <span key={props.flash} {...stylex.props(styles.ring, nodeCard.flash)} />}
+      <span {...stylex.props(nodeCard.stripe, stripeColor[status])} />
       <div {...stylex.props(styles.cellHead)}>
         <StateDot state={node.state} />
         <span {...stylex.props(styles.name)} title={node.name}>
@@ -231,7 +213,7 @@ const NodeCell = memo(function NodeCell(props: {
           </HStack>
         )}
       </div>
-      {busy && <div {...stylex.props(styles.bar)} />}
+      {busy && <div {...stylex.props(nodeCard.busyBar)} />}
       <div {...stylex.props(styles.cellBody)}>
         {node.description ? (
           // A docstring (or a SQL node's header comment) is Markdown, as a notebook's text cell is.
@@ -301,23 +283,11 @@ function Source({ node, onOpen }: { node: GraphNode; onOpen: () => void }) {
 
 /** The first rows of a node's output, or its chart when it has one; loaded when the cell comes into view. */
 function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
-  const multi = node.output_kind === "multi";
-  const parts = multi ? (node.schema ?? []).map((c) => c.name) : [];
-  const [part, setPart] = useState<string | null>(null);
-  const shown = multi ? (part !== null && parts.includes(part) ? part : (parts[0] ?? null)) : null;
-  const [p, setP] = useState<Preview | null>(null);
+  const { parts, shown, pick } = useOutputPart(node);
   const chart = !!node.chart && !!node.artifact_id;
-  useEffect(() => {
-    if (chart) return;
-    let live = true;
-    api.data(node.name, PREVIEW_ROWS, shown ?? undefined).then(
-      (d) => live && setP(d),
-      () => live && setP({ kind: null }),
-    );
-    return () => {
-      live = false;
-    };
-  }, [node.name, node.artifact_id, shown, chart]);
+  const { preview, failed } = useNodePreview(node, PREVIEW_ROWS, shown, !chart);
+  // A read that failed shows as no output.
+  const p: Preview | null = failed ? { kind: null } : preview;
 
   if (chart)
     return (
@@ -325,13 +295,9 @@ function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
         <NodeChart node={node} dark={dark} height={220} />
       </div>
     );
-  const picker = multi && parts.length > 1 && shown !== null && (
+  const picker = parts.length > 1 && shown !== null && (
     <div onClick={(e) => e.stopPropagation()}>
-      <SegmentedControl size="sm" value={shown} onChange={setPart} label={`${node.name}: outputs`}>
-        {parts.map((name) => (
-          <SegmentedControlItem key={name} value={name} label={name} />
-        ))}
-      </SegmentedControl>
+      <OutputPicker node={node} parts={parts} shown={shown} onPick={pick} />
     </div>
   );
   if (!p) return <div {...stylex.props(styles.waiting)} />;
@@ -407,19 +373,7 @@ function ViewLine({ view, onOpen }: { view: ProjectView; onOpen: () => void }) {
   );
 }
 
-const REDUCED = "@media (prefers-reduced-motion: reduce)";
 const NARROW = "@media (max-width: 1100px)";
-
-/** Inside the cell's edge, which clips what spreads out of it. */
-const flashRing = stylex.keyframes({
-  "0%": { boxShadow: `inset 0 0 0 3px color-mix(in srgb, ${colorVars["--color-accent"]} 80%, transparent)` },
-  "100%": { boxShadow: "inset 0 0 0 3px transparent" },
-});
-
-const slide = stylex.keyframes({
-  from: { backgroundPosition: "100% 0" },
-  to: { backgroundPosition: "-100% 0" },
-});
 
 const styles = stylex.create({
   scroll: { height: "100%", overflow: "auto", backgroundColor: colorVars["--color-background-body"] },
@@ -453,7 +407,6 @@ const styles = stylex.create({
     display: "flex",
     flexDirection: "column",
     minWidth: 0,
-    overflow: "hidden",
     color: colorVars["--color-text-primary"],
     backgroundColor: colorVars["--color-background-card"],
     borderWidth: "1px",
@@ -468,13 +421,8 @@ const styles = stylex.create({
     borderColor: colorVars["--color-accent"],
     boxShadow: `0 0 0 3px color-mix(in srgb, ${colorVars["--color-accent"]} 25%, transparent)`,
   },
+  // Where the ring is drawn when the cell is touched (nodeCard.flash), so the cell itself is not remounted to play it again.
   ring: { position: "absolute", inset: 0, pointerEvents: "none", borderRadius: radiusVars["--radius-container"] },
-  flash: {
-    animationName: { default: flashRing, [REDUCED]: "none" },
-    animationDuration: "1.6s",
-    animationTimingFunction: "ease-out",
-  },
-  stripe: { position: "absolute", insetBlock: 0, insetInlineStart: 0, width: "3px" },
   cellHead: {
     display: "flex",
     flexWrap: "wrap",
@@ -536,15 +484,6 @@ const styles = stylex.create({
     whiteSpace: "pre-wrap",
     overflowWrap: "anywhere",
   },
-  bar: {
-    height: "2px",
-    backgroundImage: `linear-gradient(90deg, transparent, ${colorVars["--color-accent"]}, transparent)`,
-    backgroundSize: "200% 100%",
-    animationName: { default: slide, [REDUCED]: "none" },
-    animationDuration: "1.2s",
-    animationTimingFunction: "linear",
-    animationIterationCount: "infinite",
-  },
 
   pinned: { minWidth: 0 },
   pinWait: {
@@ -572,13 +511,4 @@ const styles = stylex.create({
     borderColor: colorVars["--color-border-emphasized"],
     borderRadius: radiusVars["--radius-container"],
   },
-});
-
-/** The stripe's colour per status, as on the canvas's cards. */
-const stripe = stylex.create({
-  success: { backgroundColor: colorVars["--color-success"] },
-  warning: { backgroundColor: colorVars["--color-warning"] },
-  error: { backgroundColor: colorVars["--color-error"] },
-  accent: { backgroundColor: colorVars["--color-accent"] },
-  neutral: { backgroundColor: colorVars["--color-border-emphasized"] },
 });
