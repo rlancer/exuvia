@@ -12,7 +12,7 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { api, type GraphNode, type Preview, type Project, type ProjectView } from "./api";
 import { useAccess } from "./Access";
-import { DataTable, NodeChart, OutputPicker, useNodePreview, useOutputPart } from "./NodeOutput";
+import { DatasetSummary, DataTable, NodeChart, OutputPicker, useNodePreview, useOutputPart, useTableStats } from "./NodeOutput";
 import { notebook, type Cell, type Section } from "./notebookOrder";
 import { ago, fmtNum } from "./util";
 import { failed } from "./toast";
@@ -288,6 +288,8 @@ function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
   const { preview, failed } = useNodePreview(node, PREVIEW_ROWS, shown, !chart);
   // A read that failed shows as no output.
   const p: Preview | null = failed ? { kind: null } : preview;
+  // The quick insights and the summary line, from the output's Parquet footers.
+  const stats = useTableStats(node, shown, p?.kind === "table");
 
   if (chart)
     return (
@@ -312,12 +314,16 @@ function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
       <>
         {picker}
         <div {...stylex.props(styles.output, styles.table)}>
-          <DataTable columns={p.columns} rows={p.rows} />
+          <DataTable columns={p.columns} rows={p.rows} stats={stats} />
         </div>
-        <Text type="supporting" color="secondary" hasTabularNumbers>
-          {p.rows.length < (p.total ?? 0) ? `first ${p.rows.length} of ` : ""}
-          {fmtNum(p.total)} rows · {p.columns.length} columns
-        </Text>
+        {stats ? (
+          <DatasetSummary stats={stats} shown={p.rows.length} storage={false} />
+        ) : (
+          <Text type="supporting" color="secondary" hasTabularNumbers>
+            {p.rows.length < (p.total ?? 0) ? `first ${p.rows.length} of ` : ""}
+            {fmtNum(p.total)} rows · {p.columns.length} columns
+          </Text>
+        )}
       </>
     );
   if (p.kind === "pickle")
