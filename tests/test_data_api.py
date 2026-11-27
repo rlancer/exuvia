@@ -410,3 +410,48 @@ def test_node_reads_share_one_database_and_keep_their_temp_tables_apart():
     assert a.execute("select count(*) from __keep").fetchone() == (1,)
     assert b.execute("select count(*) from __keep").fetchone() == (0,)
     assert a.execute("select current_setting('threads')").fetchone() == b.execute("select current_setting('threads')").fetchone()
+
+
+def test_a_query_that_runs_too_long_is_stopped(hub, monkeypatch):
+    monkeypatch.setattr(dataapi, "QUERY_TIMEOUT", 0.3)
+    key = make_key(hub, ["crm"])
+    slow = {"sql": "select count(*) from crm.accounts, range(200000) a, range(200000) b where a.range * b.range = 7"}
+    for headers in (bearer(key), {**bearer(key), **ARROW}):
+        r = hub.post("/api/data/query", json=slow, headers=headers)
+        assert r.status_code == 400 and "ran longer than 0.3 seconds" in r.json()["detail"], r.text
+    # The connection it ran on still answers the next query.
+    r = hub.post("/api/data/query", json={"sql": "select count(*) from crm.accounts"}, headers=bearer(key))
+    assert r.json()["rows"] == [[2]]
+
+
+def test_a_key_has_a_limit_of_requests_running_at_once(hub, monkeypatch):
+    monkeypatch.setattr(dataapi, "KEY_CONCURRENCY", 2)
+    key, other = make_key(hub, ["crm"]), make_key(hub, ["crm"], name="other")
+    slots = hub.app.state.data_slots
+    sql = {"sql": "select count(*) from crm.accounts"}
+    held = [slots.take(key["id"]), slots.take(key["id"])]  # two requests of its own still running
+    r = hub.post("/api/data/query", json=sql, headers=bearer(key))
+    assert r.status_code == 429 and r.headers["retry-after"] == "1"
+    assert hub.get("/api/data/projects/crm/nodes/accounts", headers=bearer(key)).status_code == 429
+    assert hub.get("/api/data/projects", headers=bearer(key)).status_code == 200  # a listing needs no slot
+    assert hub.post("/api/data/query", json=sql, headers=bearer(other)).status_code == 200  # other keys go on
+    held[0]()
+    held[0]()  # giving back twice gives back once
+    assert slots.held(key["id"]) == 1
+    assert hub.post("/api/data/query", json=sql, headers=bearer(key)).status_code == 200
+    held[1]()
+    # Every answer gives its slot back, Arrow streams once they are read, failures too.
+    hub.post("/api/data/query", json=sql, headers={**bearer(key), **ARROW})
+    hub.get("/api/data/projects/crm/nodes/accounts", headers={**bearer(key), **ARROW})
+    hub.post("/api/data/query", json={"sql": "select * from nope"}, headers=bearer(key))
+    hub.get("/api/data/projects/crm/nodes/accounts?part=nope", headers=bearer(key))
+    assert slots.held(key["id"]) == 0
+
+
+def test_an_outputs_connection_keeps_few_threads():
+    """async_threads: DuckDB starts 16 per database unless told otherwise,
+    and the server keeps many databases open."""
+    from exuvia.outputs import outputs_connection
+
+    con = outputs_connection()
+    assert con.execute("select current_setting('async_threads')").fetchone() == (1,)

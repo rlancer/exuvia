@@ -298,6 +298,7 @@ class Result:
     seconds: float
     latencies: list[float] = field(default_factory=list)
     errors: dict[str, int] = field(default_factory=dict)
+    throttled: int = 0  # 429s: the key had as many requests running as it may
     peak_rss: float = 0.0
     peak_threads: int = 0
     rss_after: float = 0.0
@@ -311,7 +312,7 @@ class Result:
 
         return {
             "scenario": self.name, "conc": self.concurrency, "ok": len(lat),
-            "err": sum(self.errors.values()), "rps": round(len(lat) / self.seconds, 1) if self.seconds else 0,
+            "err": sum(self.errors.values()), "429": self.throttled, "rps": round(len(lat) / self.seconds, 1) if self.seconds else 0,
             "p50_ms": pct(0.5), "p95_ms": pct(0.95), "p99_ms": pct(0.99),
             "max_ms": round(lat[-1] * 1000, 1) if lat else None,
             "mean_ms": round(statistics.mean(lat) * 1000, 1) if lat else None,
@@ -321,6 +322,21 @@ class Result:
 
 
 Request = Callable[[httpx.AsyncClient, int], Awaitable[httpx.Response]]
+
+
+async def drained(c: httpx.AsyncClient, method: str, url: str, **kw: Any) -> httpx.Response:
+    """A request whose body is read and thrown away as it arrives: a client
+    holding every large answer at once would run out of memory before the hub."""
+    r = await c.send(c.build_request(method, url, **kw), stream=True)
+    try:
+        if r.status_code != 200:
+            await r.aread()
+        else:
+            async for _ in r.aiter_raw():
+                pass
+    finally:
+        await r.aclose()
+    return r
 
 
 async def drive(
@@ -348,7 +364,10 @@ async def drive(
                 t = time.perf_counter()
                 try:
                     r = await request(c, i)
-                    if r.status_code != 200:
+                    if r.status_code == 429:
+                        res.throttled += 1
+                        await asyncio.sleep(0.05)
+                    elif r.status_code != 200:
                         key = f"HTTP {r.status_code}: {r.text[:120]}"
                         res.errors[key] = res.errors.get(key, 0) + 1
                     else:
@@ -378,7 +397,7 @@ def print_row(r: dict[str, Any]) -> None:
     errs = f"  errors: {r['errors']}" if r["errors"] else ""
     note = f"  ({r['note']})" if r["note"] else ""
     print(
-        f"{r['scenario']:<16} c={r['conc']:<3} ok={r['ok']:<6} err={r['err']:<4} rps={r['rps']:<8} "
+        f"{r['scenario']:<16} c={r['conc']:<3} ok={r['ok']:<6} err={r['err']:<4} 429={r['429']:<5} rps={r['rps']:<8} "
         f"p50={r['p50_ms']}ms p95={r['p95_ms']}ms p99={r['p99_ms']}ms max={r['max_ms']}ms "
         f"rss peak/after={r['peak_rss_mb']}/{r['rss_after_mb']}MiB threads={r['peak_threads']}{note}{errs}",
         flush=True,
@@ -405,8 +424,10 @@ async def run_scenarios(args: argparse.Namespace, root: Path, env: dict[str, str
     try:
         all_key = await make_key(hub, pids, "all")
         two_key = await make_key(hub, pids[:2], "two")
+        other_key = await make_key(hub, pids[:2], "another app")
         auth_all = {"Authorization": f"Bearer {all_key}"}
         auth_two = {"Authorization": f"Bearer {two_key}"}
+        auth_other = {"Authorization": f"Bearer {other_key}"}
         rss0 = hub.stat()[0]
         print(f"hub started: rss={rss0:.0f}MiB, {len(pids)} projects", flush=True)
 
@@ -494,13 +515,13 @@ async def run_scenarios(args: argparse.Namespace, root: Path, env: dict[str, str
             for n in conc:
                 record(await drive(
                     hub, "arrow_scan",
-                    lambda c, i: c.post("/api/data/query", json={"sql": sql}, headers={**auth_two, **ARROW}),
+                    lambda c, i: drained(c, "POST", "/api/data/query", json={"sql": sql}, headers={**auth_two, **ARROW}),
                     n, args.duration, timeout=300,
                 ))
 
         if want("heavy_query"):
-            # A query heavy enough to keep DuckDB busy: does it starve a
-            # cheap one sent at the same time?
+            # Queries heavy enough to keep DuckDB busy, from one key: do they
+            # starve a cheap one another app sends at the same time?
             heavy = (
                 f"select a.account, b.account, count(*) from {two[0]}.orders a join {two[1]}.orders b "
                 f"on a.product = b.product and a.day = b.day group by all order by 3 desc limit 10"
@@ -512,7 +533,7 @@ async def run_scenarios(args: argparse.Namespace, root: Path, env: dict[str, str
                 while not stop.is_set():
                     t = time.perf_counter()
                     try:
-                        r = await c.post("/api/data/query", json={"sql": cheap}, headers=auth_two, timeout=600)
+                        r = await c.post("/api/data/query", json={"sql": cheap}, headers=auth_other, timeout=600)
                         if r.status_code == 200:
                             cheap_res.latencies.append(time.perf_counter() - t)
                         else:

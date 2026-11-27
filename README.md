@@ -2878,6 +2878,8 @@ empty file, stops exuvia with an error.
 | `PORTKEY_CONFIG` / `PORTKEY_PROVIDER` / `PORTKEY_VIRTUAL_KEY` | — | sent as `x-portkey-config`, `x-portkey-provider` and `x-portkey-virtual-key` (see "The agent") |
 | `EXUVIA_AGENT_MCP` | `on` | `off`: the agent uses no outside MCP servers, and `/api/me/mcp` answers 404 (see "The agent") |
 | `EXUVIA_AGENT_MCP_PRIVATE` | off | `1`: the agent's MCP servers may be on private addresses on a server that needs a sign-in or a token |
+| `EXUVIA_DATA_KEY_CONCURRENCY` | 8 | data API queries and node reads one key may have running at once; more answer 429 (`0`: no limit) |
+| `EXUVIA_DATA_QUERY_TIMEOUT` | 60 | seconds a data API query may run before it is stopped (as Arrow: until its first rows; `0`: no limit) |
 | `EXUVIA_DB` | per-project SQLite | where run history, schedules, sessions and code revisions live: `sqlite:///<path>` or `postgresql://…` |
 | `EXUVIA_DB_SCOPE` | — | prefix for project scopes in a shared `EXUVIA_DB` (e.g. a user id) |
 | `EXUVIA_ARTIFACT_STORE` | local disk | `s3://bucket/prefix`: keep node outputs in an S3-compatible bucket, keyed `<prefix>/<project>/<node>/<sha>.<ext>` |
@@ -3611,6 +3613,14 @@ makes one and picks the projects it reads.
   request names its `projects`. Send `Accept:
   application/vnd.apache.arrow.stream` for typed columns and every row (see
   [Binary data](#binary-data-arrow-and-parquet)).
+- **Limited per key.** A key may have 8 queries and node reads running at
+  once (`EXUVIA_DATA_KEY_CONCURRENCY`); one more answers 429 with
+  `Retry-After: 1`, so one busy app can't take every core from the others.
+  A query is stopped after 60 seconds (`EXUVIA_DATA_QUERY_TIMEOUT`; as
+  Arrow, until its first rows arrive) and answers 400. Listing projects
+  isn't limited, and is kept between requests until a project changes.
+  `scripts/loadtest_data_api.py` drives a hub with concurrent clients, to
+  see what one serves.
 - **Counted.** Each key's requests are counted by day (UTC), with how many
   were queries and how many failed, and kept for 90 days; requests with an
   unknown or revoked key are counted too. An admin sees them under **API

@@ -279,7 +279,13 @@ def outputs_connection() -> Any:
     loads itself (see ``outputs_db``)."""
     import duckdb
 
-    return duckdb.connect(config={"autoinstall_known_extensions": False, "autoload_known_extensions": False})
+    # async_threads: DuckDB's own pool for I/O it can wait on (remote files),
+    # 16 threads per database unless set. The server keeps many of these
+    # databases open (the data API one per set of projects) and they only
+    # read local files, which these threads don't speed up.
+    return duckdb.connect(
+        config={"autoinstall_known_extensions": False, "autoload_known_extensions": False, "async_threads": 1}
+    )
 
 
 def lock_outputs(con: Any, files: list[str]) -> None:
