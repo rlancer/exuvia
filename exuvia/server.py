@@ -1007,6 +1007,16 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         ``Workspace.schedule``)."""
         return ctx.ws.schedule()
 
+    @r.get("/storage")
+    def storage(ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """What the project keeps on disk: its state folder by what is in
+        it, every stored output by node (current and kept), the Parquet
+        files' compression, each partitioned output's files against its
+        compaction limit, and the records database (see storage.py)."""
+        from .storage import report
+
+        return report(ctx.ws)
+
     @r.post("/nodes/{name}/schedule")
     def schedule(name: str, body: ScheduleReq, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
         """Pause/resume a schedule, and/or set its cron from outside the code."""

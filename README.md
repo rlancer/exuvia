@@ -1553,6 +1553,15 @@ it at start.
   the next dozen fires across the project; and the live nodes with the views
   that refresh them. `GET /api/schedule` is the same as JSON (times in Unix
   seconds).
+- **The Storage tab** (the gear after Schedule, `#storage`) shows what the
+  project keeps on disk: `.exuvia/` by what is in it (outputs, the records
+  database, packages, caches) beside the project's own files; every node's
+  outputs, the current one and those kept from earlier runs, with rows and
+  Parquet compression; the Parquet files' rows, row groups and codecs from
+  their footers; each partitioned output's files against its compaction
+  limit and the chunks compaction or corrections replaced; and how many
+  runs, code versions and conversations the records hold. Nothing is
+  deleted from it. `GET /api/storage` is the same as JSON.
 - **A scheduled run is for its cron slot.** A `date` run parameter whose
   default is `today` gets the date of the slot the run was due at, in the
   project `timezone`, not the date it happened to start. A run delayed past

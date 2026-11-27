@@ -9,6 +9,7 @@ const ROUTES: Route[] = [
   { page: "views", view: "vol_board" },
   { page: "history" },
   { page: "schedule" },
+  { page: "storage" },
   { page: "file", path: "nodes/prices.py" },
   { page: "file", path: "views/board/App.tsx" },
   { page: "file", path: "lib/my helpers/données.py" },
@@ -22,7 +23,7 @@ describe("route", () => {
   });
 
   it("writes back every address it reads, as written", () => {
-    for (const h of ["#notebook", "#notebook/prices", "#views", "#views/board", "#history", "#schedule", "#files/nodes/a.sql", "#files/lib/x%20y.py", "#env", "#env=TOKEN"])
+    for (const h of ["#notebook", "#notebook/prices", "#views", "#views/board", "#history", "#schedule", "#storage", "#files/nodes/a.sql", "#files/lib/x%20y.py", "#env", "#env=TOKEN"])
       expect(format(parse(h))).toBe(h);
   });
 
@@ -52,6 +53,7 @@ describe("landing", () => {
     expect(landing(parse("#views"))).toEqual({ mode: "views" });
     expect(landing(parse("#history"))).toEqual({ mode: "history" });
     expect(landing(parse("#schedule"))).toEqual({ mode: "schedule" });
+    expect(landing(parse("#storage"))).toEqual({ mode: "storage" });
     expect(landing(parse("#env=X"))).toEqual({ mode: "graph" });
     expect(landing(parse(""))).toEqual({ mode: "graph" });
   });
@@ -60,6 +62,7 @@ describe("landing", () => {
     expect(format(routeOf("views", null))).toBe("#views");
     expect(format(routeOf("history", null))).toBe("#history");
     expect(format(routeOf("schedule", null))).toBe("#schedule");
+    expect(format(routeOf("storage", null))).toBe("#storage");
     expect(format(routeOf("helper", "lib/a b.py"))).toBe("#files/lib/a%20b.py");
     expect(format(routeOf("helper", null))).toBe("");
     expect(format(routeOf("graph", "lib/x.py"))).toBe("");

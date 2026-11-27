@@ -7,6 +7,7 @@
  *   #views               the views; #views/<name> that view, rendered
  *   #history             the code's history
  *   #schedule            when the graph runs by itself
+ *   #storage             what the project keeps on disk
  *   #files/<path>        a file where it lives: a node on the graph, a view's
  *                        file in its Code tab, a helper (lib/…) in the editor
  *   #env, #env=<NAME>    the Environment dialog (on that variable)
@@ -17,6 +18,7 @@ export type Route =
   | { page: "views"; view: string | null }
   | { page: "history" }
   | { page: "schedule" }
+  | { page: "storage" }
   | { page: "file"; path: string }
   | { page: "env"; name: string | null };
 
@@ -30,6 +32,7 @@ export function parse(hash: string): Route {
   if ((m = new RegExp(`^#views(?:/(${NAME}))?$`).exec(h))) return { page: "views", view: m[1] ?? null };
   if (h === "#history") return { page: "history" };
   if (h === "#schedule") return { page: "schedule" };
+  if (h === "#storage") return { page: "storage" };
   if ((m = /^#env(?:=([A-Za-z_][A-Za-z0-9_]{0,127}))?$/.exec(h))) return { page: "env", name: m[1] ?? null };
   if ((m = /^#files\/(.+)$/.exec(h))) {
     try {
@@ -52,6 +55,7 @@ export function format(r: Route): string {
       return r.view ? `#views/${r.view}` : "#views";
     case "history":
     case "schedule":
+    case "storage":
       return `#${r.page}`;
     case "file":
       return `#files/${encodeURI(r.path)}`;
@@ -60,8 +64,8 @@ export function format(r: Route): string {
   }
 }
 
-/** What the main area shows: the graph, the views, the schedule, a shared helper, or the code's history. */
-export type Mode = "graph" | "views" | "schedule" | "helper" | "history";
+/** What the main area shows: the graph, the views, the schedule, storage, a shared helper, or the code's history. */
+export type Mode = "graph" | "views" | "schedule" | "storage" | "helper" | "history";
 /** How Graph mode shows the graph: drawn on the canvas, or read as a notebook. */
 export type Layout = "canvas" | "notebook";
 
@@ -82,6 +86,7 @@ export function landing(r: Route): Landing {
       return r.view ? { mode: "views", view: { view: r.view } } : { mode: "views" };
     case "history":
     case "schedule":
+    case "storage":
       return { mode: r.page };
     case "file": {
       const node = /^nodes\/([^/]+)\.(py|sql)$/.exec(r.path);
@@ -102,6 +107,7 @@ export function routeOf(mode: Mode, helper: string | null): Route {
     case "views":
     case "history":
     case "schedule":
+    case "storage":
       return mode === "views" ? { page: "views", view: null } : { page: mode };
     case "helper":
       return helper ? { page: "file", path: helper } : { page: "graph" };
