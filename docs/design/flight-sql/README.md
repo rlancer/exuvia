@@ -242,17 +242,84 @@ stateless handles here avoid; answering "ok" and ignoring it would be worse.
 - `exuvia hub --flight-port` (or `EXUVIA_FLIGHT_PORT`) starting this server
   beside the HTTP one, with the code in `exuvia/` sharing `dataapi.py`'s key
   checks instead of copying them as `server.py` does.
-- **TLS**: the key travels in a header, so Flight needs `grpc+tls`, with its
-  own certificate settings, or a TLS-terminating proxy that speaks HTTP/2.
-- **A second port to deploy**: the Compose, Swarm and Kubernetes files, and
-  an ingress that passes gRPC (HTTP/2 end to end). That is the real cost:
-  every deployment gets one more thing to expose and secure.
+- **TLS and routing at the proxy**: the key travels in a header, so Flight
+  needs TLS. The proxy in front of the hub can terminate it, as it does for
+  HTTP. See "Deploying it behind one address" below. Flight needs no public
+  port of its own.
+- **A second server process.** pyarrow's Flight server is its own gRPC
+  server, written in C++, on its own socket. It can't be mounted in the
+  FastAPI app, and uvicorn speaks only HTTP/1.1, so inside the container it
+  listens on a port of its own (7421 below) beside uvicorn's 7420. That
+  port is internal: it is not published, and only the proxy reaches it.
 - A statement timeout and cancellation, which the HTTP API doesn't have
   either.
 - Session options (`SetSessionOptions`) if `setCatalog` matters, with the
   state behind a cookie that every replica can read.
 - Not tested yet: DBeaver itself (the JDBC driver is), Tableau and
   Superset, the ODBC driver, and the Go and Java ADBC drivers.
+
+## Deploying it behind one address
+
+gRPC is HTTP: it runs over HTTP/2, with its status in HTTP/2 trailers. What
+it needs from a deployment is HTTP/2 kept end to end. It needs no second
+public port. Clients reach Flight at the hub's own address,
+`grpc+tls://exuvia.example.com:443`, and the proxy in front sends Flight's
+requests to the Flight server and everything else to uvicorn.
+
+```
+client ──TLS, HTTP/2──▶ proxy :443 ──┬─ /arrow.flight.protocol.FlightService/* ─ h2c ─▶ Flight :7421
+                                     └─ everything else ─────────── HTTP/1.1 ─▶ uvicorn :7420
+```
+
+- **Choosing what goes to Flight.** Every Flight and Flight SQL call is a
+  gRPC method under `/arrow.flight.protocol.FlightService/`, so the proxy
+  can route on that path prefix. That is more reliable than matching
+  `Content-Type: application/grpc`, which also comes as
+  `application/grpc+proto`. A hostname of its own, such as
+  `flight.exuvia.example.com`, works as well, if Flight traffic should be
+  kept apart in logs and certificates.
+- **Two ports inside the container.** Two servers can't listen on one
+  port, so the proxy sends Flight to 7421 and the rest to 7420. Neither is
+  published. Getting down to one internal port would mean serving Flight
+  from Python on an HTTP/2 ASGI server (hypercorn), which gives up the C++
+  data path, or running a proxy inside the container, which is the same hop
+  again. Neither is worth it.
+- **Traefik**, which the Compose and Swarm files already use (as labels left
+  commented out). It speaks HTTP/2 to clients on a TLS entrypoint and h2c
+  (HTTP/2 without TLS) to a backend whose scheme says so. That makes one
+  more router on the same host and entrypoint. Once the container has two
+  services, each router names its own:
+
+  ```yaml
+  traefik.http.routers.exuvia.rule: Host(`${EXUVIA_HOST}`)
+  traefik.http.routers.exuvia.service: exuvia
+  traefik.http.services.exuvia.loadbalancer.server.port: "7420"
+
+  traefik.http.routers.exuvia-flight.rule: Host(`${EXUVIA_HOST}`) && PathPrefix(`/arrow.flight.protocol.FlightService/`)
+  traefik.http.routers.exuvia-flight.entrypoints: websecure
+  traefik.http.routers.exuvia-flight.tls.certresolver: letsencrypt
+  traefik.http.routers.exuvia-flight.service: exuvia-flight
+  traefik.http.services.exuvia-flight.loadbalancer.server.port: "7421"
+  traefik.http.services.exuvia-flight.loadbalancer.server.scheme: h2c
+  ```
+
+  On Kubernetes, Traefik reads Ingress resources and its own IngressRoute,
+  not labels. The backend service needs the same `h2c` scheme there.
+- **nginx** (`deploy/nginx/exuvia.conf`): `grpc_pass grpc://...:7421` in a
+  `location /arrow.flight.protocol.FlightService/`, with `http2` on the
+  `listen`. ingress-nginx takes the annotation
+  `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` on an Ingress for
+  that path.
+- **Elsewhere**: a cloud load balancer has to be set up for gRPC (AWS's ALB
+  needs a gRPC target group, Cloudflare needs gRPC switched on), and some
+  PaaS hosts can't pass it at all. Those deployments would go without
+  Flight, which is why it would be opt-in.
+- **Browsers** can't make raw gRPC calls, so Flight serves drivers and
+  tools only, never the workbench or a web app on the data API.
+
+None of this has been run. The prototype listens on two ports and was
+tested directly, without a proxy. The labels and settings above are what
+the Traefik and nginx documentation call for, to try when Flight ships.
 
 ## Leaning
 
@@ -261,11 +328,16 @@ clients that connect through a Flight SQL driver, and code in another
 language that already speaks ADBC. Speed for large pulls is not a reason:
 streamed HTTP Arrow comes within about 10% of Flight (see "HTTP Arrow"
 above). HTTP stays the data API's default, for agents and apps: it is faster
-for small queries, needs no second port, and has the OpenAPI spec
+for small queries, needs no second server or HTTP/2 proxy, and has the OpenAPI spec
 (`/api/data/openapi.json`).
 
 The JDBC check took away the main unknown: with three small fixes the stock
 JDBC driver connects, browses and queries, so DBeaver and other JDBC tools
-should work, apart from choosing a default catalog. What's left is the
-deployment cost (the second port, gRPC through the ingress, TLS). That is
-worth taking on only once someone needs a BI tool to connect.
+should work, apart from choosing a default catalog. The deployment cost is
+smaller than first thought. Flight needs no public port: behind Traefik it
+is a few more labels on the same host and TLS entrypoint (see "Deploying it
+behind one address"). What's left against it is upkeep: a second server
+process in the container, key checks that must keep matching the data
+API's, and a quirk or two for each BI tool. That is worth taking on only
+once someone needs a BI tool to connect, and then as an opt-in, off by
+default.
