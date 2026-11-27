@@ -932,65 +932,6 @@ export function selectionWhere(brush: { kind: "interval" | "point"; fields: stri
   return parts.length ? parts.join(" and ") : null;
 }
 
-/** What a selection holds, in words: in the whole output once that is read, of the charted rows until then. */
-export function SelectionText({ sel, picked }: { sel: NonNullable<ChartSelection>; picked: NonNullable<ReturnType<typeof useSelectedRows>> }) {
-  if (picked.whole && picked.total != null)
-    return (
-      <>
-        {picked.rows.length < picked.total ? `First ${fmtNum(picked.rows.length)} of ` : ""}
-        {fmtNum(picked.total)} selected row{picked.total === 1 ? "" : "s"}
-      </>
-    );
-  return (
-    <>
-      {fmtNum(sel.rows.length)} of {fmtNum(sel.of)} charted rows selected
-      {picked.failed ? " (the rest could not be read)" : ", counting all…"}
-    </>
-  );
-}
-
-/** How many of a selection's rows are read from the whole output, to show. */
-export const SELECTED_ROWS = 1000;
-
-/**
- * The rows a chart's selection holds in the whole output, not only in the
- * rows charted: the charted ones at once, then (once the selection has
- * stopped moving) the first `SELECTED_ROWS` of the whole output's and how
- * many there are, read with SQL. `total` is null while that count is on its
- * way; `failed` says it could not be read (the charted rows stay).
- */
-export function useSelectedRows(
-  node: GraphNode,
-  part: string | null,
-  sel: ChartSelection,
-): { columns: Column[]; rows: unknown[][]; total: number | null; whole: boolean; failed: boolean } | null {
-  const [got, setGot] = useState<{ where: string; columns: Column[]; rows: unknown[][]; total: number } | { where: string; failed: true } | null>(null);
-  useEffect(() => {
-    if (!sel || sel.complete) return;
-    let live = true;
-    const from = ident(part ? `${node.name}.${part}` : node.name);
-    const where = sel.where;
-    // A drag moves the selection many times a second: the whole output is read once it rests.
-    const timer = setTimeout(() => {
-      Promise.all([api.query(`select count(*) as n from ${from} where ${where}`, 1), api.query(`select * from ${from} where ${where}`, SELECTED_ROWS)]).then(
-        ([count, page]) => live && setGot({ where, columns: page.columns, rows: page.rows, total: Number(count.rows[0]?.[0] ?? 0) }),
-        () => live && setGot({ where, failed: true }),
-      );
-    }, 300);
-    return () => {
-      live = false;
-      clearTimeout(timer);
-    };
-  }, [node.name, node.artifact_id, part, sel?.where, sel?.complete]);
-  if (!sel) return null;
-  if (sel.complete) return { columns: sel.columns, rows: sel.rows.slice(0, SELECTED_ROWS), total: sel.rows.length, whole: true, failed: false };
-  if (got && got.where === sel.where) {
-    if ("failed" in got) return { columns: sel.columns, rows: sel.rows.slice(0, SELECTED_ROWS), total: null, whole: false, failed: true };
-    return { columns: got.columns, rows: got.rows, total: got.total, whole: true, failed: false };
-  }
-  return { columns: sel.columns, rows: sel.rows.slice(0, SELECTED_ROWS), total: null, whole: false, failed: false };
-}
-
 /** How many rows a chart draws: every row of an output up to this many, else a sample this size of all of them. */
 export const CHART_ROWS = 50_000;
 
