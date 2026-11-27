@@ -125,18 +125,76 @@ def read_parts(path: str | Path) -> dict[str, Any]:
 
 
 def _as_frame(value: Any) -> Any:
-    """``value`` as a pandas DataFrame when it is table-like (pandas, polars,
-    pyarrow), else None."""
+    """``value`` as a table when it is table-like, else None. pandas stays a
+    pandas DataFrame (a Series becomes a one-column frame). pyarrow and
+    polars become a pyarrow Table (see ``_as_arrow``), so their column types
+    reach the Parquet file as they are: through pandas, an integer column
+    with a null would turn float64, and decimals, nested types and time
+    zones could change too. Anything else with ``to_pandas`` goes through
+    pandas."""
     import pandas as pd
 
     if isinstance(value, pd.DataFrame):
         return value
     if isinstance(value, pd.Series):
         return value.to_frame()
-    if hasattr(value, "to_pandas") and not isinstance(value, type):
-        out = value.to_pandas()  # polars / pyarrow tables
+    if isinstance(value, type):
+        return None
+    table = _as_arrow(value)
+    if table is not None:
+        return table
+    if hasattr(value, "to_pandas"):
+        out = value.to_pandas()
         return out.to_frame() if isinstance(out, pd.Series) else out
     return None
+
+
+def _as_arrow(value: Any) -> Any:
+    """A pyarrow table, record batch, array or chunked array, or a polars
+    DataFrame or Series (via ``to_arrow``), as a pyarrow Table; else None.
+    A lone array or series is one column, named as pandas would name it
+    (``0`` for an unnamed pyarrow array, the series' name for polars).
+
+    A table made from a pandas frame with a real index (pandas metadata
+    naming stored index columns) gives None, so it goes through pandas as
+    it always has: its index becomes a column the way a DataFrame's does."""
+    package = type(value).__module__.partition(".")[0]
+    if package not in ("pyarrow", "polars"):
+        return None
+    import pyarrow as pa
+
+    if package == "polars":
+        if not hasattr(value, "to_arrow"):
+            return None
+        try:  # Arrow's long-standing types, not newer ones (string views) older pyarrow cannot write to Parquet
+            import polars as pl
+
+            arrow = value.to_arrow(compat_level=pl.CompatLevel.oldest())
+        except (AttributeError, TypeError):  # a polars from before compat_level
+            arrow = value.to_arrow()
+        if isinstance(arrow, (pa.Array, pa.ChunkedArray)):
+            arrow = pa.table({str(value.name): arrow})
+    elif isinstance(value, (pa.Array, pa.ChunkedArray)):
+        arrow = pa.table({"0": value})
+    else:
+        arrow = value
+    if isinstance(arrow, pa.RecordBatch):
+        arrow = pa.Table.from_batches([arrow])
+    if not isinstance(arrow, pa.Table):
+        return None
+    index = (arrow.schema.pandas_metadata or {}).get("index_columns") or []
+    if any(isinstance(c, str) for c in index):
+        return None
+    names = arrow.column_names
+    if len(set(names)) != len(names):
+        repeated = sorted({n for n in names if names.count(n) > 1})
+        raise ValueError(f"Duplicate column names found: {repeated}")
+    return arrow
+
+
+def _is_arrow(table: Any) -> bool:
+    """Whether a table from ``_as_frame`` is a pyarrow Table (else pandas)."""
+    return type(table).__module__.partition(".")[0] == "pyarrow"
 
 
 def _is_dataclass_instance(value: Any) -> bool:
@@ -177,7 +235,7 @@ def _parts_of(value: Any) -> dict[str, Any] | None:
 
 
 def _is_table(value: Any) -> bool:
-    """Whether ``_as_frame`` would make a DataFrame of ``value``, without converting it."""
+    """Whether ``_as_frame`` would make a table of ``value``, without converting it."""
     import pandas as pd
 
     return isinstance(value, (pd.DataFrame, pd.Series)) or (hasattr(value, "to_pandas") and not isinstance(value, type))
@@ -242,23 +300,43 @@ def _to_json(value: Any) -> str:
 
 
 def _table_schema(df: Any) -> list[dict[str, str]]:
+    """Each column's name and type: its pandas dtype, or its Arrow type."""
+    if _is_arrow(df):
+        return [{"name": f.name, "type": str(f.type)} for f in df.schema]
     return [{"name": str(c), "type": str(t)} for c, t in df.dtypes.items()]
 
 
 def _frame_for_parquet(df: Any) -> Any:
+    """A table from ``_as_frame`` ready to write: a pandas frame's index
+    becomes a column unless it is the default one, and its column names
+    become strings. ``df`` itself is left as it was. A pyarrow Table is
+    written as it is."""
     import pandas as pd
 
+    if _is_arrow(df):
+        return df
     if not isinstance(df.index, pd.RangeIndex) or df.index.name is not None:
         df = df.reset_index()
-    df.columns = [str(c) for c in df.columns]
+    if not all(isinstance(c, str) for c in df.columns):
+        df = df.set_axis([str(c) for c in df.columns], axis=1)
     return df
+
+
+def _write_parquet(df: Any, where: Any) -> None:
+    """Write a table from ``_frame_for_parquet`` to a path or a file object."""
+    if _is_arrow(df):
+        import pyarrow.parquet as pq
+
+        pq.write_table(df, where, **PARQUET_OPTIONS)
+    else:
+        df.to_parquet(where, index=False, engine="pyarrow", **PARQUET_OPTIONS)
 
 
 def _parquet_bytes(df: Any) -> bytes:
     import io
 
     buf = io.BytesIO()
-    df.to_parquet(buf, index=False, engine="pyarrow", **PARQUET_OPTIONS)
+    _write_parquet(df, buf)
     return buf.getvalue()
 
 
@@ -302,7 +380,7 @@ def save_artifact(value: Any, out_dir: Path) -> dict[str, Any]:
             kind, ext = "multi", "zip"
         elif frame is not None:
             df = _frame_for_parquet(frame)
-            df.to_parquet(tmp_path, index=False, engine="pyarrow", **PARQUET_OPTIONS)
+            _write_parquet(df, tmp_path)
             kind, ext = "table", "parquet"
             meta = {"rows": int(len(df)), "schema": _table_schema(df)}
         else:

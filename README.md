@@ -213,6 +213,12 @@ the old row labels as the index, so end such a node with
 `.reset_index(drop=True)`, or with `.reset_index()` when the index means
 something (a date, a group key).
 
+A pyarrow table, or a polars DataFrame, is stored as Arrow, with its column
+types as they are: an `int16` column with a null stays `int16`, and decimals,
+lists, structs and time zones are kept. A pandas DataFrame is stored with
+the types pandas holds (pandas makes an integer column with a null
+`float64`).
+
 **SQL** (DuckDB) — upstream nodes are tables:
 
 ```sql

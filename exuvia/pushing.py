@@ -73,9 +73,12 @@ def save_pushed(path: Path, fmt: str, out_dir: Path) -> dict[str, Any]:
     from .runner import save_artifact
 
     if fmt == "parquet":
-        import pandas as pd
+        # Read as Arrow, so its column types are stored as they are (see
+        # runner._as_frame); a file pandas wrote with an index still goes
+        # through pandas there, as it always has.
+        import pyarrow.parquet as pq
 
-        value: Any = pd.read_parquet(path)
+        value: Any = pq.read_table(path)
     elif fmt == "json":
         value = json.loads(Path(path).read_text(encoding="utf-8"))
         if value is None:
@@ -113,7 +116,7 @@ def encode(value: Any) -> tuple[bytes, str]:
         return data, "parquet"
     frame = _as_frame(value)
     if frame is not None:
-        return _parquet_bytes(_frame_for_parquet(frame.copy())), "parquet"
+        return _parquet_bytes(_frame_for_parquet(frame)), "parquet"
     if _parts_of(value) is not None:
         raise PushError("a push is one table or one JSON value: push each table to its own push node")
     if value is None:
