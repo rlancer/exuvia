@@ -1,6 +1,7 @@
 import { ARROW_STREAM, arrowMeta, isArrow, readArrow, toGrid } from "./arrow";
 import type { SavedEvent } from "./chat";
 import type { PackageModules } from "./views/protocol";
+import { noteAnswer } from "./session";
 
 export type State = "fresh" | "stale" | "new" | "failed" | "error" | "queued" | "running";
 
@@ -413,6 +414,8 @@ async function sendTo(
   if (origin) headers["X-Exuvia-Origin"] = origin;
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const res = await fetch(url, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
+  // A token being checked (the hub's token form) that is turned away is a wrong token, not a lapsed sign-in.
+  if (!auth || res.ok) noteAnswer(res.status);
   if (!res.ok) {
     let msg = res.statusText;
     try {
@@ -982,6 +985,7 @@ export const adminApi = {
   /** Restore projects from an export: those in it replace same-named ones, the rest stay. */
   importHub: async (file: File) => {
     const res = await fetch("/api/hub/import", { method: "POST", headers: { "Content-Type": "application/gzip" }, body: file });
+    noteAnswer(res.status);
     if (!res.ok) {
       let msg = res.statusText;
       try {
@@ -1044,6 +1048,7 @@ export async function streamAgent(
     body: JSON.stringify(body),
     signal,
   });
+  noteAnswer(res.status);
   if (!res.ok || !res.body) {
     let msg = res.statusText;
     try {

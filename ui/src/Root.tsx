@@ -5,6 +5,7 @@ import { Theme } from "@astryxdesign/core/theme";
 // The theme as `bun run theme` built it from theme/exuviaTheme.ts; its CSS is imported in main.tsx.
 import { exuviaTheme } from "./theme/exuvia";
 import { ColorModeProvider, useThemeMode } from "./theme/colorMode";
+import { SignedOut } from "./SignedOut";
 
 const styles = stylex.create({
   page: {
@@ -18,7 +19,8 @@ const styles = stylex.create({
   },
 });
 
-/** What every page of the app stands in: the colour mode, the exuvia theme and the page's ground. */
+/** What every page of the app stands in: the colour mode, the exuvia theme and the page's ground,
+ * and the notice that the page has been signed out. */
 export function Root({ children }: { children: ReactNode }) {
   return (
     <ColorModeProvider>
@@ -30,7 +32,10 @@ export function Root({ children }: { children: ReactNode }) {
 function Themed({ children }: { children: ReactNode }) {
   return (
     <Theme theme={exuviaTheme} mode={useThemeMode()}>
-      <div {...stylex.props(styles.page)}>{children}</div>
+      <div {...stylex.props(styles.page)}>
+        {children}
+        <SignedOut />
+      </div>
     </Theme>
   );
 }

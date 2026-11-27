@@ -8,6 +8,7 @@
  * and handed to the browser as a file.
  */
 import { apiUrl } from "./api";
+import { noteAnswer } from "./session";
 
 export type TableFormat = "csv" | "xlsx" | "parquet" | "json";
 
@@ -112,6 +113,7 @@ export async function saveQuery(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sql, format, params: o.params && Object.keys(o.params).length ? o.params : null, filename: o.filename ?? null }),
   });
+  noteAnswer(res.status);
   if (!res.ok) {
     let msg = res.statusText;
     try {
