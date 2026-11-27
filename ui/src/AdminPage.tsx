@@ -12,9 +12,8 @@ import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { List, ListItem } from "@astryxdesign/core/List";
-import { SideNavItem } from "@astryxdesign/core/SideNav";
+import { SideNav, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav";
 import { Spinner } from "@astryxdesign/core/Spinner";
-import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
@@ -36,7 +35,7 @@ import { McpPresetsPanel } from "./AgentMcp";
 import { Brand, Mark } from "./Brand";
 import { EnvEditor, type EnvClient } from "./EnvDialog";
 import { HelpMenu } from "./Help";
-import { HubNav } from "./HubNav";
+import { RAIL_ONLY, useFolded } from "./HubNav";
 import { DeleteDialog } from "./Hub";
 import { SignedInAs, UsersPanel } from "./Me";
 import { GENERAL_LABEL, ShareDialog } from "./Share";
@@ -83,7 +82,7 @@ const isSection = (s: string | null): s is AdminSection => !!s && s in SECTIONS;
 
 /**
  * The hub's admin page, at `/admin`: everything an admin manages for the whole hub, one section at a time
- * (`/admin?section=<id>`), listed in the page's own left nav, and as tabs on a narrow screen. An admin, or the operator
+ * (`/admin?section=<id>`), listed in the page's own left nav, which folds to a rail of their icons. An admin, or the operator
  * (the API token, or a hub nobody signs in to), uses it; anyone else is told it is for admins.
  */
 export default function AdminPage() {
@@ -95,7 +94,8 @@ export default function AdminPage() {
   });
   const [dark, toggleTheme] = useColorMode();
   const who = useMe();
-  const narrow = useMediaQuery("(max-width: 800px)");
+  const [folded, setFolded] = useFolded({ page: "admin" });
+  const railOnly = useMediaQuery(RAIL_ONLY);
   // The page scrolls under the bar, beside the left nav.
   const scroller = useRef<HTMLDivElement>(null);
 
@@ -170,30 +170,21 @@ export default function AdminPage() {
     );
   else
     body = (
-      <div {...stylex.props(styles.frame)}>
-        {narrow && (
-          <TabList role="tablist" value={shown} onChange={(s) => go(s as AdminSection)} hasDivider overflow="scroll">
-            {sections.map((s) => (
-              <Tab key={s} value={s} label={SECTIONS[s].title} />
-            ))}
-          </TabList>
-        )}
-        <main {...stylex.props(styles.main)}>
-          <VStack gap={6}>
-            <VStack gap={1}>
-              <Heading level={1}>{SECTIONS[shown].title}</Heading>
-              <Text color="secondary">{SECTIONS[shown].about}</Text>
-            </VStack>
-            {shown === "overview" && <Overview listing={listing} people={people} onGo={go} />}
-            {shown === "users" && <UsersPanel self={who?.user?.uid ?? null} />}
-            {shown === "projects" && <Projects listing={listing} people={people} self={who?.user?.uid ?? null} onChanged={load} />}
-            {shown === "variables" && <HubVariablesPanel canEdit />}
-            {shown === "mcp" && <McpPresetsPanel />}
-            {shown === "backup" && <Backup onRestored={load} />}
-            {shown === "server" && <ServerSettings />}
+      <main {...stylex.props(styles.main)}>
+        <VStack gap={6}>
+          <VStack gap={1}>
+            <Heading level={1}>{SECTIONS[shown].title}</Heading>
+            <Text color="secondary">{SECTIONS[shown].about}</Text>
           </VStack>
-        </main>
-      </div>
+          {shown === "overview" && <Overview listing={listing} people={people} onGo={go} />}
+          {shown === "users" && <UsersPanel self={who?.user?.uid ?? null} />}
+          {shown === "projects" && <Projects listing={listing} people={people} self={who?.user?.uid ?? null} onChanged={load} />}
+          {shown === "variables" && <HubVariablesPanel canEdit />}
+          {shown === "mcp" && <McpPresetsPanel />}
+          {shown === "backup" && <Backup onRestored={load} />}
+          {shown === "server" && <ServerSettings />}
+        </VStack>
+      </main>
     );
 
   return (
@@ -214,19 +205,16 @@ export default function AdminPage() {
         </HStack>
       </header>
       <div {...stylex.props(styles.body)}>
-        <HubNav
-          place={{
-            page: "admin",
-            // The sections, the left nav's own items here; on a narrow screen they are tabs over the section instead.
-            sections:
-              listing && isAdmin && !narrow
-                ? sections.map((s) => (
-                    <SideNavItem key={s} label={SECTIONS[s].title} icon={SECTIONS[s].icon} isSelected={s === shown} onClick={() => go(s)} />
-                  ))
-                : undefined,
-          }}
-          listing={listing}
-        />
+        {/* The page's own left nav: its sections, one at a time. */}
+        {listing && isAdmin && (
+          <SideNav xstyle={styles.nav} collapsible={{ isCollapsed: railOnly || folded, onCollapsedChange: setFolded, hasButton: !railOnly }}>
+            <SideNavSection title="Admin" isHeaderHidden>
+              {sections.map((s) => (
+                <SideNavItem key={s} label={SECTIONS[s].title} icon={SECTIONS[s].icon} isSelected={s === shown} onClick={() => go(s)} />
+              ))}
+            </SideNavSection>
+          </SideNav>
+        )}
         <div ref={scroller} {...stylex.props(styles.scroll)}>
           {body}
         </div>
@@ -635,7 +623,7 @@ export function HubVariablesPanel(props: { canEdit: boolean }) {
 const NARROW = "@media (max-width: 800px)";
 
 const styles = stylex.create({
-  // The bar on top, then the hub's left nav beside the page, which scrolls on its own.
+  // The bar on top, then the page's left nav beside the section, which scrolls on its own.
   page: { display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", height: "100dvh" },
   body: { display: "flex", minHeight: 0 },
   scroll: { flexGrow: 1, minWidth: 0, overflowY: "auto" },
@@ -653,8 +641,16 @@ const styles = stylex.create({
     borderBottomColor: colorVars["--color-border"],
   },
   grow: { flexGrow: 1 },
-  // The section; on a narrow screen, under its tabs.
-  frame: { display: "flex", flexDirection: "column" },
+  // The nav stands on the bars' surface and scrolls on its own, as tall as the page under the bar (as the hub's does, HubNav.tsx).
+  nav: {
+    flexShrink: 0,
+    height: "100%",
+    minHeight: 0,
+    backgroundColor: colorVars["--color-background-surface"],
+    borderInlineEndWidth: "1px",
+    borderInlineEndStyle: "solid",
+    borderInlineEndColor: colorVars["--color-border"],
+  },
   main: {
     boxSizing: "border-box",
     flexGrow: 1,

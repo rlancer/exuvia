@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { colorVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { Badge } from "@astryxdesign/core/Badge";
@@ -10,20 +10,21 @@ import { IconHome, IconPlus, IconSliders } from "./icons";
 import { sortProjects } from "./projectOrder";
 import { useMe } from "./useMe";
 
-/** Where on the hub the page is: its home, its admin page (with that page's own sections, the nav's items there), or a project's workbench. */
-export type HubPlace = { page: "home" } | { page: "admin"; sections?: ReactNode } | { page: "project"; id: string };
+/** Where on the hub the page is: its home or a project's workbench. (The admin page has a left nav of its own, in AdminPage.tsx.) */
+export type HubPlace = { page: "home" } | { page: "project"; id: string };
 
 export const workbenchUrl = (id: string) => `/p/${encodeURIComponent(id)}/`;
 
-/** Under this width (where the bars give up their words) the nav is always its rail of icons. */
-const RAIL_ONLY = "(max-width: 900px)";
+/** Under this width (where the bars give up their words) a left nav is always its rail of icons. */
+export const RAIL_ONLY = "(max-width: 900px)";
 
 /**
- * Whether the nav is folded to its rail, kept in this browser: one choice for
- * the hub's own pages and one for the workbench, which needs its width for the
- * graph and starts folded unless the window is wide.
+ * Whether a left nav is folded to its rail, kept in this browser: one choice
+ * for the hub's own pages (the admin page's nav too) and one for the
+ * workbench, which needs its width for the graph and starts folded unless the
+ * window is wide.
  */
-function useFolded(place: HubPlace): [boolean, (folded: boolean) => void] {
+export function useFolded(place: HubPlace | { page: "admin" }): [boolean, (folded: boolean) => void] {
   const key = `exuvia-nav-folded-${place.page === "project" ? "project" : "hub"}`;
   const [folded, setFolded] = useState(() => {
     try {
@@ -66,10 +67,6 @@ function useListing(given: HubListing | null | undefined): HubListing | null {
  * foot, the admin page (for an admin). It folds to a rail of Home's and
  * Admin's icons; the projects show when it is open.
  *
- * On the admin page the nav is the admin page's own: Home to go back, then
- * the page's sections, each an item of its own (no projects, no Admin item
- * that opens to show them).
- *
  * `listing` is the page's own when it has loaded one (the home and admin
  * pages); left out, the nav asks for it (the workbench), and shows nothing to
  * someone who may not list the hub's projects (a share link, a token not yet
@@ -87,18 +84,6 @@ export function HubNav(props: { place: HubPlace; listing?: HubListing | null; on
   const isAdmin = !!listing.hub_env?.can_edit || who?.user?.role === "admin";
   const projects = sortProjects(listing.projects, "used");
   const current = place.page === "project" ? place.id : null;
-
-  if (place.page === "admin")
-    return (
-      <SideNav xstyle={styles.nav} collapsible={{ isCollapsed: railOnly || folded, onCollapsedChange: setFolded, hasButton: !railOnly }}>
-        <SideNavSection title="Home" isHeaderHidden>
-          <SideNavItem label="Home" icon={<IconHome />} href="/" />
-        </SideNavSection>
-        <SideNavSection title="Admin">
-          {place.sections ?? <SideNavItem label="Admin" icon={<IconSliders />} href="/admin" isSelected />}
-        </SideNavSection>
-      </SideNav>
-    );
 
   return (
     <SideNav
