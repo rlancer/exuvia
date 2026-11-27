@@ -2869,7 +2869,7 @@ empty file, stops exuvia with an error.
 | `EXUVIA_FAILURE_TRIGGERS` | `schedule,cascade` | which failed runs the env webhook reports (`all`, or any of `schedule`, `cascade`, `manual`, `backfill`) |
 | `EXUVIA_PUBLIC_URL` | — | where this server is reachable (e.g. `https://exuvia.example.com`), for run links in failure webhooks |
 | `EXUVIA_MAX_PARALLEL` | 4 | concurrent node runs (control plane and executor) |
-| `EXUVIA_HUB_WARM_RUNNERS` | `EXUVIA_MAX_PARALLEL` | on a hub: runners kept warm for all its projects together (about 55 MB each; see [Architecture](#architecture-control-plane--executors)) |
+| `EXUVIA_HUB_WARM_RUNNERS` | `EXUVIA_MAX_PARALLEL` | on a hub: runners kept warm for all its projects together (about 55 MB each; see "Architecture: control plane + executors") |
 | `EXUVIA_RUN_TIMEOUT` | 1800 | seconds before a node run is killed |
 | `EXUVIA_RUNNER_WAIT` | 3600 | seconds a run of a `runs_on` node waits for a runner to take it before it fails (see "Runners") |
 | `EXUVIA_RUNNER_SILENCE` | 120 | seconds without a heartbeat after which a run a runner took fails |
