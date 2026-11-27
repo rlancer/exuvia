@@ -11,10 +11,18 @@ doesn't run it.
 |---|---|
 | `server.py` | A Flight SQL server beside the real hub, in the same process: `create_hub_app` on one port, Flight on another, sharing the hub's data keys, sharing rules, loaded projects and cached query connections |
 | `check.py` | Starts `server.py` on a fresh hub, makes projects and data keys over HTTP, and drives Flight SQL with the stock ADBC driver: answers, discovery, the key rules, timings |
+| `jdbc_check.py`, `JdbcCheck.java` | The same with the Arrow Flight SQL **JDBC** driver (what DBeaver, Tableau and other JVM tools use): the calls DBeaver makes to connect, fill its navigator and run queries, and the key rules |
 
 ```bash
 uv run --with adbc-driver-flightsql --with adbc-driver-manager --with httpx \
     python docs/design/flight-sql/check.py
+```
+
+The JDBC check needs Java 17 or later; it downloads the driver jar from
+Maven Central into `~/.cache` (or set `FLIGHT_SQL_JDBC_JAR`):
+
+```bash
+uv run --with httpx python docs/design/flight-sql/jdbc_check.py
 ```
 
 To try it by hand, run the server on a hub directory and connect any Flight
@@ -51,9 +59,18 @@ SELECT, each project a catalog. Of Flight SQL:
   DuckDB's `information_schema` over the key's projects only. That is what
   `adbc_get_objects`, `adbc_get_table_schema` and a SQL client's schema
   browser call.
-- **`CommandGetSqlInfo`**: name, version, Arrow version, read-only.
+- **`CommandGetSqlInfo`**: name, version, Arrow version, read-only, no
+  transactions, the identifier quote (`"`), "project" and "schema" as the
+  catalog and schema terms, and DuckDB's keywords.
+- **Keys**: `CommandGetPrimaryKeys`, `CommandGetImportedKeys`,
+  `CommandGetExportedKeys`, `CommandGetCrossReference` answer no rows
+  (outputs are views, with no keys). JDBC tools ask when they open a table.
+- **`Handshake`**: the JDBC driver opens every connection with one, sending
+  the bearer token. It exchanges nothing and hands the same token back; the
+  key is still checked on every call.
 - Not implemented: bound parameters, transactions, Substrait, DoPut,
-  cancellation.
+  cancellation, session options (`SetSessionOptions`, which JDBC's
+  `setCatalog` sends).
 
 The protobuf messages are decoded by hand (about 60 lines): they are a few
 string, bool and repeated fields, and this keeps generated code and a
@@ -104,6 +121,58 @@ rows of int64, double and text; HTTP is the data API on the same server):
   `LIMIT 0` of it instead, which took the aggregate from 64 ms to 27 ms.
   Worth remembering for any code that needs a schema before the data.
 
+## What the JDBC check showed
+
+Driver: `org.apache.arrow:flight-sql-jdbc-driver` 20.0.0, the one DBeaver
+downloads for its "Arrow Flight SQL" connection type. `JdbcCheck.java` makes
+the `DatabaseMetaData`, `Statement` and `ResultSet` calls DBeaver makes; it
+is not DBeaver itself (that is a desktop app, not run here).
+
+**It connects, browses and queries.** Every call DBeaver needs passes:
+
+- **Connecting**: product name and version, read-only, no transactions,
+  autocommit, the identifier quote, the keywords.
+- **The navigator**: the key's projects as catalogs, `main` as their schema,
+  each output as a `VIEW` with its columns and JDBC types, and nothing else:
+  a narrower key sees only its own catalog. Outputs list under Views, not
+  Tables, since they are DuckDB views.
+- **Queries**: the cross-project join; `SELECT * FROM crm.main.accounts`,
+  quoted or not, and the `COUNT(*)` around it (what the data viewer writes
+  for a table); prepared statements and their metadata; `setMaxRows` (the
+  data viewer's page); errors with DuckDB's message; writes refused and the
+  connection still answering after.
+- **Types**: `BIGINT`, `DOUBLE`, `BOOLEAN`, `DECIMAL` (as `BigDecimal`),
+  `DATE`, `TIMESTAMP`, `TIMESTAMP_WITH_TIMEZONE`, `VARCHAR` (UTF-8) and
+  lists as `ARRAY` all map, through `getObject`, `getString` and the typed
+  getters.
+- **The key rules**: no token is refused, a narrower key can't query
+  another project.
+
+**What it took** (all in `server.py` now):
+
+1. **A handshake.** The driver calls Flight's `Handshake` before anything
+   else, and the first version had none, so the driver could not connect at
+   all: "This service does not have an authentication mechanism enabled".
+   ADBC never sends one, so `check.py` hadn't caught it. `pyarrow.flight`
+   only answers a handshake with an `auth_handler`, so there is a no-op one;
+   the key middleware echoes the bearer token back, which the driver then
+   sends on every call.
+2. **The identifier quote.** Without `SQL_IDENTIFIER_QUOTE_CHAR` the driver
+   reports an empty quote string, and a tool that quotes the names it writes
+   would write them bare.
+3. **Empty key answers.** `getPrimaryKeys`, `getImportedKeys` and
+   `getExportedKeys` were "not implemented"; DBeaver asks for the primary
+   key when it opens a table.
+
+**What is still missing:** `Connection.setCatalog` sends the Flight SQL
+session action `SetSessionOptions`, which isn't implemented. DBeaver calls it
+when you pick a default catalog for an editor, so unqualified names
+(`select * from orders`) won't resolve. Qualified names always work. Doing
+it means session state (Flight SQL keeps it in a cookie), which the
+stateless handles here avoid; answering "ok" and ignoring it would be worse.
+
+`check.py` (ADBC) still passes with these changes.
+
 ## What shipping it would take
 
 - `exuvia hub --flight-port` (or `EXUVIA_FLIGHT_PORT`) starting this server
@@ -116,10 +185,10 @@ rows of int64, double and text; HTTP is the data API on the same server):
   every deployment gets one more thing to expose and secure.
 - A statement timeout and cancellation, which the HTTP API doesn't have
   either.
-- Not tested yet: the Flight SQL JDBC driver (DBeaver, Tableau, Superset)
-  and the Go and Java ADBC drivers. They speak the same protocol, but a
-  JDBC driver can ask for `SqlInfo` values or metadata commands this
-  prototype doesn't answer.
+- Session options (`SetSessionOptions`) if `setCatalog` matters, with the
+  state behind a cookie that every replica can read.
+- Not tested yet: DBeaver itself (the JDBC driver is), Tableau and
+  Superset, the ODBC driver, and the Go and Java ADBC drivers.
 
 ## Leaning
 
@@ -127,6 +196,10 @@ Worth shipping as an opt-in, for what HTTP can't do: BI tools and SQL
 clients that connect through a Flight SQL driver, and code that pulls large
 results into dataframes in another language. HTTP stays the data API's
 default, for agents and apps: it is faster for small queries, needs no
-second port, and has the OpenAPI spec (`/api/data/openapi.json`). Before
-shipping, connect DBeaver through the JDBC driver to find what else it asks
-for.
+second port, and has the OpenAPI spec (`/api/data/openapi.json`).
+
+The JDBC check took away the main unknown: with three small fixes the stock
+JDBC driver connects, browses and queries, so DBeaver and other JDBC tools
+should work, apart from choosing a default catalog. What's left is the
+deployment cost (the second port, gRPC through the ingress, TLS). That is
+worth taking on only once someone needs a BI tool to connect.
