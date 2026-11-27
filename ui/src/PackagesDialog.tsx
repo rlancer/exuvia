@@ -20,7 +20,7 @@ import { CodeEditor } from "./ui/CodeEditor";
 import { StateDot } from "./ui/state";
 import { useColorMode } from "./theme/colorMode";
 
-const STATUS: Record<PackagesState["status"], string> = {
+export const STATUS: Record<PackagesState["status"], string> = {
   none: "no packages listed",
   pending: "waiting to install",
   installing: "installing…",

@@ -484,7 +484,7 @@ def hub_instructions(url: str, projects: list[dict[str, Any]] | str) -> str:
 
 def secret_request_links(text: str, workbench: str | None, terminal: str) -> str:
     """A ``request_secret`` answer with where the user sets the value: the
-    workbench's Environment panel opened on it (``workbench``: the project's
+    workbench's Environment dialog opened on it (``workbench``: the project's
     address, when known) and the command for their own terminal
     (``terminal``: ``exuvia env set``'s arguments after the name). Only the
     name travels; the value never passes through the client or the model."""
@@ -501,7 +501,7 @@ def secret_request_links(text: str, workbench: str | None, terminal: str) -> str
     where = f"in their own terminal: `{res['terminal']}` (it asks for the value without showing it)"
     if workbench:
         res["workbench"] = f"{workbench.rstrip('/')}/#env={name}"
-        where = f"at {res['workbench']} (the workbench's Environment panel), or {where}"
+        where = f"at {res['workbench']} (the workbench's Environment dialog), or {where}"
     res["message"] = (
         f"Asked the user to set {name}. Tell them they enter the value {where}. Never ask for the value, never "
         "run that command yourself, and call list_env to see when it is set."

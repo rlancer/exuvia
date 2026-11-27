@@ -5,6 +5,7 @@ import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
+import { IconButton } from "@astryxdesign/core/IconButton";
 import { Link } from "@astryxdesign/core/Link";
 import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
 import { ProgressBar } from "@astryxdesign/core/ProgressBar";
@@ -13,7 +14,7 @@ import { Text } from "@astryxdesign/core/Text";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
 import { api, type StorageNode, type StoragePart, type StoragePartitioned, type StorageState } from "./api";
-import { IconDisk } from "./icons";
+import { IconClose, IconDisk } from "./icons";
 import { ago, fmtBytes, fmtNum } from "./util";
 
 /** How long the page waits after a graph or run event before reading again. */
@@ -61,6 +62,8 @@ export function Storage(props: {
   /** Changes on every graph or run event: read the figures again, once they settle. */
   tick: unknown;
   onOpenNode: (name: string) => void;
+  /** Back to the graph: the page is opened from the side panel's Settings tab. */
+  onClose: () => void;
 }) {
   const [data, setData] = useState<StorageState | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -348,6 +351,7 @@ export function Storage(props: {
         </Text>
         <span {...stylex.props(styles.grow)} />
         <Button size="sm" variant="ghost" label="Refresh" tooltip="Measure again" isLoading={busy} onClick={() => void load()} />
+        <IconButton variant="ghost" size="sm" label="Close storage" tooltip="Close and go back to the graph" icon={<IconClose />} onClick={props.onClose} />
       </div>
       <div {...stylex.props(styles.body)}>
         {err && <Banner status="error" title={`Couldn't measure the project: ${err}`} />}

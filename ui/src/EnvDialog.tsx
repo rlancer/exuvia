@@ -35,7 +35,7 @@ const styles = stylex.create({
 });
 
 /** Who asked for a secret: the built-in agent, an MCP client, the API. */
-const asker = (origin: string) =>
+export const asker = (origin: string) =>
   origin === "agent" ? "The agent" : origin === "mcp" ? "Your coding agent" : origin === "api" ? "An API client" : origin;
 
 /** The form: a new variable (`editing` null) or a change to `editing`. */

@@ -81,10 +81,16 @@ const styles = stylex.create({
 ## Hierarchy
 
 - **Two bars, from the outside in.** The app bar is the project as a whole
-  and the app itself (where you are, Share, download, help, theme, account).
-  The project's bar under it is Graph and Views, and what the graph is doing
-  and can be told to do (state counts, Packages, New node, Run stale). A
-  control goes in the bar of the thing it acts on.
+  on the left (its name, then Share and download beside it) and the app
+  itself on the right (help, theme, account). The project's bar under it is
+  Graph and Views, and what the graph is doing and can be told to do (state
+  counts, New node, Run stale). A control goes in the bar of the thing it
+  acts on.
+- **The side panel** is Agent, Files, History and Settings. Settings is how
+  the project runs and what it keeps (packages, environment, schedule,
+  storage): a section each, with what waits for a person (the agent's
+  requests) answered there, and the whole of it in a dialog or a page in
+  the main area.
 - **One primary action per region** (`variant="primary"`): Run stale in the
   project's bar, Run in a node's inspector, the submit of a dialog. Everything
   else is `secondary` or `ghost`; what destroys is `destructive` and asks
