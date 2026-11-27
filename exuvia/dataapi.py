@@ -6,8 +6,9 @@ can
 
 * ``GET /api/data/projects``: list those projects and their tables;
 * ``GET /api/data/projects/{project}/nodes/{node}``: read one node's output;
-* ``POST /api/data/query``: run one DuckDB ``SELECT`` across all of them,
-  each project a catalog of its own (``"sales".orders``, ``"crm".accounts``),
+* ``POST /api/data/query`` (or ``GET`` with ``?sql=``): run one DuckDB
+  ``SELECT`` across all of them, each project a catalog of its own
+  (``"sales".orders``, ``"crm".accounts``),
 
 as JSON or as an Arrow stream. People manage their keys at
 ``/api/data-keys``.
@@ -26,6 +27,17 @@ sends can change a connection other requests share. Requests that find
 the connection stale together wait for one build (a run finishing makes it
 stale for every request at once).
 
+Answers carry an ``ETag`` that names what they were made from, never a
+counter of one process: a node read's names the run and the stored output
+it reads, a query's the SQL, its limit and the views of the projects it
+attached (their files are content-addressed). A ``GET`` with that tag in
+``If-None-Match`` answers 304 without running DuckDB or writing JSON. By
+default answers say ``Cache-Control: no-cache`` (a cache may keep one, but
+asks again before each use, so it is never stale); CACHE_SECONDS lets
+caches use one for that long, and as long again while they fetch a new
+one. ``Vary: Authorization`` keeps each key's answers apart in a shared
+cache.
+
 One key may have KEY_CONCURRENCY queries and node reads running at once
 (more answer 429), and a query stops after QUERY_TIMEOUT, so one app can't
 take every core from the others. ``scripts/loadtest_data_api.py`` measures
@@ -37,6 +49,8 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import functools
+import hashlib
+import json
 import os
 import re
 import sys
@@ -46,7 +60,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Security
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, Security
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
@@ -76,6 +90,21 @@ KEY_CONCURRENCY = int(os.environ.get("EXUVIA_DATA_KEY_CONCURRENCY") or 4)
 # loop's default pool (cpu + 4 threads) the rest of the hub shares, so a
 # burst of queries neither waits behind the hub's work nor holds it up.
 DATA_WORKERS = int(os.environ.get("EXUVIA_DATA_WORKERS") or max(16, 2 * (os.cpu_count() or 1)))
+# Seconds a cache (a browser's, a proxy's) may use a data API answer without
+# asking the hub again; as long again it may answer with it while it fetches
+# a new one (stale-while-revalidate). 0: every use is checked first (no-cache).
+CACHE_SECONDS = float(os.environ.get("EXUVIA_DATA_CACHE_SECONDS") or 0)
+# An answer depends on the request's key and on Accept (JSON or Arrow).
+VARY = "Authorization, Accept"
+# Functions whose value changes between two runs of the same query over the
+# same data: a query using one has no ETag (and is never cached). False
+# positives only cost a 304.
+VOLATILE = re.compile(
+    r"(?<![a-z0-9_])(random|setseed|uuid|uuidv4|uuidv7|gen_random_uuid|now|today|age|current_date|current_time"
+    r"|current_timestamp|current_localtime|current_localtimestamp|localtime|localtimestamp|get_current_time"
+    r"|get_current_timestamp|transaction_timestamp|nextval|currval|txid_current|current_query|current_query_id"
+    r"|current_transaction_id|current_connection_id|getvariable|sample|tablesample|reservoir_quantile)(?![a-z0-9_])"
+)
 # DuckDB's own catalogs: a project of one of these names can't be attached.
 RESERVED_CATALOGS = {"main", "memory", "system", "temp"}
 
@@ -242,8 +271,8 @@ class QueryConnections:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        # projects -> (stamp, built at, connection)
-        self._cons: "OrderedDict[tuple[str, ...], tuple[Any, float, Any]]" = OrderedDict()
+        # projects -> (stamp, built at, connection, digest of its views)
+        self._cons: "OrderedDict[tuple[str, ...], tuple[Any, float, Any, str]]" = OrderedDict()
         # projects -> the lock held while that set's connection is built, so
         # requests that miss together wait for one build instead of each
         # making their own (a run finishing invalidates the connection for
@@ -255,33 +284,53 @@ class QueryConnections:
     def _stamp(workspaces: dict[str, Workspace]) -> tuple[Any, ...]:
         return tuple((pid, id(ws), ws.bus.version) for pid, ws in sorted(workspaces.items()))
 
-    def _cached(self, key: tuple[str, ...], stamp: tuple[Any, ...]) -> Any:
+    def _cached(self, key: tuple[str, ...], stamp: tuple[Any, ...]) -> tuple[Any, str] | None:
         with self._lock:
             hit = self._cons.get(key)
             if hit and hit[0] == stamp and time.monotonic() - hit[1] < CACHE_TTL:
                 self._cons.move_to_end(key)
-                return hit[2].cursor()
+                return hit[2].cursor(), hit[3]
         return None
 
     def cursor(self, workspaces: dict[str, Workspace]) -> Any:
         """A cursor on a connection with each project's outputs in a catalog
         named after it. Blocking (a build may download outputs)."""
+        return self.open(workspaces)[0]
+
+    def kept(self, workspaces: dict[str, Workspace]) -> tuple[Any, str] | None:
+        """``open`` when the connection is kept and current; None when it
+        would have to be built."""
+        return self._cached(tuple(sorted(workspaces)), self._stamp(workspaces))
+
+    def open(self, workspaces: dict[str, Workspace]) -> tuple[Any, str]:
+        """``cursor``, and a digest of what the connection reads: its views,
+        each project's files named relative to the project (content-
+        addressed), so the same data has the same digest in every process.
+        Blocking."""
         key = tuple(sorted(workspaces))
         stamp = self._stamp(workspaces)
-        cur = self._cached(key, stamp)
-        if cur is not None:
-            return cur
+        hit = self._cached(key, stamp)
+        if hit is not None:
+            return hit
         with self._lock:
             building = self._building.setdefault(key, threading.Lock())
         with building:
-            cur = self._cached(key, stamp)  # built while this request waited
-            if cur is not None:
-                return cur
+            hit = self._cached(key, stamp)  # built while this request waited
+            if hit is not None:
+                return hit
             return self._build(key, workspaces, stamp)
 
-    def _build(self, key: tuple[str, ...], workspaces: dict[str, Workspace], stamp: tuple[Any, ...]) -> Any:
+    @staticmethod
+    def _digest(statements: list[str], workspaces: dict[str, Workspace]) -> str:
+        text = "\n".join(statements)
+        for pid, ws in workspaces.items():
+            text = text.replace(str(ws.project.root), f"<{pid}>")
+        return hashlib.blake2b(text.encode(), digest_size=16).hexdigest()
+
+    def _build(self, key: tuple[str, ...], workspaces: dict[str, Workspace], stamp: tuple[Any, ...]) -> tuple[Any, str]:
         now = time.monotonic()
         con = outputs_connection()
+        rec = Recorder(con)  # what the views are made of, for the digest
         files: list[str] = []
         for pid in key:
             if pid.lower() in RESERVED_CATALOGS:
@@ -289,21 +338,38 @@ class QueryConnections:
                     f"project {pid} can't be queried with others: {pid} is the name of one of DuckDB's own "
                     f"catalogs. Read its nodes at {PREFIX}projects/{pid}/nodes/<node>"
                 )
-            files += workspaces[pid].add_output_views(con, None, catalog=pid)
+            files += workspaces[pid].add_output_views(rec, None, catalog=pid)
+        digest = self._digest(rec.statements, workspaces)
         lock_outputs(con, files)
         with self._lock:
             self.builds += 1
-            self._cons[key] = (stamp, now, con)
+            self._cons[key] = (stamp, now, con, digest)
             self._cons.move_to_end(key)
             while len(self._cons) > CACHE_MAX:
                 old, _ = self._cons.popitem(last=False)  # a cursor still reading keeps it alive
                 self._building.pop(old, None)
-        return con.cursor()
+        return con.cursor(), digest
 
     def clear(self) -> None:
         with self._lock:
             self._cons.clear()
             self._building.clear()
+
+
+class Recorder:
+    """A DuckDB connection that notes every statement executed on it (and
+    its parameters): what a query connection's views are made of."""
+
+    def __init__(self, con: Any) -> None:
+        self._con = con
+        self.statements: list[str] = []
+
+    def execute(self, sql: str, *args: Any) -> Any:
+        self.statements.append(sql if not args else f"{sql} {json.dumps(args, default=str)}")
+        return self._con.execute(sql, *args)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._con, name)
 
 
 class KeySlots:
@@ -374,6 +440,48 @@ def deadline(cur: Any, seconds: float) -> threading.Timer | None:
     timer.daemon = True
     timer.start()
     return timer
+
+
+def cache_control() -> str:
+    """The data API answers' Cache-Control (see CACHE_SECONDS). ``public``
+    with a lifetime: a shared cache may then keep an answer to a request
+    with a key (``Vary: Authorization`` keeps each key's apart)."""
+    n = CACHE_SECONDS
+    return f"public, max-age={n:g}, stale-while-revalidate={n:g}" if n > 0 else "no-cache"
+
+
+def etag(*parts: Any) -> str:
+    """A weak ETag over ``parts``: weak, since two answers with the same tag
+    hold the same rows, though not always in the same bytes (an answer
+    without ``order by`` may come in another order)."""
+    raw = json.dumps([__version__, *parts], default=str, sort_keys=True, separators=(",", ":"))
+    return f'W/"{hashlib.blake2b(raw.encode(), digest_size=16).hexdigest()}"'
+
+
+def matches(if_none_match: str | None, tag: str | None) -> bool:
+    """Whether ``If-None-Match`` names ``tag`` (weak comparison)."""
+    if not if_none_match or not tag:
+        return False
+    if if_none_match.strip() == "*":
+        return True
+    bare = tag.removeprefix("W/")
+    return any(t.strip().removeprefix("W/") == bare for t in if_none_match.split(","))
+
+
+def caching(tag: str | None) -> dict[str, str]:
+    """The headers of a data answer (``tag`` None: one never cached)."""
+    if tag is None:
+        return {"Cache-Control": "no-store", "Vary": VARY}
+    return {"ETag": tag, "Cache-Control": cache_control(), "Vary": VARY}
+
+
+def not_modified(tag: str) -> Response:
+    return Response(status_code=304, headers=caching(tag))
+
+
+def volatile(sql: str) -> bool:
+    """Whether ``sql`` may answer differently over the same data."""
+    return VOLATILE.search(sql.lower()) is not None
 
 
 def describe(ws: Workspace) -> list[dict[str, Any]]:
@@ -457,6 +565,24 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
             return out
     access_cache: dict[str, tuple[tuple[str, ...], float]] = {}
     access_lock = threading.Lock()
+    # (project, node, parameters) -> ((workspace, its version), looked up at,
+    # what a node read's ETag is made of): kept like a listing, so a node
+    # read's tag costs no lookup in the run records.
+    output_runs: dict[tuple[str, str, str], tuple[tuple[int, int], float, Any]] = {}
+
+    def output_run(pid: str, ws: Workspace, node: str, resolved: dict[str, Any]) -> Any:
+        key = (pid, node, json.dumps(resolved, sort_keys=True, default=str))
+        stamp = (id(ws), ws.bus.version)
+        hit = output_runs.get(key)
+        if hit and hit[0] == stamp and time.monotonic() - hit[1] < CACHE_TTL:
+            return hit[2]
+        now = time.monotonic()
+        ls = ws.store.last_success(node, ws.node_params(node, resolved)[1])
+        out = ls and [ls.get("id"), ls.get("artifact_id"), ls.get("version")]
+        if len(output_runs) > 4096:
+            output_runs.clear()
+        output_runs[key] = (stamp, now, out)
+        return out
 
     # -- managing keys (people, not keys) -----------------------------------------------
     def manager() -> str | None:
@@ -640,8 +766,28 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
     # documents them, so FastAPI neither validates nor re-encodes them.
     route = {"tags": ["data"], "response_model": None, "response_class": FastJSON}
 
-    @app.get(PREFIX + "projects", responses={200: {"model": DataProjects}, **PROBLEMS}, **route)
-    async def data_projects(access: Access = Depends(key_projects)) -> Any:
+    def revalidated(answer: FastJSON, if_none_match: str | None) -> Response:
+        """A listing with an ETag over its bytes: 304 when the client has them."""
+        tag = etag(hashlib.blake2b(answer.body, digest_size=16).hexdigest())
+        if matches(if_none_match, tag):
+            return not_modified(tag)
+        answer.headers.update(caching(tag))
+        return answer
+
+    inm_doc = "An ETag of an earlier answer: 304 Not Modified when the answer would be the same."
+    INM = Header(None, alias="If-None-Match", description=inm_doc)
+    cached_doc = {
+        "ETag": {"description": "Names what the answer was made from: send it back in `If-None-Match`.",
+                 "schema": {"type": "string"}},
+        "Cache-Control": {"description": "`no-cache` (revalidate each use), or `public, max-age=N, "
+                          "stale-while-revalidate=N` when the hub sets EXUVIA_DATA_CACHE_SECONDS.",
+                          "schema": {"type": "string"}},
+        "Vary": {"description": "`Authorization, Accept`.", "schema": {"type": "string"}},
+    }
+    NOT_MODIFIED = {304: {"description": "Not Modified: the `If-None-Match` ETag is current.", "headers": cached_doc}}
+
+    @app.get(PREFIX + "projects", responses={200: {"model": DataProjects, "headers": cached_doc}, **NOT_MODIFIED, **PROBLEMS}, **route)
+    async def data_projects(if_none_match: str | None = INM, access: Access = Depends(key_projects)) -> Any:
         """The projects this key reads, each with its nodes and their current
         outputs: the place to start."""
         key, projects = access
@@ -649,17 +795,18 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         for pid in projects:
             ws = (await hub.get(pid)).ws
             out.append({"id": pid, "name": ws.project.name, "nodes": await blocking(nodes_of, pid, ws)})
-        return FastJSON({"key": {"id": key.id, "name": key.name}, "projects": out})
+        return revalidated(FastJSON({"key": {"id": key.id, "name": key.name}, "projects": out}), if_none_match)
 
-    @app.get(PREFIX + "projects/{project}", responses={200: {"model": DataProject}, **PROBLEMS}, **route)
-    async def data_project(project: str, access: Access = Depends(key_projects)) -> Any:
+    @app.get(PREFIX + "projects/{project}", responses={200: {"model": DataProject, "headers": cached_doc}, **NOT_MODIFIED, **PROBLEMS}, **route)
+    async def data_project(project: str, if_none_match: str | None = INM, access: Access = Depends(key_projects)) -> Any:
         """One of the key's projects, with its nodes."""
         ws = await workspace(project, access[1])
-        return FastJSON({"id": project, "name": ws.project.name, "nodes": await blocking(nodes_of, project, ws)})
+        answer = FastJSON({"id": project, "name": ws.project.name, "nodes": await blocking(nodes_of, project, ws)})
+        return revalidated(answer, if_none_match)
 
     @app.get(
         PREFIX + "projects/{project}/nodes/{node}",
-        responses={200: {"model": NodeOutput, "content": ARROW_DOC}, **PROBLEMS}, **route,
+        responses={200: {"model": NodeOutput, "content": ARROW_DOC, "headers": cached_doc}, **NOT_MODIFIED, **PROBLEMS}, **route,
     )
     async def data_node(
         project: str,
@@ -670,6 +817,7 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         params: str | None = Query(None, description="Run parameters as a JSON object; default: the project's defaults."),
         part: str | None = Query(None, description="One output of a node with several."),
         partitions: str | None = Query(None, description="For a partitioned node: `lo..hi` (either end optional) or one value."),
+        if_none_match: str | None = INM,
         access: Access = Depends(key_projects),
     ) -> Any:
         """A node's output: JSON rows, or with `Accept:
@@ -682,64 +830,83 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         resolved = resolve_params(ws, query_params(params))
         rng = partition_range(partitions)
         need_partitioned(ws, node, rng, None)
+        arrow = wants_arrow(request.headers.get("accept"))
 
         def read() -> Any:
+            # The tag before the answer: a run finishing in between leaves a
+            # newer answer under an older tag (asked again, it differs), never
+            # an older answer under the newer tag.
+            tag = etag("node", project, node, output_run(project, ws, node, resolved), limit, offset, resolved, part, rng, arrow)
+            if matches(if_none_match, tag):
+                return not_modified(tag)
             give = slots.take(access[0].id)
             try:
-                if wants_arrow(request.headers.get("accept")):
+                if arrow:
                     stream = ws.preview_arrow(node, limit=limit, offset=offset, params=resolved, part=part, partitions=rng)
                     if stream is not None:
-                        answer = arrow_response(Finally(stream, give))  # gives the slot back once read
+                        answer = arrow_response(Finally(stream, give), caching(tag))  # gives the slot back once read
                         give = None
                         return answer
                 rows = 200 if limit is None else min(limit, JSON_MAX)
                 try:
-                    return FastJSON(
-                        ws.preview(node, limit=rows, offset=offset, params=resolved, part=part, partitions=rng, raw=True)
-                    )
+                    out = ws.preview(node, limit=rows, offset=offset, params=resolved, part=part, partitions=rng, raw=True)
                 except KeyError as e:
                     raise HTTPException(404, str(e.args[0])) from e
+                return FastJSON(out, headers=caching(tag))
             finally:
                 if give is not None:
                     give()
 
         return await blocking(read)
 
-    @app.post(PREFIX + "query", responses={200: {"model": QueryAnswer, "content": ARROW_DOC}, **PROBLEMS}, **route)
-    async def data_query(body: DataQueryReq, request: Request, access: Access = Depends(key_projects)) -> Any:
-        """One DuckDB SELECT across the key's projects. Each project is a
-        catalog: `"<project>".<node>`, `"<project>".<node>.<part>` for one
-        output of a node with several, `"<project>".<node>__runs` for every
-        parameter set it ran with. JSON: the first `limit` rows (500 unless
-        given, 5000 at most). With `Accept:
-        application/vnd.apache.arrow.stream`: every row unless `limit`."""
+    async def answer_query(
+        sql: str, limit: int | None, asked: list[str] | None, request: Request, access: Access,
+        if_none_match: str | None,
+    ) -> Any:
         projects = access[1]
-        if body.projects is not None:
-            missing = [p for p in body.projects if p not in projects]
+        if asked is not None:
+            missing = [p for p in asked if p not in projects]
             if missing:
                 raise HTTPException(404, f"this key does not read {', '.join(missing)}")
-            chosen = list(dict.fromkeys(body.projects))
+            chosen = list(dict.fromkeys(asked))
         else:
-            chosen = named_in(body.sql, projects)
+            chosen = named_in(sql, projects)
         workspaces = {pid: (await hub.get(pid)).ws for pid in chosen}
+        arrow = wants_arrow(request.headers.get("accept"))
+        rows = limit if arrow else JSON_ROWS if limit is None else min(limit, JSON_MAX)
+        cacheable = not volatile(sql)
+
+        def tagged(digest: str) -> str | None:
+            return etag("query", digest, sql, rows, chosen, arrow) if cacheable else None
 
         def run() -> Any:
             import duckdb
 
+            if if_none_match and cacheable:
+                # A 304 from a kept connection takes no slot: it costs next to nothing.
+                hit = connections.kept(workspaces)
+                if hit is not None:
+                    hit[0].close()
+                    tag = tagged(hit[1])
+                    if matches(if_none_match, tag):
+                        return not_modified(tag)  # type: ignore[arg-type]
             give = slots.take(access[0].id)
             cur = None
             timer = None
             streaming = False
             try:
-                cur = read_only(connections.cursor(workspaces))
-                check_select(cur, body.sql)
+                cur, digest = connections.open(workspaces)
+                tag = tagged(digest)
+                if matches(if_none_match, tag):
+                    return not_modified(tag)  # type: ignore[arg-type]
+                read_only(cur)
+                check_select(cur, sql)
                 timer = deadline(cur, QUERY_TIMEOUT)
-                if wants_arrow(request.headers.get("accept")):
-                    stream = query_arrow(cur, body.sql, body.limit)  # closes the cursor when it has been read
+                if arrow:
+                    stream = query_arrow(cur, sql, rows)  # closes the cursor when it has been read
                     streaming = True
-                    return arrow_response(Finally(stream, give))  # gives the slot back once read
-                rows = JSON_ROWS if body.limit is None else min(body.limit, JSON_MAX)
-                return FastJSON({**query_json(cur, body.sql, rows, raw=True), "projects": chosen})
+                    return arrow_response(Finally(stream, give), caching(tag))  # gives the slot back once read
+                return FastJSON({**query_json(cur, sql, rows, raw=True), "projects": chosen}, headers=caching(tag))
             except HTTPException:
                 raise
             except duckdb.InterruptException as e:
@@ -758,6 +925,39 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
                         cur.close()
 
         return await blocking(run)
+
+    query_doc = {200: {"model": QueryAnswer, "content": ARROW_DOC, "headers": cached_doc}, **PROBLEMS}
+
+    @app.post(PREFIX + "query", responses=query_doc, **route)
+    async def data_query(body: DataQueryReq, request: Request, access: Access = Depends(key_projects)) -> Any:
+        """One DuckDB SELECT across the key's projects. Each project is a
+        catalog: `"<project>".<node>`, `"<project>".<node>.<part>` for one
+        output of a node with several, `"<project>".<node>__runs` for every
+        parameter set it ran with. JSON: the first `limit` rows (500 unless
+        given, 5000 at most). With `Accept:
+        application/vnd.apache.arrow.stream`: every row unless `limit`.
+        The answer's ETag is the one `GET /api/data/query` answers 304 to
+        (caches keep GET answers, not POST ones)."""
+        return await answer_query(body.sql, body.limit, body.projects, request, access, None)
+
+    @app.get(PREFIX + "query", responses={**query_doc, **NOT_MODIFIED}, **route)
+    async def data_query_get(
+        request: Request,
+        sql: str = Query(description='One SELECT (or EXPLAIN). Each project is a catalog: `"sales".orders`.'),
+        limit: int | None = Query(None, ge=0, description="Rows to return. JSON: 500 unless given, 5000 at most. Arrow: every row unless given."),
+        projects: list[str] | None = Query(
+            None, description="The projects to attach (repeat it for several). Default: the key's projects whose id appears in `sql`."
+        ),
+        if_none_match: str | None = INM,
+        access: Access = Depends(key_projects),
+    ) -> Any:
+        """`POST /api/data/query` as a GET, which browsers and proxies cache:
+        send the answer's `ETag` back in `If-None-Match` for a 304 when
+        nothing it read has changed (DuckDB does not run). The URL is
+        limited in length (about 8 KB behind nginx) and the SQL lands in
+        access logs: POST a query that is long or names what it shouldn't.
+        A query using a function like `now()` or `random()` has no ETag."""
+        return await answer_query(sql, limit, projects, request, access, if_none_match)
 
     spec_cache: dict[str, dict[str, Any]] = {}
 

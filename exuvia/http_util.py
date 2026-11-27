@@ -43,8 +43,10 @@ def static_file(root: Path, path: str) -> Path | None:
     return f if f.is_relative_to(base) and f.is_file() else None
 
 
-def arrow_response(stream: ArrowStream) -> StreamingResponse:
-    return StreamingResponse(stream, media_type=ARROW_STREAM, headers={"Cache-Control": "no-store"})
+def arrow_response(stream: ArrowStream, headers: dict[str, str] | None = None) -> StreamingResponse:
+    """An Arrow stream. The workbench's are never stored (``no-store``):
+    ``headers`` replaces that (the data API sends its ETag and caching)."""
+    return StreamingResponse(stream, media_type=ARROW_STREAM, headers=headers or {"Cache-Control": "no-store"})
 
 
 def query_params(raw: str | None) -> dict[str, Any] | None:

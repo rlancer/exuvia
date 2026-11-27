@@ -350,6 +350,7 @@ class FakeWorkspace:
 
         self.bus = EventBus()
         self.built = 0
+        self.project = type("Project", (), {"root": "/nowhere"})()
 
     def add_output_views(self, con, params, only=None, catalog=None):
         import time
@@ -483,3 +484,153 @@ def test_an_outputs_connection_keeps_few_threads():
 
     con = outputs_connection()
     assert con.execute("select current_setting('async_threads')").fetchone() == (1,)
+
+
+# -- HTTP caching: ETags, 304s, Cache-Control, Vary ----------------------------------------
+def rerun_accounts(client, names):
+    rows = ", ".join(str(i + 1) for i in range(len(names)))
+    src = ACCOUNTS.replace('[1, 2], "name": ["Acme", "Globex"]', f'[{rows}], "name": {names!r}')
+    assert client.put("/p/crm/api/nodes/accounts", json={"source": src}, headers=ALICE).status_code == 200
+    assert client.post("/p/crm/api/nodes/accounts/run", json={"wait": 120}, headers=ALICE).json()["ok"]
+
+
+def test_a_query_by_get_revalidates_until_a_run_changes_its_data(hub):
+    key = make_key(hub, ["crm", "sales"])
+    q = {"sql": "select count(*) as n from crm.accounts"}
+    first = hub.get("/api/data/query", params=q, headers=bearer(key))
+    assert first.status_code == 200 and first.json()["rows"] == [[2]]
+    tag = first.headers["etag"]
+    assert tag.startswith('W/"') and first.headers["cache-control"] == "no-cache"
+    assert first.headers["vary"] == "Authorization, Accept"
+    # The POST's tag is the same: an app can move to GET without losing it.
+    assert hub.post("/api/data/query", json=q, headers=bearer(key)).headers["etag"] == tag
+
+    again = hub.get("/api/data/query", params=q, headers={**bearer(key), "If-None-Match": tag})
+    assert again.status_code == 304 and again.content == b"" and again.headers["etag"] == tag
+    assert again.headers["vary"] == "Authorization, Accept"
+    # Another limit, another format or other SQL is another answer.
+    assert hub.get("/api/data/query", params={**q, "limit": 1}, headers={**bearer(key), "If-None-Match": tag}).status_code == 200
+    arrow = hub.get("/api/data/query", params=q, headers={**bearer(key), **ARROW, "If-None-Match": tag})
+    assert arrow.status_code == 200 and arrow.headers["etag"] != tag and arrow.headers["cache-control"] == "no-cache"
+    assert hub.get("/api/data/query", params={"sql": "select count(*) from crm.accounts where 1 = 1"},
+                   headers={**bearer(key), "If-None-Match": tag}).status_code == 200
+    # Data the query does not read changes nothing; a run of what it reads does.
+    assert hub.post("/p/sales/api/nodes/orders/run", json={"wait": 120}, headers=ALICE).json()["ok"]
+    assert hub.get("/api/data/query", params=q, headers={**bearer(key), "If-None-Match": tag}).status_code == 304
+    rerun_accounts(hub, ["Acme", "Globex", "Initech"])
+    after = hub.get("/api/data/query", params=q, headers={**bearer(key), "If-None-Match": tag})
+    assert after.status_code == 200 and after.json()["rows"] == [[3]] and after.headers["etag"] != tag
+
+
+def test_the_same_data_has_the_same_tag_in_another_process(hub):
+    """A tag names content, not a counter of one process: a hub started
+    again (or another replica) answers 304 to it."""
+    key = make_key(hub, ["crm"])
+    q = {"sql": "select * from crm.accounts order by 1"}
+    tag = hub.get("/api/data/query", params=q, headers=bearer(key)).headers["etag"]
+    node_tag = hub.get("/api/data/projects/crm/nodes/accounts", headers=bearer(key)).headers["etag"]
+    hub.app.state.data_connections.clear()
+    with TestClient(create_hub_app(hub.app.state.hub.root)) as again:
+        got = again.get("/api/data/query", params=q, headers={**bearer(key), "If-None-Match": tag})
+        assert got.status_code == 304
+        got = again.get("/api/data/projects/crm/nodes/accounts", headers={**bearer(key), "If-None-Match": node_tag})
+        assert got.status_code == 304
+    assert hub.get("/api/data/query", params=q, headers={**bearer(key), "If-None-Match": tag}).status_code == 304
+
+
+def test_a_node_read_revalidates_until_its_node_runs_again(hub):
+    key = make_key(hub, ["crm"])
+    url = "/api/data/projects/crm/nodes/accounts"
+    first = hub.get(url, headers=bearer(key))
+    tag = first.headers["etag"]
+    assert first.headers["cache-control"] == "no-cache" and first.headers["vary"] == "Authorization, Accept"
+    assert hub.get(url, headers={**bearer(key), "If-None-Match": f'"other", {tag}'}).status_code == 304
+    assert hub.get(url, headers={**bearer(key), "If-None-Match": "*"}).status_code == 304
+    assert hub.get(url + "?limit=1", headers={**bearer(key), "If-None-Match": tag}).status_code == 200
+    arrow = hub.get(url, headers={**bearer(key), **ARROW, "If-None-Match": tag})
+    assert arrow.status_code == 200 and arrow.headers["etag"] != tag
+    assert hub.get(url, headers={**bearer(key), **ARROW, "If-None-Match": arrow.headers["etag"]}).status_code == 304
+    # Running it again is a new run (its run_id is in the answer): a new tag.
+    assert hub.post("/p/crm/api/nodes/accounts/run", json={"wait": 120}, headers=ALICE).json()["ok"]
+    after = hub.get(url, headers={**bearer(key), "If-None-Match": tag})
+    assert after.status_code == 200 and after.headers["etag"] != tag
+
+
+def test_a_listing_revalidates_too(hub):
+    key = make_key(hub, ["crm"])
+    first = hub.get("/api/data/projects", headers=bearer(key))
+    tag = first.headers["etag"]
+    assert hub.get("/api/data/projects", headers={**bearer(key), "If-None-Match": tag}).status_code == 304
+    assert hub.get("/api/data/projects/crm", headers={**bearer(key), "If-None-Match": tag}).status_code == 200
+    rerun_accounts(hub, ["Acme"])
+    assert hub.get("/api/data/projects", headers={**bearer(key), "If-None-Match": tag}).status_code == 200
+
+
+def test_a_304_still_needs_a_key_that_reads_the_project(hub):
+    key = make_key(hub, ["crm"])
+    other = make_key(hub, ["sales"])
+    q = {"sql": "select count(*) from crm.accounts"}
+    tag = hub.get("/api/data/query", params=q, headers=bearer(key)).headers["etag"]
+    url = "/api/data/projects/crm/nodes/accounts"
+    node_tag = hub.get(url, headers=bearer(key)).headers["etag"]
+    assert hub.get("/api/data/query", params=q, headers={"If-None-Match": tag}).status_code == 401
+    assert hub.get("/api/data/query", params=q, headers={**bearer(other), "If-None-Match": tag}).status_code == 400
+    assert hub.get(url, headers={**bearer(other), "If-None-Match": node_tag}).status_code == 404
+    hub.delete(f"/api/data-keys/{key['id']}", headers=ALICE)
+    assert hub.get(url, headers={**bearer(key), "If-None-Match": node_tag}).status_code == 401
+
+
+def test_a_304_is_counted_as_a_request(hub):
+    key = make_key(hub, ["crm"])
+    q = {"sql": "select count(*) from crm.accounts"}
+    tag = hub.get("/api/data/query", params=q, headers=bearer(key)).headers["etag"]
+    for _ in range(3):
+        assert hub.get("/api/data/query", params=q, headers={**bearer(key), "If-None-Match": tag}).status_code == 304
+    hub.app.state.hub.data_keys.flush()
+    usage = hub.get("/api/data-keys/usage", headers=ROOT).json()
+    [mine] = [k for k in usage["keys"] if k["id"] == key["id"]]
+    assert mine["usage"]["requests"] == 4 and mine["usage"]["queries"] == 4 and mine["usage"]["errors"] == 0
+
+
+@pytest.mark.parametrize("sql", [
+    "select now()", "select random()", "select current_date", "select * from crm.accounts using sample 1",
+    "select gen_random_uuid()",
+])
+def test_a_query_that_changes_by_itself_has_no_tag(hub, sql):
+    key = make_key(hub, ["crm"])
+    r = hub.get("/api/data/query", params={"sql": sql, "projects": ["crm"]}, headers=bearer(key))
+    assert r.status_code == 200, r.text
+    assert "etag" not in r.headers and r.headers["cache-control"] == "no-store"
+    assert hub.get("/api/data/query", params={"sql": sql, "projects": ["crm"]},
+                   headers={**bearer(key), "If-None-Match": "*"}).status_code == 200
+
+
+def test_cache_seconds_let_caches_keep_an_answer(hub, monkeypatch):
+    monkeypatch.setattr(dataapi, "CACHE_SECONDS", 30.0)
+    key = make_key(hub, ["crm"])
+    for r in (
+        hub.get("/api/data/query", params={"sql": "select 1 from crm.accounts"}, headers=bearer(key)),
+        hub.get("/api/data/projects/crm/nodes/accounts", headers=bearer(key)),
+        hub.get("/api/data/projects", headers=bearer(key)),
+    ):
+        assert r.headers["cache-control"] == "public, max-age=30, stale-while-revalidate=30"
+        assert r.headers["vary"] == "Authorization, Accept"
+
+
+def test_errors_are_never_cached(hub):
+    key = make_key(hub, ["crm"])
+    r = hub.get("/api/data/query", params={"sql": "select * from crm.nothing"}, headers=bearer(key))
+    assert r.status_code == 400 and "etag" not in r.headers
+    r = hub.get("/api/data/projects/crm/nodes/nothing", headers=bearer(key))
+    assert r.status_code == 404 and "etag" not in r.headers
+
+
+def test_the_get_query_takes_its_projects_and_limit(hub):
+    key = make_key(hub, ["crm", "sales"])
+    r = hub.get("/api/data/query", params={"sql": "select 1 as one", "projects": ["crm", "sales"], "limit": 1},
+                headers=bearer(key))
+    assert r.status_code == 200 and r.json()["projects"] == ["crm", "sales"] and r.json()["rows"] == [[1]]
+    assert hub.get("/api/data/query", params={"sql": "select 1", "projects": ["secret"]}, headers=bearer(key)).status_code == 404
+    assert hub.get("/api/data/query", params={"sql": "drop view crm.accounts", "projects": ["crm"]},
+                   headers=bearer(key)).status_code == 400
+    assert hub.get("/api/data/query", headers=bearer(key)).status_code == 422

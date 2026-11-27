@@ -2888,6 +2888,7 @@ empty file, stops exuvia with an error.
 | `EXUVIA_DATA_KEY_CONCURRENCY` | 4 | data API queries and node reads one key may have running at once; more answer 429 (`0`: no limit) |
 | `EXUVIA_DATA_WORKERS` | 2 × cores, at least 16 | threads the data API's queries and reads run on, apart from the rest of the hub's |
 | `EXUVIA_DATA_QUERY_TIMEOUT` | 60 | seconds a data API query may run before it is stopped (as Arrow: until its first rows; `0`: no limit) |
+| `EXUVIA_DATA_CACHE_SECONDS` | 0 | seconds a browser or proxy may use a data API answer without asking the hub again (`Cache-Control: public, max-age=N, stale-while-revalidate=N`: an answer is then at most about 2 × N seconds old). `0`: `no-cache`, every use is checked with the answer's ETag first |
 | `EXUVIA_DB` | per-project SQLite | where run history, schedules, sessions and code revisions live: `sqlite:///<path>` or `postgresql://…` |
 | `EXUVIA_DB_SCOPE` | — | prefix for project scopes in a shared `EXUVIA_DB` (e.g. a user id) |
 | `EXUVIA_ARTIFACT_STORE` | local disk | `s3://bucket/prefix`: keep node outputs in an S3-compatible bucket, keyed `<prefix>/<project>/<node>/<sha>.<ext>` |
@@ -3631,7 +3632,30 @@ makes one and picks the projects it reads.
   Arrow, until its first rows arrive) and answers 400. Listing projects
   isn't limited, and is kept between requests until a project changes.
   `scripts/loadtest_data_api.py` drives a hub with concurrent clients, to
-  see what one serves.
+  see what one serves, how stale its cached answers get and whether a proxy
+  ever gives one key's answer to another (`--proxy nginx`).
+- **Cached by ETag.** Every answer has an `ETag` naming what it was made
+  from: a node read's names the run and the stored output it read, a
+  query's its SQL, `limit` and the files behind the projects it attached
+  (all content-addressed, so every replica gives the same data the same
+  tag). Send it back in `If-None-Match` on a `GET` and, while nothing it
+  read has changed, the answer is `304 Not Modified`: DuckDB does not run
+  and no JSON is written. Answers say `Cache-Control: no-cache` (a browser
+  or proxy may keep one, but asks again before each use, so nothing is ever
+  stale) and `Vary: Authorization, Accept` (a shared cache keeps each key's
+  answers apart). With `EXUVIA_DATA_CACHE_SECONDS=N` they say `public,
+  max-age=N, stale-while-revalidate=N` instead: caches answer for N seconds
+  without asking, and an answer is at most about 2 × N seconds old. Arrow
+  answers are tagged and cached the same way. A query that uses `now()`,
+  `random()`, `current_date` or the like answers differently each time, so
+  it has no tag (`no-store`); errors are never cached. A 304 counts as a
+  request in the key's usage. `deploy/nginx/exuvia.conf` puts nginx in
+  front of a hub with a cache on disk for `/api/data/`.
+- **A query as a GET.** `GET /api/data/query?sql=...&limit=...&projects=...`
+  is the POST as a URL, which browsers and proxies cache (they don't cache
+  POST). The URL is limited in length (8 KB in nginx unless raised; the
+  example config allows 16 KB) and the SQL ends up in access logs: POST a
+  query that is long or names something that shouldn't be logged.
 - **Counted.** Each key's requests are counted by day (UTC), with how many
   were queries and how many failed, and kept for 90 days; requests with an
   unknown or revoked key are counted too. An admin sees them under **API
@@ -3656,6 +3680,7 @@ rest. (`/openapi.json` and `/docs` cover the whole HTTP API.)
 | `GET /api/data/projects/{project}` | one of them |
 | `GET /api/data/projects/{project}/nodes/{node}` | a node's output, as `/api/nodes/{name}/data` answers it (`limit`, `offset`, `params`, `part`, `partitions`; JSON or Arrow) |
 | `POST /api/data/query` | `{sql, limit, projects}`: one SELECT across the key's projects. JSON: the first `limit` rows (500 unless given, 5000 at most) and the `projects` attached; Arrow: every row unless `limit` |
+| `GET /api/data/query` | the same as `?sql=...&limit=...&projects=a&projects=b`, which caches keep; with `If-None-Match`, 304 while nothing it read has changed |
 | `GET /api/data-keys`, `POST /api/data-keys` | your keys (`?all=true`: every key, for an admin) / make one (`{name, projects}`; each a project you can open). `key` is in the answer once: only a hash is kept |
 | `PATCH /api/data-keys/{id}`, `DELETE /api/data-keys/{id}` | rename it or replace its `projects` / revoke it (its maker, or an admin) |
 | `GET /api/data-keys/usage` | every key on the hub with its use, for the admin page's **API keys**: requests today, in 7 days and over `days` (30 unless given, 90 at most), how many were queries and how many failed, by day; and the requests turned away for an unknown or revoked key (admins only) |
