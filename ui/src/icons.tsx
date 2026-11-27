@@ -98,3 +98,5 @@ export const IconSortDown = icon(<path d="M8 3v10M4 9l4 4 4-4" />);
 /** Filter a column: a funnel, filled while a filter is on. */
 export const IconFilter = icon(<path d="M2.5 3h11L9.5 8.2v4l-3 1.3V8.2z" />);
 export const IconFilterOn = icon(<path d="M2.5 3h11L9.5 8.2v4l-3 1.3V8.2z" fill="currentColor" />);
+/** A table of contents: entries, the second level indented. */
+export const IconContents = icon(<path d="M2.5 3.5h.01M5 3.5h8.5M5 8h.01M7.5 8h6M5 12.5h.01M7.5 12.5h6" />);
