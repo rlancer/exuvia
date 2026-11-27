@@ -114,7 +114,7 @@ async function shot(page, name, locator) {
 }
 
 const tab = (page, name) => page.getByRole("tab", { name, exact: true });
-// A node's card on the graph, and the side panel (agent, files, history).
+// A node's card on the graph, and the side panel (agent, files, history, settings).
 const node = (page, name) => page.locator(".react-flow__node", { hasText: name });
 const side = (page) => page.locator('aside[aria-label="Side panel"]');
 
@@ -185,9 +185,10 @@ async function app() {
   await page.getByText("vs previous").waitFor();
   await shot(page, "history");
 
-  // Packages: the project's pyproject.toml, managed from the top bar.
+  // Packages: the project's pyproject.toml, managed from the side panel's Settings tab.
   await page.goto(base);
-  await page.getByRole("button", { name: "Packages" }).click();
+  await page.getByRole("tab", { name: /^Settings/ }).click();
+  await page.getByRole("button", { name: "Manage packages" }).click();
   await page.getByText("scipy").first().waitFor();
   await shot(page, "packages");
   await page.keyboard.press("Escape");

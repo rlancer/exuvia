@@ -23,13 +23,13 @@ export interface BarLayout {
 export const BAR = {
   padding: 32,
   gap: 12,
-  tabs: 337,
+  tabs: 152,
   toggleLabels: 173,
   toggleIcons: 66,
   /** One state's dot, number and word ("9 fresh"). */
   perState: 62,
-  buttonsLabels: 494,
-  buttonsIcons: 136,
+  buttonsLabels: 252,
+  buttonsIcons: 80,
 };
 
 const LAYOUTS: BarLayout[] = [

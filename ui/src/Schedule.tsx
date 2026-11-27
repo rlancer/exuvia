@@ -6,6 +6,7 @@ import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
+import { IconButton } from "@astryxdesign/core/IconButton";
 import { Link } from "@astryxdesign/core/Link";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
@@ -13,7 +14,7 @@ import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
 import { api, type LiveRow, type ScheduleRow, type ScheduleState } from "./api";
 import { useAccess } from "./Access";
-import { IconClock } from "./icons";
+import { IconClock, IconClose } from "./icons";
 import { failed } from "./toast";
 import { StateDot } from "./ui/state";
 import { ago, until } from "./util";
@@ -63,6 +64,8 @@ export function Schedule(props: {
   /** Changes on every graph or run event: read the schedule again. */
   tick: unknown;
   onOpenNode: (name: string) => void;
+  /** Back to the graph: the page is opened from the side panel's Settings tab. */
+  onClose: () => void;
 }) {
   const { canEdit } = useAccess();
   const [sched, setSched] = useState<ScheduleState | null>(null);
@@ -246,6 +249,8 @@ export function Schedule(props: {
         <Text type="supporting" color="secondary" maxLines={1} xstyle={styles.hint}>
           When the graph runs by itself. Times are {clock}.
         </Text>
+        <span {...stylex.props(styles.grow)} />
+        <IconButton variant="ghost" size="sm" label="Close the schedule" tooltip="Close and go back to the graph" icon={<IconClose />} onClick={props.onClose} />
       </div>
       <div {...stylex.props(styles.body)}>
         {err && <Banner status="error" title={`Couldn't read the schedule: ${err}`} />}
@@ -346,6 +351,7 @@ const styles = stylex.create({
     borderBottomColor: colorVars["--color-border"],
   },
   hint: { display: { default: "block", "@media (max-width: 1100px)": "none" } },
+  grow: { flexGrow: 1 },
   body: {
     display: "flex",
     flexDirection: "column",

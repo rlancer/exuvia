@@ -4,16 +4,16 @@ import { colorVars, spacingVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { ReactFlowProvider } from "@xyflow/react";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
-import { Divider } from "@astryxdesign/core/Divider";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
+import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
-import { access, api, apiUrl, HUB_PROJECT, type Access, type CodeRevision, type PackagesState, type Project } from "./api";
+import { access, api, apiUrl, HUB_PROJECT, type Access, type CodeRevision, type EnvState, type PackagesState, type Project } from "./api";
 import { AccessContext, accessState, NoAccess, useAccess, ViewOnlyBanner } from "./Access";
 import { Canvas } from "./Canvas";
 import { Inspector, Overview } from "./Inspector";
@@ -22,7 +22,6 @@ import { HistoryBrowser, HistoryRail } from "./History";
 import { TagBrowser } from "./Tags";
 import type { OpenView } from "./Views";
 import { FileTree, HelperEditor } from "./Files";
-import { Schedule } from "./Schedule";
 import { codeGroup, DownloadMenu } from "./Export";
 import type { FileRef } from "./tree";
 import { SignedInAs } from "./Me";
@@ -30,7 +29,7 @@ import { HelpMenu } from "./Help";
 import { HubNav } from "./HubNav";
 import { useColorMode } from "./theme/colorMode";
 import { Brand, Mark } from "./Brand";
-import { IconClock, IconClose, IconGraph, IconKey, IconNotebook, IconTag, IconMoon, IconPackage, IconPlay, IconPlus, IconShare, IconSun } from "./icons";
+import { IconClock, IconClose, IconGraph, IconNotebook, IconTag, IconMoon, IconPlay, IconPlus, IconShare, IconSun } from "./icons";
 import { StateDot } from "./ui/state";
 import { failed, Toasts } from "./toast";
 import { appViewOf } from "./appMode";
@@ -46,7 +45,7 @@ function envOf(hash: string): { name?: string } | null {
 }
 
 // What is not on the first screen is fetched when it is opened: the Views
-// mode and the dialogs.
+// mode, the Settings tab and its pages, and the dialogs.
 const Views = lazy(() => import("./Views").then((m) => ({ default: m.Views })));
 const ShareDialog = lazy(() => import("./Share").then((m) => ({ default: m.ShareDialog })));
 const NewNodeDialog = lazy(() => import("./NewNodeDialog").then((m) => ({ default: m.NewNodeDialog })));
@@ -54,6 +53,8 @@ const PackagesDialog = lazy(() => import("./PackagesDialog").then((m) => ({ defa
 const EnvDialog = lazy(() => import("./EnvDialog").then((m) => ({ default: m.EnvDialog })));
 const AppView = lazy(() => import("./AppView"));
 const Storage = lazy(() => import("./Storage").then((m) => ({ default: m.Storage })));
+const Schedule = lazy(() => import("./Schedule").then((m) => ({ default: m.Schedule })));
+const ProjectSettings = lazy(() => import("./ProjectSettings").then((m) => ({ default: m.ProjectSettings })));
 const Notebook = lazy(() => import("./Notebook").then((m) => ({ default: m.Notebook })));
 
 const embed = new URLSearchParams(location.search).has("embed");
@@ -86,7 +87,7 @@ function useWidth<T extends HTMLElement>(): [(el: T | null) => void, number] {
 /** A narrow window, where the side panel is a sheet over the main area. */
 const narrow = () => window.matchMedia("(max-width: 1100px)").matches;
 
-const sideTabs = oneOf<SideTab>("agent", "files", "history");
+const sideTabs = oneOf<SideTab>("agent", "files", "history", "settings");
 const openClosed = oneOf("open", "closed");
 const layouts = oneOf<Layout>("canvas", "notebook");
 
@@ -167,9 +168,9 @@ function Workbench() {
   const [pkgOpen, setPkgOpen] = useState(false);
   // The Environment dialog: closed (null), or open, on a variable when a link named one.
   const [envOpen, setEnvOpen] = useState<{ name?: string } | null>(() => envOf(location.hash));
-  // Requests to set a secret (the agent's request_secret), for the button's count.
-  const [envRequests, setEnvRequests] = useState(0);
-  const refreshEnv = useCallback(() => api.env().then((s) => setEnvRequests(s.requests.length)).catch(() => {}), []);
+  // The project's variables and the requests to set one (the agent's request_secret), for the Settings tab.
+  const [env, setEnv] = useState<EnvState | null>(null);
+  const refreshEnv = useCallback(() => api.env().then(setEnv).catch(() => {}), []);
   useEffect(() => {
     if (envOf(location.hash)) goTo({ page: "graph" });
     const onHash = () => {
@@ -269,7 +270,10 @@ function Workbench() {
     return c;
   }, [nodes]);
   const staleCount = (counts.stale ?? 0) + (counts.new ?? 0) + (counts.failed ?? 0);
-  const scheduled = nodes.filter((n) => n.schedule).length;
+  // What waits for an editor in the Settings tab: the agent's requests for packages and secrets, a failed install.
+  const asked = canEdit ? (pkgs?.requests.length ?? 0) + (env?.requests.length ?? 0) : 0;
+  const pkgsFailed = canEdit && pkgs?.status === "failed";
+  const settingsWaiting = asked ? `${asked} ${asked === 1 ? "request waits" : "requests wait"} for you` : pkgsFailed ? "packages failed to install" : undefined;
 
   const touch = useCallback((name: string) => {
     setFlash((f) => ({ ...f, [name]: Date.now() }));
@@ -300,6 +304,11 @@ function Workbench() {
   const openTag = (name: string) => {
     setTag(name);
     setMode("history");
+    if (narrow()) setAgentOpen(false);
+  };
+  /** A page the Settings tab opens in the main area: the schedule, or storage. */
+  const openPage = (m: "schedule" | "storage") => {
+    setMode(m);
     if (narrow()) setAgentOpen(false);
   };
   const openSide = (t: SideTab) => {
@@ -349,8 +358,8 @@ function Workbench() {
       {/* The app bar: where you are, what you do with the project as a whole, and the app's own menus. */}
       {!embed && (
         <header {...stylex.props(styles.bar, styles.appBar)}>
+          {/* The project: its name, then what is done with it as a whole. */}
           <Brand home={HUB_PROJECT ? "/" : undefined}>{project?.name ?? "…"}</Brand>
-          <span {...stylex.props(styles.grow)} />
           <HStack gap={1} vAlign="center">
             {canShare && (
               <Button
@@ -363,7 +372,8 @@ function Workbench() {
             )}
             <DownloadMenu title="Download the project's code" groups={[codeGroup({ title: "Project" })]} />
           </HStack>
-          <Divider orientation="vertical" xstyle={styles.rule} />
+          <span {...stylex.props(styles.grow)} />
+          {/* The app: help, the theme, and who is signed in. */}
           <HStack gap={0.5} vAlign="center">
             <HelpMenu />
             <IconButton
@@ -387,11 +397,9 @@ function Workbench() {
             <div {...stylex.props(styles.main)}>
               {/* The project's bar: its two faces, and what the graph is doing and can be told to do. */}
               <div ref={barRef} {...stylex.props(styles.bar, styles.workBar)}>
-                <TabList role="tablist" value={mode === "views" || mode === "graph" || mode === "schedule" || mode === "storage" ? mode : ""} onChange={(v) => setMode(v as Mode)} xstyle={[styles.modes, phone && styles.modesScroll]}>
+                <TabList role="tablist" value={mode === "views" || mode === "graph" ? mode : ""} onChange={(v) => setMode(v as Mode)} xstyle={[styles.modes, phone && styles.modesScroll]}>
                   <Tab value="graph" label="Graph" />
                   <Tab value="views" label="Views" endContent={project?.views.length && !phone ? <Badge label={project.views.length} /> : undefined} />
-                  <Tab value="schedule" label="Schedule" endContent={scheduled && !phone ? <Badge label={scheduled} /> : undefined} />
-                  <Tab value="storage" label="Storage" />
                 </TabList>
                 {/* Two ways to read the same graph: drawn, or top to bottom as a notebook. On a phone, one button that switches. */}
                 {mode === "graph" && nodes.length > 0 &&
@@ -411,7 +419,7 @@ function Workbench() {
                   ))}
                 <span {...stylex.props(styles.grow)} />
                 {!conn && <Badge variant="error" label="Reconnecting…" />}
-                {/* The graph's own state and actions: with the graph, not with the views. */}
+                {/* The graph's own state and actions: with the graph, not with the views. The project's settings are the side panel's. */}
                 {mode === "graph" && (<>
                 {fit.counts && !phone && (
                 <HStack gap={3} vAlign="center" xstyle={styles.counts}>
@@ -429,30 +437,6 @@ function Workbench() {
                 )}
                 {canEdit && (
                   <HStack gap={1} vAlign="center">
-                    <Button
-                      label="Packages"
-                      icon={<IconPackage />}
-                      isIconOnly={!fit.buttonLabels}
-                      tooltip={pkgs?.requests.length ? "The agent is waiting for you to approve packages" : "The packages your nodes import"}
-                      endContent={
-                        pkgs?.requests.length ? (
-                          <Badge variant="info" label={pkgs.requests.length} />
-                        ) : pkgs?.status === "failed" ? (
-                          <Badge variant="error" label="Failed" />
-                        ) : pkgs?.status === "installing" || pkgs?.status === "pending" ? (
-                          <Badge variant="info" label="Installing" />
-                        ) : undefined
-                      }
-                      onClick={() => setPkgOpen(true)}
-                    />
-                    <Button
-                      label="Environment"
-                      icon={<IconKey />}
-                      isIconOnly={!fit.buttonLabels}
-                      tooltip={envRequests ? "The agent is waiting for you to set a secret" : "API keys, tokens and settings your nodes read from os.environ"}
-                      endContent={envRequests ? <Badge variant="info" label={envRequests} /> : undefined}
-                      onClick={() => setEnvOpen({})}
-                    />
                     <Button label="New node" icon={<IconPlus />} isIconOnly={!fit.buttonLabels} tooltip="Add a node to the graph" onClick={() => setNewOpen(true)} />
                     <Button
                       label="Run stale"
@@ -502,10 +486,12 @@ function Workbench() {
                   )}
                 </section>
               ) : mode === "schedule" ? (
-                <Schedule tick={project} onOpenNode={openNode} />
+                <Suspense fallback={<div {...stylex.props(styles.wide)} />}>
+                  <Schedule tick={project} onOpenNode={openNode} onClose={toGraph} />
+                </Suspense>
               ) : mode === "storage" ? (
                 <Suspense fallback={<div {...stylex.props(styles.wide)} />}>
-                  <Storage tick={project} onOpenNode={openNode} />
+                  <Storage tick={project} onOpenNode={openNode} onClose={toGraph} />
                 </Suspense>
               ) : mode === "views" ? (
                 <Suspense fallback={<div {...stylex.props(styles.wide)} />}>
@@ -601,9 +587,32 @@ function Workbench() {
                     onOpenTag={openTag}
                   />
                 }
+                settings={
+                  <Suspense fallback={null}>
+                    <ProjectSettings
+                      canEdit={canEdit}
+                      pkgs={pkgs}
+                      onPkgs={setPkgs}
+                      env={env}
+                      onEnv={setEnv}
+                      nodes={nodes}
+                      onPackages={() => setPkgOpen(true)}
+                      onEnvironment={(name) => setEnvOpen(name ? { name } : {})}
+                      onSchedule={() => openPage("schedule")}
+                      onStorage={() => openPage("storage")}
+                    />
+                  </Suspense>
+                }
+                settingsEnd={
+                  asked ? (
+                    <Badge variant="info" label={asked} />
+                  ) : pkgsFailed ? (
+                    <StatusDot variant="error" label="Packages failed to install" />
+                  ) : undefined
+                }
               />
             ) : (
-              <SideRail agent={canEdit} bar={sheet} onOpen={openSide} />
+              <SideRail agent={canEdit} bar={sheet} onOpen={openSide} settingsWaiting={settingsWaiting} />
             )}
           </div>
         </div>
@@ -625,7 +634,7 @@ function Workbench() {
           <EnvDialog
             key={envOpen.name ?? ""}
             initialName={envOpen.name}
-            onChange={(s) => setEnvRequests(s.requests.length)}
+            onChange={setEnv}
             onClose={() => setEnvOpen(null)}
           />
         )}
@@ -648,9 +657,10 @@ function Workbench() {
 
 /**
  * The workbench's frame. Two bars, from the outside in: the app bar (the
- * project and the app), then the project's bar (Graph and Views, and the
- * graph's own state and actions). Under them the main area, and the side
- * panel beside it.
+ * project with Share and download on the left, the app on the right), then
+ * the project's bar (Graph and Views, and the graph's own state and actions).
+ * Under them the main area, and the side panel beside it (Agent, Files,
+ * History, and Settings: packages, environment, schedule, storage).
  *
  *   > 1100px   main | side panel 340 (or its 40px rail)
  *              the graph: canvas | inspector
@@ -692,7 +702,6 @@ const styles = stylex.create({
   // On the smallest phones they scroll rather than be cut off.
   modesScroll: { flexShrink: 1, minWidth: 0, overflowX: "auto", scrollbarWidth: "none" },
   grow: { flexGrow: 1 },
-  rule: { alignSelf: "stretch", marginBlock: spacingVars["--spacing-1"] },
   // The state counts are on the canvas's nodes too: the last of the bar's layouts leaves them out.
   counts: { flexShrink: 0, whiteSpace: "nowrap" },
   workspace: {
