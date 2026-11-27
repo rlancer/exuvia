@@ -6,6 +6,8 @@ can
 
 * ``GET /api/data/projects``: list those projects and their tables;
 * ``GET /api/data/projects/{project}/nodes/{node}``: read one node's output;
+* ``GET /api/data/projects/{project}/nodes/{node}/artifacts/{artifact_id}.parquet``:
+  fetch a stored output by its content hash, cached for good;
 * ``POST /api/data/query`` (or ``GET`` with ``?sql=``): run one DuckDB
   ``SELECT`` across all of them, each project a catalog of its own
   (``"sales".orders``, ``"crm".accounts``),
@@ -67,7 +69,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__, auth
 from .arrowstream import wants_arrow
-from .http_util import FastJSON, arrow_response, need_partitioned, partition_range, query_params, resolve_params
+from fastapi.responses import FileResponse
+
+from .http_util import (
+    ARTIFACT_EXTENSIONS, ARTIFACT_KINDS, ARTIFACT_MEDIA_TYPES, FastJSON, arrow_response, need_partitioned,
+    partition_range, query_params, resolve_params,
+)
 from .datakeys import MAX_PROJECTS, TURNED_AWAY, DataKey, DataKeyStore, clean_projects, looks_like_key
 from .sharing import at_least
 from .outputs import lock_outputs, output_parts, outputs_connection, query_arrow, query_json
@@ -150,6 +157,10 @@ class DataNode(BaseModel):
     parts: list[Part] | None = Field(None, description="For a node with several outputs: each is `<project>.<node>.<part>`.")
     run_id: str | None = None
     artifact_id: str | None = Field(None, description="The stored output's content hash: it changes when the data does.")
+    url: str | None = Field(
+        None, description="The stored output as a file (Parquet, JSON, or a zip of several), named by `artifact_id`: "
+        "it never changes, so caches keep it for good. Null for a partitioned output."
+    )
     finished_at: float | None = Field(None, description="When the run that made it finished (Unix seconds).")
     partitioned: bool
     history: bool = Field(description="Whether `<project>.<node>__runs` exists: its output for every parameter set it ran with.")
@@ -484,7 +495,7 @@ def volatile(sql: str) -> bool:
     return VOLATILE.search(sql.lower()) is not None
 
 
-def describe(ws: Workspace) -> list[dict[str, Any]]:
+def describe(ws: Workspace, pid: str) -> list[dict[str, Any]]:
     """A project's nodes and their current outputs (default parameters),
     for an app to find what to read: ``kind`` (``table``, ``multi``,
     ``json`` or null before the first run), ``rows``, ``columns`` and, for a
@@ -511,6 +522,8 @@ def describe(ws: Workspace) -> list[dict[str, Any]]:
         }
         if kind == "multi":
             item["parts"] = output_parts(ls.get("schema"))  # type: ignore[union-attr]
+        if ls and kind in ARTIFACT_EXTENSIONS and ls.get("artifact_id") and not ws.is_partitioned(ls):
+            item["url"] = f"{PREFIX}projects/{pid}/nodes/{name}/artifacts/{ls['artifact_id']}.{ARTIFACT_EXTENSIONS[kind]}"
         out.append(item)
     return out
 
@@ -560,7 +573,7 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
             out = fresh()  # built while this request waited
             if out is None:
                 now = time.monotonic()
-                out = describe(ws)
+                out = describe(ws, pid)
                 described[pid] = (stamp, now, out)
             return out
     access_cache: dict[str, tuple[tuple[str, ...], float]] = {}
@@ -858,6 +871,64 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
                     give()
 
         return await blocking(read)
+
+    immutable = {"Cache-Control": "public, max-age=31536000, immutable", "Vary": "Authorization"}
+    artifact_doc = {
+        200: {"description": "The file, byte for byte. `Range` is honoured (part of a Parquet file).",
+              "content": {t: {"schema": {"type": "string", "format": "binary"}} for t in ARTIFACT_MEDIA_TYPES.values()},
+              "headers": {"ETag": {"description": "The artifact id.", "schema": {"type": "string"}},
+                          "Cache-Control": {"description": "`public, max-age=31536000, immutable`", "schema": {"type": "string"}}}},
+        **NOT_MODIFIED, **PROBLEMS,
+    }
+
+    def artifact_answer(found: tuple[Any, str] | None, kind: str | None, tag: str, if_none_match: str | None, what: str) -> Response:
+        if found is None or found[1] != kind:
+            raise HTTPException(404, f"no output {what}")
+        headers = {**immutable, "ETag": tag}
+        if matches(if_none_match, tag):
+            return Response(status_code=304, headers=headers)
+        return FileResponse(found[0], media_type=ARTIFACT_MEDIA_TYPES[kind], headers=headers)
+
+    artifact_path = PREFIX + "projects/{project}/nodes/{node}/artifacts/{filename}"
+    part_path = PREFIX + "projects/{project}/nodes/{node}/artifacts/{artifact_id}/{filename}"
+
+    @app.get(artifact_path, responses=artifact_doc, tags=["data"], response_model=None)
+    async def data_artifact(
+        project: str, node: str, filename: str, if_none_match: str | None = INM, access: Access = Depends(key_projects),
+    ) -> Any:
+        """A node's stored output by its content hash (a node's `artifact_id`
+        and `url` in the listing): `<artifact_id>.parquet`, `.json`, or
+        `.zip` for a node with several outputs. The id names the content, so
+        the answer never changes: caches keep it for good (`immutable`). Read
+        the listing (revalidated) to learn the current id, then fetch this.
+        Only an output the node in this project produced is served."""
+        ws = await workspace(project, access[1])
+        if node not in ws.graph.nodes:
+            raise HTTPException(404, f"no node {node} in project {project}")
+        artifact_id, _, ext = filename.rpartition(".")
+        kind = ARTIFACT_KINDS.get(ext)
+        found = await blocking(ws.artifact_file, node, artifact_id) if kind and artifact_id else None
+        return artifact_answer(found, kind, f'"{artifact_id}"', if_none_match, f"{filename} of {node}")
+
+    @app.get(part_path, responses=artifact_doc, tags=["data"], response_model=None)
+    async def data_artifact_part(
+        project: str, node: str, artifact_id: str, filename: str, if_none_match: str | None = INM,
+        access: Access = Depends(key_projects),
+    ) -> Any:
+        """One output of a node with several, by the id of the whole
+        (`<artifact_id>.zip`): `<part>.parquet` or `<part>.json`. Cached for
+        good like the whole."""
+        ws = await workspace(project, access[1])
+        if node not in ws.graph.nodes:
+            raise HTTPException(404, f"no node {node} in project {project}")
+        part, _, ext = filename.rpartition(".")
+        kind = ARTIFACT_KINDS.get(ext)
+        found = await blocking(ws.artifact_file, node, artifact_id, part) if kind in ("table", "json") and part else None
+        return artifact_answer(found, kind, f'"{artifact_id}/{part}"', if_none_match, f"{artifact_id}/{filename} of {node}")
+
+    # HEAD too (a client checking a file's size before ranged reads), left out of the spec.
+    app.head(artifact_path, include_in_schema=False, response_model=None)(data_artifact)
+    app.head(part_path, include_in_schema=False, response_model=None)(data_artifact_part)
 
     async def answer_query(
         sql: str, limit: int | None, asked: list[str] | None, request: Request, access: Access,

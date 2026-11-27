@@ -48,7 +48,10 @@ from .pushing import format_of, max_bytes
 from .report import graph_report, node_report
 from .runners import Broker, RunnerError
 from .groups import open_groups
-from .http_util import FastJSON, arrow_response, need_partitioned, partition_range, query_params, resolve_params, static_file
+from .http_util import (
+    ARTIFACT_KINDS, ARTIFACT_MEDIA_TYPES, FastJSON, arrow_response, need_partitioned, partition_range, query_params,
+    resolve_params, static_file,
+)
 from .sharing import GRANT_ROLES, LINK_COOKIE, MAX_LINK_DAYS, at_least, looks_like_link, open_sharing
 from .store import clean_origin
 from .agent_mcp import CALLBACK_PATH, McpServers, finish_sign_in, open_mcp_servers, private_allowed, probe, sign_in
@@ -60,8 +63,6 @@ STATIC = Path(__file__).parent / "static"
 BACKFILL_MAX = 400
 RUN_WAIT_MAX = 300.0
 # Stored output files by extension (see runner.save_artifact), and how each is served.
-ARTIFACT_KINDS = {"parquet": "table", "json": "json", "zip": "multi"}
-ARTIFACT_MEDIA_TYPES = {"table": "application/vnd.apache.parquet", "json": "application/json", "multi": "application/zip"}
 
 
 async def _await_run(task: "asyncio.Task[dict[str, Any]]", wait: float) -> dict[str, Any] | None:

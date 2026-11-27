@@ -34,6 +34,10 @@ Caching (exuvia/dataapi.py, HTTP caching):
   answer with the latest run that had finished when they asked: the worst
   and p99 staleness, checked against the bound the hub's caching allows
   (0 with ``no-cache``; 2 x ``--cache-seconds`` with ``max-age``).
+* ``artifact``: a whole table as Arrow from its node read, as the stored
+  Parquet file by its hash (``url`` in the listing), and that file by
+  clients that keep it (it never changes). Keep ``--concurrency`` low: those
+  clients hold the file in memory.
 * ``isolation``: through the proxy, a key that can't read a project never
   gets a cached answer for it, and one key's cached answer is never served
   to another.
@@ -699,33 +703,36 @@ async def isolation(hub: HubProcess, args: argparse.Namespace, pids: list[str], 
                 res.latencies.append(time.perf_counter() - t)
             return r
 
-        urls = [u for u in (q, node, "/api/data/projects") if u]
+        # The output by its hash, where the hub has it: `immutable`, so a proxy keeps it even without --cache-seconds.
+        listed = (await c.get(f"/api/data/projects/{pids[0]}", headers=a)).json()
+        artifact = next((n.get("url") for n in listed.get("nodes", []) if n["name"] == "accounts"), None)
+        urls = [u for u in (q, node, "/api/data/projects", artifact) if u]
         for url in urls:
             first = await get(url, a)
             second = await get(url, a)  # a cache, if there is one, now has it
-            checks[f"{url[:40]}: key A reads it"] = first.status_code == second.status_code == 200
+            checks[f"{url[:64]}: key A reads it"] = first.status_code == second.status_code == 200
             cached = second.headers.get("x-cache-status") in ("HIT", "REVALIDATED", "STALE", "UPDATING")
-            res.extra.setdefault("cached_for_a", {})[url[:40]] = second.headers.get("x-cache-status")
+            res.extra.setdefault("cached_for_a", {})[url[:64]] = second.headers.get("x-cache-status")
             other = await get(url, b)
             if url == "/api/data/projects":
                 checks[f"{url}: key B sees its own projects"] = (
                     other.status_code == 200 and [p["id"] for p in other.json()["projects"]] == pids[2:3]
                 )
             else:
-                checks[f"{url[:40]}: key B is refused"] = other.status_code in (400, 404)
-            checks[f"{url[:40]}: key B gets no cached answer"] = other.headers.get("x-cache-status") not in ("HIT", "STALE", "UPDATING")
+                checks[f"{url[:64]}: key B is refused"] = other.status_code in (400, 404)
+            checks[f"{url[:64]}: key B gets no cached answer"] = other.headers.get("x-cache-status") not in ("HIT", "STALE", "UPDATING")
             twin = await get(url, a2)
-            checks[f"{url[:40]}: key A2 is answered for itself, not from A's entry"] = (
+            checks[f"{url[:64]}: key A2 is answered for itself, not from A's entry"] = (
                 twin.status_code == 200 and twin.headers.get("x-cache-status") not in ("HIT", "STALE", "UPDATING")
                 and (url != "/api/data/projects" or twin.json()["key"]["name"] == "isolation a2")
             )
             nobody = await get(url, {})
-            checks[f"{url[:40]}: no key is refused"] = nobody.status_code == 401
+            checks[f"{url[:64]}: no key is refused"] = nobody.status_code == 401
             tag = second.headers.get("etag")
             if tag:
                 stolen = await get(url, {**b, "If-None-Match": tag})
-                checks[f"{url[:40]}: key B with A's ETag gets no 304"] = stolen.status_code != 304
-            res.extra.setdefault("a_cached", {})[url[:40]] = cached
+                checks[f"{url[:64]}: key B with A's ETag gets no 304"] = stolen.status_code != 304
+            res.extra.setdefault("a_cached", {})[url[:64]] = cached
     res.seconds = time.perf_counter() - t0
     res.cpu_seconds = hub.cpu() - cpu0
     failed = [k for k, v in checks.items() if not v]
@@ -902,6 +909,37 @@ async def run_scenarios(args: argparse.Namespace, root: Path, env: dict[str, str
             record(res)
             record(cheap_res)
 
+        if want("artifact"):
+            # A whole table, three ways: as Arrow from the node read (DuckDB
+            # reads and streams it), as the stored Parquet file by its hash
+            # (sent byte for byte), and that file by a client that keeps it
+            # (it is immutable: asked for once).
+            listing = httpx.get(hub.url + f"/api/data/projects/{pids[0]}", headers=auth_two, timeout=60).json()
+            url = next((n.get("url") for n in listing["nodes"] if n["name"] == "orders"), None)
+            for n in conc:
+                record(await drive(
+                    hub, "artifact:arrow",
+                    lambda c, i: drained(c, "GET", f"/api/data/projects/{pids[0]}/nodes/orders", headers={**auth_two, **ARROW}),
+                    n, args.duration, timeout=300,
+                ))
+                if url is None:
+                    continue
+                res = await drive(hub, "artifact:file", lambda c, i: drained(c, "GET", url, headers=auth_two), n, args.duration, timeout=300)
+                res.note = url.rsplit("/", 1)[-1]
+                record(res)
+                stats = CacheStats()
+                caches = [BrowserCache(stats) for _ in range(n)]
+
+                def kept(c: httpx.AsyncClient, i: int, n: int = n, caches: list[BrowserCache] = caches) -> Awaitable[httpx.Response]:
+                    return caches[i % n].get(c, url, auth_two)
+
+                res = await drive(hub, "artifact:kept", kept, n, args.duration, timeout=300)
+                res.extra.update(stats.note())
+                res.note = f"{stats.got_200} fetched, {stats.local} from the client's cache"
+                record(res)
+            if url is None:
+                print("  (no artifact urls on this hub: artifact:file and artifact:kept skipped)", flush=True)
+
         if want("dashboard"):
             # Many clients polling a dashboard's panels (three expensive
             # queries, two node reads) while one of its projects re-runs a
@@ -1001,7 +1039,7 @@ def main() -> None:
     ap.add_argument("--churn-every", type=float, default=0.25, help="seconds between runs in churn_query")
     ap.add_argument("--only", help="comma-separated scenarios: cold_list, warm_list, hot_query, point_query, "
                     "node_read, history, churn_query, distinct_sets, arrow_scan, wide_json, wide_node, heavy_query, dashboard, "
-                    "staleness, isolation")
+                    "staleness, isolation, artifact")
     ap.add_argument("--cache-seconds", type=float, default=0.0, help="EXUVIA_DATA_CACHE_SECONDS for the hub (0: no-cache)")
     ap.add_argument("--proxy", choices=["nginx"], help="put a proxy in front of the hub (deploy/nginx/exuvia.conf)")
     ap.add_argument("--dashboard-churn", type=float, default=3.0, help="seconds between runs in dashboard")
