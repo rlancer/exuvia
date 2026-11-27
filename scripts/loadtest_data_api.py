@@ -578,6 +578,9 @@ class BrowserCache:
         now = time.monotonic()
         if hit and now < hit[2]:
             self.stats.local += 1
+            # Let the other clients run: a loop of hits that never waits
+            # would hold the event loop and slow every request on the wire.
+            await asyncio.sleep(0)
             return httpx.Response(200, content=hit[1])
         send = dict(headers)
         if hit and hit[0]:
