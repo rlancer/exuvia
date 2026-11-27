@@ -6,6 +6,7 @@ import {
   Controls,
   Handle,
   MiniMap,
+  Panel,
   Position,
   ReactFlow,
   useEdgesState,
@@ -21,16 +22,19 @@ import dagre from "@dagrejs/dagre";
 import * as stylex from "@stylexjs/stylex";
 import { colorVars, durationVars, fontWeightVars, radiusVars, shadowVars, spacingVars, textSizeVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { Badge } from "@astryxdesign/core/Badge";
+import { Button } from "@astryxdesign/core/Button";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
 import { usePersisted } from "./ui/usePersisted";
 import type { GraphNode, NodeStage, Project, ProjectView } from "./api";
 import { ago, fmtNum, summary, until } from "./util";
-import { IconClock, IconCollapse, IconLayers, IconUncollapse, IconWindow } from "./icons";
+import { IconClock, IconCollapse, IconContents, IconLayers, IconUncollapse, IconWindow } from "./icons";
 import { StateDot, statusOf, statusText } from "./ui/state";
-import { lineage, visible, worstState, type Item, type Visible } from "./canvasGraph";
+import { lineage, stageId, visible, worstState, type Item, type Visible } from "./canvasGraph";
 import { ActivityPanel } from "./CanvasActivity";
 import { nodeCard, StateCounts, stripeColor } from "./ui/nodeCard";
+import { ContentsPanel, type Entry } from "./Contents";
+import { notebook } from "./notebookOrder";
 
 const PinnedView = lazy(() => import("./PinnedView"));
 
@@ -209,10 +213,10 @@ function layout(v: Visible): Record<string, { x: number; y: number }> {
   return out;
 }
 
-/** What the canvas remembers per project in this browser: folded stages, whether views show, whether Activity is open. */
-type Prefs = { collapsed: string[]; views: boolean; activity: boolean | null };
+/** What the canvas remembers per project in this browser: folded stages, whether views show, whether Activity and the contents are open. */
+type Prefs = { collapsed: string[]; views: boolean; activity: boolean | null; contents: boolean };
 
-const NO_PREFS: Prefs = { collapsed: [], views: true, activity: null };
+const NO_PREFS: Prefs = { collapsed: [], views: true, activity: null, contents: false };
 /** What is stored, over the defaults: an older version may have stored fewer of them. */
 const acceptPrefs = (v: unknown): Prefs | undefined => (v && typeof v === "object" && !Array.isArray(v) ? { ...NO_PREFS, ...(v as Partial<Prefs>) } : undefined);
 
@@ -266,11 +270,14 @@ export function Canvas(props: {
   }, []);
   const roomy = width ? width >= ROOM_FOR_ACTIVITY : !narrow;
   const activityOpen = prefs.activity ?? (nodes.length > 8 && roomy);
-  // Fit the graph (or the node brought into view) beside the open Activity panel, not under it.
+  // Fit the graph (or the node brought into view) beside the open Activity panel and contents, not under them.
+  const beside = (activityOpen || prefs.contents) && roomy;
   const fitPadding = useRef<FitViewOptions["padding"]>(0.15);
-  fitPadding.current = activityOpen && roomy ? { top: "32px", right: "340px", bottom: "32px", left: "32px" } : 0.15;
+  fitPadding.current = beside
+    ? { top: "32px", right: activityOpen ? "340px" : "32px", bottom: "32px", left: prefs.contents ? "290px" : "32px" }
+    : 0.15;
   const focusPadding = useRef<FitViewOptions["padding"]>(0.8);
-  focusPadding.current = activityOpen && roomy ? { top: "25%", right: "360px", bottom: "25%", left: "25%" } : 0.8;
+  focusPadding.current = beside ? { top: "25%", right: activityOpen ? "360px" : "25%", bottom: "25%", left: prefs.contents ? "310px" : "25%" } : 0.8;
 
   const shown = useMemo(() => visible(nodes, views, stages, { collapsed, showViews: prefs.views }), [nodes, views, stages, collapsed, prefs.views]);
   const at = useRef(shown.at);
@@ -405,6 +412,19 @@ export function Canvas(props: {
     [nodes, collapsed, fold, fitView, onSelect],
   );
 
+  // The contents: the stages and their nodes in the notebook's reading order; a pick brings it into view.
+  const sections = useMemo(() => notebook(nodes, views, stages), [nodes, views, stages]);
+  const goTo = useCallback(
+    (e: Entry) => {
+      if (e.kind === "node") focus(e.id);
+      else if (e.kind === "section" && e.section.stage) {
+        const name = e.section.stage.name;
+        fitView({ nodes: [{ id: collapsed.has(name) ? stageId(name) : `frame:${name}` }], padding: fitPadding.current, duration: 300, maxZoom: 1.1 });
+      }
+    },
+    [focus, fitView, collapsed],
+  );
+
   const staged = shown.frames.length + shown.items.filter((i) => i.kind === "stage").length;
   const allFolded = staged > 0 && shown.frames.length === 0;
   const plainViews = views.filter((v) => !v.canvas).length;
@@ -464,6 +484,15 @@ export function Canvas(props: {
             nodeStrokeColor={(n) => (n.type === "frame" ? "var(--xy-minimap-node-background-color)" : "transparent")}
             nodeStrokeWidth={4}
           />
+        )}
+        {nodes.length > 0 && (
+          <Panel position="top-left">
+            {prefs.contents ? (
+              <ContentsPanel sections={sections} current={selected} views={false} floating onPick={goTo} onClose={() => setPrefs({ contents: false })} />
+            ) : (
+              <Button size="sm" label="Contents" icon={<IconContents />} tooltip="The stages and nodes, to jump to one" onClick={() => setPrefs({ contents: true })} />
+            )}
+          </Panel>
         )}
         {nodes.length > 0 && <ActivityPanel nodes={nodes} isOpen={activityOpen} onOpenChange={(open) => setPrefs({ activity: open })} onFocus={focus} />}
       </ReactFlow>

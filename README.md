@@ -989,6 +989,12 @@ its node into view, opening its stage if it is folded. It is open by default
 on a graph of more than eight nodes on a wide screen; closed, it is one
 button that counts what is running and what failed.
 
+**Contents.** A button at the canvas's top left opens its table of contents:
+the stages, each foldable, over their nodes, in the notebook's reading order.
+A node brings it into view (opening its stage if it is folded) and selects
+it; a stage fits its frame or card in the view. The canvas remembers per
+project whether it is open.
+
 ### Notebook: the same graph, read top to bottom
 
 Graph mode has two layouts, switched in the project's bar: **Canvas** draws
@@ -1017,6 +1023,12 @@ node's cell.
   `prices → returns → rolling_vol` read together instead of interleaving with
   unrelated branches; and a new node goes after its last upstream (or where
   its stage lists it) without moving any other.
+- **Contents** run down the notebook's left edge: the stages, each
+  foldable, over their nodes and views, with the entry being read marked as
+  you scroll. A click goes to that cell (and selects a node). They fold to a
+  rail with one button; the browser remembers which, and on a notebook
+  wider than 1000px they start open. Where the notebook is narrower than
+  600px they open over it and close after a pick.
 - Cells load as they scroll into view, each output's preview with them.
   A viewer of a shared project reads the notebook without Run and Edit.
 

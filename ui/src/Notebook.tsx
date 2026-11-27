@@ -1,12 +1,13 @@
-import { createContext, lazy, memo, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, lazy, memo, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import * as stylex from "@stylexjs/stylex";
-import { colorVars, durationVars, fontWeightVars, radiusVars, spacingVars, textSizeVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
+import { colorVars, durationVars, fontWeightVars, radiusVars, shadowVars, spacingVars, textSizeVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { CodeBlock } from "@astryxdesign/core/CodeBlock";
 import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
+import { IconButton } from "@astryxdesign/core/IconButton";
 import { Link } from "@astryxdesign/core/Link";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
@@ -16,7 +17,9 @@ import { chartBrush, chartedPart, ChartPick, DatasetSummary, DataTable, NodeChar
 import { notebook, type Cell, type Section } from "./notebookOrder";
 import { ago, fmtNum } from "./util";
 import { failed } from "./toast";
-import { IconChevronRight, IconCode, IconLayers, IconPlay, IconWindow } from "./icons";
+import { IconChevronRight, IconCode, IconContents, IconLayers, IconPlay, IconWindow } from "./icons";
+import { ContentsPanel, entryIds, sectionId, type Entry } from "./Contents";
+import { oneOf, usePersisted } from "./ui/usePersisted";
 import { Markdown } from "./ui/Markdown";
 import { StateDot, statusOf, statusText } from "./ui/state";
 import { nodeCard, StateCounts, stripeColor } from "./ui/nodeCard";
@@ -28,6 +31,13 @@ const PREVIEW_ROWS = 8;
 
 /** A pinned view's header, above the height its manifest names (as on the canvas). */
 const PIN_HEAD = 38;
+
+/** Where the contents stay open beside the notebook (when it is not this wide, they open over it, and close after a pick). */
+const DOCK_PX = 600;
+/** How wide the notebook is before the contents open beside it by themselves. */
+const ROOMY_PX = 1000;
+
+const openClosed = oneOf("open", "closed");
 
 /** The notebook's scroller, which cells watch to know when they come into view. */
 const Scroller = createContext<HTMLElement | null>(null);
@@ -107,16 +117,88 @@ export function Notebook(props: {
     else cells.current.delete(id);
   };
 
+  // The contents: beside the notebook where there is room (open by itself on a
+  // wide one, else as this browser left them), over it where there is not.
+  const [frame, setFrame] = useState<HTMLElement | null>(null);
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    if (!frame) return;
+    setWidth(frame.clientWidth);
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setWidth(frame.clientWidth));
+    ro.observe(frame);
+    return () => ro.disconnect();
+  }, [frame]);
+  const [kept, setKept] = usePersisted<"open" | "closed" | null>("exuvia-contents-notebook", null, openClosed);
+  const [sheet, setSheet] = useState(false);
+  const over = width > 0 && width < DOCK_PX;
+  const contentsOpen = over ? sheet : kept ? kept === "open" : width >= ROOMY_PX;
+  const setContentsOpen = useCallback((open: boolean) => (over ? setSheet(open) : setKept(open ? "open" : "closed")), [over, setKept]);
+  const order = useMemo(() => entryIds(sections), [sections]);
+  // An entry picked in the contents goes to the top of the page, and stays
+  // there while the cells above it load and change height, until the page is
+  // scrolled by hand.
+  const [column, setColumn] = useState<HTMLElement | null>(null);
+  const unpin = useRef<() => void>(() => {});
+  useEffect(() => () => unpin.current(), []);
+  const goTo = useCallback(
+    (e: Entry) => {
+      if (e.kind === "node") pick(e.id);
+      if (over) setSheet(false);
+      const el = cells.current.get(e.id);
+      if (!el || !scroller) return;
+      unpin.current();
+      const align = () => {
+        const margin = parseFloat(getComputedStyle(el).scrollMarginTop) || 0;
+        scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - margin;
+      };
+      align();
+      const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(align);
+      if (column) ro?.observe(column);
+      const byHand = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+      const stop = () => {
+        ro?.disconnect();
+        clearTimeout(timer);
+        byHand.forEach((t) => scroller.removeEventListener(t, stop));
+        unpin.current = () => {};
+      };
+      const timer = setTimeout(stop, 2000);
+      byHand.forEach((t) => scroller.addEventListener(t, stop, { passive: true }));
+      unpin.current = stop;
+    },
+    [pick, over, scroller, column],
+  );
+
   return (
     <Scroller.Provider value={scroller}>
+      <div ref={setFrame} {...stylex.props(styles.frame, contentsOpen && !over && styles.frameOpen)}>
+      {contentsOpen && !over ? (
+        <NotebookContents sections={sections} order={order} cells={cells} scroller={scroller} onPick={goTo} onClose={() => setContentsOpen(false)} />
+      ) : (
+        <div {...stylex.props(styles.rail)}>
+          <IconButton
+            size="sm"
+            variant={contentsOpen ? "secondary" : "ghost"}
+            label={contentsOpen ? "Hide the contents" : "Show the contents"}
+            tooltip={contentsOpen ? "Hide the contents" : "Contents: the stages and nodes, to jump to one"}
+            icon={<IconContents />}
+            onClick={() => setContentsOpen(!contentsOpen)}
+          />
+        </div>
+      )}
+      {contentsOpen && over && (
+        <div {...stylex.props(styles.sheet)}>
+          <NotebookContents sections={sections} order={order} cells={cells} scroller={scroller} onPick={goTo} onClose={() => setContentsOpen(false)} />
+        </div>
+      )}
       <div ref={setScroller} {...stylex.props(styles.scroll)} onClick={(e) => e.target === e.currentTarget && pick(null)}>
-        <div {...stylex.props(styles.column)}>
+        <div ref={setColumn} {...stylex.props(styles.column)}>
           <Text type="supporting" color="secondary" xstyle={styles.note}>
             The graph in reading order: each node after what it reads, chains kept together, stages as sections. Reading order is not run order: a node
             runs when what it reads changes, wherever it is on the page.
           </Text>
           {sections.map((s) => (
-            <SectionBlock key={s.key} section={s}>
+            <SectionBlock key={s.key} section={s} sectionRef={register(sectionId(s))}>
               {s.cells.map((c) =>
                 c.kind === "node" ? (
                   <NodeCell
@@ -130,22 +212,67 @@ export function Notebook(props: {
                     onEdit={edit}
                   />
                 ) : (
-                  <ViewCell key={c.id} cell={c} project={project} dark={props.dark} onOpen={() => props.onOpenView(c.view.name)} />
+                  <ViewCell key={c.id} cellRef={register(c.id)} cell={c} project={project} dark={props.dark} onOpen={() => props.onOpenView(c.view.name)} />
                 ),
               )}
             </SectionBlock>
           ))}
         </div>
       </div>
+      </div>
     </Scroller.Provider>
   );
 }
 
+/**
+ * The contents beside (or over) the notebook, marking the entry being read:
+ * the last whose top has passed a line near the top of the scroller. Its own
+ * component, so scrolling past a cell draws the contents again, not the cells.
+ */
+function NotebookContents(props: {
+  sections: Section[];
+  order: string[];
+  cells: RefObject<Map<string, HTMLElement>>;
+  scroller: HTMLElement | null;
+  onPick: (e: Entry) => void;
+  onClose: () => void;
+}) {
+  const { order, cells, scroller } = props;
+  const [current, setCurrent] = useState<string | null>(null);
+  useEffect(() => {
+    if (!scroller) return;
+    let frame = 0;
+    const spy = () => {
+      frame = 0;
+      const box = scroller.getBoundingClientRect();
+      const line = box.top + Math.min(120, box.height / 3);
+      let at: string | null = null;
+      for (const id of order) {
+        const el = cells.current.get(id);
+        if (!el) continue;
+        if (el.getBoundingClientRect().top > line) break;
+        at = id;
+      }
+      setCurrent(at ?? order[0] ?? null);
+    };
+    const onScroll = () => {
+      if (!frame) frame = requestAnimationFrame(spy);
+    };
+    spy();
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      scroller.removeEventListener("scroll", onScroll);
+      cancelAnimationFrame(frame);
+    };
+  }, [scroller, order, cells]);
+  return <ContentsPanel sections={props.sections} current={current} onPick={props.onPick} onClose={props.onClose} />;
+}
+
 /** A section: a stage's title, what it is for and its states, or a quiet line over nodes in no stage. */
-function SectionBlock({ section, children }: { section: Section; children: ReactNode }) {
+function SectionBlock({ section, sectionRef, children }: { section: Section; sectionRef: (el: HTMLElement | null) => void; children: ReactNode }) {
   const { stage, members, continued } = section;
   return (
-    <section {...stylex.props(styles.section)}>
+    <section ref={sectionRef} {...stylex.props(styles.section)}>
       {stage ? (
         <header {...stylex.props(styles.sectionHead)}>
           <HStack gap={2} vAlign="center">
@@ -388,14 +515,25 @@ function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
 }
 
 /** A view after the last node it reads: pinned ones rendered live, the others a line that opens them. */
-function ViewCell({ cell, project, dark, onOpen }: { cell: Extract<Cell, { kind: "view" }>; project: Project; dark: boolean; onOpen: () => void }) {
+function ViewCell(props: {
+  cellRef: (el: HTMLElement | null) => void;
+  cell: Extract<Cell, { kind: "view" }>;
+  project: Project;
+  dark: boolean;
+  onOpen: () => void;
+}) {
+  const { cell, project, dark, onOpen, cellRef } = props;
   const { view } = cell;
   const [el, setEl] = useState<HTMLElement | null>(null);
   const seen = useSeen(el);
   const size = view.canvas;
+  const ref = (e: HTMLElement | null) => {
+    setEl(e);
+    cellRef(e);
+  };
   if (cell.pinned && size)
     return (
-      <div ref={setEl} {...stylex.props(styles.pinned)}>
+      <div ref={ref} {...stylex.props(styles.pinned)}>
         {seen ? (
           <Suspense fallback={<div {...stylex.props(styles.pinWait, styles.height(size.height + PIN_HEAD))} />}>
             <PinnedView view={view} project={project} width={size.width} height={size.height} dark={dark} onOpen={onOpen} fill />
@@ -405,13 +543,13 @@ function ViewCell({ cell, project, dark, onOpen }: { cell: Extract<Cell, { kind:
         )}
       </div>
     );
-  return <ViewLine view={view} onOpen={onOpen} />;
+  return <ViewLine view={view} onOpen={onOpen} lineRef={cellRef} />;
 }
 
-function ViewLine({ view, onOpen }: { view: ProjectView; onOpen: () => void }) {
+function ViewLine({ view, onOpen, lineRef }: { view: ProjectView; onOpen: () => void; lineRef: (el: HTMLElement | null) => void }) {
   const title = view.title || view.name;
   return (
-    <div {...stylex.props(styles.viewLine)}>
+    <div ref={lineRef} {...stylex.props(styles.viewLine)}>
       <IconWindow />
       <Text weight="medium" maxLines={1}>
         {title}
@@ -429,6 +567,35 @@ function ViewLine({ view, onOpen }: { view: ProjectView; onOpen: () => void }) {
 const NARROW = "@media (max-width: 1100px)";
 
 const styles = stylex.create({
+  // The contents (or their rail) beside the notebook's scroller.
+  frame: {
+    position: "relative",
+    display: "grid",
+    gridTemplateColumns: "40px minmax(0, 1fr)",
+    gridTemplateRows: "minmax(0, 1fr)",
+    height: "100%",
+    minHeight: 0,
+  },
+  frameOpen: { gridTemplateColumns: "clamp(220px, 24%, 300px) minmax(0, 1fr)" },
+  rail: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    paddingBlock: spacingVars["--spacing-1-5"],
+    backgroundColor: colorVars["--color-background-surface"],
+    borderInlineEndWidth: "1px",
+    borderInlineEndStyle: "solid",
+    borderInlineEndColor: colorVars["--color-border"],
+  },
+  // A narrow notebook: the contents open over it, beside the rail.
+  sheet: {
+    position: "absolute",
+    insetBlock: 0,
+    insetInlineStart: "40px",
+    zIndex: 2,
+    width: "min(300px, calc(100% - 56px))",
+    boxShadow: shadowVars["--shadow-med"],
+  },
   scroll: { height: "100%", overflow: "auto", backgroundColor: colorVars["--color-background-body"] },
   // A reading column: about a page wide, centred.
   column: {
@@ -442,7 +609,7 @@ const styles = stylex.create({
   },
   note: { maxWidth: "70ch" },
   grow: { flexGrow: 1 },
-  section: { display: "flex", flexDirection: "column", gap: spacingVars["--spacing-3"], minWidth: 0 },
+  section: { display: "flex", flexDirection: "column", gap: spacingVars["--spacing-3"], minWidth: 0, scrollMarginBlock: spacingVars["--spacing-4"] },
   sectionHead: {
     display: "flex",
     flexDirection: "column",
@@ -538,7 +705,7 @@ const styles = stylex.create({
     overflowWrap: "anywhere",
   },
 
-  pinned: { minWidth: 0 },
+  pinned: { minWidth: 0, scrollMarginBlock: spacingVars["--spacing-4"] },
   pinWait: {
     width: "100%",
     borderWidth: "1px",
@@ -550,6 +717,7 @@ const styles = stylex.create({
   height: (height: number) => ({ height }),
   // A view is not a step of the pipeline: a dashed edge, the surface's ground (as on the canvas).
   viewLine: {
+    scrollMarginBlock: spacingVars["--spacing-4"],
     display: "flex",
     alignItems: "center",
     gap: spacingVars["--spacing-2"],

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { GraphNode, NodeStage, ProjectView } from "./api";
 import { notebook, readingOrder } from "./notebookOrder";
+import { entryIds } from "./Contents";
 
 const node = (name: string, deps: string[] = []): GraphNode => ({ name, deps, state: "fresh" }) as GraphNode;
 const stage = (name: string, nodes: string[]): NodeStage => ({ name, title: name, description: "", nodes, missing: [], problem: null });
@@ -140,5 +141,14 @@ describe("notebook", () => {
       ["stage:x", false],
       ["stage:s:1", true],
     ]);
+  });
+});
+
+describe("entryIds", () => {
+  it("lists each stage before its cells, in reading order, views where they come", () => {
+    const ns = [node("a"), node("b", ["a"]), node("loose", ["b"])];
+    const sections = notebook(ns, [view("board", ["b"])], [stage("ingest", ["a", "b"])]);
+    expect(entryIds(sections)).toEqual(["section:stage:ingest", "a", "b", "view:board", "loose"]);
+    expect(entryIds(sections, false)).toEqual(["section:stage:ingest", "a", "b", "loose"]);
   });
 });
