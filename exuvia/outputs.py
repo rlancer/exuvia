@@ -11,6 +11,7 @@ Workspace keeps thin wrappers (``query``, ``query_arrow``, ``_outputs_db``,
 from __future__ import annotations
 
 import re
+import threading
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -254,6 +255,23 @@ def _history_union(runs: list[tuple[str, dict[str, Any]]]) -> str:
         cols = ", ".join(f'{_lit(v)} as "_{k}"' for k, v in sorted(params.items()))
         selects.append(f"select {cols + ', ' if cols else ''}* from read_parquet({_lit(path)})")
     return " union all by name ".join(selects)
+
+
+_reader: Any = None
+_reader_lock = threading.Lock()
+
+
+def reader() -> Any:
+    """A cursor on the one DuckDB database the server keeps for reading
+    output files by paths it chose itself: a node's rows, its Arrow stream,
+    its column summary. Opening a database costs tens of milliseconds and
+    starts a pool of threads; a cursor on an open one costs microseconds.
+    Never for SQL a client sends: that runs in ``outputs_db``'s sandbox."""
+    global _reader
+    with _reader_lock:
+        if _reader is None:
+            _reader = outputs_connection()
+        return _reader.cursor()
 
 
 def outputs_connection() -> Any:

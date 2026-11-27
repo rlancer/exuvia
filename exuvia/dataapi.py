@@ -222,22 +222,43 @@ class QueryConnections:
         self._lock = threading.Lock()
         # projects -> (stamp, built at, connection)
         self._cons: "OrderedDict[tuple[str, ...], tuple[Any, float, Any]]" = OrderedDict()
+        # projects -> the lock held while that set's connection is built, so
+        # requests that miss together wait for one build instead of each
+        # making their own (a run finishing invalidates the connection for
+        # every request at once).
+        self._building: dict[tuple[str, ...], threading.Lock] = {}
+        self.builds = 0  # connections built, for tests and the load test
 
     @staticmethod
     def _stamp(workspaces: dict[str, Workspace]) -> tuple[Any, ...]:
         return tuple((pid, id(ws), ws.bus.version) for pid, ws in sorted(workspaces.items()))
+
+    def _cached(self, key: tuple[str, ...], stamp: tuple[Any, ...]) -> Any:
+        with self._lock:
+            hit = self._cons.get(key)
+            if hit and hit[0] == stamp and time.monotonic() - hit[1] < CACHE_TTL:
+                self._cons.move_to_end(key)
+                return hit[2].cursor()
+        return None
 
     def cursor(self, workspaces: dict[str, Workspace]) -> Any:
         """A cursor on a connection with each project's outputs in a catalog
         named after it. Blocking (a build may download outputs)."""
         key = tuple(sorted(workspaces))
         stamp = self._stamp(workspaces)
-        now = time.monotonic()
+        cur = self._cached(key, stamp)
+        if cur is not None:
+            return cur
         with self._lock:
-            hit = self._cons.get(key)
-            if hit and hit[0] == stamp and now - hit[1] < CACHE_TTL:
-                self._cons.move_to_end(key)
-                return hit[2].cursor()
+            building = self._building.setdefault(key, threading.Lock())
+        with building:
+            cur = self._cached(key, stamp)  # built while this request waited
+            if cur is not None:
+                return cur
+            return self._build(key, workspaces, stamp)
+
+    def _build(self, key: tuple[str, ...], workspaces: dict[str, Workspace], stamp: tuple[Any, ...]) -> Any:
+        now = time.monotonic()
         con = outputs_connection()
         files: list[str] = []
         for pid in key:
@@ -249,15 +270,18 @@ class QueryConnections:
             files += workspaces[pid].add_output_views(con, None, catalog=pid)
         lock_outputs(con, files)
         with self._lock:
+            self.builds += 1
             self._cons[key] = (stamp, now, con)
             self._cons.move_to_end(key)
             while len(self._cons) > CACHE_MAX:
-                self._cons.popitem(last=False)  # a cursor still reading keeps it alive
+                old, _ = self._cons.popitem(last=False)  # a cursor still reading keeps it alive
+                self._building.pop(old, None)
         return con.cursor()
 
     def clear(self) -> None:
         with self._lock:
             self._cons.clear()
+            self._building.clear()
 
 
 def describe(ws: Workspace) -> list[dict[str, Any]]:
@@ -299,6 +323,20 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
 
     store: DataKeyStore = hub.data_keys
     connections = QueryConnections()
+    app.state.data_connections = connections
+    # project -> ((workspace, its version), built at, describe()): a listing
+    # reads every node's last run, so it is kept until the project changes
+    # (or CACHE_TTL passes: a default parameter like "today" moves on its own).
+    described: dict[str, tuple[tuple[int, int], float, list[dict[str, Any]]]] = {}
+
+    def nodes_of(pid: str, ws: Workspace) -> list[dict[str, Any]]:
+        stamp, now = (id(ws), ws.bus.version), time.monotonic()
+        hit = described.get(pid)
+        if hit and hit[0] == stamp and now - hit[1] < CACHE_TTL:
+            return hit[2]
+        out = describe(ws)
+        described[pid] = (stamp, now, out)
+        return out
     access_cache: dict[str, tuple[tuple[str, ...], float]] = {}
     access_lock = threading.Lock()
 
@@ -492,14 +530,14 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         out = []
         for pid in projects:
             ws = (await hub.get(pid)).ws
-            out.append({"id": pid, "name": ws.project.name, "nodes": await asyncio.to_thread(describe, ws)})
+            out.append({"id": pid, "name": ws.project.name, "nodes": await asyncio.to_thread(nodes_of, pid, ws)})
         return FastJSON({"key": {"id": key.id, "name": key.name}, "projects": out})
 
     @app.get(PREFIX + "projects/{project}", responses={200: {"model": DataProject}, **PROBLEMS}, **route)
     async def data_project(project: str, access: Access = Depends(key_projects)) -> Any:
         """One of the key's projects, with its nodes."""
         ws = await workspace(project, access[1])
-        return FastJSON({"id": project, "name": ws.project.name, "nodes": await asyncio.to_thread(describe, ws)})
+        return FastJSON({"id": project, "name": ws.project.name, "nodes": await asyncio.to_thread(nodes_of, project, ws)})
 
     @app.get(
         PREFIX + "projects/{project}/nodes/{node}",

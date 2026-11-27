@@ -340,3 +340,73 @@ def test_a_json_output_with_nan_is_served_as_null(hub):
     r = hub.get("/api/data/projects/lab/nodes/stats", headers=bearer(make_key(hub, ["lab"])))
     assert r.status_code == 200, r.text
     assert r.json()["value"] == want
+
+
+class FakeWorkspace:
+    """Just what QueryConnections reads of a workspace: its version and views."""
+
+    def __init__(self):
+        from exuvia.events import EventBus
+
+        self.bus = EventBus()
+        self.built = 0
+
+    def add_output_views(self, con, params, only=None, catalog=None):
+        import time
+
+        self.built += 1
+        time.sleep(0.2)  # long enough for every request below to miss together
+        con.execute(f'attach \':memory:\' as "{catalog}"')
+        con.execute(f'create view "{catalog}".main.t as select 1 as x')
+        return []
+
+
+def test_requests_that_miss_together_wait_for_one_build():
+    """A run finishing invalidates the connection for every request at once:
+    they wait for one build instead of each making their own."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    conns, ws = dataapi.QueryConnections(), FakeWorkspace()
+
+    def query(_):
+        cur = conns.cursor({"sales": ws})
+        try:
+            return cur.execute("select x from sales.t").fetchall()
+        finally:
+            cur.close()
+
+    with ThreadPoolExecutor(8) as pool:
+        assert list(pool.map(query, range(8))) == [[(1,)]] * 8
+    assert ws.built == 1 and conns.builds == 1
+
+    ws.bus.touch()  # the project changed: the next requests build once more
+    with ThreadPoolExecutor(8) as pool:
+        assert list(pool.map(query, range(8))) == [[(1,)]] * 8
+    assert ws.built == 2 and conns.builds == 2
+
+
+def test_a_listing_is_kept_until_its_project_changes(hub, monkeypatch):
+    key = make_key(hub, ["crm"])
+    calls = []
+    real = dataapi.describe
+    monkeypatch.setattr(dataapi, "describe", lambda ws: calls.append(1) or real(ws))
+    for _ in range(3):
+        assert hub.get("/api/data/projects", headers=bearer(key)).status_code == 200
+    assert len(calls) == 1
+    hub.app.state.hub._ctxs["crm"].ws.bus.touch()
+    got = hub.get("/api/data/projects/crm", headers=bearer(key)).json()
+    assert len(calls) == 2 and [n["name"] for n in got["nodes"]] == ["accounts"]
+
+
+def test_node_reads_share_one_database_and_keep_their_temp_tables_apart():
+    """outputs.reader: a cursor each, on one database; a temp table one
+    cursor makes (a partitioned read's filter) is not another's."""
+    from exuvia import outputs
+
+    a, b = outputs.reader(), outputs.reader()
+    a.execute("create temp table __keep (v varchar)")
+    a.execute("insert into __keep values ('a')")
+    b.execute("create temp table __keep (v varchar)")
+    assert a.execute("select count(*) from __keep").fetchone() == (1,)
+    assert b.execute("select count(*) from __keep").fetchone() == (0,)
+    assert a.execute("select current_setting('threads')").fetchone() == b.execute("select current_setting('threads')").fetchone()
