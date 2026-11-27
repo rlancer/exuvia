@@ -655,9 +655,75 @@ exuvia push bbg_closes closes.csv --url https://exuvia.example.com/p/research --
   it. A hub that others can read, or a share link, may take it past them:
   check the terms before pushing it somewhere shared.
 
-Running the node itself on the desktop, with the hub scheduling it and the
-code managed there, is planned: see
-[rlancer/exuvia#127](https://github.com/rlancer/exuvia/issues/127).
+To have the hub schedule the node and keep its code, and the desktop only
+run it, use a runner instead (below).
+
+### Runners: nodes that run on someone's desktop
+
+A push node needs a script of your own on the desktop. A **runner** runs
+the node itself there: the hub keeps its code, schedule, history and the
+graph around it, and hands each run to the desktop.
+
+```python
+"""Daily closes from the Bloomberg Terminal on the trading desk."""
+import blpapi  # listed in the project's pyproject.toml
+import exuvia
+
+
+@exuvia.node(runs_on="bloomberg", schedule="15 17 * * 1-5")
+def bbg_closes():
+    ...  # runs on the desktop, against that person's terminal login
+```
+
+(SQL: `-- runs_on: bloomberg`.) On the desktop, signed in with your own agent
+token from the workbench's account menu:
+
+```bash
+EXUVIA_API_TOKEN=... exuvia runner --url https://exuvia.example.com --label bloomberg
+```
+
+- **It dials out.** The runner long-polls the hub over HTTPS for runs of
+  nodes with its labels (`--label`, repeatable), runs each one with the
+  usual subprocess runner, streams the log back and uploads the output,
+  which the hub checks by its hash. Nothing has to reach the desktop, so it
+  works behind NAT or a corporate firewall.
+- **Bound to a person.** A runner takes runs only from projects its owner
+  (the agent token's person) can edit, and only it can answer for a run it
+  took. `GET /api/runners` lists your runners, online or not, and the runs
+  waiting for one.
+- **Code approval.** Anyone who can edit the project, the agent included,
+  could otherwise run code on your desktop. So a runner runs only code you
+  have approved on that machine: the node's file, the `lib/` files it
+  imports and the project's `pyproject.toml`, `uv.lock` and `exuvia.json`,
+  by their hash. New or changed code shows its diff from the version you
+  last approved and waits for a yes when the runner is in a terminal. In the
+  background, the run fails saying so, the code is kept, and
+  `exuvia runner approve` shows it and approves it; the next run (a retry,
+  the next schedule) goes ahead. Approvals live on the desktop
+  (`EXUVIA_RUNNER_HOME`, default `~/.exuvia/runner`): the hub can't grant one.
+- **Only what it needs.** The runner gets that node's code, not the whole
+  project, and only the project variables its files name (`BBG_KEY` in
+  `os.environ["BBG_KEY"]`), not every secret. The hub's and the runner's
+  own settings (`EXUVIA_*`) never reach the node. Packages in the
+  project's `pyproject.toml` are installed on the desktop with `uv`, as the
+  hub's installer does.
+- **Offline desktops.** A run waits ("waiting for a runner labelled
+  bloomberg", and whether one is online) until a runner takes it, for
+  `EXUVIA_RUNNER_WAIT` seconds (default 3600), then fails; a runner that goes
+  quiet for `EXUVIA_RUNNER_SILENCE` seconds (default 120) fails the run it
+  held. Nodes downstream keep reading the last good output, as after any
+  failed run, and `retries` tries again. A run waiting for a desktop takes
+  none of the hub's run slots (`EXUVIA_MAX_PARALLEL`). Cancelling it on the
+  hub stops it on the desktop too.
+- **Sources only, for now.** A `runs_on` node takes no upstream nodes, so no
+  large output is shipped down to a laptop; it can't be live either. Read
+  its output from nodes downstream, which run on the hub as usual.
+- **Licences.** The same as for push nodes: check the data's terms before
+  its output lands where others can read it.
+
+`exuvia runner --once` waits for one run and stops; `--name` names the
+runner on the hub (default: the machine's name). A run needs `exuvia serve`
+or `exuvia hub`: `exuvia run` has nothing to hand it to.
 
 ## Views
 
@@ -2697,6 +2763,8 @@ empty file, stops exuvia with an error.
 | `EXUVIA_PUBLIC_URL` | — | where this server is reachable (e.g. `https://exuvia.example.com`), for run links in failure webhooks |
 | `EXUVIA_MAX_PARALLEL` | 4 | concurrent node runs (control plane and executor) |
 | `EXUVIA_RUN_TIMEOUT` | 1800 | seconds before a node run is killed |
+| `EXUVIA_RUNNER_WAIT` | 3600 | seconds a run of a `runs_on` node waits for a runner to take it before it fails (see "Runners") |
+| `EXUVIA_RUNNER_SILENCE` | 120 | seconds without a heartbeat after which a run a runner took fails |
 | `EXUVIA_BUNDLE_MAX_MB` | 50 | max project size shipped to a remote executor |
 | `EXUVIA_AGENT_PACKAGES` | `ask` | what the agent may do with packages: `ask` (requests wait for a person to approve them), `install`, or `off` (see "Packages") |
 | `EXUVIA_PACKAGES_CONCURRENCY` | 2 | package installs that run at once (a hub starting with many projects to install) |
@@ -3138,6 +3206,7 @@ section named after each one has the details.
 | `exuvia mcp [DIR]` | the agent's tools over MCP on stdio: the project in `DIR`, or `--url URL` to relay to a running server or hub | MCP |
 | `exuvia tool [NAME] [INPUT]` | call one of the agent's tools and print its answer, for agents without a working MCP connection: `--url URL` (or `EXUVIA_URL`) or the project in `.`; no `NAME` lists them. `-a KEY=VALUE`, `--schema`, `--json` | When MCP doesn't connect |
 | `exuvia push NODE FILE --url URL` | upload a push node's output (`.parquet`, `.csv`, `.json`) from the machine that has the data. `--param`, `--note`, `--allow-http` | Push nodes |
+| `exuvia runner --url URL --label LABEL` | take the hub's runs of `runs_on` nodes with that label and run them on this machine, once you approve their code; `exuvia runner approve` approves code waiting for it. `--name`, `--once`, `--allow-http` | Runners |
 | `exuvia cancel RUN_ID --url URL` | stop a queued or running run of a running exuvia (a hub project or `exuvia serve`); sends `EXUVIA_API_TOKEN`. `--allow-http` | Stopping a run |
 | `exuvia mirror DEST` | the project's code history as git commits on branch `exuvia` in `DEST`, from `--url URL` or `--project DIR` (default `.`); `--remote REMOTE` or `--github OWNER/NAME` pushes it; `--prefix DIR` puts it under a folder, so one branch holds several projects. `--branch`, `--allow-http` | The history in git |
 | `exuvia env list`, `set`, `rm` | a project's (or, with `--group`, a hub group's; with `--hub`, the hub's) environment variables and secrets, in a folder or over `--url` | Environment variables and secrets |
@@ -3228,6 +3297,8 @@ exuvia hub ./projects --templates ./templates --scheduler external
 | `ANY /p/{project}/api/...` | that project's API (everything in the table below) |
 | `POST /api/schedule/tick` | evaluate every project's schedules; returns what started and the next due time. A project that fails to load or tick is skipped and named under `errors` (id → reason); the others still tick |
 | `GET /api/hub/state` | whether anything is running, and a counter that changes when state does |
+| `POST /api/runners/claim`, `POST /api/runners/jobs/{id}/log`, `PUT /api/runners/jobs/{id}/output`, `POST /api/runners/jobs/{id}/result` | what `exuvia runner` calls (also on `exuvia serve`): claim a run of a `runs_on` node in a project the token's person can edit, send its log (and a heartbeat; 410 once it was cancelled), its output (kept only if it hashes to its `artifact_id`) and how it ended (see "Runners") |
+| `GET /api/runners` | your runners (every one, for an admin), online or not, and the runs waiting for one in projects you can open |
 | `GET /api/hub/export`, `POST /api/hub/import` | the whole directory as one archive, for hosts with no persistent disk (without outputs already in `EXUVIA_ARTIFACT_STORE`, or records already in a shared `EXUVIA_DB`). With `EXUVIA_AUTH` set it carries the user list too, which an import puts in place of the hub's |
 | `GET /api/users`, `PATCH /api/users/{id}` | the user list, for admins (see "Users and admins"): everyone who has signed in with their identities / change one's `role` or `disabled` |
 | `GET /api/people?q=` | enabled users whose name or email contains `q` (id, name, email), for choosing who to share with; for anyone signed in |

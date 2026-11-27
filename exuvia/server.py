@@ -46,6 +46,7 @@ from .packages import PackagesError
 from .project import NODE_NAME, PARAM_TYPES, coerce_param
 from .pushing import format_of, max_bytes
 from .report import graph_report, node_report
+from .runners import Broker, RunnerError
 from .groups import open_groups
 from .http_util import FastJSON, arrow_response, need_partitioned, partition_range, query_params, resolve_params, static_file
 from .sharing import GRANT_ROLES, LINK_COOKIE, MAX_LINK_DAYS, at_least, looks_like_link, open_sharing
@@ -1861,6 +1862,134 @@ def _install_common(app: FastAPI, users: UserStore | None, command: str = "serve
         return resp
 
 
+class RunnerClaim(BaseModel):
+    labels: list[str] = Field(min_length=1, max_length=20)
+    name: str = Field(min_length=1, max_length=100)
+    version: str = ""
+    wait: float = 25.0  # seconds to hold the request open for a run
+
+
+class RunnerLog(BaseModel):
+    token: str
+    text: str = ""
+
+
+class RunnerResult(BaseModel):
+    token: str
+    result: dict[str, Any]
+
+
+def _runner_routes(
+    app: FastAPI,
+    broker: Broker,
+    can_take: Callable[[str], bool],
+    is_admin: Callable[[], bool],
+    can_see: Callable[[str], bool] | None = None,
+) -> None:
+    """``/api/runners``: runners on people's machines take the runs of
+    runs_on nodes (runners.py). ``can_take(project)``: whether the request's
+    person may take that project's runs (edit access); ``can_see``: whether
+    they may see that it has some waiting."""
+    from .project import RUNS_ON
+
+    def owner() -> tuple[str, str | None]:
+        ident = auth.current()
+        if ident is not None and ident.method == "link":
+            raise HTTPException(403, "a share link can't run a runner: sign in with your agent token")
+        if ident is None:
+            return "operator", None
+        return ident.id or "someone", ident.uid
+
+    def runner_key() -> str:
+        who, uid = owner()
+        return f"{uid or who}|"
+
+    def name_of(request: Request) -> str:
+        name = request.headers.get("x-exuvia-runner", "")
+        if not name:
+            raise HTTPException(400, "say which runner this is: the X-Exuvia-Runner header")
+        return name
+
+    def fail(e: RunnerError) -> HTTPException:
+        return HTTPException(e.status, str(e))
+
+    @app.post("/api/runners/claim")
+    async def runner_claim(body: RunnerClaim) -> dict[str, Any]:
+        """Wait up to ``wait`` seconds (at most 30) for a run of a node
+        with one of ``labels``, in a project the runner's owner can edit,
+        and claim it: ``{"job": {...}}``, or ``{"job": null}`` to ask again."""
+        bad = [label for label in body.labels if not RUNS_ON.fullmatch(label)]
+        if bad:
+            raise HTTPException(400, f"not a runner label: {bad[0]!r}")
+        who, uid = owner()
+        runner = broker.heard(who, uid, body.name.strip(), sorted(set(body.labels)), body.version[:40])
+        deadline = _time.monotonic() + min(max(body.wait, 0.0), 30.0)
+        while True:
+            job = await asyncio.to_thread(broker.try_claim, runner, can_take)
+            if job is not None or _time.monotonic() >= deadline:
+                broker.heard(who, uid, runner.name, runner.labels)
+                return {"job": job}
+            await asyncio.sleep(0.5)
+
+    @app.post("/api/runners/jobs/{job_id}/log")
+    async def runner_log(job_id: str, body: RunnerLog, request: Request) -> dict[str, Any]:
+        """What the run printed, and a heartbeat. 410 once the run is no
+        longer the runner's (cancelled, or given up on): stop it."""
+        try:
+            await asyncio.to_thread(broker.log, job_id, body.token, runner_key() + name_of(request), body.text[:1_000_000])
+        except RunnerError as e:
+            raise fail(e) from None
+        return {"ok": True}
+
+    @app.put("/api/runners/jobs/{job_id}/output")
+    async def runner_output(
+        job_id: str, request: Request, token: str = Query(...), kind: str = Query(...), artifact_id: str = Query(...)
+    ) -> dict[str, Any]:
+        """The run's output file as the body; kept only if its bytes hash to ``artifact_id``."""
+        limit = max_bytes()
+        fd, tmp = tempfile.mkstemp(prefix="runner-", suffix=".part")
+        size = 0
+        try:
+            with os.fdopen(fd, "wb") as f:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > limit:
+                        raise HTTPException(413, f"the output is bigger than {limit // (1024 * 1024)} MB (EXUVIA_PUSH_MAX_MB)")
+                    f.write(chunk)
+            await asyncio.to_thread(
+                broker.output, job_id, token, runner_key() + name_of(request), kind, artifact_id, Path(tmp)
+            )
+        except RunnerError as e:
+            raise fail(e) from None
+        finally:
+            with suppress(FileNotFoundError):
+                os.unlink(tmp)
+        return {"ok": True, "bytes": size}
+
+    @app.post("/api/runners/jobs/{job_id}/result")
+    async def runner_result(job_id: str, body: RunnerResult, request: Request) -> dict[str, Any]:
+        """How the run ended: the runner's result (ok, error, kind,
+        artifact_id, rows, schema)."""
+        try:
+            await asyncio.to_thread(broker.finish, job_id, body.token, runner_key() + name_of(request), body.result)
+        except RunnerError as e:
+            raise fail(e) from None
+        return {"ok": True}
+
+    @app.get("/api/runners")
+    def runner_list() -> dict[str, Any]:
+        """Runners (yours; every one for an admin), online or not, and the
+        runs waiting for one in projects you can open."""
+        admin = is_admin()
+        ident = auth.current()
+        me = None if ident is not None and ident.method == "link" else runner_key()
+
+        def visible(r: Any) -> bool:
+            return admin or r.key.startswith(me or "\0")
+
+        return broker.describe(visible, can_see or can_take)
+
+
 def create_app(root: str | Path) -> FastAPI:
     ws = Workspace(root)
     ctx = Ctx(ws, Agent(ws))
@@ -1881,6 +2010,9 @@ def create_app(root: str | Path) -> FastAPI:
     # One project: the user list lives in its database (or the shared one).
     users = open_users(ws.store.db) if auth.identifies_people() else None
     _install_common(app, users)
+    ws.runners = Broker()
+    # Whoever gets in can change this one project, and so take its runs.
+    _runner_routes(app, ws.runners, lambda _project: True, _operator_or_admin)
     app.state.users = users
     ctx.agent.mcp = _open_agent_mcp(ws.store.db, users)
     _agent_mcp_routes(app, ctx.agent.mcp)
@@ -2382,6 +2514,11 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
     hub.mcp =_open_agent_mcp(hub.root / HUB_USERS_DB, hub.users)
     _agent_mcp_routes(app, hub.mcp, is_admin)
     dataapi.install(app, hub, role_on, is_admin)
+    # A runner takes runs only from projects its owner can edit (runners.py).
+    _runner_routes(
+        app, hub.runners, lambda p: hub.exists(p) and at_least(role_on(p), "editor"), is_admin,
+        lambda p: hub.exists(p) and role_on(p) is not None,
+    )
 
     async def get_ctx(project: str, request: Request) -> Ctx:
         # The rules may need a database read: off the event loop (the thread

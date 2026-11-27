@@ -95,6 +95,11 @@ class Hub:
         # Read-only keys for the data API (datakeys.py; set by create_hub_app).
         self.data_keys: Any = None
         self.keyring = envvars.Keyring(self.root / ".exuvia")
+        # The runs of runs_on nodes, waiting for or held by runners on
+        # people's machines, for every project (runners.py).
+        from .runners import Broker
+
+        self.runners = Broker()
         # The projects a request may see (create_hub_app filters by sharing).
         self.visible: Any = self.list
         # The hub's ASGI app (set by create_hub_app): its MCP endpoint calls
@@ -154,6 +159,7 @@ class Hub:
                     npm_store=self.root / HUB_NPM,
                 )
                 ws.api_prefix = f"/p/{project_id}/api"
+                ws.runners, ws.project_id = self.runners, project_id
                 if self.groups is not None:
                     ws.inherited_env = lambda pid=project_id: self.inherited_env(pid)
                 await ws.start()

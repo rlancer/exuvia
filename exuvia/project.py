@@ -97,6 +97,9 @@ class Node:
     # Its output is uploaded (``exuvia push``), never computed here: for data
     # only another machine can read, such as a Bloomberg Terminal's.
     push: bool = False
+    # The label of the runners (``exuvia runner --label``) that run it on
+    # someone's own machine instead of the project's executor (runners.py).
+    runs_on: str | None = None
     # A live node re-runs when a view that depends on it is opened, and the
     # view shows its last output until the new one lands. None: not live;
     # otherwise how many seconds an output stays recent enough not to re-run
@@ -386,6 +389,8 @@ class Project:
             missing = [d for d in n.deps if d not in names]
             if missing and n.parse_error is None:
                 n.parse_error = f"Unknown upstream node(s): {', '.join(missing)}"
+            if n.runs_on and n.deps and n.parse_error is None:
+                n.parse_error = RUNS_ON_DEPS
             unknown = [p for p in n.params if p not in declared]
             if unknown and n.parse_error is None:
                 n.parse_error = (
@@ -896,6 +901,8 @@ def _parse_python(node: Node, text: str) -> None:
                 if not isinstance(value, bool):
                     raise ValueError(f"`push` must be True or False, not {value!r}.")
                 node.push = value
+            elif kw.arg == "runs_on":
+                node.runs_on = runs_on_label(value)
             elif kw.arg == "live":
                 node.live = _live_value(value)
             elif kw.arg == "partition_by":
@@ -909,6 +916,7 @@ def _parse_python(node: Node, text: str) -> None:
     _check_key(node)
     if node.push:
         _check_push(node)
+    _check_runs_on(node)
     if node.schedule:
         _validate_cron(node.schedule)
 
@@ -951,6 +959,39 @@ def _check_push(node: Node) -> None:
             "A push node can't be live: nothing here runs it, so opening a view can't refresh it."
         )
 
+
+RUNS_ON = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def runs_on_label(value: Any) -> str | None:
+    """``runs_on``: the label of the runners that run the node, such as
+    ``"bloomberg"``; None or empty: the project's executor."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or not RUNS_ON.fullmatch(value.strip()):
+        raise ValueError(
+            f"`runs_on` names the label of the runners that run the node (`exuvia runner --label bloomberg`): "
+            f"letters, digits, `.`, `_` and `-`, up to 64 of them, not {value!r}."
+        )
+    return value.strip()
+
+
+def _check_runs_on(node: Node) -> None:
+    """A node run by a runner on someone's machine: not pushed, not live
+    (opening a view must not wait on a desktop). Its upstream nodes are
+    checked once the graph is known (``Project.graph``)."""
+    if not node.runs_on:
+        return
+    if node.push:
+        raise ValueError("A push node can't have `runs_on`: its output is uploaded, nothing runs it.")
+    if node.live is not None:
+        raise ValueError("A `runs_on` node can't be live: opening a view would wait on someone's desktop.")
+
+
+RUNS_ON_DEPS = (
+    "A `runs_on` node takes no upstream nodes: the runner on someone's machine gets the node's code, "
+    "not other nodes' outputs. Have it fetch the data, and read it from other nodes downstream."
+)
 
 MAX_LIVE_SECONDS = 7 * 24 * 3600
 
@@ -1060,9 +1101,12 @@ def _parse_sql(node: Node, text: str) -> None:
             node.on_duplicate = on_duplicate_value(val.strip())
         elif key == "merge":
             node.merge = _merge_value(val)
+        elif key == "runs_on":
+            node.runs_on = runs_on_label(val)
     # Markdown, as a Python node's docstring is: its lines and blank lines kept.
     node.description = "\n".join(desc).strip()
     _check_key(node)
+    _check_runs_on(node)
     if node.schedule:
         _validate_cron(node.schedule)
 
@@ -1222,7 +1266,7 @@ RUN_OPTIONS = ("retries", "retry_delay", "overlap", "timeout")
 # Header settings a SQL node's leading `--` lines can make, and the ones of
 # them an empty value leaves out (that line is then description).
 _SQL_SETTINGS = {"schedule", "cascade", "params", "live", "partition_by", "key", "merge"}
-_SQL_SETTINGS_WITH_VALUE = {"chart", "tags", "on_duplicate", *RUN_OPTIONS}
+_SQL_SETTINGS_WITH_VALUE = {"chart", "tags", "on_duplicate", "runs_on", *RUN_OPTIONS}
 MAX_RETRIES = 10
 MAX_TIMEOUT = 86400
 OVERLAP_POLICIES = ("queue", "skip")
