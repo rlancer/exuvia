@@ -207,6 +207,84 @@ def test_refusals(tmp_path):
         mirror(LocalSource(tmp_path / "p"), tmp_path / "m", branch="-x")
 
 
+def test_several_projects_share_a_branch_under_prefixes(tmp_path):
+    sales, marketing = project(tmp_path / "sales"), project(tmp_path / "marketing")
+    save(sales, "nums", V2)
+    sales.create_tag("v1")
+    marketing.create_tag("v1")
+    remote = tmp_path / "remote.git"
+    git(tmp_path, "init", "-q", "--bare", str(remote))
+    # The repository's default branch holds a workflow; the projects go on it too, each in its folder.
+    seed = tmp_path / "seed"
+    git(tmp_path, "init", "-q", "-b", "main", str(seed))
+    (seed / ".github").mkdir()
+    (seed / ".github" / "mirror.yml").write_text("on: push\n", encoding="utf-8")
+    git(seed, "add", ".")
+    git(seed, "-c", "user.name=x", "-c", "user.email=x@example.com", "commit", "-qm", "workflow")
+    git(seed, "push", "-q", str(remote), "main")
+
+    m = tmp_path / "m"
+    a = mirror(LocalSource(tmp_path / "sales"), m, branch="main", remote=str(remote), prefix="sales/")
+    b = mirror(LocalSource(tmp_path / "marketing"), m, branch="main", remote=str(remote), prefix="marketing")
+    assert (a["commits"], b["commits"]) == (2, 1) and a["pushed"] and b["pushed"]
+    files = git(remote, "ls-tree", "-r", "--name-only", "main").splitlines()
+    assert sorted(files) == [
+        ".github/mirror.yml", "marketing/exuvia.json", "marketing/nodes/nums.py", "sales/exuvia.json", "sales/nodes/nums.py",
+    ]
+    assert git(remote, "show", "main:sales/nodes/nums.py") + "\n" == V2
+    assert git(remote, "show", "main:marketing/nodes/nums.py") + "\n" == V1
+    body = git(remote, "log", "-1", "--format=%B", "main")
+    assert body.startswith("load: 2 files") and "- marketing/nodes/nums.py" in body and "Exuvia-Prefix: marketing" in body
+    # The same tag name in each project: one git tag per folder.
+    assert git(remote, "rev-parse", "sales/v1^{commit}") == git(m, "rev-parse", "main~1")
+    assert git(remote, "rev-parse", "marketing/v1^{commit}") == b["tip"]
+    assert (a["tags"], b["tags"]) == (1, 1)
+
+    # Each carries on from its own last commit, past the other's and past commits outside its folder.
+    (m / "README.md").write_text("projects\n", encoding="utf-8")
+    git(m, "add", "README.md")
+    git(m, "-c", "user.name=x", "-c", "user.email=x@example.com", "commit", "-qm", "readme")
+    save(sales, "nums", V1)
+    again = mirror(LocalSource(tmp_path / "sales"), tmp_path / "fresh", branch="main", remote=str(remote), prefix="sales")
+    assert again["commits"] == 1 and again["pushed"]
+    assert mirror(LocalSource(tmp_path / "marketing"), m, branch="main", prefix="marketing")["commits"] == 0
+    assert mirror(LocalSource(tmp_path / "marketing"), tmp_path / "fresh", branch="main", prefix="marketing")["commits"] == 0
+
+    # A project on its own, from scratch, under the same folder: the same file contents and messages.
+    alone = mirror(LocalSource(tmp_path / "marketing"), tmp_path / "alone", prefix="marketing")
+    assert git(tmp_path / "alone", "rev-parse", f"{alone['tip']}^{{tree}}:marketing") == git(
+        remote, "rev-parse", "main:marketing"
+    )
+
+    # The branch without --prefix is refused, rather than read as one project's mirror.
+    with pytest.raises(MirrorError, match="pass --prefix"):
+        mirror(LocalSource(tmp_path / "marketing"), tmp_path / "fresh", branch="main")
+    # Another project under a folder that already holds one: refused.
+    with pytest.raises(MirrorError, match="does not have"):
+        mirror(LocalSource(tmp_path / "marketing"), tmp_path / "fresh", branch="main", prefix="sales")
+    # A hand edit inside a project's folder stops that project, and only that one.
+    f = tmp_path / "fresh"
+    (f / "sales" / "nodes" / "nums.py").write_text("x = 1\n", encoding="utf-8")
+    git(f, "-c", "user.name=x", "-c", "user.email=x@example.com", "commit", "-qam", "hand edit")
+    save(sales, "nums", V2)
+    save(marketing, "nums", V2)
+    with pytest.raises(MirrorError, match="did not make"):
+        mirror(LocalSource(tmp_path / "sales"), f, branch="main", prefix="sales")
+    assert mirror(LocalSource(tmp_path / "marketing"), f, branch="main", prefix="marketing")["commits"] == 1
+
+    # A CI job's shallow checkout of the branch carries on as well.
+    save(marketing, "more", V1)
+    ci = tmp_path / "ci"
+    git(tmp_path, "clone", "-q", "--depth", "1", "--branch", "main", f"file://{remote}", str(ci))
+    assert git(ci, "rev-parse", "--is-shallow-repository") == "true"
+    out = mirror(LocalSource(tmp_path / "marketing"), ci, branch="main", remote="origin", prefix="marketing")
+    assert out["commits"] == 2 and out["pushed"] and (ci / "marketing" / "nodes" / "more.py").is_file()
+
+    for bad in ("", "/", "../x", "a/../b", "-x", ".git", "a b", "x.lock"):
+        with pytest.raises(MirrorError, match="--prefix takes"):
+            mirror(LocalSource(tmp_path / "sales"), tmp_path / "bad", prefix=bad)
+
+
 def test_github_through_gh(tmp_path):
     calls = []
 

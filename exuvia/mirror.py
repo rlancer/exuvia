@@ -31,6 +31,11 @@ The revisions stay the record; the repository is derived from them, one way:
   of the save it was made at (tagger and date from the tag, so these are
   the same every run too). A git tag of that name that points elsewhere is
   left as it is, here and on the remote, with a line saying so.
+- With ``--prefix DIR`` the project's files go under ``DIR/`` and the rest
+  of the branch is left alone, so one branch can hold several projects. The
+  cursor is then the last commit carrying ``Exuvia-Prefix: DIR``, only a
+  commit that changed ``DIR/`` without being one of those stops it, and
+  tags are named ``DIR/<tag>``.
 """
 
 from __future__ import annotations
@@ -47,6 +52,7 @@ from .store import saves
 
 BRANCH = "exuvia"
 TRAILER = "Exuvia-Revision"
+PREFIX_TRAILER = "Exuvia-Prefix"
 COMMITTER = "exuvia <mirror@exuvia.invalid>"
 PAGE = 1000
 # Where fast-import builds the new commits before the branch moves to them.
@@ -174,18 +180,41 @@ def _data(blob: bytes) -> bytes:
     return b"data %d\n" % len(blob) + blob + b"\n"
 
 
-def message(save: list[dict[str, Any]]) -> str:
+def check_prefix(prefix: str | None) -> str | None:
+    """``prefix`` as the folder it names (``sales/`` -> ``sales``), or None
+    for the repository's root; MirrorError when it is not a plain relative
+    folder."""
+    if prefix is None:
+        return None
+    p = prefix.strip().strip("/")
+    parts = p.split("/")
+    if not p or any(
+        not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*", part) or part.endswith((".", ".lock")) for part in parts
+    ):
+        raise MirrorError(
+            f"--prefix takes a folder inside the repository, like sales or projects/sales: got {prefix!r}"
+        )
+    return p
+
+
+def _in(prefix: str | None, path: str) -> str:
+    return f"{prefix}/{path}" if prefix else path
+
+
+def message(save: list[dict[str, Any]], prefix: str | None = None) -> str:
     """The commit message for one save: what it changed, then trailers."""
     origin = save[0]["origin"]
 
     def what(r: dict[str, Any]) -> str:
-        return ("delete " if r["hash"] is None else "") + r["path"]
+        return ("delete " if r["hash"] is None else "") + _in(prefix, r["path"])
 
     if len(save) == 1:
         lines = [f"{origin}: {what(save[0])}", ""]
     else:
         lines = [f"{origin}: {len(save)} files", "", *(f"- {what(r)}" for r in save), ""]
     lines.append(f"Exuvia-Origin: {origin}")
+    if prefix:
+        lines.append(f"{PREFIX_TRAILER}: {prefix}")
     lines += [f"{TRAILER}: {r['id']}" for r in save]
     return "\n".join(lines) + "\n"
 
@@ -198,10 +227,15 @@ def ident(save: list[dict[str, Any]]) -> str:
 
 
 def fast_import_stream(
-    groups: list[list[dict[str, Any]]], source: Callable[[str], str | None], parent: str | None
+    groups: list[list[dict[str, Any]]],
+    source: Callable[[str], str | None],
+    parent: str | None,
+    prefix: str | None = None,
 ) -> bytes:
     """The fast-import commands that add one commit per save onto
-    ``parent`` (a root commit when None), building ``IMPORT_REF``."""
+    ``parent`` (a root commit when None), building ``IMPORT_REF``. With
+    ``prefix`` each file goes under that folder; the parent's other files
+    stay as they are."""
     out = bytearray()
     texts: dict[str, bytes] = {}
     for i, save in enumerate(groups):
@@ -209,11 +243,11 @@ def fast_import_stream(
         out += f"commit {IMPORT_REF}\n".encode()
         out += f"author {ident(save)}\n".encode()
         out += f"committer {COMMITTER} {when} +0000\n".encode()
-        out += _data(message(save).encode("utf-8"))
+        out += _data(message(save, prefix).encode("utf-8"))
         if i == 0 and parent:
             out += f"from {parent}\n".encode()
         for r in save:
-            path = _quote(r["path"]).encode("utf-8")
+            path = _quote(_in(prefix, r["path"])).encode("utf-8")
             if r["hash"] is None:
                 out += b"D " + path + b"\n"
                 continue
@@ -317,29 +351,82 @@ def github_remote(repo: str, run: Callable[..., subprocess.CompletedProcess[str]
     return urls["url"] + ".git"
 
 
-def cursor(git: Git, tip: str) -> str:
-    """The last revision the commit ``tip`` mirrored."""
-    found = re.findall(rf"^{TRAILER}: (\S+)\s*$", git.out("log", "-1", "--format=%B", tip), re.M)
+def _prefix_of(body: str) -> str | None:
+    found = re.findall(rf"^{PREFIX_TRAILER}: (\S+)\s*$", body, re.M)
+    return found[-1] if found else None
+
+
+def cursor(git: Git, tip: str, prefix: str | None = None) -> str | None:
+    """The last revision the branch up to ``tip`` mirrored: from its tip,
+    or with ``prefix``, from the last commit that mirrored into that folder
+    (None when none has yet)."""
+    if prefix:
+        return _prefix_cursor(git, tip, prefix)
+    body = git.out("log", "-1", "--format=%B", tip)
+    found = re.findall(rf"^{TRAILER}: (\S+)\s*$", body, re.M)
     if not found:
         raise MirrorError(
             f"the tip of this branch ({tip[:12]}) was not made by exuvia mirror: something else committed to it. "
-            "Mirror into another branch (--branch) or repository"
+            "Mirror into another branch (--branch) or repository, or under a folder of this one (--prefix)"
+        )
+    if _prefix_of(body):
+        raise MirrorError(
+            f"this branch holds projects mirrored under folders (its tip is under {_prefix_of(body)}/): "
+            "pass --prefix, or mirror into another branch (--branch)"
         )
     return found[-1]
 
 
-def tag_message(tag: dict[str, Any]) -> str:
-    return f"{(tag.get('message') or tag['name']).strip()}\n\n{TRAILER}: {tag['revision']}\n"
-
-
-def commits_by_revision(git: Git, tip: str) -> dict[str, str]:
-    """Every revision the branch up to ``tip`` mirrored -> its commit."""
-    out: dict[str, str] = {}
-    log = git.run("log", "--format=%H%x1f%B%x1e", tip).stdout.decode("utf-8", "replace")
+def _mine(git: Git, tip: str, prefix: str) -> list[tuple[str, str]]:
+    """(commit, message) of each commit up to ``tip`` that mirrored into
+    ``prefix``, newest first."""
+    log = git.run(
+        "log", "--topo-order", "-F", f"--grep={PREFIX_TRAILER}: {prefix}", "--format=%H%x1f%B%x1e", tip
+    ).stdout.decode("utf-8", "replace")
+    out = []
     for entry in log.split("\x1e"):
         sha, _, body = entry.strip().partition("\x1f")
+        if sha and _prefix_of(body) == prefix:
+            out.append((sha, body))
+    return out
+
+
+def _prefix_cursor(git: Git, tip: str, prefix: str) -> str | None:
+    mine = _mine(git, tip, prefix)
+    touched = git.out("log", "--topo-order", "-1", "--format=%H", tip, "--", f"{prefix}/") or None
+    if touched and (not mine or not git.is_ancestor(touched, mine[0][0])):
+        raise MirrorError(
+            f"{prefix}/ on this branch was changed by a commit exuvia mirror did not make ({touched[:12]}). "
+            "Mirror under another folder (--prefix), branch (--branch) or repository"
+        )
+    if not mine:
+        return None
+    found = re.findall(rf"^{TRAILER}: (\S+)\s*$", mine[0][1], re.M)
+    return found[-1] if found else None
+
+
+def tag_message(tag: dict[str, Any], prefix: str | None = None) -> str:
+    lines = [(tag.get("message") or tag["name"]).strip(), ""]
+    if prefix:
+        lines.append(f"{PREFIX_TRAILER}: {prefix}")
+    lines.append(f"{TRAILER}: {tag['revision']}")
+    return "\n".join(lines) + "\n"
+
+
+def commits_by_revision(git: Git, tip: str, prefix: str | None = None) -> dict[str, str]:
+    """Every revision the branch up to ``tip`` mirrored (into ``prefix``,
+    when given) -> its commit."""
+    out: dict[str, str] = {}
+    if prefix:
+        entries = _mine(git, tip, prefix)
+    else:
+        log = git.run("log", "--format=%H%x1f%B%x1e", tip).stdout.decode("utf-8", "replace")
+        entries = [tuple(e.strip().partition("\x1f")[::2]) for e in log.split("\x1e")]
+    for sha, body in entries:
+        if not prefix and _prefix_of(body):
+            continue
         for rid in re.findall(rf"^{TRAILER}: (\S+)\s*$", body, re.M):
-            out[rid] = sha
+            out.setdefault(rid, sha)
     return out
 
 
@@ -348,15 +435,21 @@ _TAG_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def mirror_tags(
-    git: Git, source: RemoteSource | LocalSource, tip: str, remote: str | None, log: Callable[[str], None]
+    git: Git,
+    source: RemoteSource | LocalSource,
+    tip: str,
+    remote: str | None,
+    log: Callable[[str], None],
+    prefix: str | None = None,
 ) -> tuple[int, int]:
     """An annotated git tag for each of ``source``'s code tags on the commit
-    of its revision, pushed to ``remote`` when given. Returns (made here,
-    pushed); a git tag of the same name on another commit is left alone."""
+    of its revision (named ``<prefix>/<tag>`` with ``prefix``), pushed to
+    ``remote`` when given. Returns (made here, pushed); a git tag of the
+    same name on another commit is left alone."""
     tags = source.tags()
     if not tags:
         return 0, 0
-    commits = commits_by_revision(git, tip)
+    commits = commits_by_revision(git, tip, prefix)
     made, ready = 0, []
     for tag in sorted(tags, key=lambda t: (t["created_at"], t["name"])):
         name, commit = str(tag["name"]), commits.get(tag["revision"])
@@ -366,6 +459,7 @@ def mirror_tags(
         if not _TAG_NAME.fullmatch(name):
             log(f"tag {name!r}: not a tag name exuvia makes; left out")
             continue
+        name = _in(prefix, name)
         if commit is None or git.run("check-ref-format", f"refs/tags/{name}", check=False).returncode != 0:
             log(f"tag {name}: its revision {tag['revision']} is not on this branch; left out")
             continue
@@ -378,7 +472,7 @@ def mirror_tags(
                 "GIT_COMMITTER_EMAIL": f"{email}@exuvia.invalid",
                 "GIT_COMMITTER_DATE": f"{int(tag['created_at'])} +0000",
             }
-            git.run("-c", "tag.gpgSign=false", "tag", "-a", "-F", "-", name, commit, input=tag_message(tag).encode("utf-8"), env=env)
+            git.run("-c", "tag.gpgSign=false", "tag", "-a", "-F", "-", name, commit, input=tag_message(tag, prefix).encode("utf-8"), env=env)
             made += 1
         elif have != commit:
             log(f"tag {name}: a git tag of that name is on another commit here; left as it is")
@@ -422,15 +516,18 @@ def mirror(
     branch: str = BRANCH,
     remote: str | None = None,
     github: str | None = None,
+    prefix: str | None = None,
     log: Callable[[str], None] = lambda _: None,
 ) -> dict[str, Any]:
     """Add a commit to ``branch`` in the repository at ``dest`` for each
-    save of ``source`` not mirrored yet, then push the branch to ``remote``
-    (a remote's name or URL) or ``github`` (``owner/name``, through ``gh``)
-    when given, with a git tag for each code tag. Returns ``{commits, tip,
-    pushed, tags, tags_pushed}``; raises MirrorError."""
+    save of ``source`` not mirrored yet (its files under the folder
+    ``prefix`` when given), then push the branch to ``remote`` (a remote's
+    name or URL) or ``github`` (``owner/name``, through ``gh``) when given,
+    with a git tag for each code tag. Returns ``{commits, tip, pushed, tags,
+    tags_pushed}``; raises MirrorError."""
     if remote and github:
         raise MirrorError("give --remote or --github, not both")
+    prefix = check_prefix(prefix)
     if not re.fullmatch(r"[A-Za-z0-9._/-]+", branch) or branch.startswith(("-", "/")) or ".." in branch:
         raise MirrorError(f"not a branch name: {branch!r}")
     git = open_repo(dest, branch)
@@ -438,6 +535,12 @@ def mirror(
         remote = github_remote(github)
         log(f"github: {github} -> {remote}")
 
+    if git.out("rev-parse", "--is-shallow-repository") == "true":
+        # A CI checkout (actions/checkout) holds one commit: the cursor and
+        # the tags are found in the branch's history, so fetch all of it.
+        if not remote:
+            raise MirrorError(f"{dest} is a shallow clone: fetch its whole history first (git fetch --unshallow)")
+        git.run("fetch", "-q", "--unshallow", "--no-tags", remote)
     local = git.sha(f"refs/heads/{branch}")
     theirs = remote_tip(git, remote, branch) if remote else None
     if local and theirs and local != theirs:
@@ -452,19 +555,19 @@ def mirror(
             )
     else:
         base = local or theirs
-    after = cursor(git, base) if base else None
+    after = cursor(git, base, prefix) if base else None
 
     try:
         revisions = source.revisions_after(after)
     except KeyError:
         raise MirrorError(
-            f"{branch} last mirrored revision {after}, which {source.where} does not have: "
-            "is this the mirror of another project? Mirror into another branch (--branch) or repository"
+            f"{_in(prefix, '') if prefix else branch} last mirrored revision {after}, which {source.where} does not have: "
+            "is this the mirror of another project? Mirror into another branch (--branch), folder (--prefix) or repository"
         ) from None
     groups = saves(revisions)
     tip = base
     if groups:
-        stream = fast_import_stream(groups, source.source, base)
+        stream = fast_import_stream(groups, source.source, base, prefix)
         git.run("update-ref", "-d", IMPORT_REF, check=False)
         git.run("fast-import", "--quiet", "--done", input=stream)
         tip = git.sha(IMPORT_REF)
@@ -482,5 +585,5 @@ def mirror(
     if remote and tip and tip != theirs:
         git.run("push", "-q", remote, f"{tip}:refs/heads/{branch}")
         pushed = True
-    tags, tags_pushed = mirror_tags(git, source, tip, remote, log) if tip else (0, 0)
+    tags, tags_pushed = mirror_tags(git, source, tip, remote, log, prefix) if tip else (0, 0)
     return {"commits": len(groups), "tip": tip, "pushed": pushed, "remote": remote, "tags": tags, "tags_pushed": tags_pushed}
