@@ -10,21 +10,20 @@ import { IconHome, IconPlus, IconSliders } from "./icons";
 import { sortProjects } from "./projectOrder";
 import { useMe } from "./useMe";
 
-/** Where on the hub the page is: its home or a project's workbench. (The admin page has a left nav of its own, in AdminPage.tsx.) */
-export type HubPlace = { page: "home" } | { page: "project"; id: string };
+/** Where on the hub the page is: its home, its admin page (whose sections are the admin panel's own links, AdminPage.tsx), or a project's workbench. */
+export type HubPlace = { page: "home" } | { page: "admin" } | { page: "project"; id: string };
 
 export const workbenchUrl = (id: string) => `/p/${encodeURIComponent(id)}/`;
 
-/** Under this width (where the bars give up their words) a left nav is always its rail of icons. */
-export const RAIL_ONLY = "(max-width: 900px)";
+/** Under this width (where the bars give up their words) the nav is always its rail of icons. */
+const RAIL_ONLY = "(max-width: 900px)";
 
 /**
- * Whether a left nav is folded to its rail, kept in this browser: one choice
- * for the hub's own pages (the admin page's nav too) and one for the
- * workbench, which needs its width for the graph and starts folded unless the
- * window is wide.
+ * Whether the nav is folded to its rail, kept in this browser: one choice for
+ * the hub's own pages and one for the workbench, which needs its width for the
+ * graph and starts folded unless the window is wide.
  */
-export function useFolded(place: HubPlace | { page: "admin" }): [boolean, (folded: boolean) => void] {
+function useFolded(place: HubPlace): [boolean, (folded: boolean) => void] {
   const key = `exuvia-nav-folded-${place.page === "project" ? "project" : "hub"}`;
   const [folded, setFolded] = useState(() => {
     try {
@@ -92,7 +91,7 @@ export function HubNav(props: { place: HubPlace; listing?: HubListing | null; on
       footer={
         isAdmin && (
           <SideNavSection title="Hub" isHeaderHidden>
-            <SideNavItem label="Admin" icon={<IconSliders />} href="/admin" />
+            <SideNavItem label="Admin" icon={<IconSliders />} href="/admin" isSelected={place.page === "admin"} />
           </SideNavSection>
         )
       }
