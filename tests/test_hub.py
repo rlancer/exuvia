@@ -517,6 +517,44 @@ def test_the_admin_page_and_its_settings(tmp_path, monkeypatch):
     assert shown_url("nope") == "(not a URL)"
 
 
+def test_the_admin_storage_report(tmp_path, monkeypatch):
+    """/api/admin/storage measures every project by kind, the hub's shared
+    folders and the disk, from the disk alone; only an admin sees it."""
+    monkeypatch.setenv("EXUVIA_AUTH", "headers")
+    monkeypatch.setenv("EXUVIA_ADMINS", "alice")
+    alice = {"X-Forwarded-User": "alice", "X-Forwarded-Email": "alice@example.com"}
+    bob = {"X-Forwarded-User": "bob", "X-Forwarded-Email": "bob@example.com"}
+    with TestClient(create_hub_app(tmp_path / "hub", template(tmp_path))) as hub:
+        for pid in ("big", "small"):
+            assert hub.post("/api/projects", json={"id": pid, "template": "dated"}, headers=alice).status_code == 200
+        assert hub.post("/p/big/api/nodes/prices/run", json={"wait": 60}, headers=alice).json()["ok"]
+        # A second output of the same node: both are kept, both are counted.
+        assert hub.post("/p/big/api/nodes/prices/run", json={"wait": 60, "params": {"as_of": "2026-01-05"}},
+                        headers=alice).json()["ok"]
+        (tmp_path / "hub" / ".exuvia" / "npm").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "hub" / ".exuvia" / "npm" / "mod.js").write_text("x" * 5000, encoding="utf-8")
+
+        assert hub.get("/api/admin/storage", headers=bob).status_code == 403
+        r = hub.get("/api/admin/storage", headers=alice).json()
+        by_id = {p["id"]: p for p in r["projects"]}
+        assert [p["id"] for p in r["projects"]] == ["big", "small"]
+        big, small = by_id["big"], by_id["small"]
+        assert big["kinds"]["outputs"]["files"] == 2 and big["kinds"]["outputs"]["bytes"] > 0
+        assert small["kinds"]["outputs"] == {"bytes": 0, "files": 0} and small["written_at"] is None
+        assert big["written_at"] and big["outputs_nodes"] == 1 and big["nodes"] == 1
+        assert big["kinds"]["code"]["files"] >= 2 and big["kinds"]["database"]["bytes"] > 0
+        assert big["bytes"] == sum(k["bytes"] for k in big["kinds"].values())
+        assert r["largest"] == [{"project": "big", "node": "prices", "bytes": big["kinds"]["outputs"]["bytes"], "files": 2}]
+        npm = next(s for s in r["shared"] if s["key"] == "npm")
+        assert npm == {"key": "npm", "label": "View modules (shared cache)", "bytes": 5000, "files": 1}
+        assert r["total_bytes"] == r["projects_bytes"] + r["shared_bytes"]
+        assert r["projects_bytes"] == big["bytes"] + small["bytes"]
+        assert r["kinds"]["outputs"]["files"] == 2
+        assert r["disk"]["total"] >= r["disk"]["free"] > 0
+        assert r["database"] == {"shared": False, "where": "a SQLite file in each project"}
+        assert r["artifact_store"] == {"configured": False, "where": None}
+
+
 def test_every_hub_store_round_trips_through_one_hub_db(tmp_path):
     """Each hub record store declares only its tables (db.HubRecordStore
     does the rest), and dump_to / replace_from carry every row of every

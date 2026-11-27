@@ -29,10 +29,11 @@ from __future__ import annotations
 
 import asyncio
 import re
+import sys
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, Callable, Literal
+from typing import Any, AsyncIterator, Callable, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Security
 from fastapi.openapi.utils import get_openapi
@@ -42,7 +43,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from . import __version__, auth
 from .arrowstream import wants_arrow
 from .http_util import FastJSON, arrow_response, need_partitioned, partition_range, query_params, resolve_params
-from .datakeys import MAX_PROJECTS, DataKey, DataKeyStore, clean_projects, looks_like_key
+from .datakeys import MAX_PROJECTS, TURNED_AWAY, DataKey, DataKeyStore, clean_projects, looks_like_key
 from .sharing import at_least
 from .outputs import lock_outputs, output_parts, outputs_connection, query_arrow, query_json
 from .workspace import Workspace
@@ -345,6 +346,53 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
             raise HTTPException(403, "admins only: every key on the hub")
         return {"keys": store.list(owner, everyone=all), "max_projects": MAX_PROJECTS}
 
+    @app.get("/api/data-keys/usage")
+    def data_keys_usage(days: int = Query(30, ge=1, le=90)) -> dict[str, Any]:
+        """Every key on the hub with how much it was used, for the admin
+        page: by day over the last ``days`` days, and the requests turned
+        away for an unknown or revoked key. Admins only."""
+        manager()
+        if not is_admin():
+            raise HTTPException(403, "admins only: every key on the hub")
+        used = store.usage(days)
+        span, by_key = used["days"], used["keys"]
+        week = set(span[-7:])
+        today = span[-1]
+
+        def totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
+            return {
+                "today": sum(r["requests"] for r in rows if r["day"] == today),
+                "week": sum(r["requests"] for r in rows if r["day"] in week),
+                "requests": sum(r["requests"] for r in rows),
+                "queries": sum(r["queries"] for r in rows),
+                "errors": sum(r["errors"] for r in rows),
+            }
+
+        def owner(uid: str | None) -> dict[str, Any] | None:
+            if uid is None:
+                return None
+            user = hub.users.get(uid) if hub.users is not None else None
+            return {"id": uid, "name": user.name if user else uid, "disabled": bool(user and user.disabled)}
+
+        keys = []
+        for k in store.list(everyone=True):
+            rows = by_key.get(k["id"], [])
+            keys.append({**k, "owner": owner(k["owner_id"]), "usage": totals(rows),
+                         "daily": [{"day": r["day"], "requests": r["requests"]} for r in rows]})
+        daily: dict[str, dict[str, int]] = {d: {"requests": 0, "queries": 0, "errors": 0} for d in span}
+        for kid, rows in by_key.items():
+            if kid == TURNED_AWAY:
+                continue
+            for r in rows:
+                for f in ("requests", "queries", "errors"):
+                    daily[r["day"]][f] += r[f]
+        return {
+            "days": days,
+            "keys": keys,
+            "daily": [{"day": d, **daily[d]} for d in span],
+            "turned_away": totals(by_key.get(TURNED_AWAY, [])),
+        }
+
     @app.post("/api/data-keys", status_code=201)
     def data_keys_create(body: DataKeyReq) -> dict[str, Any]:
         """A new read-only key for ``projects`` (each one you can open).
@@ -398,16 +446,34 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
             access_cache[key.id] = (tuple(out), now)
         return tuple(out)
 
+    async def count(kid: str, query: bool, ok: bool) -> None:
+        """Count a request with a key (datakeys.py, usage), writing the
+        counts when they are due."""
+        if store.note(kid, query=query, ok=ok):
+            try:
+                await asyncio.to_thread(store.flush)
+            except Exception as e:  # noqa: BLE001 - a count not written must not fail the request; it is kept for next time
+                print(f"exuvia: could not write data key usage: {e}", file=sys.stderr)
+
     async def key_projects(
+        request: Request,
         creds: HTTPAuthorizationCredentials | None = Security(bearer),
-    ) -> Access:
+    ) -> AsyncIterator[Access]:
         token = creds.credentials.strip() if creds else ""
         if not looks_like_key(token):
             raise HTTPException(401, "send a data key: Authorization: Bearer exd_... (make one in the hub's account menu, Data API keys)")
         key = await asyncio.to_thread(store.by_key, token)
+        query = request.url.path.endswith("/query")
         if key is None:
+            await count(TURNED_AWAY, query, False)
             raise HTTPException(401, "unknown or revoked data key")
-        return key, await asyncio.to_thread(readable, key)
+        # The request counts once it is answered: a failure in it (here or in the route) counts as an error.
+        ok = False
+        try:
+            yield key, await asyncio.to_thread(readable, key)
+            ok = True
+        finally:
+            await count(key.id, query, ok)
 
     async def workspace(project: str, projects: tuple[str, ...]) -> Workspace:
         if project not in projects:

@@ -3285,8 +3285,9 @@ exuvia hub ./projects --templates ./templates --scheduler external
 | Route | |
 |---|---|
 | `GET /` | the hub's home page (the web UI): list, create, open and delete projects |
-| `GET /admin` | the admin page (the web UI): an overview, users, every project, hub variables, MCP servers on offer, export and import, and the server's settings |
+| `GET /admin` | the admin page (the web UI): an overview, users, every project, storage, API keys, hub variables, MCP servers on offer, export and import, and the server's settings |
 | `GET /api/admin/settings` | how the server is set up, for the admin page: each setting's value and the environment variable that sets it, read-only; secrets show only as set or not set (admins only) |
+| `GET /api/admin/storage` | what the hub keeps on disk, for the admin page's **Storage**: each project's size by kind (node outputs, its own files, its records database, caches), the folders the hub shares between projects (packages, view modules, the hub's database), the hub's largest outputs, and the disk's free space. Measured from the disk, without loading a project (admins only) |
 | `GET /p/{project}/` | that project's workbench (the web UI, talking to `/p/{project}/api`) |
 | `GET /api/projects` | list projects (`{projects, templates, auth}`; `auth`: whether clients need the API token) |
 | `GET /api/tools` | the project tools, as each project's `/guide` lists them (for `exuvia mcp --url <hub>`) |
@@ -3514,6 +3515,10 @@ makes one and picks the projects it reads.
   request names its `projects`. Send `Accept:
   application/vnd.apache.arrow.stream` for typed columns and every row (see
   [Binary data](#binary-data-arrow-and-parquet)).
+- **Counted.** Each key's requests are counted by day (UTC), with how many
+  were queries and how many failed, and kept for 90 days; requests with an
+  unknown or revoked key are counted too. An admin sees them under **API
+  keys** on the admin page (`/admin`), and can revoke any key there.
 
 ```bash
 curl -s https://hub.example.com/api/data/query \
@@ -3536,6 +3541,7 @@ rest. (`/openapi.json` and `/docs` cover the whole HTTP API.)
 | `POST /api/data/query` | `{sql, limit, projects}`: one SELECT across the key's projects. JSON: the first `limit` rows (500 unless given, 5000 at most) and the `projects` attached; Arrow: every row unless `limit` |
 | `GET /api/data-keys`, `POST /api/data-keys` | your keys (`?all=true`: every key, for an admin) / make one (`{name, projects}`; each a project you can open). `key` is in the answer once: only a hash is kept |
 | `PATCH /api/data-keys/{id}`, `DELETE /api/data-keys/{id}` | rename it or replace its `projects` / revoke it (its maker, or an admin) |
+| `GET /api/data-keys/usage` | every key on the hub with its use, for the admin page's **API keys**: requests today, in 7 days and over `days` (30 unless given, 90 at most), how many were queries and how many failed, by day; and the requests turned away for an unknown or revoked key (admins only) |
 
 Keys are managed by a signed-in person (not with an agent token or a share
 link) or the operator. They live beside the groups (the hub's

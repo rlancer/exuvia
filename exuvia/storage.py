@@ -11,11 +11,15 @@ Footers are read once per file and remembered, since an output file is
 named by its content and never changes. A file that is only in the remote
 artifact store (``artifacts.py``) and not cached here has no size to give:
 it is counted under ``remote.missing``.
+
+``hub_report`` is the hub's admin page's Storage section: every project's
+size by kind, the hub's shared folders and the disk, from the disk alone.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -75,10 +79,12 @@ def _footer(path: Path, size: int) -> dict[str, Any] | None:
     return out
 
 
-def _walk(path: Path, skip: set[str] | None = None) -> tuple[int, int]:
-    """(bytes, files) under ``path``, not following links; entries named in
-    ``skip`` and dot entries are left out when ``skip`` is given."""
+def _walk(path: Path, skip: set[str] | None = None) -> tuple[int, int, float]:
+    """(bytes, files, newest modification time) under ``path``, not
+    following links; entries named in ``skip`` and dot entries are left out
+    when ``skip`` is given. The time is 0 when there are no files."""
     total = files = 0
+    newest = 0.0
     stack = [path]
     while stack:
         here = stack.pop()
@@ -93,27 +99,49 @@ def _walk(path: Path, skip: set[str] | None = None) -> tuple[int, int]:
                 if e.is_dir(follow_symlinks=False):
                     stack.append(Path(e.path))
                 elif e.is_file(follow_symlinks=False):
-                    total += e.stat(follow_symlinks=False).st_size
+                    st = e.stat(follow_symlinks=False)
+                    total += st.st_size
                     files += 1
+                    newest = max(newest, st.st_mtime)
             except OSError:
                 continue
-    return total, files
+    return total, files, newest
 
 
-def _state(state_dir: Path) -> list[dict[str, Any]]:
-    """Each entry of .exuvia/ by what it holds, largest first. The database's
-    -wal and -shm files count with it."""
+def _state(
+    state_dir: Path,
+    labels: dict[str, str] = STATE_LABELS,
+    by_node: dict[str, list[float]] | None = None,
+) -> list[dict[str, Any]]:
+    """Each entry of .exuvia/ by what it holds (``labels``: the entries named;
+    the rest are "other"), largest first. A database's -wal and -shm files
+    count with it. With ``by_node``, the outputs are measured folder by
+    folder (one per node) into it: name -> [bytes, files, newest time]."""
     sizes: dict[str, list[int]] = {}
     try:
         entries = list(os.scandir(state_dir))
     except OSError:
         entries = []
     for e in entries:
-        name = e.name.split("-")[0] if e.name.startswith("exuvia.db") else e.name
-        key = name if name in STATE_LABELS else "other"
+        name = e.name.rsplit("-", 1)[0] if e.name.endswith((".db-wal", ".db-shm", ".db-journal")) else e.name
+        key = name if name in labels else "other"
         try:
-            if e.is_dir(follow_symlinks=False):
-                b, n = _walk(Path(e.path))
+            if by_node is not None and key == "artifacts" and e.is_dir(follow_symlinks=False):
+                b = n = 0
+                for d in os.scandir(e.path):
+                    if d.is_dir(follow_symlinks=False):
+                        nb, nn, newest = _walk(Path(d.path))
+                    elif d.is_file(follow_symlinks=False):
+                        st = d.stat(follow_symlinks=False)
+                        nb, nn, newest = st.st_size, 1, st.st_mtime
+                    else:
+                        continue
+                    if nn:
+                        by_node[d.name] = [nb, nn, newest]
+                    b += nb
+                    n += nn
+            elif e.is_dir(follow_symlinks=False):
+                b, n, _ = _walk(Path(e.path))
             elif e.is_file(follow_symlinks=False):
                 b, n = e.stat(follow_symlinks=False).st_size, 1
             else:
@@ -124,7 +152,7 @@ def _state(state_dir: Path) -> list[dict[str, Any]]:
         acc[0] += b
         acc[1] += n
     out = [
-        {"key": k, "label": STATE_LABELS.get(k, "Other"), "bytes": b, "files": n}
+        {"key": k, "label": labels.get(k, "Other"), "bytes": b, "files": n}
         for k, (b, n) in sizes.items()
     ]
     return sorted((p for p in out if p["files"]), key=lambda p: (-p["bytes"], p["key"]))
@@ -276,7 +304,7 @@ def report(ws: "Workspace") -> dict[str, Any]:
 
     missing = [p for p in recorded if p not in seen]
     state = _state(state_dir)
-    code_bytes, code_files = _walk(root, NOT_CODE)
+    code_bytes, code_files, _ = _walk(root, NOT_CODE)
 
     db = store.db
     db_kind = "sqlite" if isinstance(db, SQLiteDatabase) else getattr(db, "dialect", "database")
@@ -313,6 +341,96 @@ def report(ws: "Workspace") -> dict[str, Any]:
             "bytes": next((p["bytes"] for p in state if p["key"] == "exuvia.db"), None) if in_project else None,
             "rows": store.counts(),
         },
+    }
+
+
+# What each entry of a hub's own .exuvia/ (beside its projects) holds.
+HUB_LABELS = {
+    "packages": "Python packages (shared)",
+    "npm": "View modules (shared cache)",
+    "hub.db": "Hub database",
+}
+# A project's .exuvia/ entries, folded into the hub page's few kinds of space.
+KIND_OF = {"artifacts": "outputs", "exuvia.db": "database", "parts": "caches", "packages": "caches", "npm": "caches", "staging": "caches"}
+# How many of the hub's largest outputs (one node's, in one project) the page lists.
+LARGEST_KEPT = 10
+
+
+def hub_report(hub_root: Path, projects: list[dict[str, Any]]) -> dict[str, Any]:
+    """The admin page's Storage figures for a hub (GET /api/admin/storage):
+    each project's size by kind (outputs, its own files, its records
+    database, caches, other), the hub's shared folders, the largest outputs
+    on the hub, and the disk they are on. ``projects``: the hub's listing
+    (``Hub.list()``), whose ids are folders under ``hub_root``.
+
+    Sizes come from the disk alone, so no project is loaded and no record
+    read. Blocking: call it off the event loop."""
+    from .admin import shown_url
+    from .db import database_url
+
+    rows: list[dict[str, Any]] = []
+    largest: list[dict[str, Any]] = []
+    kinds = {k: {"bytes": 0, "files": 0} for k in ("outputs", "code", "database", "caches", "other")}
+    for p in projects:
+        root = hub_root / p["id"]
+        by_node: dict[str, list[float]] = {}
+        state = _state(root / ".exuvia", by_node=by_node)
+        code_bytes, code_files, code_newest = _walk(root, NOT_CODE)
+        mine = {k: {"bytes": 0, "files": 0} for k in kinds}
+        mine["code"] = {"bytes": code_bytes, "files": code_files}
+        for part in state:
+            kind = KIND_OF.get(part["key"], "other")
+            mine[kind]["bytes"] += part["bytes"]
+            mine[kind]["files"] += part["files"]
+        for k, v in mine.items():
+            kinds[k]["bytes"] += v["bytes"]
+            kinds[k]["files"] += v["files"]
+        for node, (b, n, _) in by_node.items():
+            largest.append({"project": p["id"], "node": node, "bytes": int(b), "files": int(n)})
+        rows.append({
+            "id": p["id"],
+            "name": p.get("name") or p["id"],
+            "nodes": p.get("nodes", 0),
+            "bytes": sum(v["bytes"] for v in mine.values()),
+            "files": sum(v["files"] for v in mine.values()),
+            "kinds": mine,
+            "outputs_nodes": len(by_node),
+            "written_at": max((t for _, _, t in by_node.values()), default=0) or None,
+            "code_changed_at": code_newest or None,
+        })
+    rows.sort(key=lambda r: (-r["bytes"], r["id"]))
+    largest.sort(key=lambda r: (-r["bytes"], r["project"], r["node"]))
+
+    # The hub's own folder beside the projects: shared installs and the hub's database.
+    shared = _state(hub_root / ".exuvia", HUB_LABELS)
+    projects_bytes = sum(r["bytes"] for r in rows)
+    shared_bytes = sum(s["bytes"] for s in shared)
+    try:
+        du = shutil.disk_usage(hub_root)
+        disk: dict[str, int] | None = {"total": du.total, "used": du.used, "free": du.free}
+    except OSError:
+        disk = None
+
+    db = database_url()
+    if not db:
+        db_where = "a SQLite file in each project"
+    elif db.startswith("sqlite"):
+        db_where = f"SQLite at {db.split(':///', 1)[-1]}"
+    else:
+        db_where = shown_url(db)
+    store = os.environ.get("EXUVIA_ARTIFACT_STORE", "").strip()
+    return {
+        "generated_at": time.time(),
+        "total_bytes": projects_bytes + shared_bytes,
+        "projects_bytes": projects_bytes,
+        "shared_bytes": shared_bytes,
+        "disk": disk,
+        "kinds": kinds,
+        "shared": shared,
+        "projects": rows,
+        "largest": largest[:LARGEST_KEPT],
+        "database": {"shared": bool(db), "where": db_where},
+        "artifact_store": {"configured": artifact_store() is not None, "where": shown_url(store) if store else None},
     }
 
 

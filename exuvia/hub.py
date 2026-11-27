@@ -337,6 +337,8 @@ class Hub:
         async with self._lock:
             for pid in list(self._ctxs):
                 await self._unload(pid)
+        if self.data_keys is not None:
+            self.data_keys.close()  # writes the usage still counted in memory, before the database closes
         if self.sharing is not None:
             self.sharing.close()
         if self.groups is not None:
