@@ -609,6 +609,22 @@ class BrowserCache:
 # -- scenarios ----------------------------------------------------------------------
 
 
+def result_cache(hub: HubProcess) -> dict[str, Any] | None:
+    """The hub's in-process result cache counters (None where it has none)."""
+    try:
+        return httpx.get(hub.url + "/api/data-keys/usage", params={"days": 1}, timeout=30).json().get("result_cache")
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
+def cache_delta(before: dict[str, Any] | None, after: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not before or not after:
+        return None
+    d = {k: after[k] - before[k] for k in ("hits", "misses", "coalesced", "stored", "evictions", "not_kept")}
+    asked = d["hits"] + d["misses"] + d["coalesced"]
+    return {**d, "hit_rate": round(d["hits"] / asked, 3) if asked else None, "bytes": after["bytes"], "entries": after["entries"]}
+
+
 def staleness_of(samples: list[tuple[float, float]], runs: list[tuple[float, float]]) -> list[float]:
     """For each answer (asked at, value it held), how long it had been out
     of date: since the first run newer than its value finished, if that run
@@ -665,6 +681,9 @@ async def staleness(
     first = runs[0][1] if runs else float("inf")
     stale = sorted(staleness_of([s for s in samples if s[0] >= first], runs))
     mode = f"max-age={args.cache_seconds:g}" if args.cache_seconds else "no-cache"
+    rc = result_cache(hub)
+    if rc and rc["budget"] > 0:
+        mode += f", result cache {rc['budget'] / 2**20:g} MiB ({rc['hits']} hits so far)"
     bound = 2 * args.cache_seconds + 0.5 if args.cache_seconds else 0.0  # max-age + stale-while-revalidate, and the update
     worst = stale[-1] if stale else 0.0
     p99 = stale[min(len(stale) - 1, int(0.99 * len(stale)))] if stale else 0.0
@@ -978,12 +997,18 @@ async def run_scenarios(args: argparse.Namespace, root: Path, env: dict[str, str
                         return query(c, what, auth_dash, cache) if kind == "query" else read(c, what, auth_dash, cache)
 
                     runs = 0
+                    rc0 = result_cache(hub)
                     res = await drive(hub, f"dashboard:{mode}", panel, n, args.duration, background=dash_churn)
+                    rc = cache_delta(rc0, result_cache(hub))
                     res.note = f"{runs} runs during it" + ("" if get_query else "; POST queries (no GET on this hub)")
                     if caches:
                         res.extra.update(stats.note())
                         cc = res.extra["client_cache"]
                         res.note += f"; 304s {cc['got_304']}/{cc['sent']} sent, {cc['local_hits']} from the client's cache, p50 304 {cc['p50_304_ms']}ms vs 200 {cc['p50_200_ms']}ms"
+                    if rc:
+                        res.extra["result_cache"] = rc
+                        res.note += (f"; result cache: {rc['hits']} hits, {rc['misses']} misses, {rc['coalesced']} coalesced, "
+                                     f"{rc['evictions']} evicted, {rc['bytes'] / 2**20:.1f} MiB")
                     if hub.proxy:
                         res.extra["nginx_cache_mb"] = round(hub.proxy.cache_bytes() / 2**20, 1)
                     record(res)

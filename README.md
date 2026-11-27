@@ -2888,6 +2888,7 @@ empty file, stops exuvia with an error.
 | `EXUVIA_DATA_KEY_CONCURRENCY` | 4 | data API queries and node reads one key may have running at once; more answer 429 (`0`: no limit) |
 | `EXUVIA_DATA_WORKERS` | 2 × cores, at least 16 | threads the data API's queries and reads run on, apart from the rest of the hub's |
 | `EXUVIA_DATA_QUERY_TIMEOUT` | 60 | seconds a data API query may run before it is stopped (as Arrow: until its first rows; `0`: no limit) |
+| `EXUVIA_DATA_RESULT_CACHE_MB` | 64 | MiB of JSON query answers the hub keeps in memory, the least recently used dropped first (`0`: none). An answer is kept while nothing it read has changed, for at most 5 seconds, and only if it took 10 ms or more and is at most 2 MiB |
 | `EXUVIA_DATA_CACHE_SECONDS` | 0 | seconds a browser or proxy may use a data API answer without asking the hub again (`Cache-Control: public, max-age=N, stale-while-revalidate=N`: an answer is then at most about 2 × N seconds old). `0`: `no-cache`, every use is checked with the answer's ETag first |
 | `EXUVIA_DB` | per-project SQLite | where run history, schedules, sessions and code revisions live: `sqlite:///<path>` or `postgresql://…` |
 | `EXUVIA_DB_SCOPE` | — | prefix for project scopes in a shared `EXUVIA_DB` (e.g. a user id) |
@@ -3661,6 +3662,17 @@ makes one and picks the projects it reads.
   and fetches data only when an id changed. The key must read the project,
   and only an output that node produced is served: a hash from another
   project gets a 404.
+- **Repeated queries from memory.** Without a cache in front of the hub,
+  a JSON query asked again is answered from memory: the hub keeps the
+  written answer while none of the projects it read has changed (and for
+  at most 5 seconds, which bounds a change made on another replica), up to
+  64 MiB in all (`EXUVIA_DATA_RESULT_CACHE_MB`; `0` turns it off). Only
+  answers that took 10 ms or more and are at most 2 MiB are kept; Arrow
+  answers and errors never are. Identical queries that arrive while one is
+  running wait for it, kept or not. An answer from memory takes none of the
+  key's 4 running requests, and still counts as a request. Its counters
+  (hits, misses, waits, evictions, bytes) are in `GET
+  /api/data-keys/usage` as `result_cache`.
 - **A query as a GET.** `GET /api/data/query?sql=...&limit=...&projects=...`
   is the POST as a URL, which browsers and proxies cache (they don't cache
   POST). The URL is limited in length (8 KB in nginx unless raised; the
