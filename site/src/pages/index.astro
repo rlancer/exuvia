@@ -10,6 +10,7 @@ import Workbench from "../components/Workbench.astro";
 import ViewAnatomy from "../components/ViewAnatomy.astro";
 import Compare from "../components/Compare.astro";
 import History from "../components/History.astro";
+import Lake from "../components/Lake.astro";
 import Workflows from "../components/Workflows.astro";
 import agentPanel from "../assets/shots/agent-panel.png";
 import { DEPLOY_TARGETS, EXAMPLE_HOSTNAME, agentDeployPrompt, agentSetupPrompt } from "../lib/docs";
@@ -81,6 +82,13 @@ const comparison = [
   ["Dependencies", "Hidden state, or reactive cells", "Declared in code", "Function parameters and SQL table names"],
   ["Scheduling", "None", "The whole DAG, or asset jobs", "Per node, by cron, cascading downstream"],
   ["Iteration loop", "Fast", "Slow: deploy first", "Fast: edit, run, see the data"],
+  ["Reading it", "Top to bottom", "A DAG diagram and a run log", "A canvas, or the same graph as a notebook"],
+  [
+    "Outputs",
+    "In memory, gone when the kernel restarts",
+    "Whatever each task writes, wherever it writes it",
+    "Parquet for every run, in your bucket, queryable with SQL",
+  ],
   [
     "Custom UI",
     "Widgets and HTML built from Python",
@@ -107,9 +115,14 @@ const more = [
     body: "Keep the control plane on your laptop and run nodes in a container on Cloud Run, Fly, Kubernetes or Cloudflare.",
   },
   {
-    title: "Your storage",
-    href: "/docs/records/",
-    body: "Outputs go to disk or any S3-compatible bucket. Run history goes to SQLite or Postgres.",
+    title: "Data only one desktop can reach",
+    href: "/docs/push-nodes/",
+    body: "A Bloomberg Terminal answers only on its own machine. A push node uploads from there, or a runner on that desktop runs the node and sends its output to the hub.",
+  },
+  {
+    title: "Live nodes",
+    href: "/docs/live-nodes/",
+    body: "Mark a node live and opening a view that reads it runs it again, so quotes and queues are current without a schedule running all day.",
   },
   {
     title: "Headless runs",
@@ -130,6 +143,16 @@ const more = [
     title: "Sign-in you already have",
     href: "/docs/deploying/#schedules-auth-and-settings",
     body: "Behind your SSO proxy everyone is a named user, and each run and code save says who made it.",
+  },
+  {
+    title: "Tags",
+    href: "/docs/execution-model/#tags-a-name-for-one-version-of-the-whole-project",
+    body: "Name the whole project's code at one save, like a git tag: the version behind the Q3 numbers, to read, compare or restore.",
+  },
+  {
+    title: "A copy of the code in git",
+    href: "/docs/execution-model/#the-history-in-git-exuvia-mirror-for-code-backups",
+    body: "<code>exuvia mirror</code> copies every saved version into a git repository, one commit per save. Several projects can share one repository, each under its own folder.",
   },
   {
     title: "Schedules that recover",
@@ -169,7 +192,7 @@ const steps = [
 
 <Base
   title="exuvia: a data workbench where the graph is the interface"
-  description="exuvia turns an analysis into a graph of plain Python and SQL files, with per-node schedules, stored outputs and an AI agent that works on the graph with you."
+  description="exuvia turns an analysis into a graph of plain Python and SQL files, read as a canvas or a notebook, with per-node schedules, every output kept as Parquet in your own bucket, and an AI agent that works on the graph with you."
   current="home"
 >
   <Sea />
@@ -178,9 +201,9 @@ const steps = [
       <div class="pitch">
         <h1>A data workbench where the graph is the interface</h1>
         <p class="lede">
-          exuvia turns an analysis into a graph of plain Python and SQL files. Schedule any node on its own, keep
-          every output it produces, and work with an AI agent that reads, writes, runs and debugs the graph
-          alongside you.
+          exuvia turns an analysis into a graph of plain Python and SQL files, laid out as a canvas or read as a
+          notebook. Schedule any node on its own, keep every output it produces as Parquet in your own bucket, and
+          work with an AI agent that reads, writes, runs and debugs the graph alongside you.
         </p>
         <div class="actions">
           <a class="btn btn-primary" href={url("/docs/getting-started/")}>Get started</a>
@@ -212,6 +235,7 @@ const steps = [
   <Workbench />
   <ViewAnatomy />
   <History />
+  <Lake />
 
   <section class="agent" id="agent">
     <div class="wrap agent-grid">
@@ -224,7 +248,7 @@ const steps = [
         </p>
         <ul class="habits">
           <li>It looks at the real column names before it writes a line.</li>
-          <li>It runs what it writes, and reads the traceback when a run fails.</li>
+          <li>It runs what it writes, reads the traceback when a run fails, and looks at the output it made.</li>
           <li>Every tool call shows in the conversation, and the nodes it touches flash on the canvas.</li>
           <li>What it leaves behind are ordinary files, with every earlier version kept and restorable.</li>
         </ul>
@@ -261,7 +285,7 @@ const steps = [
         <div class="clip">
           <Image
             src={agentPanel}
-            alt="An agent conversation. The request: add a drawdown node per ticker with a chart. Its steps: looked at the graph, read prices, wrote drawdown in 24 lines, ran drawdown for 2,080 rows. Then a summary of the new node."
+            alt="An agent conversation. The request: add a drawdown node per ticker with a chart. The agent ran drawdown for 3,984 rows, saw a stray index column in the output and fixed it, put the node in the features stage, then summarized it: what it depends on, the formula, the rows and the chart."
             widths={[340, 678]}
             sizes="340px"
             loading="lazy"

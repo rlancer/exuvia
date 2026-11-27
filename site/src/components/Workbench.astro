@@ -1,6 +1,8 @@
 ---
 import { Image } from "astro:assets";
 import workbench from "../assets/shots/workbench.png";
+import data from "../assets/shots/data.png";
+import notebook from "../assets/shots/notebook.png";
 import views from "../assets/shots/views.png";
 import agent from "../assets/shots/agent.png";
 import history from "../assets/shots/history.png";
@@ -11,19 +13,35 @@ import share from "../assets/shots/share.png";
 const tabs = [
   {
     id: "graph",
-    label: "Graph and outputs",
+    label: "Graph and data",
     image: workbench,
-    alt: "The exuvia workbench. On the left a graph of five nodes, all fresh. In the middle the selected node, rolling_vol, with its chart of 20-day volatility for eight tickers. On the right the agent panel, with its Files and History tabs.",
+    alt: "The exuvia workbench. On the left the graph in three stages, Ingest, Features and Reports, all fresh. In the middle the selected node, rolling_vol, on its Data tab: the data's shape and size, a chart of 20-day volatility for eight tickers, and every row under it with each column's missing values, min and max.",
     caption:
-      "The canvas is the project. Select a node to see its code, its data, its chart, every run it has had and every version of its code.",
+      "The canvas is the project. Select a node to see its code, every run it has had, every version of its code, and its data: its chart over every row, whether there are ten or ten million.",
+  },
+  {
+    id: "data",
+    label: "Ask the rows",
+    image: data,
+    alt: "rolling_vol's Data tab after a filter in words: AAPL, MSFT and NVDA since July 2026. Under the box, the SQL condition the model wrote; the chart draws those three tickers since July, and the table holds 324 of 3,824 rows.",
+    caption:
+      "Say which rows you want and the model writes the SQL condition, in plain sight under the box. Or type SQL, filter a column, sort, or brush the chart: each reads the whole output, not a preview.",
+  },
+  {
+    id: "notebook",
+    label: "Notebook",
+    image: notebook,
+    alt: "The Notebook layout: the graph's contents down the left, stages over their nodes, and rolling_vol's cell with its description, what it reads, its chart and its rows. Its code is open in the inspector on the right.",
+    caption:
+      "The same graph, read top to bottom as a notebook: stages are sections, each node a cell with its description, chart and rows. Reading order is not run order, so there is no hidden state to restart.",
   },
   {
     id: "agent",
     label: "The agent at work",
     image: agent,
-    alt: "The workbench after an agent turn. The agent panel lists its steps: looked at the graph, read prices, wrote drawdown, ran drawdown. The new drawdown node is selected under prices, with its chart of each ticker's drawdown.",
+    alt: "The workbench after an agent turn. The agent panel shows the request, the run of drawdown, the agent noticing a stray index column and fixing it, then a summary. The new drawdown node is selected in the Features stage, with its chart of each ticker's drawdown over its rows.",
     caption:
-      "Asked for a drawdown node, the agent read the graph and the upstream code, wrote a new file, ran it, and reported what it made. The new node is on the canvas.",
+      "Asked for a drawdown node, the agent wrote it, ran it, noticed a stray index column in the output and fixed it, then put the node in its stage. It is on the canvas with its chart.",
   },
   {
     id: "views",
@@ -45,12 +63,11 @@ const tabs = [
     id: "share",
     label: "Sharing",
     image: share,
-    alt: "The Share dialog for a project on a hub: an access request to approve, two people with their roles, general access set to only people added here, and a read-only share link.",
+    alt: "The Share dialog for a project on a hub: an access request to approve, three people with their roles, general access set to only people added here, and a link that opens a view as an app.",
     caption:
       "On a hub, each project is shared the way a document is: viewers, editors, read-only links, and requests to answer.",
   },
 ];
----
 ---
 
 <section class="workbench reverse" id="workbench">

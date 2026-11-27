@@ -154,6 +154,13 @@ const PAGES: PageSpec[] = [
     summary: "The published image, ready hubs for Compose, Swarm and Kubernetes, auth, and every environment variable.",
   },
   {
+    slug: "storage",
+    group: "Run",
+    source: { heading: "Storage: every output kept, as Parquet" },
+    title: "Storage",
+    summary: "Every run's output kept as Parquet, on disk or in your bucket: histories that grow, keys, compaction, and SQL over all of it.",
+  },
+  {
     slug: "records",
     group: "Run",
     source: { heading: "Records: SQLite, Postgres, or your own adapter" },
@@ -206,10 +213,32 @@ type Figure = {
 const FIGURES: Record<string, Figure[]> = {
   nodes: [
     {
+      shot: "data",
+      after: "Download then saves the rows shown",
+      alt: "rolling_vol's Data tab after a prompt filter: the words AAPL, MSFT and NVDA since July 2026 in the box, the SQL condition the model wrote under it, the chart drawing those three tickers since July, and 324 of 3,824 rows.",
+      caption: "A filter in words. The model writes the SQL condition, shown under the box, and the chart and the rows follow it.",
+    },
+    {
       shot: "files",
       after: "The workbench's side panel has three tabs",
       alt: "The Files tab of the side panel: nodes/, lib/ and views/vol_board/ as one tree. lib/stats.py is open in place of the graph, used by rolling_vol.",
       caption: "The Files tab. A helper opens in place of the graph, with the nodes that import it.",
+    },
+  ],
+  canvas: [
+    {
+      shot: "notebook",
+      after: "Graph mode has two layouts",
+      alt: "The Notebook layout of the example project: its contents down the left, with the Ingest, Features and Reports stages over their nodes, and rolling_vol's cell open with its chart over its rows, the filter box and the column insights. The inspector on the right shows rolling_vol's code.",
+      caption: "The notebook: the same graph read top to bottom, with its contents down the left.",
+    },
+  ],
+  storage: [
+    {
+      shot: "storage",
+      after: "**The Storage tab**",
+      alt: "The Storage tab of the example project: every node's outputs on disk, the current one and those kept from earlier runs, with rows and compression; the Parquet files' rows, row groups and codecs; the partitioned prices output against its compaction limit; and the records' counts of runs and code versions.",
+      caption: "The Storage tab: outputs by node, current and earlier, with Parquet compression and compaction.",
     },
   ],
   packages: [
@@ -246,8 +275,8 @@ const FIGURES: Record<string, Figure[]> = {
     {
       shot: "agent",
       after: "The agent runs a tool loop over the live workspace",
-      alt: "The workbench after an agent turn. The agent panel lists its steps: looked at the graph, read prices, wrote drawdown, ran drawdown, then a summary. The new drawdown node is selected on the canvas, with its chart.",
-      caption: "Asked for a drawdown node, the agent read the graph and the upstream code, wrote the node, ran it and said what it made.",
+      alt: "The workbench after an agent turn. The agent panel shows the request, the run of drawdown, the agent fixing a stray index column it noticed in the output, then a summary. The new drawdown node is selected in its stage on the canvas, with its chart over its rows.",
+      caption: "Asked for a drawdown node, the agent wrote it, ran it, fixed what it saw wrong in the output, and said what it made.",
     },
   ],
   "execution-model": [
@@ -262,14 +291,14 @@ const FIGURES: Record<string, Figure[]> = {
     {
       shot: "hub",
       after: "`exuvia hub <dir>` serves every project under one directory",
-      alt: "The hub's home page: three projects, Customer churn, Credit risk and Markets, each with its node count, owner and who can edit it.",
+      alt: "The hub's home page: its left nav with Home and the projects, the project worked on most recently, then all three projects, Customer churn, Credit risk and Markets, each with its node count, owner and who can open it, and Groups under them.",
       caption: "The hub's home page, for a signed-in person: their own project and two shared with them.",
     },
     {
       shot: "share",
       after: "Each project on a hub is one workflow, and it is shared the way a document",
-      alt: "The Share dialog for the Markets project: a request for edit access with a note, the people with access and their roles, general access set to only people added here, and a share link that expires in a month.",
-      caption: "The Share dialog: an access request to answer, people and their roles, general access, and a read-only link.",
+      alt: "The Share dialog for the Markets project: a request for edit access with a note, the people with access and their roles, general access set to only people added here, and the address that opens a view as an app.",
+      caption: "The Share dialog: an access request to answer, people and their roles, general access, and a view opened as an app.",
     },
   ],
 };

@@ -9,7 +9,8 @@
  *   cp -r examples/markets /tmp/markets && uv run exuvia serve /tmp/markets --port 7431
  *   # in exuvia/site/
  *   node tools/capture.mjs app http://127.0.0.1:7431
- *       -> workbench, downloads, history, packages, files, views, view-code, agent, agent-panel
+ *       -> workbench, downloads, data, history, packages, files, views, view-code, notebook, storage,
+ *          agent, agent-panel
  *
  *   # a hub on an empty directory, with sign-in from headers
  *   EXUVIA_AUTH=headers uv run exuvia hub /tmp/hub --port 7432
@@ -25,9 +26,11 @@
  *
  * Each product mode changes the project it runs against, which is why they
  * want scratch copies. `app` adds lib/stats.py, makes rolling_vol use it (so
- * History has a change to show) and adds scipy to the project's packages.
- * Its agent shots send one real prompt (the agent writes a node), which
- * spends a few cents of model credit; pass --no-agent to skip them. `hub`
+ * History has a change to show), adds scipy to the project's packages, and
+ * last changes lib/stats.py again so Storage has earlier outputs to show.
+ * Its model shots send two real prompts (a Data tab filter in words, and the
+ * agent writing a node), which spend a few cents of model credit; pass
+ * --no-agent to skip them. `hub`
  * signs in as three made-up people, creates three projects and shares one.
  * `tutorial` writes every `file=` block of src/docs/getting-started.md.
  */
@@ -147,21 +150,37 @@ async function app() {
 
   const page = await workbench();
 
-  // The workbench: graph on the left, a node's chart in the inspector.
+  // The workbench: graph on the left, a node's Data tab, its chart over its rows.
   await page.goto(base);
   await node(page, "rolling_vol").click();
-  await tab(page, "Chart").click();
+  await page.getByRole("tab", { name: /^Data/ }).click();
   await page.locator(".vega-embed canvas, .vega-embed svg").first().waitFor();
+  await page.getByText("Data shape").first().waitFor();
   await shot(page, "workbench");
 
   // Downloads: the node's rows, and the formats they save as.
-  await page.getByRole("tab", { name: /^Data/ }).click();
   await page.locator("button", { hasText: "Download" }).last().click();
   await page.getByText("Parquet", { exact: true }).last().waitFor();
   await shot(page, "downloads");
   await page.keyboard.press("Escape");
 
+  // Data: rows asked for in plain words. The model writes the SQL condition,
+  // which shows under the box. It spends a little model credit, as the agent does.
+  if (!flags.includes("--no-agent")) {
+    await page.getByText("Prompt", { exact: true }).first().click();
+    await page.getByRole("radio", { name: "Prompt" }).click().catch(() => {});
+    const box = page.getByPlaceholder(/^Filter: say which rows/);
+    await box.fill("AAPL, MSFT and NVDA since July 2026");
+    await box.press("Enter");
+    // The condition the model wrote shows under the box once it is applied.
+    await page.getByText(/^Filtered where/).first().waitFor({ timeout: 120_000 });
+    await page.waitForTimeout(2500);
+    await shot(page, "data");
+  }
+
   // History: the edit to rolling_vol, against the version before it.
+  await page.goto(base);
+  await node(page, "rolling_vol").click();
   await tab(page, "History").first().click();
   await page.getByText("vs previous").waitFor();
   await shot(page, "history");
@@ -189,8 +208,41 @@ async function app() {
   await page.getByRole("button", { name: "App.tsx" }).click();
   await shot(page, "view-code");
 
-  // The agent, after one real turn, with the node it made selected.
-  if (flags.includes("--no-agent")) return;
+  // Notebook: the same graph read top to bottom, on rolling_vol's cell, with
+  // the contents down the left and the side panel folded away.
+  const nb = await workbench();
+  await nb.goto(`${base}/#notebook/rolling_vol`);
+  await nb.getByRole("button", { name: "Collapse the side panel" }).click();
+  const contents = nb.getByRole("button", { name: "Show the contents" });
+  if (await contents.count()) await contents.click();
+  await nb.locator(".vega-embed canvas, .vega-embed svg").first().waitFor();
+  // A pick in the contents keeps the cell at the top while the ones above it load.
+  await nb.getByRole("tree").getByText("rolling_vol", { exact: true }).click();
+  await nb.mouse.move(700, 880);
+  await nb.waitForTimeout(2500);
+  await shot(nb, "notebook");
+
+  if (!flags.includes("--no-agent")) await agentTurn(page);
+
+  // Storage: what the project keeps, by node, after one more change, so it
+  // has earlier outputs to show beside the current ones.
+  await api("PUT", "/api/files/lib/stats.py", { source: STATS.replace(".std()", ".std(ddof=0)") });
+  await runStale();
+  await nb.goto(`${base}/#storage`);
+  await nb.reload();
+  await nb.getByText("Outputs by node").waitFor();
+  // Scroll the page's own pane (not the window) to the outputs, under the bars.
+  await nb.getByText("Outputs by node").evaluate((el) => {
+    let pane = el.parentElement;
+    while (pane && !(pane.scrollHeight > pane.clientHeight && /auto|scroll/.test(getComputedStyle(pane).overflowY))) pane = pane.parentElement;
+    if (pane) pane.scrollTop += el.getBoundingClientRect().top - pane.getBoundingClientRect().top - 16;
+  });
+  await nb.mouse.move(700, 880); // off the rail, so no tooltip shows
+  await shot(nb, "storage");
+}
+
+/** The agent, after one real turn, with the node it made selected. */
+async function agentTurn(page) {
   await page.goto(base);
   await tab(page, "Agent").click();
   await node(page, "prices").click();
@@ -200,7 +252,7 @@ async function app() {
   await page.getByRole("button", { name: "Stop", exact: true }).waitFor({ state: "detached", timeout: 300_000 });
   if (await node(page, "drawdown").count()) {
     await node(page, "drawdown").click();
-    if (await tab(page, "Chart").count()) await tab(page, "Chart").click();
+    await page.getByRole("tab", { name: /^Data/ }).click();
   }
   await page.waitForTimeout(1200);
   await shot(page, "agent");
@@ -278,9 +330,9 @@ async function hub() {
   await api("POST", `${sharing}/requests`, ask, person("linus")).catch(() => {});
 
   // The hub's home page as grace sees it: her own project and two of ada's.
-  const home = await workbench({ headers: person("grace"), height: 360 });
+  const home = await workbench({ headers: person("grace"), height: 640 });
   await home.goto(base);
-  await home.getByText("Customer churn").waitFor();
+  await home.getByText("Customer churn").first().waitFor();
   await shot(home, "hub");
 
   // The Share dialog, from the workbench of the project's owner.
