@@ -8,6 +8,7 @@ latency percentiles, errors and the hub process's memory (RSS) and threads.
     uv run python scripts/loadtest_data_api.py                 # seed and run
     uv run python scripts/loadtest_data_api.py --hub /tmp/lt   # keep the hub: later runs skip seeding
     uv run python scripts/loadtest_data_api.py --only hot_query,churn_query
+    uv run python scripts/loadtest_data_api.py --only dashboard,staleness --cache-seconds 2 --proxy nginx
 
 The seeded hub has ``--projects`` projects, each with
 
@@ -17,6 +18,29 @@ The seeded hub has ``--projects`` projects, each with
 * ``daily``: a node with an ``as_of`` parameter, run for ``--history`` dates,
   so ``daily__runs`` is a view over that many files;
 * ``--small`` small nodes, as real projects have.
+
+Each row also has the hub's CPU use over the scenario (``cpu``, % of one core) and per
+answered request.
+
+Caching (exuvia/dataapi.py, HTTP caching):
+
+* ``dashboard``: many clients poll a few expensive queries and node reads
+  while one project re-runs a node every ``--dashboard-churn`` seconds; once
+  as plain clients (``dashboard:plain``), once as clients that keep answers
+  like a browser does and send ``If-None-Match`` (``dashboard:reval``: how
+  many got 304s, and what those cost).
+* ``staleness``: clients like a browser's read the ``tick`` node (it writes
+  ``time.time()``) and a query over it while it re-runs, and compare each
+  answer with the latest run that had finished when they asked: the worst
+  and p99 staleness, checked against the bound the hub's caching allows
+  (0 with ``no-cache``; 2 x ``--cache-seconds`` with ``max-age``).
+* ``isolation``: through the proxy, a key that can't read a project never
+  gets a cached answer for it, and one key's cached answer is never served
+  to another.
+
+``--cache-seconds N`` starts the hub with ``EXUVIA_DATA_CACHE_SECONDS=N``.
+``--proxy nginx`` puts nginx in front of the hub with the example config
+(``deploy/nginx/exuvia.conf``), and every scenario goes through it.
 
 Nobody signs in to the hub, so data keys are the operator's. Linux only (RSS
 is read from /proc). ``--json FILE`` writes the results for comparing runs.
@@ -29,6 +53,8 @@ import asyncio
 import json
 import os
 import random
+import re
+import shutil
 import signal
 import socket
 import statistics
@@ -40,10 +66,13 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlencode
 
 import httpx
 
 ARROW = {"Accept": "application/vnd.apache.arrow.stream"}
+REPO = Path(__file__).resolve().parent.parent
+TICKS = os.sysconf("SC_CLK_TCK")
 
 ORDERS = '''import exuvia
 
@@ -189,6 +218,8 @@ class HubProcess:
         self.root = root
         self.port = free_port()
         self.url = f"http://127.0.0.1:{self.port}"
+        self.base = self.url  # where scenarios send their requests: the proxy's address when there is one
+        self.proxy: NginxProxy | None = None
         base = dict(os.environ)
         for name in ("EXUVIA_AUTH", "EXUVIA_API_TOKEN", "EXUVIA_BROWSER_AUTH", "EXUVIA_DB", "EXUVIA_ARTIFACT_STORE"):
             base.pop(name, None)  # nobody signs in, outputs on local disk: unless `env` says otherwise
@@ -224,16 +255,85 @@ class HubProcess:
 
     def cpu(self) -> float:
         """CPU seconds (user + system) the hub process has used."""
-        try:
-            fields = Path(f"/proc/{self.proc.pid}/stat").read_text().rsplit(")", 1)[1].split()
-        except OSError:
-            return 0.0
-        return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+        return proc_cpu(self.proc.pid)
 
     def stop(self) -> None:
+        if self.proxy is not None:
+            self.proxy.stop()
         self.proc.send_signal(signal.SIGINT)
         try:
             self.proc.wait(15)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+
+
+def proc_cpu(pid: int) -> float:
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    except OSError:
+        return 0.0
+    return (int(fields[11]) + int(fields[12])) / TICKS  # utime, stime
+
+
+class NginxProxy:
+    """nginx in front of the hub with the example config (deploy/nginx/
+    exuvia.conf), its cache in a folder of its own."""
+
+    def __init__(self, upstream_port: int, folder: Path):
+        exe = shutil.which("nginx") or "/usr/sbin/nginx"
+        if not Path(exe).exists():
+            raise SystemExit("--proxy nginx needs nginx (apt-get install nginx)")
+        self.port = free_port()
+        self.url = f"http://127.0.0.1:{self.port}"
+        shutil.rmtree(folder, ignore_errors=True)
+        (folder / "cache").mkdir(parents=True)
+        (folder / "logs").mkdir()
+        conf = (REPO / "deploy" / "nginx" / "exuvia.conf").read_text()
+        conf = conf.replace("server exuvia:7420;", f"server 127.0.0.1:{upstream_port};")
+        conf = conf.replace("listen 80;", f"listen 127.0.0.1:{self.port};")
+        conf = conf.replace("/var/cache/nginx/exuvia", str(folder / "cache"))
+        (folder / "exuvia.conf").write_text(conf)
+        (folder / "nginx.conf").write_text(
+            f"worker_processes 2;\npid {folder}/nginx.pid;\nerror_log {folder}/logs/error.log warn;\n"
+            "events { worker_connections 4096; }\n"
+            f"http {{\n  access_log off;\n  client_body_temp_path {folder}/body;\n  proxy_temp_path {folder}/proxy;\n"
+            f"  fastcgi_temp_path {folder}/fastcgi;\n  uwsgi_temp_path {folder}/uwsgi;\n  scgi_temp_path {folder}/scgi;\n"
+            f"  include {folder}/exuvia.conf;\n}}\n"
+        )
+        self.folder = folder
+        self.proc = subprocess.Popen(
+            [exe, "-p", str(folder), "-c", str(folder / "nginx.conf"), "-g", "daemon off;"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        )
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if self.proc.poll() is not None:
+                raise SystemExit(f"nginx exited: {self.proc.stderr.read() if self.proc.stderr else ''}")
+            try:
+                httpx.get(self.url + "/api/data/openapi.json", timeout=2)
+                return
+            except httpx.HTTPError:
+                time.sleep(0.1)
+        raise SystemExit("nginx did not start in 10s")
+
+    def cpu(self) -> float:
+        """CPU seconds nginx's master and workers have used."""
+        total = proc_cpu(self.proc.pid)
+        for stat in Path("/proc").glob("[0-9]*/stat"):
+            try:
+                if int(stat.read_text().rsplit(")", 1)[1].split()[1]) == self.proc.pid:
+                    total += proc_cpu(int(stat.parent.name))
+            except (OSError, ValueError, IndexError):
+                pass
+        return total
+
+    def cache_bytes(self) -> int:
+        return sum(f.stat().st_size for f in (self.folder / "cache").rglob("*") if f.is_file())
+
+    def stop(self) -> None:
+        self.proc.send_signal(signal.SIGQUIT)
+        try:
+            self.proc.wait(10)
         except subprocess.TimeoutExpired:
             self.proc.kill()
 
@@ -311,7 +411,9 @@ class Result:
     peak_threads: int = 0
     rss_after: float = 0.0
     cpu_seconds: float = 0.0  # the hub process's CPU time (user + system) while the scenario ran
+    proxy_cpu: float | None = None  # nginx's, with --proxy nginx
     note: str = ""
+    extra: dict[str, Any] = field(default_factory=dict)
 
     def row(self) -> dict[str, Any]:
         lat = sorted(self.latencies)
@@ -330,6 +432,8 @@ class Result:
             "hub_cpu_pct": round(100 * self.cpu_seconds / self.seconds) if self.seconds else 0,
             "cpu_ms_per_req": round(1000 * self.cpu_seconds / len(lat), 2) if lat else None,
             "errors": self.errors, "note": self.note,
+            **({"proxy_cpu_s": round(self.proxy_cpu, 2)} if self.proxy_cpu is not None else {}),
+            **self.extra,
         }
 
 
@@ -362,7 +466,7 @@ async def drive(
     stop = asyncio.Event()
     sent = 0
     limits = httpx.Limits(max_connections=concurrency + 4, max_keepalive_connections=concurrency + 4)
-    async with httpx.AsyncClient(base_url=hub.url, timeout=timeout, limits=limits) as c:
+    async with httpx.AsyncClient(base_url=hub.base, timeout=timeout, limits=limits) as c:
         bg = asyncio.create_task(background(c, stop)) if background else None
 
         async def client(n: int) -> None:
@@ -389,6 +493,7 @@ async def drive(
                     res.errors[key] = res.errors.get(key, 0) + 1
                 i += concurrency
 
+        pcpu0 = hub.proxy.cpu() if hub.proxy else None
         with Sampler(hub) as s:
             cpu0 = hub.cpu()
             t0 = time.perf_counter()
@@ -399,6 +504,8 @@ async def drive(
             await asyncio.gather(*clients)
             res.seconds = time.perf_counter() - t0
             res.cpu_seconds = hub.cpu() - cpu0
+            if hub.proxy is not None and pcpu0 is not None:
+                res.proxy_cpu = hub.proxy.cpu() - pcpu0
             stop.set()
             if bg:
                 await bg
@@ -410,16 +517,221 @@ async def drive(
 def print_row(r: dict[str, Any]) -> None:
     errs = f"  errors: {r['errors']}" if r["errors"] else ""
     note = f"  ({r['note']})" if r["note"] else ""
+    proxy = f" nginx cpu={r['proxy_cpu_s']}s" if "proxy_cpu_s" in r else ""
     print(
         f"{r['scenario']:<16} c={r['conc']:<3} ok={r['ok']:<6} err={r['err']:<4} 429={r['429']:<5} rps={r['rps']:<8} "
         f"p50={r['p50_ms']}ms p95={r['p95_ms']}ms p99={r['p99_ms']}ms max={r['max_ms']}ms "
         f"cpu={r.get('hub_cpu_pct')}% ({r.get('cpu_ms_per_req')}ms/req) "
-        f"rss peak/after={r['peak_rss_mb']}/{r['rss_after_mb']}MiB threads={r['peak_threads']}{note}{errs}",
+        f"rss peak/after={r['peak_rss_mb']}/{r['rss_after_mb']}MiB threads={r['peak_threads']}{proxy}{note}{errs}",
         flush=True,
     )
 
 
+# -- a client that caches like a browser ------------------------------------------------
+
+
+def max_age(headers: httpx.Headers) -> float:
+    """How long an answer stays fresh in a client's cache: max-age less the
+    Age a shared cache reports. 0 for no-cache, no-store or none."""
+    cc = headers.get("cache-control", "")
+    if "no-cache" in cc or "no-store" in cc:
+        return 0.0
+    m = re.search(r"max-age=(\d+(?:\.\d+)?)", cc)
+    return max(0.0, float(m.group(1)) - float(headers.get("age") or 0)) if m else 0.0
+
+
+@dataclass
+class CacheStats:
+    local: int = 0  # answered from the client's cache, nothing sent
+    sent_inm: int = 0  # sent with If-None-Match
+    got_304: int = 0
+    got_200: int = 0
+    lat_304: list[float] = field(default_factory=list)
+    lat_200: list[float] = field(default_factory=list)
+
+    def note(self) -> dict[str, Any]:
+        def p50(xs: list[float]) -> float | None:
+            return round(statistics.median(xs) * 1000, 2) if xs else None
+
+        sent = self.got_304 + self.got_200
+        return {
+            "client_cache": {
+                "local_hits": self.local, "sent": sent, "sent_if_none_match": self.sent_inm, "got_304": self.got_304,
+                "rate_304": round(self.got_304 / sent, 3) if sent else None,
+                "p50_304_ms": p50(self.lat_304), "p50_200_ms": p50(self.lat_200),
+            }
+        }
+
+
+class BrowserCache:
+    """One client's HTTP cache, as a browser keeps one: each answer with its
+    ETag, used without asking while it is fresh (max-age), then sent back
+    in If-None-Match. Holds bodies in memory: for small answers only."""
+
+    def __init__(self, stats: CacheStats):
+        self.stats = stats
+        self.entries: dict[tuple[str, str], tuple[str | None, bytes, float]] = {}  # (url, accept) -> (etag, body, fresh until)
+
+    async def get(self, c: httpx.AsyncClient, url: str, headers: dict[str, str]) -> httpx.Response:
+        k = (url, headers.get("Accept", ""))
+        hit = self.entries.get(k)
+        now = time.monotonic()
+        if hit and now < hit[2]:
+            self.stats.local += 1
+            return httpx.Response(200, content=hit[1])
+        send = dict(headers)
+        if hit and hit[0]:
+            send["If-None-Match"] = hit[0]
+            self.stats.sent_inm += 1
+        t = time.perf_counter()
+        r = await c.get(url, headers=send)
+        took = time.perf_counter() - t
+        if r.status_code == 304 and hit:
+            self.stats.got_304 += 1
+            self.stats.lat_304.append(took)
+            self.entries[k] = (r.headers.get("etag") or hit[0], hit[1], time.monotonic() + max_age(r.headers))
+            return httpx.Response(200, content=hit[1], headers=r.headers)
+        if r.status_code == 200:
+            self.stats.got_200 += 1
+            self.stats.lat_200.append(took)
+            if "no-store" not in r.headers.get("cache-control", ""):
+                self.entries[k] = (r.headers.get("etag"), r.content, time.monotonic() + max_age(r.headers))
+        return r
+
+
 # -- scenarios ----------------------------------------------------------------------
+
+
+def staleness_of(samples: list[tuple[float, float]], runs: list[tuple[float, float]]) -> list[float]:
+    """For each answer (asked at, value it held), how long it had been out
+    of date: since the first run newer than its value finished, if that run
+    had finished before the answer was asked for; else 0. ``runs`` are
+    (value the run wrote, when it was seen finished)."""
+    out = []
+    for asked, value in samples:
+        newer = [done for t, done in runs if t > value + 1e-9 and done <= asked]
+        out.append(asked - min(newer) if newer else 0.0)
+    return out
+
+
+async def staleness(
+    hub: HubProcess, args: argparse.Namespace, pid: str, auth: dict[str, str],
+    query: Callable[..., Awaitable[httpx.Response]], read: Callable[..., Awaitable[httpx.Response]],
+) -> Result:
+    """Clients that cache like a browser read ``tick`` (a node read and a
+    query) while it re-runs every ``--tick-every`` seconds; how stale is
+    what they see, against the latest run that had finished when they asked?"""
+    runs: list[tuple[float, float]] = []
+    samples: list[tuple[float, float]] = []
+    stats = CacheStats()
+    n = args.staleness_clients
+    caches = [BrowserCache(stats) for _ in range(n)]
+    sql = f'select t from "{pid}".tick'
+
+    async def ticker(c: httpx.AsyncClient, stop: asyncio.Event) -> None:
+        while not stop.is_set():
+            r = await c.post(f"{hub.url}/p/{pid}/api/nodes/tick/run", json={"wait": 60})
+            done = time.monotonic()
+            if r.status_code == 200 and r.json().get("ok"):
+                # What it wrote, read past every cache (the workbench API, straight from the hub).
+                got = await c.get(f"{hub.url}/p/{pid}/api/nodes/tick/data")
+                runs.append((float(got.json()["rows"][0][0]), done))
+            try:
+                await asyncio.wait_for(stop.wait(), args.tick_every)
+            except asyncio.TimeoutError:
+                pass
+
+    async def ask(c: httpx.AsyncClient, i: int) -> httpx.Response:
+        cache = caches[i % n]
+        asked = time.monotonic()
+        if (i // n) % 2:
+            r = await query(c, sql, auth, cache)
+        else:
+            r = await read(c, f"/api/data/projects/{pid}/nodes/tick", auth, cache)
+        if r.status_code == 200:
+            samples.append((asked, float(json.loads(r.content)["rows"][0][0])))
+        await asyncio.sleep(0.02)
+        return r
+
+    res = await drive(hub, "staleness", ask, n, args.duration, background=ticker)
+    # Only answers asked once the first run had finished say anything.
+    first = runs[0][1] if runs else float("inf")
+    stale = sorted(staleness_of([s for s in samples if s[0] >= first], runs))
+    mode = f"max-age={args.cache_seconds:g}" if args.cache_seconds else "no-cache"
+    bound = 2 * args.cache_seconds + 0.5 if args.cache_seconds else 0.0  # max-age + stale-while-revalidate, and the update
+    worst = stale[-1] if stale else 0.0
+    p99 = stale[min(len(stale) - 1, int(0.99 * len(stale)))] if stale else 0.0
+    ok = worst <= bound
+    res.extra.update(stats.note())
+    res.extra["staleness"] = {
+        "mode": mode, "through": "nginx" if hub.proxy else "hub", "runs": len(runs), "answers": len(stale),
+        "stale_answers": sum(1 for x in stale if x > 0), "worst_s": round(worst, 3), "p99_s": round(p99, 3),
+        "bound_s": bound, "pass": ok,
+    }
+    res.note = (f"{mode}: {len(runs)} runs, {len(stale)} answers, {sum(1 for x in stale if x > 0)} stale, "
+                f"worst {worst:.3f}s p99 {p99:.3f}s, bound {bound:g}s: {'PASS' if ok else 'FAIL'}")
+    return res
+
+
+async def isolation(hub: HubProcess, args: argparse.Namespace, pids: list[str], get_query: bool) -> Result:
+    """Through the proxy (or straight to the hub): a key that can't read a
+    project never gets a cached answer for it, and one key's cached answer
+    is never another key's."""
+    a = {"Authorization": f"Bearer {await make_key(hub, pids[:2], 'isolation a')}"}
+    b = {"Authorization": f"Bearer {await make_key(hub, pids[2:3], 'isolation b')}"}
+    a2 = {"Authorization": f"Bearer {await make_key(hub, pids[:2], 'isolation a2')}"}
+    checks: dict[str, bool] = {}
+    res = Result("isolation", 1, 0.0)
+    cpu0 = hub.cpu()
+    t0 = time.perf_counter()
+    sql = f'select count(*) from "{pids[0]}".accounts'
+    q = "/api/data/query?" + urlencode({"sql": sql}) if get_query else None
+    node = f"/api/data/projects/{pids[0]}/nodes/accounts?limit=5"
+    async with httpx.AsyncClient(base_url=hub.base, timeout=60) as c:
+
+        async def get(url: str, headers: dict[str, str]) -> httpx.Response:
+            t = time.perf_counter()
+            r = await c.get(url, headers=headers)
+            if r.status_code in (200, 304):
+                res.latencies.append(time.perf_counter() - t)
+            return r
+
+        urls = [u for u in (q, node, "/api/data/projects") if u]
+        for url in urls:
+            first = await get(url, a)
+            second = await get(url, a)  # a cache, if there is one, now has it
+            checks[f"{url[:40]}: key A reads it"] = first.status_code == second.status_code == 200
+            cached = second.headers.get("x-cache-status") in ("HIT", "REVALIDATED", "STALE", "UPDATING")
+            res.extra.setdefault("cached_for_a", {})[url[:40]] = second.headers.get("x-cache-status")
+            other = await get(url, b)
+            if url == "/api/data/projects":
+                checks[f"{url}: key B sees its own projects"] = (
+                    other.status_code == 200 and [p["id"] for p in other.json()["projects"]] == pids[2:3]
+                )
+            else:
+                checks[f"{url[:40]}: key B is refused"] = other.status_code in (400, 404)
+            checks[f"{url[:40]}: key B gets no cached answer"] = other.headers.get("x-cache-status") not in ("HIT", "STALE", "UPDATING")
+            twin = await get(url, a2)
+            checks[f"{url[:40]}: key A2 is answered for itself, not from A's entry"] = (
+                twin.status_code == 200 and twin.headers.get("x-cache-status") not in ("HIT", "STALE", "UPDATING")
+                and (url != "/api/data/projects" or twin.json()["key"]["name"] == "isolation a2")
+            )
+            nobody = await get(url, {})
+            checks[f"{url[:40]}: no key is refused"] = nobody.status_code == 401
+            tag = second.headers.get("etag")
+            if tag:
+                stolen = await get(url, {**b, "If-None-Match": tag})
+                checks[f"{url[:40]}: key B with A's ETag gets no 304"] = stolen.status_code != 304
+            res.extra.setdefault("a_cached", {})[url[:40]] = cached
+    res.seconds = time.perf_counter() - t0
+    res.cpu_seconds = hub.cpu() - cpu0
+    failed = [k for k, v in checks.items() if not v]
+    res.extra["isolation"] = {"checks": checks, "pass": not failed}
+    caching_on = any(res.extra.get("a_cached", {}).values())
+    res.note = (f"{len(checks) - len(failed)}/{len(checks)} checks pass"
+                f"{'' if hub.proxy else ', no proxy'}{'' if caching_on or not hub.proxy else ', nothing was cached (use --cache-seconds)'}"
+                f"{': FAIL ' + '; '.join(failed) if failed else ''}")
+    return res
 
 
 async def run_scenarios(args: argparse.Namespace, root: Path, env: dict[str, str]) -> list[dict[str, Any]]:
@@ -436,6 +748,9 @@ async def run_scenarios(args: argparse.Namespace, root: Path, env: dict[str, str
 
     # A fresh hub per group of scenarios that needs nothing loaded yet.
     hub = HubProcess(root, env)
+    if args.proxy == "nginx":
+        hub.proxy = NginxProxy(hub.port, Path(tempfile.mkdtemp(prefix="exuvia-loadtest-nginx-")))
+        hub.base = hub.proxy.url
     try:
         all_key = await make_key(hub, pids, "all")
         two_key = await make_key(hub, pids[:2], "two")
@@ -444,7 +759,22 @@ async def run_scenarios(args: argparse.Namespace, root: Path, env: dict[str, str
         auth_two = {"Authorization": f"Bearer {two_key}"}
         auth_other = {"Authorization": f"Bearer {other_key}"}
         rss0 = hub.stat()[0]
-        print(f"hub started: rss={rss0:.0f}MiB, {len(pids)} projects", flush=True)
+        print(f"hub started: rss={rss0:.0f}MiB, {len(pids)} projects"
+              f"{f', behind nginx at {hub.base}' if hub.proxy else ''}"
+              f"{f', EXUVIA_DATA_CACHE_SECONDS={args.cache_seconds:g}' if args.cache_seconds else ''}", flush=True)
+        # Hubs before the GET form of the query answer it 405: send those a POST.
+        probe = httpx.get(hub.url + "/api/data/query", params={"sql": "select 1", "projects": pids[0]}, headers=auth_two)
+        get_query = probe.status_code != 405
+
+        def query(c: httpx.AsyncClient, sql: str, headers: dict[str, str], cache: BrowserCache | None = None) -> Awaitable[httpx.Response]:
+            """The query as a GET (which caches keep) where the hub has one."""
+            if not get_query:
+                return c.post("/api/data/query", json={"sql": sql}, headers=headers)
+            url = "/api/data/query?" + urlencode({"sql": sql})
+            return cache.get(c, url, headers) if cache else c.get(url, headers=headers)
+
+        def read(c: httpx.AsyncClient, url: str, headers: dict[str, str], cache: BrowserCache | None = None) -> Awaitable[httpx.Response]:
+            return cache.get(c, url, headers) if cache else c.get(url, headers=headers)
 
         if want("cold_list"):
             # One request for every project's nodes, nothing loaded yet.
@@ -568,6 +898,60 @@ async def run_scenarios(args: argparse.Namespace, root: Path, env: dict[str, str
             cheap_res.seconds = time.perf_counter() - t0
             record(res)
             record(cheap_res)
+
+        if want("dashboard"):
+            # Many clients polling a dashboard's panels (three expensive
+            # queries, two node reads) while one of its projects re-runs a
+            # node every few seconds, which changes what two panels read.
+            dash_key = await make_key(hub, pids[:3], "dashboard")
+            auth_dash = {"Authorization": f"Bearer {dash_key}"}
+            panels: list[tuple[str, str]] = [
+                ("query", hot_sql),
+                ("query", f'select region, date_trunc(\'month\', day) as m, sum(amount), count(*) from "{pids[2]}".orders group by all order by all'),
+                ("query", f'select as_of, avg(balance), max(balance) from "{pids[1]}".daily__runs group by all order by 1'),
+                ("node", f"/api/data/projects/{pids[0]}/nodes/by_region"),
+                ("node", f"/api/data/projects/{pids[1]}/nodes/accounts?limit=100"),
+            ]
+            runs = 0
+
+            async def dash_churn(c: httpx.AsyncClient, stop: asyncio.Event) -> None:
+                nonlocal runs
+                while not stop.is_set():
+                    try:
+                        await asyncio.wait_for(stop.wait(), args.dashboard_churn)
+                    except asyncio.TimeoutError:
+                        pass
+                    if stop.is_set():
+                        return
+                    r = await c.post(f"/p/{pids[0]}/api/nodes/tick/run", json={"wait": 60})
+                    runs += r.status_code == 200
+
+            for mode in ("plain", "reval"):
+                for n in conc:
+                    stats = CacheStats()
+                    caches = [BrowserCache(stats) for _ in range(n)] if mode == "reval" else None
+
+                    def panel(c: httpx.AsyncClient, i: int, n: int = n, caches: list[BrowserCache] | None = caches) -> Awaitable[httpx.Response]:
+                        kind, what = panels[(i // n) % len(panels)]
+                        cache = caches[i % n] if caches else None
+                        return query(c, what, auth_dash, cache) if kind == "query" else read(c, what, auth_dash, cache)
+
+                    runs = 0
+                    res = await drive(hub, f"dashboard:{mode}", panel, n, args.duration, background=dash_churn)
+                    res.note = f"{runs} runs during it" + ("" if get_query else "; POST queries (no GET on this hub)")
+                    if caches:
+                        res.extra.update(stats.note())
+                        cc = res.extra["client_cache"]
+                        res.note += f"; 304s {cc['got_304']}/{cc['sent']} sent, {cc['local_hits']} from the client's cache, p50 304 {cc['p50_304_ms']}ms vs 200 {cc['p50_200_ms']}ms"
+                    if hub.proxy:
+                        res.extra["nginx_cache_mb"] = round(hub.proxy.cache_bytes() / 2**20, 1)
+                    record(res)
+
+        if want("staleness"):
+            record(await staleness(hub, args, pids[0], auth_two, query, read))
+
+        if want("isolation"):
+            record(await isolation(hub, args, pids, get_query))
     finally:
         hub.stop()
     return out
@@ -613,7 +997,14 @@ def main() -> None:
     ap.add_argument("--concurrency", default="1,8,32", help="clients at once, per scenario")
     ap.add_argument("--churn-every", type=float, default=0.25, help="seconds between runs in churn_query")
     ap.add_argument("--only", help="comma-separated scenarios: cold_list, warm_list, hot_query, point_query, "
-                    "node_read, history, churn_query, distinct_sets, arrow_scan, wide_json, wide_node, heavy_query")
+                    "node_read, history, churn_query, distinct_sets, arrow_scan, wide_json, wide_node, heavy_query, dashboard, "
+                    "staleness, isolation")
+    ap.add_argument("--cache-seconds", type=float, default=0.0, help="EXUVIA_DATA_CACHE_SECONDS for the hub (0: no-cache)")
+    ap.add_argument("--proxy", choices=["nginx"], help="put a proxy in front of the hub (deploy/nginx/exuvia.conf)")
+    ap.add_argument("--dashboard-churn", type=float, default=3.0, help="seconds between runs in dashboard")
+    ap.add_argument("--tick-every", type=float, default=0.5, help="seconds between runs of tick in staleness")
+    ap.add_argument("--staleness-clients", type=int, default=8, help="clients in staleness")
+    ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for the hub's environment (repeatable)")
     ap.add_argument("--json", help="write the results to this file")
     ap.add_argument("--db", help="EXUVIA_DB for the hub (a postgresql:// URL): run records in a shared database, not "
                     "each project's SQLite file. Seed a separate --hub for it")
@@ -623,6 +1014,11 @@ def main() -> None:
     marker = root / ".loadtest.json"
     shape = {"projects": args.projects, "rows": args.rows, "small": args.small, "history": args.history}
     env = {"EXUVIA_SCHEDULER": "external"}
+    if args.cache_seconds:
+        env["EXUVIA_DATA_CACHE_SECONDS"] = f"{args.cache_seconds:g}"
+    for pair in args.env:
+        name, _, value = pair.partition("=")
+        env[name] = value
     if args.db:
         env["EXUVIA_DB"] = args.db
     if not (marker.is_file() and json.loads(marker.read_text()) == shape):
