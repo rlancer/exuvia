@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -62,17 +63,19 @@ from . import auth, envvars
 from .arrowstream import ArrowStream
 from .artifacts import artifact_key, artifact_store
 from .events import EventBus
-from .executor import ExecRequest, LocalExecutor, make_executor
+from . import runners as runners_mod
+from .executor import ExecRequest, ExecResult, LocalExecutor, make_executor
 from .notify import failure_webhook, payload, send
 from .npm import Npm, bare_imports
 from .packages import Packages, missing_package
 from .keys import KeyViolation, enforce_file
 from .partitioned import Manifest, PartitionError, Writer, commit, in_range, prune, sort_values
 from .pushing import save_pushed
-from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Project, View, _hash, _validate_cron, check_stage, same_code
+from .project import NODE_SUFFIXES, VIEW_DIR, VIEW_MANIFEST, Graph, Node, Project, View, _hash, _validate_cron, check_stage, same_code
 from . import outputs
 from .outputs import jsonable, lock_outputs, output_parts, outputs_connection  # noqa: F401 - lock_outputs, outputs_connection: re-exported
 from .runner import PART_EXT, PART_NAME, finite
+from .runners import Broker
 from .store import CodeChange, clean_origin, open_store
 
 MAX_PARALLEL = int(os.environ.get("EXUVIA_MAX_PARALLEL", "4"))
@@ -169,6 +172,11 @@ class Workspace:
         self._stop_watching: asyncio.Event | None = None
         self._backfill: dict[str, Any] | None = None
         self.executor = make_executor(self.project.root, MAX_PARALLEL)
+        # Where runs_on nodes go (runners.py): set by the server that serves
+        # the project (one broker per hub); None when nothing serves it, and
+        # then nothing can hand them to a runner.
+        self.runners: Broker | None = None
+        self.project_id = ""  # its id on a hub (Hub.get)
         # The packages the project lists in its pyproject.toml (packages.py).
         local = isinstance(self.executor, LocalExecutor)
         self.packages = Packages(self.project.root, publish=self.bus.publish, local=local, store=packages_store)
@@ -1112,7 +1120,9 @@ class Workspace:
             # given back while waiting to retry.
             async with lock:
                 for attempt in range(1, attempts + 1):
-                    async with self._slots:
+                    # A runs_on node runs on someone's machine: waiting for
+                    # it takes none of this machine's run slots.
+                    async with self._slots if not node.runs_on else contextlib.nullcontext():
                         if attempt == 1 and name not in force and self._is_fresh_ignoring_inflight(name, key, params):
                             return self._finish(run_id, name, key, status="cached")
                         if run_id in self._cancelled:
@@ -1619,7 +1629,10 @@ class Workspace:
             on_log("exuvia: full refresh: what this run returns becomes the whole output\n")
         # Executors block (subprocess pipes / HTTP streams); keep them off the loop.
         try:
-            res = await asyncio.to_thread(self.executor.execute, req, on_log)
+            if node.runs_on:
+                res = await asyncio.to_thread(self._on_runner, node, req, on_log)
+            else:
+                res = await asyncio.to_thread(self.executor.execute, req, on_log)
             if node.partition_by and res.ok:
                 staged = res.artifact_path if res.kind == "table" else None
                 try:
@@ -1664,6 +1677,17 @@ class Workspace:
             schema=res.schema,
         )
 
+    def _on_runner(self, node: Node, req: ExecRequest, on_log: Callable[[str], None]) -> ExecResult:
+        """Hand a runs_on node's run to a runner (runners.py) and wait for it."""
+        if self.runners is None:
+            return ExecResult(
+                ok=False,
+                error=f"{node.name} runs on a runner labelled {node.runs_on}: only a served project "
+                "(exuvia serve, exuvia hub) can hand it to one",
+            )
+        files = runners_mod.run_files(self.project.root, node.path, node.helpers)
+        return self.runners.execute(self.project_id, node.runs_on or "", req, files, on_log)
+
     def cancel(self, run_id: str) -> bool:
         """Stop a run that has not finished. A queued one (waiting for its
         upstream nodes, the node's lock or a free slot) ends at once, an
@@ -1683,7 +1707,7 @@ class Workspace:
             loop, task = entry
             loop.call_soon_threadsafe(self._cancel_on_loop, run_id, task)
             return True
-        if self.executor.cancel(run_id):
+        if self.executor.cancel(run_id) or (self.runners is not None and self.runners.cancel(run_id)):
             return True
         self._cancelled.discard(run_id)
         return False

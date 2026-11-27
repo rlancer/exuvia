@@ -58,6 +58,7 @@ def node(
     key: str | list[str] | None = None,
     on_duplicate: str = "error",
     merge: bool = False,
+    runs_on: str | None = None,
 ) -> Any:
     """Mark a function as a exuvia node.
 
@@ -89,6 +90,13 @@ def node(
             never computed by exuvia: for data only that machine can read,
             such as a Bloomberg Terminal's. A push node takes no upstream
             nodes and has no schedule; its function is not run.
+        runs_on: the label of the runners that run this node, instead of the
+            project's executor: ``exuvia runner --label <label>`` on a
+            person's own machine (a desktop logged in to a Bloomberg
+            Terminal, say), signed in as someone who can edit the project.
+            It runs there only once that person has approved its code, and
+            its output is sent back here. A ``runs_on`` node takes no
+            upstream nodes and can't be live.
         live: re-run the node whenever a view that depends on it is opened
             (or its parameters change), so the view shows current data: it
             renders the last output at once, says it is refreshing, and
@@ -140,6 +148,7 @@ def node(
             "key": key,
             "on_duplicate": on_duplicate,
             "merge": merge,
+            "runs_on": runs_on,
         }
         return f
 

@@ -10,6 +10,7 @@
     exuvia tool [name] [--url URL] the same tools from a terminal, one call per command (no MCP needed)
     exuvia mirror <dest>         the project's code history as git commits; --remote / --github push them
     exuvia executor              run nodes for a remote control plane (HTTP service)
+    exuvia runner --url URL --label L  run a hub's runs_on nodes on this machine (approve code with `runner approve`)
     exuvia env list|set|rm       a project's environment variables (a secret is asked for, never an argument)
     exuvia secrets-key           print a new key for EXUVIA_SECRETS_KEY
 """
@@ -298,6 +299,32 @@ def cmd_mirror(args: argparse.Namespace) -> None:
     print(f"{line} ({done['tip'][:12]})")
 
 
+def cmd_runner(args: argparse.Namespace) -> None:
+    from .desktop import Approvals, DesktopRunner, RunnerStop, approve_pending, home
+
+    if args.action == "approve":
+        approve_pending(Approvals(home()))
+        return
+    if not args.url or not args.label:
+        raise SystemExit("exuvia runner: give the hub (--url) and at least one --label (the nodes' runs_on)")
+    try:
+        runner = DesktopRunner(args.url, args.label, name=args.name, allow_http=args.allow_http)
+    except RunnerStop as e:
+        raise SystemExit(f"exuvia runner: {e}") from None
+    try:
+        if args.once:
+            done = runner.run_once()
+            print("no run came" if done is None else ("done" if done.get("ok") else f"failed: {done.get('error')}"))
+        else:
+            runner.run_forever()
+    except RunnerStop as e:
+        raise SystemExit(f"exuvia runner: {e}") from None
+    except KeyboardInterrupt:
+        pass
+    finally:
+        runner.close()
+
+
 def cmd_executor(args: argparse.Namespace) -> None:
     import os
 
@@ -374,6 +401,17 @@ def main() -> None:
     p.add_argument("--note", help="a line for the run's log, e.g. where the data came from")
     p.add_argument("--allow-http", action="store_true", help="send to a plain-http address on another machine anyway")
     p.set_defaults(fn=cmd_push)
+
+    p = sub.add_parser("runner", help="run a hub's runs_on nodes on this machine, once you approve their code")
+    p.add_argument("action", nargs="?", choices=["approve"],
+                   help="approve: show the code runs brought that waits for approval here, and approve it")
+    p.add_argument("--url", metavar="URL", help="the hub (or an `exuvia serve` address); sends EXUVIA_API_TOKEN")
+    p.add_argument("--label", action="append", metavar="LABEL",
+                   help="run nodes with this runs_on, repeatable (e.g. --label bloomberg)")
+    p.add_argument("--name", help="this runner's name on the hub (default: the machine's name)")
+    p.add_argument("--once", action="store_true", help="wait for one run (up to 25 s), run it and stop")
+    p.add_argument("--allow-http", action="store_true", help="talk to a plain-http address on another machine anyway")
+    p.set_defaults(fn=cmd_runner)
 
     p = sub.add_parser("cancel", help="stop a queued or running run on a running exuvia")
     p.add_argument("run_id", help="the run's id (the workbench's run history, or the MCP list_runs tool)")
