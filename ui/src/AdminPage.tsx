@@ -12,7 +12,6 @@ import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { List, ListItem } from "@astryxdesign/core/List";
-import { SideNavItem } from "@astryxdesign/core/SideNav";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
@@ -58,7 +57,7 @@ import {
   IconUser,
 } from "./icons";
 
-/** The admin page's sections, in the order the side nav lists them. */
+/** The admin page's sections, in the order the admin panel's nav lists them. */
 export type AdminSection = "overview" | "users" | "projects" | "variables" | "mcp" | "backup" | "server";
 
 const SECTIONS: Record<AdminSection, { title: string; about: string; icon: ReactNode }> = {
@@ -83,7 +82,7 @@ const isSection = (s: string | null): s is AdminSection => !!s && s in SECTIONS;
 
 /**
  * The hub's admin page, at `/admin`: everything an admin manages for the whole hub, one section at a time
- * (`/admin?section=<id>`), listed in the page's own left nav, and as tabs on a narrow screen. An admin, or the operator
+ * (`/admin?section=<id>`). Admin in the hub's left nav opens it; the panel lists its sections in a nav of its own beside the section, and as tabs over it under 1100px. An admin, or the operator
  * (the API token, or a hub nobody signs in to), uses it; anyone else is told it is for admins.
  */
 export default function AdminPage() {
@@ -95,8 +94,9 @@ export default function AdminPage() {
   });
   const [dark, toggleTheme] = useColorMode();
   const who = useMe();
-  const narrow = useMediaQuery("(max-width: 800px)");
-  // The page scrolls under the bar, beside the left nav.
+  // Under 1100px (where the workbench stacks) the hub's nav leaves too little room for the panel's own beside the section: tabs instead.
+  const tabbed = useMediaQuery("(max-width: 1100px)");
+  // The section scrolls on its own, beside the hub's left nav and the panel's nav.
   const scroller = useRef<HTMLDivElement>(null);
 
   const load = useCallback(
@@ -170,30 +170,21 @@ export default function AdminPage() {
     );
   else
     body = (
-      <div {...stylex.props(styles.frame)}>
-        {narrow && (
-          <TabList role="tablist" value={shown} onChange={(s) => go(s as AdminSection)} hasDivider overflow="scroll">
-            {sections.map((s) => (
-              <Tab key={s} value={s} label={SECTIONS[s].title} />
-            ))}
-          </TabList>
-        )}
-        <main {...stylex.props(styles.main)}>
-          <VStack gap={6}>
-            <VStack gap={1}>
-              <Heading level={1}>{SECTIONS[shown].title}</Heading>
-              <Text color="secondary">{SECTIONS[shown].about}</Text>
-            </VStack>
-            {shown === "overview" && <Overview listing={listing} people={people} onGo={go} />}
-            {shown === "users" && <UsersPanel self={who?.user?.uid ?? null} />}
-            {shown === "projects" && <Projects listing={listing} people={people} self={who?.user?.uid ?? null} onChanged={load} />}
-            {shown === "variables" && <HubVariablesPanel canEdit />}
-            {shown === "mcp" && <McpPresetsPanel />}
-            {shown === "backup" && <Backup onRestored={load} />}
-            {shown === "server" && <ServerSettings />}
+      <main {...stylex.props(styles.main)}>
+        <VStack gap={6}>
+          <VStack gap={1}>
+            <Heading level={1}>{SECTIONS[shown].title}</Heading>
+            <Text color="secondary">{SECTIONS[shown].about}</Text>
           </VStack>
-        </main>
-      </div>
+          {shown === "overview" && <Overview listing={listing} people={people} onGo={go} />}
+          {shown === "users" && <UsersPanel self={who?.user?.uid ?? null} />}
+          {shown === "projects" && <Projects listing={listing} people={people} self={who?.user?.uid ?? null} onChanged={load} />}
+          {shown === "variables" && <HubVariablesPanel canEdit />}
+          {shown === "mcp" && <McpPresetsPanel />}
+          {shown === "backup" && <Backup onRestored={load} />}
+          {shown === "server" && <ServerSettings />}
+        </VStack>
+      </main>
     );
 
   return (
@@ -214,20 +205,30 @@ export default function AdminPage() {
         </HStack>
       </header>
       <div {...stylex.props(styles.body)}>
-        <HubNav
-          place={{
-            page: "admin",
-            // The sections, the left nav's own items here; on a narrow screen they are tabs over the section instead.
-            sections:
-              listing && isAdmin && !narrow
-                ? sections.map((s) => (
-                    <SideNavItem key={s} label={SECTIONS[s].title} icon={SECTIONS[s].icon} isSelected={s === shown} onClick={() => go(s)} />
-                  ))
-                : undefined,
-          }}
-          listing={listing}
-        />
+        <HubNav place={{ page: "admin" }} listing={listing} />
+        {/* The admin panel: its own nav of sections (tabs on a narrow screen), then the section. */}
+        {listing && isAdmin && !tabbed && (
+          <nav aria-label="Admin" {...stylex.props(styles.panelNav)}>
+            <VStack gap={3}>
+              <Heading level={2} xstyle={styles.panelTitle}>
+                Admin
+              </Heading>
+              <List>
+                {sections.map((s) => (
+                  <ListItem key={s} label={SECTIONS[s].title} startContent={SECTIONS[s].icon} isSelected={s === shown} onClick={() => go(s)} />
+                ))}
+              </List>
+            </VStack>
+          </nav>
+        )}
         <div ref={scroller} {...stylex.props(styles.scroll)}>
+          {listing && isAdmin && tabbed && (
+            <TabList role="tablist" value={shown} onChange={(s) => go(s as AdminSection)} hasDivider overflow="scroll">
+              {sections.map((s) => (
+                <Tab key={s} value={s} label={SECTIONS[s].title} />
+              ))}
+            </TabList>
+          )}
           {body}
         </div>
       </div>
@@ -635,7 +636,7 @@ export function HubVariablesPanel(props: { canEdit: boolean }) {
 const NARROW = "@media (max-width: 800px)";
 
 const styles = stylex.create({
-  // The bar on top, then the hub's left nav beside the page, which scrolls on its own.
+  // The bar on top, then the hub's left nav, the admin panel's nav and the section, each scrolling on its own.
   page: { display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", height: "100dvh" },
   body: { display: "flex", minHeight: 0 },
   scroll: { flexGrow: 1, minWidth: 0, overflowY: "auto" },
@@ -653,8 +654,20 @@ const styles = stylex.create({
     borderBottomColor: colorVars["--color-border"],
   },
   grow: { flexGrow: 1 },
-  // The section; on a narrow screen, under its tabs.
-  frame: { display: "flex", flexDirection: "column" },
+  // The admin panel's nav: on the page's own background (it is part of the panel, not another bar), its sections in a column.
+  panelNav: {
+    boxSizing: "border-box",
+    flexShrink: 0,
+    width: "232px",
+    overflowY: "auto",
+    paddingBlock: spacingVars["--spacing-8"],
+    paddingInline: spacingVars["--spacing-3"],
+    borderInlineEndWidth: "1px",
+    borderInlineEndStyle: "solid",
+    borderInlineEndColor: colorVars["--color-border"],
+  },
+  // The panel's title lines up with its items' labels.
+  panelTitle: { paddingInline: spacingVars["--spacing-3"] },
   main: {
     boxSizing: "border-box",
     flexGrow: 1,
