@@ -569,12 +569,16 @@ def main() -> None:
     ap.add_argument("--only", help="comma-separated scenarios: cold_list, warm_list, hot_query, point_query, "
                     "node_read, history, churn_query, distinct_sets, arrow_scan, heavy_query")
     ap.add_argument("--json", help="write the results to this file")
+    ap.add_argument("--db", help="EXUVIA_DB for the hub (a postgresql:// URL): run records in a shared database, not "
+                    "each project's SQLite file. Seed a separate --hub for it")
     args = ap.parse_args()
 
     root = Path(args.hub).resolve() if args.hub else Path(tempfile.mkdtemp(prefix="exuvia-loadtest-"))
     marker = root / ".loadtest.json"
     shape = {"projects": args.projects, "rows": args.rows, "small": args.small, "history": args.history}
     env = {"EXUVIA_SCHEDULER": "external"}
+    if args.db:
+        env["EXUVIA_DB"] = args.db
     if not (marker.is_file() and json.loads(marker.read_text()) == shape):
         print(f"seeding {root}: {shape}", flush=True)
         for i in range(args.projects):
