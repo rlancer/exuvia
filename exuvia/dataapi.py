@@ -40,6 +40,12 @@ caches use one for that long, and as long again while they fetch a new
 one. ``Vary: Authorization`` keeps each key's answers apart in a shared
 cache.
 
+A hub with no cache in front of it still answers a repeated JSON query
+from memory (ResultCache): the encoded answer, kept while none of the
+projects it read has changed and for at most CACHE_TTL, within a budget of
+RESULT_CACHE_MB. Requests for the same query that arrive while it runs wait
+for that one run.
+
 One key may have KEY_CONCURRENCY queries and node reads running at once
 (more answer 429), and a query stops after QUERY_TIMEOUT, so one app can't
 take every core from the others. ``scripts/loadtest_data_api.py`` measures
@@ -112,6 +118,12 @@ VOLATILE = re.compile(
     r"|get_current_timestamp|transaction_timestamp|nextval|currval|txid_current|current_query|current_query_id"
     r"|current_transaction_id|current_connection_id|getvariable|sample|tablesample|reservoir_quantile)(?![a-z0-9_])"
 )
+# The answers of JSON queries kept in memory (ResultCache): MiB in all
+# (0 turns it off), the most one answer may take, and how long a query must
+# have taken to be worth keeping.
+RESULT_CACHE_MB = float(os.environ.get("EXUVIA_DATA_RESULT_CACHE_MB") or 64)
+RESULT_MAX_BYTES = 2 * 2**20
+RESULT_MIN_SECONDS = 0.010
 # DuckDB's own catalogs: a project of one of these names can't be attached.
 RESERVED_CATALOGS = {"main", "memory", "system", "temp"}
 
@@ -383,6 +395,102 @@ class Recorder:
         return getattr(self._con, name)
 
 
+class ResultCache:
+    """Encoded JSON query answers, kept in memory so a repeated query is
+    answered without DuckDB.
+
+    An answer is keyed by the projects it attached and their versions (as
+    QueryConnections' stamp), its SQL and its limit, and is used for at most
+    CACHE_TTL (which bounds how long a change on another replica takes to
+    show). The answers together take at most ``budget`` bytes, the least
+    recently used going first; one larger than ``RESULT_MAX_BYTES``, or from
+    a query that took less than ``RESULT_MIN_SECONDS``, is not kept. Errors
+    never are.
+
+    Identical queries that arrive while one runs wait for it (``flight``),
+    kept or not: a run finishing makes every dashboard's query miss at once."""
+
+    def __init__(self, budget: int) -> None:
+        self.budget = budget
+        self._lock = threading.Lock()
+        # key -> (body, etag, kept at)
+        self._entries: "OrderedDict[tuple[Any, ...], tuple[bytes, str | None, float]]" = OrderedDict()
+        self._flights: dict[tuple[Any, ...], "Flight"] = {}
+        self.bytes = 0
+        self.hits = self.misses = self.coalesced = self.stored = self.evictions = self.skipped = 0
+
+    def get(self, key: tuple[Any, ...]) -> tuple[bytes, str | None] | None:
+        with self._lock:
+            hit = self._entries.get(key)
+            if hit is not None and time.monotonic() - hit[2] < CACHE_TTL:
+                self._entries.move_to_end(key)
+                self.hits += 1
+                return hit[0], hit[1]
+            if hit is not None:
+                self._drop(key)
+        return None
+
+    def put(self, key: tuple[Any, ...], body: bytes, tag: str | None, took: float) -> None:
+        size = len(body)
+        if self.budget <= 0 or size > min(RESULT_MAX_BYTES, self.budget) or took < RESULT_MIN_SECONDS:
+            with self._lock:
+                self.skipped += 1
+            return
+        with self._lock:
+            if key in self._entries:
+                self._drop(key)
+            self._entries[key] = (body, tag, time.monotonic())
+            self.bytes += size
+            self.stored += 1
+            while self.bytes > self.budget:
+                old = next(iter(self._entries))
+                self._drop(old)
+                self.evictions += 1
+
+    def _drop(self, key: tuple[Any, ...]) -> None:
+        body = self._entries.pop(key)[0]
+        self.bytes -= len(body)
+
+    def flight(self, key: tuple[Any, ...]) -> tuple["Flight", bool]:
+        """The run of ``key`` in flight, and whether this request leads it
+        (runs the query) or follows (waits for the leader's answer)."""
+        with self._lock:
+            f = self._flights.get(key)
+            if f is not None:
+                self.coalesced += 1
+                return f, False
+            self.misses += 1
+            f = self._flights[key] = Flight()
+            return f, True
+
+    def land(self, key: tuple[Any, ...], f: "Flight", answer: tuple[bytes, str | None] | None) -> None:
+        """The leader's answer (None: it failed) to the requests following it."""
+        with self._lock:
+            if self._flights.get(key) is f:
+                del self._flights[key]
+        f.answer = answer
+        f.done.set()
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self.bytes = 0
+
+    def stats(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "entries": len(self._entries), "bytes": self.bytes, "budget": self.budget, "hits": self.hits,
+                "misses": self.misses, "coalesced": self.coalesced, "stored": self.stored,
+                "evictions": self.evictions, "not_kept": self.skipped,
+            }
+
+
+class Flight:
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.answer: tuple[bytes, str | None] | None = None
+
+
 class KeySlots:
     """The queries and node reads each key has running, up to
     KEY_CONCURRENCY at once. Taken in the worker thread that runs the
@@ -539,6 +647,8 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
     app.state.data_connections = connections
     slots = KeySlots()
     app.state.data_slots = slots
+    results = ResultCache(int(RESULT_CACHE_MB * 2**20))
+    app.state.data_results = results
     pool = ThreadPoolExecutor(DATA_WORKERS, thread_name_prefix="exuvia-data")
 
     def blocking(fn: Callable[..., Any], *args: Any) -> Awaitable[Any]:
@@ -686,6 +796,7 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
             "keys": keys,
             "daily": [{"day": d, **daily[d]} for d in span],
             "turned_away": totals(by_key.get(TURNED_AWAY, [])),
+            "result_cache": results.stats(),
         }
 
     @app.post("/api/data-keys", status_code=201)
@@ -950,7 +1061,7 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         def tagged(digest: str) -> str | None:
             return etag("query", digest, sql, rows, chosen, arrow) if cacheable else None
 
-        def run() -> Any:
+        def execute() -> Any:
             import duckdb
 
             if if_none_match and cacheable:
@@ -994,6 +1105,37 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
                     give()
                     if cur is not None:
                         cur.close()
+
+        def from_memory(kept: tuple[bytes, str | None]) -> Response:
+            body, tag = kept
+            if matches(if_none_match, tag):
+                return not_modified(tag)  # type: ignore[arg-type]
+            return Response(body, media_type="application/json", headers=caching(tag))
+
+        def run() -> Any:
+            """``execute``, through the result cache for a JSON answer: a
+            hit takes no slot, and a miss that finds the same query running
+            waits for it."""
+            if arrow or not cacheable or results.budget <= 0:
+                return execute()
+            key = (QueryConnections._stamp(workspaces), sql, rows, tuple(chosen))
+            kept = results.get(key)
+            if kept is not None:
+                return from_memory(kept)
+            flight, leads = results.flight(key)
+            if not leads:
+                flight.done.wait(QUERY_TIMEOUT if QUERY_TIMEOUT > 0 else None)
+                return from_memory(flight.answer) if flight.answer is not None else execute()
+            answer = None
+            try:
+                t = time.perf_counter()
+                out = execute()
+                if out.status_code == 200:
+                    answer = (bytes(out.body), out.headers.get("etag"))
+                    results.put(key, answer[0], answer[1], time.perf_counter() - t)
+                return out
+            finally:
+                results.land(key, flight, answer)  # None (it failed, or was a 304): the others run it themselves
 
         return await blocking(run)
 

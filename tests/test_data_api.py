@@ -713,3 +713,124 @@ def test_a_part_of_several_outputs_is_fetched_by_the_hash_of_the_whole(hub):
     assert hub.get(f"{base}/close.parquet", headers={**bearer(key), "If-None-Match": close.headers["etag"]}).status_code == 304
     assert hub.get(f"{base}/close.json", headers=bearer(key)).status_code == 404
     assert hub.get(f"{base}/nothing.parquet", headers=bearer(key)).status_code == 404
+
+
+# -- the result cache ---------------------------------------------------------------------
+def test_the_result_cache_keeps_a_byte_budget_least_recently_used_first(monkeypatch):
+    monkeypatch.setattr(dataapi, "RESULT_MAX_BYTES", 400)
+    cache = dataapi.ResultCache(1000)
+    for i in range(4):
+        cache.put(("q", i), b"x" * 300, f'W/"{i}"', took=1.0)
+    assert cache.bytes == 900 and cache.get(("q", 0)) is None  # 4 x 300 > 1000: the oldest went
+    assert cache.stats()["evictions"] == 1
+    assert cache.get(("q", 1)) == (b"x" * 300, 'W/"1"')  # now the most recently used
+    cache.put(("q", 4), b"y" * 300, None, took=1.0)
+    assert cache.get(("q", 2)) is None and cache.get(("q", 1)) is not None
+    # Too big for one entry, or too cheap to be worth it: not kept.
+    cache.put(("big",), b"z" * 401, None, took=1.0)
+    cache.put(("cheap",), b"z", None, took=0.001)
+    assert cache.get(("big",)) is None and cache.get(("cheap",)) is None and cache.stats()["not_kept"] == 2
+    assert cache.bytes == sum(len(cache.get(k)[0]) for k in [("q", 1), ("q", 3), ("q", 4)]) == 900
+    assert dataapi.ResultCache(0).put(("q",), b"x", None, took=1.0) is None and dataapi.ResultCache(0).bytes == 0
+
+
+def test_the_result_cache_forgets_after_its_age_limit(monkeypatch):
+    cache = dataapi.ResultCache(1000)
+    cache.put(("q",), b"x", None, took=1.0)
+    assert cache.get(("q",)) is not None
+    monkeypatch.setattr(dataapi, "CACHE_TTL", 0.0)
+    assert cache.get(("q",)) is None and cache.bytes == 0
+
+
+def test_identical_queries_in_flight_run_once(hub, monkeypatch):
+    """Even a query too cheap to keep: the requests that arrive while it
+    runs wait for that run."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(dataapi, "RESULT_MIN_SECONDS", 3600.0)  # nothing is kept
+    monkeypatch.setattr(dataapi, "KEY_CONCURRENCY", 0)
+    key = make_key(hub, ["crm"])
+    runs = []
+    gate = threading.Event()
+    real = dataapi.query_json
+
+    def slow(cur, sql, limit, **kw):
+        runs.append(sql)
+        gate.wait(5)
+        return real(cur, sql, limit, **kw)
+
+    monkeypatch.setattr(dataapi, "query_json", slow)
+    q = {"sql": "select count(*) from crm.accounts"}
+
+    def ask(_):
+        return hub.get("/api/data/query", params=q, headers=bearer(key))
+
+    with ThreadPoolExecutor(6) as pool:
+        futures = [pool.submit(ask, i) for i in range(6)]
+        import time
+
+        deadline = time.time() + 5
+        while hub.app.state.data_results.stats()["coalesced"] < 5 and time.time() < deadline:
+            time.sleep(0.01)
+        gate.set()
+        answers = [f.result() for f in futures]
+    assert [a.json()["rows"] for a in answers] == [[[2]]] * 6
+    assert len(runs) == 1 and len({a.headers["etag"] for a in answers}) == 1
+    stats = hub.app.state.data_results.stats()
+    assert stats["coalesced"] == 5 and stats["entries"] == 0
+    assert ask(0).status_code == 200 and len(runs) == 2  # not kept: it runs again
+
+
+def test_a_repeated_query_is_answered_from_memory_until_a_run(hub, monkeypatch):
+    monkeypatch.setattr(dataapi, "RESULT_MIN_SECONDS", 0.0)
+    key = make_key(hub, ["crm"])
+    calls = []
+    real = dataapi.query_json
+    monkeypatch.setattr(dataapi, "query_json", lambda *a, **kw: calls.append(1) or real(*a, **kw))
+    q = {"sql": "select name from crm.accounts order by 1"}
+    first = hub.post("/api/data/query", json=q, headers=bearer(key))
+    again = hub.get("/api/data/query", params=q, headers=bearer(key))
+    assert first.json() == again.json() and first.headers["etag"] == again.headers["etag"] and len(calls) == 1
+    assert hub.get("/api/data/query", params=q, headers={**bearer(key), "If-None-Match": again.headers["etag"]}).status_code == 304
+    # Another limit or format is another answer; Arrow is never kept.
+    hub.get("/api/data/query", params={**q, "limit": 1}, headers=bearer(key))
+    assert len(calls) == 2
+    hub.get("/api/data/query", params=q, headers={**bearer(key), **ARROW})
+    hub.get("/api/data/query", params=q, headers={**bearer(key), **ARROW})
+    assert len(calls) == 2 and hub.app.state.data_results.stats()["entries"] == 2
+    # A run of what it read: answered afresh, never the kept one.
+    rerun_accounts(hub, ["Acme", "Globex", "Initech"])
+    assert hub.get("/api/data/query", params=q, headers=bearer(key)).json()["rows"] == [["Acme"], ["Globex"], ["Initech"]]
+    assert len(calls) == 3
+    # Another key with the same projects gets the same answer; one without them, none.
+    other = make_key(hub, ["sales"])
+    assert hub.get("/api/data/query", params=q, headers=bearer(other)).status_code == 400
+    stats = hub.get("/api/data-keys/usage", headers=ROOT).json()["result_cache"]
+    assert stats["hits"] >= 2 and stats["bytes"] > 0
+
+
+def test_a_kept_answer_takes_no_slot_but_counts(hub, monkeypatch):
+    monkeypatch.setattr(dataapi, "RESULT_MIN_SECONDS", 0.0)
+    key = make_key(hub, ["crm"])
+    q = {"sql": "select count(*) from crm.accounts"}
+    assert hub.get("/api/data/query", params=q, headers=bearer(key)).status_code == 200
+    slots = hub.app.state.data_slots
+    held = [slots.take(key["id"]) for _ in range(dataapi.KEY_CONCURRENCY)]  # the key has none left
+    try:
+        assert hub.get("/api/data/query", params=q, headers=bearer(key)).status_code == 200
+        assert hub.get("/api/data/query", params={"sql": "select 2 from crm.accounts"}, headers=bearer(key)).status_code == 429
+    finally:
+        for give in held:
+            give()
+    hub.app.state.hub.data_keys.flush()
+    [mine] = [k for k in hub.get("/api/data-keys/usage", headers=ROOT).json()["keys"] if k["id"] == key["id"]]
+    assert mine["usage"]["requests"] == 3
+
+
+def test_errors_are_never_kept(hub, monkeypatch):
+    monkeypatch.setattr(dataapi, "RESULT_MIN_SECONDS", 0.0)
+    key = make_key(hub, ["crm"])
+    for _ in range(2):
+        assert hub.get("/api/data/query", params={"sql": "select nope from crm.accounts"}, headers=bearer(key)).status_code == 400
+    assert hub.app.state.data_results.stats()["entries"] == 0
