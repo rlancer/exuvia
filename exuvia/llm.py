@@ -389,7 +389,7 @@ class LLMError(RuntimeError):
     """The model could not be reached or returned no text."""
 
 
-def complete(prompt: str, *, system: str | None = None, max_tokens: int = 4000) -> str:
+def complete(prompt: str, *, system: str | None = None, max_tokens: int = 4000, timeout: float | None = None) -> str:
     """Ask the configured model one question from inside a node and return its text.
 
         from exuvia import llm
@@ -403,8 +403,10 @@ def complete(prompt: str, *, system: str | None = None, max_tokens: int = 4000) 
     history. A node that calls it is not reproducible: a re-run can word the
     answer differently, so compute every number in code and pass it in.
     ``max_tokens`` covers the model's reasoning as well as its answer.
-    Raises ``LLMError`` when no provider is configured, the call fails, or the
-    answer is empty or cut off.
+    ``timeout`` is how many seconds the call may take (the SDK's own limit,
+    ten minutes, when not given). Raises ``LLMError`` when no provider is
+    configured, the call fails or runs out of time, or the answer is empty
+    or cut off.
     """
     endpoint = resolve_endpoint()
     if endpoint is None:
@@ -418,7 +420,10 @@ def complete(prompt: str, *, system: str | None = None, max_tokens: int = 4000) 
                 max_tokens=max_tokens,
                 system=system or anthropic.NOT_GIVEN,
                 messages=[{"role": "user", "content": prompt}],
+                timeout=anthropic.NOT_GIVEN if timeout is None else timeout,
             )
+        except anthropic.APITimeoutError as e:
+            raise LLMError(f"the model did not answer within {timeout:g}s") from e
         except anthropic.APIError as e:
             raise LLMError(f"Anthropic API error: {_err_text(e)}") from e
         text = "".join(block.text for block in message.content if block.type == "text")
@@ -428,16 +433,20 @@ def complete(prompt: str, *, system: str | None = None, max_tokens: int = 4000) 
 
         client = openai.OpenAI(api_key=endpoint.api_key, base_url=endpoint.base_url, default_headers=endpoint.headers or None)
         messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
+        limit = {} if timeout is None else {"timeout": timeout}
         try:
-            response = client.chat.completions.create(model=endpoint.model, messages=messages, max_tokens=max_tokens)
+            response = client.chat.completions.create(model=endpoint.model, messages=messages, max_tokens=max_tokens, **limit)
+        except openai.APITimeoutError as e:
+            raise LLMError(f"the model did not answer within {timeout:g}s") from e
         except openai.APIError as e:
             raise LLMError(f"{endpoint.provider} API error: {_err_text(e)}") from e
         choice = response.choices[0] if response.choices else None
         text = (choice.message.content or "") if choice else ""
         cut_off = bool(choice) and choice.finish_reason == "length"
     text = text.strip()
-    if not text:
-        raise LLMError("the model returned no text")
+    # Cut off comes first: a model that reasons can spend every token before it writes a word.
     if cut_off:
         raise LLMError(f"the answer was cut off at max_tokens={max_tokens}; raise it or ask for less")
+    if not text:
+        raise LLMError("the model returned no text")
     return text

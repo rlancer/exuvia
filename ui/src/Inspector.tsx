@@ -14,6 +14,7 @@ import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { List, ListItem } from "@astryxdesign/core/List";
+import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
@@ -22,13 +23,14 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { api, type Column, type GraphNode, type RunRow } from "./api";
 import { ago, dur, fmtNum, until } from "./util";
-import { IconClock, IconPlay, IconSpark, IconTrash, MOD } from "./icons";
+import { IconClock, IconCode, IconPlay, IconSpark, IconTrash, MOD } from "./icons";
 import { failed } from "./toast";
 import { HistoryBrowser } from "./History";
 import { useAccess } from "./Access";
 import { codeGroup, DownloadMenu, outputGroups, tableItems } from "./Export";
 import { nodeExportUrl, saveQuery, saveUrl } from "./download";
 import { CodeEditor } from "./ui/CodeEditor";
+import { oneOf, usePersisted } from "./ui/usePersisted";
 import { chartBrush, chartedPart, ChartPick, DatasetSummary, DataTable, isNumeric, NodeChart, OutputPicker, RowsTable, rowsSource, useAskedRows, useNodePreview, useOutputPart, useRowPages, useTableStats, type ChartSelection } from "./NodeOutput";
 import { PAGE_ROWS } from "./rowWindow";
 import { baseQuery, nextSort, tableOf, type Sort, type TableAsk } from "./tableQuery";
@@ -325,7 +327,7 @@ export function Inspector(props: {
             </div>
           </div>
         )}
-        {tab === "data" && <DataTab node={node} dark={dark} />}
+        {tab === "data" && <DataTab node={node} dark={dark} canPrompt={aiEnabled} />}
         {tab === "runs" && <RunsTab node={node} logs={logs} />}
         {tab === "history" && (
           <HistoryBrowser
@@ -380,10 +382,12 @@ export function Inspector(props: {
  * A node's output: every row of a table, drawn as it scrolls into view and
  * read a page at a time, under its chart when it has one; or its JSON. The
  * rows can be asked for another way (tableQuery.ts): filtered by a SQL
- * condition, sorted by a column (its name is pressed), picked on the chart,
- * or as a query of one's own over the output.
+ * condition, typed or (`canPrompt`: a model is set up and the person may
+ * spend it) written by the model from a prompt, sorted by a column (its name
+ * is pressed), picked on the chart, or as a query of one's own over the
+ * output.
  */
-function DataTab({ node, dark }: { node: GraphNode; dark: boolean }) {
+function DataTab({ node, dark, canPrompt }: { node: GraphNode; dark: boolean; canPrompt: boolean }) {
   // A node with several outputs shows one at a time.
   const { parts, shown, pick } = useOutputPart(node);
   // The chart, over the rows, when the output shown is the one it charts;
@@ -401,6 +405,23 @@ function DataTab({ node, dark }: { node: GraphNode; dark: boolean }) {
   const [sql, setSql] = useState<string | null>(null);
   const [sqlDraft, setSqlDraft] = useState("");
   const writing = sql !== null;
+  // How the filter is written: as SQL, or as a prompt the model makes the
+  // SQL of (`words` as typed; `prompted`, the prompt and the condition it
+  // became, while that is the filter; `prompting`, the one the model is
+  // writing now). The browser remembers which.
+  const [kept, setKept] = usePersisted<FilterBy>("exuvia-filter-by", "sql", FILTER_BY);
+  const by: FilterBy = canPrompt ? kept : "sql";
+  const [words, setWords] = useState("");
+  const [prompted, setPrompted] = useState<{ words: string; where: string } | null>(null);
+  const [prompting, setPrompting] = useState<string | null>(null);
+  const [promptError, setPromptError] = useState<string | null>(null);
+  // The latest prompt sent: an answer to an earlier one, or for another table, is dropped.
+  const promptSeq = useRef(0);
+  const noPrompt = () => {
+    promptSeq.current += 1;
+    setPrompting(null);
+    setPromptError(null);
+  };
   // Another output, or another node: nothing is selected or asked.
   useEffect(() => {
     setSel(null);
@@ -408,7 +429,29 @@ function DataTab({ node, dark }: { node: GraphNode; dark: boolean }) {
     setDraft("");
     setSort(null);
     setSql(null);
+    setWords("");
+    setPrompted(null);
+    noPrompt();
   }, [node.name, shown]);
+  // The model writes the condition for `words`: it becomes the filter, and the SQL box holds it to read and change.
+  const prompt = async () => {
+    const text = words.trim();
+    if (!text) return;
+    const seq = ++promptSeq.current;
+    setPrompting(text);
+    setPromptError(null);
+    try {
+      const where = await api.filterFromWords(node.name, text, shown);
+      if (promptSeq.current !== seq) return;
+      setFilter(where);
+      setDraft(where);
+      setPrompted({ words: text, where });
+    } catch (e) {
+      if (promptSeq.current !== seq) return;
+      setPromptError((e as Error).message);
+    }
+    setPrompting(null);
+  };
   // A query of one's own is not the chart's rows: the chart picks nothing while one is written.
   const brush = hasChart && !writing ? chartBrush(node.chart) : null;
   const multi = node.output_kind === "multi";
@@ -472,6 +515,8 @@ function DataTab({ node, dark }: { node: GraphNode; dark: boolean }) {
       setSql(sqlDraft);
     };
     const example = p.columns.find((c) => isNumeric(c.type));
+    // Whether the filter is the condition the model wrote for the last prompt (not one typed since).
+    const ofPrompt = prompted !== null && prompted.where === filter;
     return (
       <div {...stylex.props(styles.fill, styles.tableFill)}>
         {picker}
@@ -520,31 +565,73 @@ function DataTab({ node, dark }: { node: GraphNode; dark: boolean }) {
           </div>
         ) : (
           <div {...stylex.props(styles.ask)}>
-            <TextInput
-              size="sm"
-              type="search"
-              label="Filter the rows with a SQL condition"
-              isLabelHidden
-              placeholder={`Filter: a SQL condition, e.g. ${example ? `${example.name} > 0` : `${p.columns[0]?.name ?? "column"} = '…'`} (Enter)`}
-              value={draft}
-              onChange={(v) => {
-                setDraft(v);
-                if (!v) setFilter(""); // cleared: every row again, without a press of Enter
-              }}
-              onEnter={() => setFilter(draft.trim())}
-              hasClear
-              hasSpellCheck={false}
-              autoComplete="off"
-              autoCapitalize="off"
-              isLoading={asked.loading}
-              status={asked.error ? { type: "error" } : draft.trim() !== filter ? { type: "warning" } : undefined}
-              containerXstyle={styles.askInput}
-            />
-            <Button
+            {canPrompt && (
+              <SegmentedControl
+                size="sm"
+                label="Write the filter as"
+                value={by}
+                onChange={(v) => {
+                  setKept(v as FilterBy);
+                  setPromptError(null);
+                }}
+              >
+                <SegmentedControlItem value="sql" label="SQL" />
+                <SegmentedControlItem value="prompt" label="Prompt" />
+              </SegmentedControl>
+            )}
+            {by === "prompt" ? (
+              <TextInput
+                size="sm"
+                type="search"
+                label="Filter the rows with a prompt"
+                isLabelHidden
+                placeholder={`Filter: say which rows, e.g. ${example ? `the largest ${example.name}` : "the latest ones"} (Enter)`}
+                value={words}
+                onChange={(v) => {
+                  setWords(v);
+                  if (!v) {
+                    // cleared: every row again, without a press of Enter
+                    noPrompt();
+                    setPrompted(null);
+                    setFilter("");
+                    setDraft("");
+                  }
+                }}
+                onEnter={prompt}
+                hasClear
+                autoComplete="off"
+                isLoading={prompting !== null || asked.loading}
+                status={promptError || asked.error ? { type: "error" } : words.trim() !== (prompting ?? (ofPrompt ? prompted.words : "")) ? { type: "warning" } : undefined}
+                containerXstyle={styles.askInput}
+              />
+            ) : (
+              <TextInput
+                size="sm"
+                type="search"
+                label="Filter the rows with a SQL condition"
+                isLabelHidden
+                placeholder={`Filter: a SQL condition, e.g. ${example ? `${example.name} > 0` : `${p.columns[0]?.name ?? "column"} = '…'`} (Enter)`}
+                value={draft}
+                onChange={(v) => {
+                  setDraft(v);
+                  if (!v) setFilter(""); // cleared: every row again, without a press of Enter
+                }}
+                onEnter={() => setFilter(draft.trim())}
+                hasClear
+                hasSpellCheck={false}
+                autoComplete="off"
+                autoCapitalize="off"
+                isLoading={asked.loading}
+                status={asked.error ? { type: "error" } : draft.trim() !== filter ? { type: "warning" } : undefined}
+                containerXstyle={styles.askInput}
+              />
+            )}
+            <IconButton
               size="sm"
               variant="ghost"
-              label="SQL"
-              tooltip="Write a query of your own over this output"
+              label="Write a SQL query"
+              tooltip="Write a SQL query of your own over this output"
+              icon={<IconCode />}
               onClick={() => {
                 const text = baseQuery(table, { sql: null, where: [filter], sort: null });
                 setSqlDraft(text);
@@ -553,8 +640,15 @@ function DataTab({ node, dark }: { node: GraphNode; dark: boolean }) {
                 setSql(text);
               }}
             />
+            {by === "prompt" && filter && (
+              <Text type="supporting" color="secondary" maxLines={2} xstyle={styles.askWhere}>
+                {ofPrompt ? "Filtered where " : "Filtered, by a condition typed as SQL, where "}
+                <Code size="inherit">{filter}</Code>
+              </Text>
+            )}
           </div>
         )}
+        {promptError && by === "prompt" && !writing && <Banner status="error" title={promptError} />}
         {asked.error && (
           <Banner
             status="error"
@@ -832,6 +926,10 @@ export function Overview(props: { nodes: GraphNode[]; onSelect: (n: string) => v
 }
 
 /** The query box's language, and its name for a screen reader. */
+/** How the Data tab's filter is written: a SQL condition, or a prompt the model writes the condition for. */
+type FilterBy = "sql" | "prompt";
+const FILTER_BY = oneOf<FilterBy>("sql", "prompt");
+
 const QUERY = [sql(), EditorView.contentAttributes.of({ "aria-label": "SQL over the nodes' outputs" })];
 
 const rule = {
@@ -904,6 +1002,7 @@ const styles = stylex.create({
   // What is asked of the rows, over them: a condition to filter by, or a query written out.
   ask: {
     display: "flex",
+    flexWrap: "wrap",
     alignItems: "center",
     gap: spacingVars["--spacing-2"],
     flexShrink: 0,
@@ -912,7 +1011,10 @@ const styles = stylex.create({
     ...rule,
   },
   askSql: { flexDirection: "column", alignItems: "stretch" },
-  askInput: { flexGrow: 1, minWidth: 0 },
+  // The box takes the room the controls beside it leave, and stays on their line.
+  askInput: { flexGrow: 1, flexBasis: 0, minWidth: "120px" },
+  // The condition a prompt became, on a line of its own under the box.
+  askWhere: { flexBasis: "100%", minWidth: 0 },
   // What can be done, at the bar's end: it keeps its width, and the text gives way.
   footEnd: { display: "flex", flexShrink: 0 },
   // A bar over a tab's content: which output, which run.

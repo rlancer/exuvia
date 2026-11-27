@@ -512,6 +512,9 @@ export const api = {
   /** A table output's overview from its Parquet footers (no row is read). */
   stats: (name: string, part?: string) =>
     req<TableStats>("GET", `/api/nodes/${name}/stats${part ? `?part=${encodeURIComponent(part)}` : ""}`),
+  /** The SQL condition that keeps the rows `prompt` describes of a table output (`part` of a node with several), as the model writes it. */
+  filterFromWords: async (name: string, prompt: string, part?: string | null) =>
+    (await req<{ where: string }>("POST", `/api/nodes/${name}/filter`, { prompt, part: part ?? null })).where,
   runs: (name: string) => req<RunRow[]>("GET", `/api/nodes/${name}/runs`),
   recentRuns: () => req<RunRow[]>("GET", "/api/runs"),
   runDetail: (id: string) => req<RunRow>("GET", `/api/runs/${id}`),

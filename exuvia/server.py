@@ -34,7 +34,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import _STARTED, __version__, about as about_mod, auth, dataapi, mcp_http
+from . import _STARTED, __version__, about as about_mod, auth, dataapi, llm, mcp_http, rowfilter
 from .activity import ActivityStore
 from .datakeys import DataKeyStore
 from .agent import READ_TOOLS, TOOLS, Agent
@@ -215,6 +215,12 @@ class QueryReq(BaseModel):
 
 
 class ViewRefresh(BaseModel):
+    params: dict[str, Any] | None = None
+
+
+class FilterReq(BaseModel):
+    prompt: str = Field(min_length=1, max_length=rowfilter.PROMPT_MAX)  # the rows wanted, in words
+    part: str | None = None  # one output of a node with several
     params: dict[str, Any] | None = None
 
 
@@ -1305,6 +1311,33 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         except Exception as e:
             raise HTTPException(400, f"{type(e).__name__}: {e}") from e
         return _table_export(stream, fmt, body.filename or "query")
+
+    @r.post("/nodes/{name}/filter")
+    def filter_from_words(name: str, body: FilterReq, ctx: Ctx = Depends(get_ctx)) -> dict[str, Any]:
+        """The SQL condition that keeps the rows ``prompt`` describes of
+        ``name``'s table output (``part`` picks one output of a node with
+        several): ``{"where": ...}``, written by the model the agent uses
+        (rowfilter.py) and checked against the table, to filter by in
+        ``POST /query``. The model is sent the table's columns, its first
+        rows and the values of the text columns that have few. 400 with no
+        model configured or no such table, 422 when the request is not a
+        filter or the model's condition does not run, 502 when the model
+        cannot be reached. For editors, as the agent is: it spends the
+        model's budget."""
+        _need(ctx.ws, name)
+        if not ctx.agent.enabled:
+            raise HTTPException(400, "No model is configured: set ANTHROPIC_API_KEY or OPENROUTER_API_KEY (or PORTKEY_API_KEY with EXUVIA_MODEL) to filter with a prompt.")
+        if not body.prompt.strip():
+            raise HTTPException(422, "say which rows to keep")
+        try:
+            where = rowfilter.condition(ctx.ws, name, body.prompt, body.part, body.params)
+        except rowfilter.FilterError as e:
+            raise HTTPException(422, str(e)) from e
+        except llm.LLMError as e:
+            raise HTTPException(502, str(e)) from e
+        except Exception as e:
+            raise HTTPException(400, f"{type(e).__name__}: {e}") from e
+        return {"where": where}
 
     @r.get("/events")
     async def events(request: Request, ctx: Ctx = Depends(get_ctx)) -> StreamingResponse:

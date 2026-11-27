@@ -223,6 +223,7 @@ def test_a_viewer_reads_but_changes_nothing(hub):
         ("POST", "/p/a/api/nodes/nums/run", {}),
         ("POST", "/p/a/api/tools/write_node", {"name": "x", "kind": "python", "source": NODE}),
         ("POST", "/p/a/api/agent", {"message": "hi"}),
+        ("POST", "/p/a/api/nodes/nums/filter", {"prompt": "the even ones"}),
         ("DELETE", "/p/a/api/nodes/nums", None),
         ("PUT", "/p/a/api/env/API_KEY", {"value": "k", "secret": True}),
         ("DELETE", "/p/a/api/env/API_KEY", None),

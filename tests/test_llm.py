@@ -346,3 +346,19 @@ def test_complete_asks_once_and_returns_the_text(monkeypatch):
     answer.update(content="Half a sen", finish="length")
     with pytest.raises(llm.LLMError, match="cut off"):
         llm.complete("Describe it.")
+    # A model that reasons can spend every token before it writes a word: that is cut off too.
+    answer.update(content="", finish="length")
+    with pytest.raises(llm.LLMError, match="cut off at max_tokens=4000"):
+        llm.complete("Describe it.")
+
+    # A time limit is the SDK's to keep; none is sent unless asked for.
+    assert "timeout" not in sent["request"]
+    answer.update(content="In time.", finish="stop")
+    assert llm.complete("Describe it.", timeout=30) == "In time." and sent["request"]["timeout"] == 30
+
+    def too_slow(self, **kwargs):
+        raise openai.APITimeoutError(request=None)
+
+    monkeypatch.setattr(FakeClient, "create", too_slow)
+    with pytest.raises(llm.LLMError, match="did not answer within 30s"):
+        llm.complete("Describe it.", timeout=30)

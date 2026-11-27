@@ -254,13 +254,24 @@ with SQL, a page at a time like the rest:
 - **Filter.** The box over the rows takes a SQL condition
   (`ticker = 'AAPL' and close > 100`), applied with Enter. What is picked
   on the chart narrows the rows the same way, and the two add up.
+- **Filter with a prompt.** With a model set up (see "The agent"), a
+  SQL / Prompt switch stands before the box. On Prompt the box takes the
+  rows in words (`apple above 100 this year`, `the ten largest closes`), and
+  Enter has the model write the condition, which becomes the filter and is
+  shown under the box. Switch back to SQL to read it whole and change it.
+  The model is sent the table's column names and types, its first five
+  rows and the values of text columns that hold only a few; it never runs
+  anything itself, and its condition runs where a typed one does. A request
+  that is no filter (a total, a grouping) is refused with the reason. The
+  browser remembers which of the two was last used. Like the agent, a
+  prompt is for editors: a viewer has the SQL box alone.
 - **Sort.** Press a column's name: smallest first, then largest first, then
   the order stored. Rows that tie are ordered by every other column, so the
   pages agree with each other.
-- **SQL.** The SQL button turns the box into an editor with the query the
-  table is showing, to rewrite as any DuckDB query over this output and
-  every other table node (`select ticker, avg(close) from prices group by
-  1`). Its result is the table, sortable like any other. Up to 10,000 rows
+- **SQL.** The `</>` button at the box's end turns it into an editor with
+  the query the table is showing, to rewrite as any DuckDB query over this
+  output and every other table node (`select ticker, avg(close) from prices
+  group by 1`). Its result is the table, sortable like any other. Up to 10,000 rows
   are one read; a longer result whose order is not fixed should be sorted,
   by an `order by` of its own or by a column's name.
 
@@ -2740,7 +2751,8 @@ model is active.
 **The same model from a node.** A Python node can call the configured model
 once, for text, with `exuvia.llm.complete`. It uses the provider the agent
 uses and raises `LLMError` when none is set, or when the reply is empty or
-cut off, so a node never stores half an answer.
+cut off, so a node never stores half an answer. `timeout=` (seconds) bounds
+the call.
 
 ```python
 from exuvia import llm
@@ -3432,6 +3444,7 @@ headlessly or iframe the UI:
 | `GET /api/code/archive` | the project's code as a .zip (nodes, `lib/` helpers, views, `exuvia.json`, `pyproject.toml`, `uv.lock`, `package.json`; never `.env` or outputs); `?node=` for one node and the helpers it imports, `?view=` for one view |
 | `POST /api/nodes/{name}/restore` | make a saved version (`{hash}`) current again; brings back a deleted node |
 | `GET /api/runs/{run_id}/source` | the exact code a run executed |
+| `POST /api/nodes/{name}/filter` | the SQL condition that keeps the rows `prompt` describes of a table output (`{prompt, part, params}`; `part` picks one output of a node with several): `{"where": ...}`, written by the configured model from the table's columns, first rows and the values of its text columns that have few, and checked against the table (asked once more with DuckDB's error when it does not run). Filter with it in `POST /api/query`: `select * from <node> where (<where>)`. 400 with no model configured, 422 when the request is not a filter or the condition does not run, 502 when the model fails or takes over a minute. For editors |
 | `POST /api/query` | DuckDB SQL over all outputs (`{sql, limit, offset, params}`): JSON rows, or an Arrow stream (see "Binary data"). `offset` skips rows first, to read a result a page at a time; each page runs the query again, so give it an order that leaves no ties. It cannot open other files or the network (see "Execution model") |
 | `POST /api/query/export` | the whole result of `{sql, params, format, filename}` as a file to save, in `csv`, `xlsx`, `parquet` or `json` |
 | `POST /api/nodes/{name}/schedule` | set, clear, pause or resume a schedule |
@@ -3678,6 +3691,7 @@ exuvia/
   arrowstream.py  query results as an Arrow IPC stream
   agent.py      agent tools + provider-neutral tool loop
   llm.py        model providers: Anthropic, OpenAI-compatible (OpenRouter / Portkey / DeepSeek)
+  rowfilter.py  a table's filter from a prompt: the model writes the SQL condition, checked against the table
   server.py     FastAPI routes + SSE + static UI
 ui/             React + Astryx (components) + StyleX (styles) + React Flow + CodeMirror + Vega-Lite; ui/AGENTS.md says how it is built
 ui/src/views/   views runtime (sandboxed iframe), its postMessage protocol and the page's side of it
