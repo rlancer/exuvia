@@ -1,6 +1,7 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode, type Ref } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode, type Ref } from "react";
+import type { View as VegaView } from "vega";
 import * as stylex from "@stylexjs/stylex";
-import { colorVars, fontWeightVars, radiusVars, spacingVars, textSizeVars, typeScaleVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
+import { colorVars, durationVars, fontWeightVars, radiusVars, shadowVars, spacingVars, textSizeVars, typeScaleVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { HStack } from "@astryxdesign/core/HStack";
@@ -14,9 +15,14 @@ import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
 import { api, type Column, type ColumnStats, type GraphNode, type Preview, type TableStats } from "./api";
 import { columnChars, MAX_ROWS_HEIGHT, PAGE_ROWS, pagesFor, pagesToDrop, rowWindow } from "./rowWindow";
-import { IconFilter, IconFilterOn, IconSort, IconSortDown, IconSortUp } from "./icons";
+import { IconExpand, IconFilter, IconFilterOn, IconSort, IconSortDown, IconSortUp } from "./icons";
+import { DownloadMenu } from "./Export";
+import { saveAs } from "./download";
 import { asks, baseQuery, columnKind, countQuery, filterOps, filterText, ident, isNumeric, needsValue, opLabel, pageQuery, type ColumnFilter, type FilterOp, type Sort, type TableAsk } from "./tableQuery";
 import { fmtBytes, fmtCell, fmtNum, pressable } from "./util";
+
+// A chart full screen, with its rows under it: fetched when one is first opened.
+const ChartFullScreen = lazy(() => import("./ChartFullScreen"));
 
 /*
  * What a node made, shown wherever it is shown: the inspector's Data tab (its
@@ -1038,21 +1044,66 @@ export function ChartPick({ kind, selected, onClear }: { kind: "interval" | "poi
  * A node's chart (`chart` in its decorator): its Vega-Lite spec over its
  * output, in the theme's colours. With `onSelect` it is linked to a table
  * (`chartBrush`); a new `reset` draws it again with nothing selected.
+ *
+ * Its tools (save it as an image, open it full screen) float over its top
+ * corner while it is pointed at, so they take none of its room. `height`
+ * "fill" makes it as tall as the box it is in, following that box as it
+ * grows and shrinks; `canExpand` off leaves out the full-screen button (the
+ * chart that is full screen already).
  */
-export function NodeChart({ node, dark, height = 300, onSelect, reset = 0 }: { node: GraphNode; dark: boolean; height?: number; onSelect?: (s: ChartSelection) => void; reset?: number }) {
+export function NodeChart({
+  node,
+  dark,
+  height = 300,
+  onSelect,
+  reset = 0,
+  canExpand = true,
+}: {
+  node: GraphNode;
+  dark: boolean;
+  height?: number | "fill";
+  onSelect?: (s: ChartSelection) => void;
+  reset?: number;
+  canExpand?: boolean;
+}) {
   // The latest onSelect, so a new one does not draw the chart again.
   const select = useRef(onSelect);
   select.current = onSelect;
   const linked = !!onSelect;
   const ref = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const [full, setFull] = useState(false);
+  // The chart as drawn, for saving it as an image and for following a "fill" box.
+  const [view, setView] = useState<VegaView | null>(null);
   // A node with several outputs charts its first table.
   const { data: d, sampled } = useChartData(node, chartedPart(node));
+  // "fill": the box's height, measured. The chart is drawn once it is known and
+  // resized after that (drawn again, it would lose what is selected on it).
+  const fill = height === "fill";
+  const [boxHeight, setBoxHeight] = useState<number | null>(null);
+  const drawnHeight = useRef(0);
+  drawnHeight.current = fill ? (boxHeight ?? 0) : height;
+  useLayoutEffect(() => {
+    if (!fill || !box.current) return;
+    const el = box.current;
+    const measure = () => setBoxHeight(Math.max(120, Math.floor(el.clientHeight)));
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [fill]);
+  useEffect(() => {
+    if (!fill || !view || boxHeight === null) return;
+    view.height(boxHeight).resize().runAsync();
+  }, [fill, view, boxHeight]);
+  const ready = !fill || boxHeight !== null;
   // The spec as text: the graph is read again whenever anything in it runs,
   // and the same chart must not be drawn again (and lose its selection) for that.
   const chartText = JSON.stringify(node.chart ?? null);
   useEffect(() => {
-    if (!d || !ref.current) return;
+    if (!d || !ref.current || !ready) return;
     const chart = JSON.parse(chartText) as GraphNode["chart"];
     let cancelled = false;
     let finalize: (() => void) | undefined;
@@ -1071,9 +1122,10 @@ export function NodeChart({ node, dark, height = 300, onSelect, reset = 0 }: { n
       const spec = {
         $schema: "https://vega.github.io/schema/vega-lite/v5.json",
         width: "container",
-        height,
+        height: drawnHeight.current,
         autosize: { type: "fit", contains: "padding" },
         ...chart,
+        ...(fill && { height: drawnHeight.current }),
         ...(brush && {
           params: [brush.kind === "interval" ? { ...brush.param, select: { ...(brush.param.select as object), mark: { fill: series[0], fillOpacity: 0.12, stroke: series[0] } } } : brush.param],
         }),
@@ -1093,13 +1145,15 @@ export function NodeChart({ node, dark, height = 300, onSelect, reset = 0 }: { n
         // Vega is as large as the rest of the app: it is fetched when a chart is first drawn.
         const { default: embed } = await import("vega-embed");
         if (cancelled || !ref.current) return;
+        // vega-embed's own menu keeps a column beside the chart for its button: the chart's tools are ours.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const res = await embed(ref.current, spec as any, { actions: { export: true, source: false, compiled: false, editor: false } });
+        const res = await embed(ref.current, spec as any, { actions: false });
         if (cancelled) {
           res.finalize();
           return;
         }
         finalize = () => res.finalize();
+        setView(res.view);
         select.current?.(null);
         if (brush) {
           // A drag fires on every move: the rows are worked out once a frame.
@@ -1121,18 +1175,59 @@ export function NodeChart({ node, dark, height = 300, onSelect, reset = 0 }: { n
     return () => {
       cancelled = true;
       cancelAnimationFrame(frame);
+      setView(null);
       finalize?.();
     };
-  }, [d, sampled, chartText, dark, height, linked, reset]);
+    // A "fill" chart is resized, not drawn again, when its box changes (above).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [d, sampled, chartText, dark, fill ? null : height, ready, linked, reset]);
+  const save = async (format: "png" | "svg") => {
+    if (!view || !ref.current) return;
+    // A picture of the chart is seen away from the page: it takes the page's background, not none.
+    const [bg] = themeColors(ref.current, ["--color-background-surface"]);
+    const was = view.background();
+    view.background(bg);
+    try {
+      saveAs(await view.toImageURL(format, format === "png" ? 2 : 1), `${node.name}.${format}`);
+    } finally {
+      view.background(was);
+    }
+  };
   return (
     <>
       {error && <Banner status="error" title={error} />}
-      <div ref={ref} {...stylex.props(styles.vega)} />
+      <div ref={box} {...stylex.props(styles.chartBox, fill && styles.chartFill, stylex.defaultMarker())}>
+        <div ref={ref} {...stylex.props(styles.vega)} />
+        <div {...stylex.props(styles.tools)}>
+            <DownloadMenu
+              small
+              title="Save the chart as an image"
+              disabled={!view}
+              groups={[
+                {
+                  title: "The chart",
+                  items: [
+                    { key: "png", label: "PNG", hint: "an image, twice the size shown", onPick: () => save("png") },
+                    { key: "svg", label: "SVG", hint: "drawn in lines, any size", onPick: () => save("svg") },
+                  ],
+                },
+              ]}
+            />
+            {canExpand && (
+              <IconButton size="sm" variant="ghost" label="Full screen" tooltip="Open the chart full screen, with its rows" icon={<IconExpand size={12} />} onClick={() => setFull(true)} />
+            )}
+        </div>
+      </div>
       {sampled && d?.rows && (
         <Text type="supporting" color="secondary" hasTabularNumbers>
           A random sample of {fmtNum(d.rows.length)} of {fmtNum(d.total)} rows
           {linked ? "; a selection holds every row in it" : ""}
         </Text>
+      )}
+      {full && (
+        <Suspense fallback={null}>
+          <ChartFullScreen node={node} dark={dark} onClose={() => setFull(false)} />
+        </Suspense>
       )}
     </>
   );
@@ -1147,6 +1242,32 @@ const rule = {
 const styles = stylex.create({
   // vega-embed makes its element inline; as a flex item it is as wide as its column, which the chart fits itself to.
   vega: { width: "100%", flexShrink: 0 },
+  // The chart and its tools over it.
+  chartBox: { position: "relative", flexShrink: 0 },
+  // As tall as the room it is given (the full-screen chart).
+  chartFill: { flexGrow: 1, flexShrink: 1, flexBasis: 0, minHeight: "200px", overflow: "hidden" },
+  // Over the chart's top corner, shown while the chart is pointed at or a tool has the focus
+  // (always, where nothing points: a touch screen).
+  tools: {
+    position: "absolute",
+    top: 0,
+    insetInlineEnd: 0,
+    zIndex: 1,
+    display: "flex",
+    gap: spacingVars["--spacing-0-5"],
+    padding: spacingVars["--spacing-0-5"],
+    borderRadius: radiusVars["--radius-element"],
+    backgroundColor: colorVars["--color-background-surface"],
+    boxShadow: shadowVars["--shadow-low"],
+    opacity: {
+      default: 0,
+      ":focus-within": 1,
+      [stylex.when.ancestor(":hover")]: 1,
+      "@media (hover: none)": 1,
+    },
+    transitionProperty: "opacity",
+    transitionDuration: durationVars["--duration-fast"],
+  },
 });
 
 /** The data table's parts (DataTable). */
