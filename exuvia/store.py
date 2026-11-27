@@ -523,6 +523,36 @@ class Store:
         )
         return [r["artifact_path"] for r in rows]
 
+    # -- storage (storage.py) ---------------------------------------------------
+    def output_records(self) -> list[dict[str, Any]]:
+        """Every successful run's output, oldest first: node, params_key,
+        artifact_path (null for a partitioned one), version and kind."""
+        return self._q(
+            "select node, params_key, artifact_path, version, kind from runs "
+            "where project=? and status='success' order by queued_at",
+            (self.scope,),
+        )
+
+    def chunk_records(self) -> list[dict[str, Any]]:
+        """Every chunk file any version of a partitioned output used:
+        node, params_key, file, since and until (null while current)."""
+        return self._q(
+            "select node, params_key, file, partitions, since, until from output_files where project=?",
+            (self.scope,),
+        )
+
+    def counts(self) -> dict[str, int]:
+        """How many rows this project has in each table that grows with use."""
+        out = {}
+        for table in ("runs", "code_revisions", "code_blobs", "agent_sessions", "output_partitions", "output_files"):
+            out[table] = int(self._q(f"select count(*) as n from {table} where project=?", (self.scope,))[0]["n"])
+        return out
+
+    def run_counts(self) -> dict[str, int]:
+        """How many runs each node has had, by node."""
+        rows = self._q("select node, count(*) as n from runs where project=? group by node", (self.scope,))
+        return {r["node"]: int(r["n"]) for r in rows}
+
     def param_sets(self) -> list[dict[str, Any]]:
         """Every distinct parameter set any run has used."""
         rows = self._q(

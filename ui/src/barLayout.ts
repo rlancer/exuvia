@@ -23,7 +23,7 @@ export interface BarLayout {
 export const BAR = {
   padding: 32,
   gap: 12,
-  tabs: 262,
+  tabs: 304,
   toggleLabels: 173,
   toggleIcons: 66,
   /** One state's dot, number and word ("9 fresh"). */

@@ -12,6 +12,7 @@ import { IconButton } from "@astryxdesign/core/IconButton";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Text } from "@astryxdesign/core/Text";
+import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
 import { access, api, apiUrl, HUB_PROJECT, type Access, type CodeRevision, type PackagesState, type Project } from "./api";
 import { AccessContext, accessState, NoAccess, useAccess, ViewOnlyBanner } from "./Access";
@@ -30,7 +31,7 @@ import { HelpMenu } from "./Help";
 import { HubNav } from "./HubNav";
 import { useColorMode } from "./theme/colorMode";
 import { Brand, Mark } from "./Brand";
-import { IconClock, IconClose, IconGraph, IconKey, IconNotebook, IconTag, IconMoon, IconPackage, IconPlay, IconPlus, IconShare, IconSun } from "./icons";
+import { IconClock, IconClose, IconGear, IconGraph, IconKey, IconNotebook, IconTag, IconMoon, IconPackage, IconPlay, IconPlus, IconShare, IconSun } from "./icons";
 import { StateDot } from "./ui/state";
 import { failed, Toasts } from "./toast";
 import { appViewOf } from "./appMode";
@@ -53,6 +54,7 @@ const NewNodeDialog = lazy(() => import("./NewNodeDialog").then((m) => ({ defaul
 const PackagesDialog = lazy(() => import("./PackagesDialog").then((m) => ({ default: m.PackagesDialog })));
 const EnvDialog = lazy(() => import("./EnvDialog").then((m) => ({ default: m.EnvDialog })));
 const AppView = lazy(() => import("./AppView"));
+const Storage = lazy(() => import("./Storage").then((m) => ({ default: m.Storage })));
 const Notebook = lazy(() => import("./Notebook").then((m) => ({ default: m.Notebook })));
 
 const embed = new URLSearchParams(location.search).has("embed");
@@ -386,10 +388,13 @@ function Workbench() {
             <div {...stylex.props(styles.main)}>
               {/* The project's bar: its two faces, and what the graph is doing and can be told to do. */}
               <div ref={barRef} {...stylex.props(styles.bar, styles.workBar)}>
-                <TabList role="tablist" value={mode === "views" || mode === "graph" || mode === "schedule" ? mode : ""} onChange={(v) => setMode(v as Mode)} xstyle={[styles.modes, phone && styles.modesScroll]}>
+                <TabList role="tablist" value={mode === "views" || mode === "graph" || mode === "schedule" || mode === "storage" ? mode : ""} onChange={(v) => setMode(v as Mode)} xstyle={[styles.modes, phone && styles.modesScroll]}>
                   <Tab value="graph" label="Graph" />
                   <Tab value="views" label="Views" endContent={project?.views.length && !phone ? <Badge label={project.views.length} /> : undefined} />
                   <Tab value="schedule" label="Schedule" endContent={scheduled && !phone ? <Badge label={scheduled} /> : undefined} />
+                  <Tooltip content="Storage: what this project keeps on disk">
+                    <Tab value="storage" label="Storage" icon={<IconGear />} isLabelHidden />
+                  </Tooltip>
                 </TabList>
                 {/* Two ways to read the same graph: drawn, or top to bottom as a notebook. On a phone, one button that switches. */}
                 {mode === "graph" && nodes.length > 0 &&
@@ -501,6 +506,10 @@ function Workbench() {
                 </section>
               ) : mode === "schedule" ? (
                 <Schedule tick={project} onOpenNode={openNode} />
+              ) : mode === "storage" ? (
+                <Suspense fallback={<div {...stylex.props(styles.wide)} />}>
+                  <Storage tick={project} onOpenNode={openNode} />
+                </Suspense>
               ) : mode === "views" ? (
                 <Suspense fallback={<div {...stylex.props(styles.wide)} />}>
                   <Views project={project} nodes={nodes} dark={dark} open={viewOpen} onOpenNode={openNode} onShown={onShown} />

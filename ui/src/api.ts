@@ -65,6 +65,78 @@ export interface ScheduleState {
   live: LiveRow[];
 }
 
+/** One part of a project's `.exuvia/` folder in `GET /api/storage`. */
+export type StoragePart = { key: string; label: string; bytes: number; files: number };
+
+/** One node's stored outputs in `GET /api/storage`; sizes are bytes. */
+export type StorageNode = {
+  name: string;
+  /** False for a node that was deleted but whose outputs are still kept. */
+  exists: boolean;
+  partitioned: boolean;
+  runs: number;
+  /** Every output file kept, current or from an earlier run. */
+  files: number;
+  bytes: number;
+  /** The files its latest output (for each parameter set) reads. */
+  current_files: number;
+  current_bytes: number;
+  parquet_bytes: number;
+  /** The Parquet files' column data before compression, and after. */
+  uncompressed_bytes: number;
+  compressed_bytes: number;
+  /** Rows in its current Parquet output(s). */
+  rows: number;
+  /** Files by kind: parquet, json, multi (a zip of several), other. */
+  kinds: Record<string, number>;
+};
+
+/** A partitioned output's files against its compaction limit, in `GET /api/storage`. */
+export type StoragePartitioned = {
+  node: string;
+  params_key: string;
+  version: number;
+  partitions: number;
+  files: number;
+  /** Files holding more than one partition: what compaction made. */
+  merged_files: number;
+  /** Years (or one group for values that aren't dates): one file each once compacted. */
+  periods: number;
+  /** It compacts once it has more files than this. */
+  limit: number;
+  /** Chunks earlier versions read and this one does not: kept, never deleted. */
+  superseded_files: number;
+};
+
+/** `GET /api/storage`: what the project keeps on disk. */
+export interface StorageState {
+  generated_at: number;
+  total_bytes: number;
+  code: { bytes: number; files: number };
+  state: StoragePart[];
+  outputs: {
+    files: number;
+    bytes: number;
+    current_files: number;
+    current_bytes: number;
+    by_kind: Record<"parquet" | "json" | "multi" | "other", { files: number; bytes: number }>;
+  };
+  parquet: {
+    files: number;
+    bytes: number;
+    uncompressed_bytes: number;
+    compressed_bytes: number;
+    rows: number;
+    row_groups: number;
+    codecs: { codec: string; bytes: number }[];
+  };
+  nodes: StorageNode[];
+  partitioned: StoragePartitioned[];
+  compact_after: number;
+  remote: { configured: boolean; uploaded: number; missing: number };
+  database: { kind: string; in_project: boolean; bytes: number | null; rows: Record<string, number> };
+}
+
 export interface GraphNode {
   name: string;
   kind: "python" | "sql";
@@ -507,6 +579,7 @@ export const api = {
     req("POST", "/api/run", { targets, force: false, params: Object.keys(params).length ? params : null }),
   runStale: () => req<{ targets: string[] }>("POST", "/api/run-stale"),
   schedule: () => req<ScheduleState>("GET", "/api/schedule"),
+  storage: () => req<StorageState>("GET", "/api/storage"),
   pause: (name: string, paused: boolean) => req("POST", `/api/nodes/${name}/schedule`, { paused }),
   data: (name: string, limit = 200, part?: string) => nodeData(name, limit, part),
   /** `limit` rows of a table output from row `offset` on, of the run `runId` made (so pages of one output agree). */
