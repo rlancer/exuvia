@@ -294,7 +294,9 @@ def test_the_data_api_publishes_its_own_spec(hub):
     spec = hub.get("/api/data/openapi.json").json()  # no key needed: an agent reads it first
     assert spec["info"]["title"] == "exuvia data API"
     assert sorted(spec["paths"]) == [
-        "/api/data/projects", "/api/data/projects/{project}", "/api/data/projects/{project}/nodes/{node}", "/api/data/query",
+        "/api/data/projects", "/api/data/projects/{project}", "/api/data/projects/{project}/nodes/{node}",
+        "/api/data/projects/{project}/nodes/{node}/artifacts/{artifact_id}/{filename}",
+        "/api/data/projects/{project}/nodes/{node}/artifacts/{filename}", "/api/data/query",
     ]
     assert spec["components"]["securitySchemes"]["dataKey"] == {
         "type": "http", "scheme": "bearer", "bearerFormat": "exd_...",
@@ -390,7 +392,7 @@ def test_a_listing_is_kept_until_its_project_changes(hub, monkeypatch):
     key = make_key(hub, ["crm"])
     calls = []
     real = dataapi.describe
-    monkeypatch.setattr(dataapi, "describe", lambda ws: calls.append(1) or real(ws))
+    monkeypatch.setattr(dataapi, "describe", lambda ws, pid: calls.append(1) or real(ws, pid))
     for _ in range(3):
         assert hub.get("/api/data/projects", headers=bearer(key)).status_code == 200
     assert len(calls) == 1
@@ -409,10 +411,10 @@ def test_requests_that_find_a_listing_stale_together_describe_it_once(hub, monke
     real = dataapi.describe
     gate = threading.Event()
 
-    def slow(ws):
+    def slow(ws, pid):
         calls.append(1)
         gate.wait(5)  # the others arrive while this one builds
-        return real(ws)
+        return real(ws, pid)
 
     monkeypatch.setattr(dataapi, "describe", slow)
 
@@ -634,3 +636,80 @@ def test_the_get_query_takes_its_projects_and_limit(hub):
     assert hub.get("/api/data/query", params={"sql": "drop view crm.accounts", "projects": ["crm"]},
                    headers=bearer(key)).status_code == 400
     assert hub.get("/api/data/query", headers=bearer(key)).status_code == 422
+
+
+# -- content-addressed outputs ------------------------------------------------------------
+MULTI = '''import exuvia
+
+
+@exuvia.node()
+def prices():
+    import pandas as pd
+
+    return {"close": pd.DataFrame({"t": [1, 2], "v": [3.0, 4.0]}), "meta": {"source": "test"}}
+'''
+
+
+def test_an_output_is_fetched_by_its_hash_and_cached_for_good(hub):
+    key = make_key(hub, ["crm", "sales"])
+    [accounts] = hub.get("/api/data/projects/crm", headers=bearer(key)).json()["nodes"]
+    url = accounts["url"]
+    assert url == f"/api/data/projects/crm/nodes/accounts/artifacts/{accounts['artifact_id']}.parquet"
+    r = hub.get(url, headers=bearer(key))
+    assert r.status_code == 200 and r.headers["content-type"] == "application/vnd.apache.parquet"
+    assert r.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert r.headers["vary"] == "Authorization" and r.headers["etag"] == f'"{accounts["artifact_id"]}"'
+    import pyarrow.parquet as pq
+
+    assert pq.read_table(io.BytesIO(r.content)).to_pydict() == {"account": [1, 2], "name": ["Acme", "Globex"]}
+    assert hub.get(url, headers={**bearer(key), "If-None-Match": r.headers["etag"]}).status_code == 304
+    assert hub.head(url, headers=bearer(key)).status_code == 200
+    # A new run with other data: a new id, and the old file is still the old data.
+    rerun_accounts(hub, ["Acme", "Globex", "Initech"])
+    [after] = hub.get("/api/data/projects/crm", headers=bearer(key)).json()["nodes"]
+    assert after["url"] != url
+    assert pq.read_table(io.BytesIO(hub.get(after["url"], headers=bearer(key)).content)).num_rows == 3
+    assert pq.read_table(io.BytesIO(hub.get(url, headers=bearer(key)).content)).num_rows == 2
+
+
+def test_a_hash_reads_nothing_the_key_cant(hub):
+    key = make_key(hub, ["crm", "sales"])
+    crm = hub.get("/api/data/projects/crm", headers=bearer(key)).json()["nodes"][0]
+    sales = hub.get("/api/data/projects/sales", headers=bearer(key)).json()["nodes"][0]
+    secret = make_key(hub, ["secret"], as_=BOB)
+    hidden = hub.get("/api/data/projects/secret", headers=bearer(secret)).json()["nodes"][0]
+    own = f"/api/data/projects/crm/nodes/accounts/artifacts/{crm['artifact_id']}.parquet"
+    assert hub.get(own, headers=bearer(key)).status_code == 200
+    # Bob's project's output, by its hash: the key does not read the project.
+    assert hub.get(f"/api/data/projects/secret/nodes/accounts/artifacts/{hidden['artifact_id']}.parquet",
+                   headers=bearer(key)).status_code == 404
+    # (Bob's accounts are the same rows as crm's: the same hash, which under
+    # crm names crm's own file. A hash names content, not who may read it.)
+    assert hidden["artifact_id"] == crm["artifact_id"]
+    # Nor through a project it reads: a hash is only served under the node that made it.
+    assert hub.get(f"/api/data/projects/crm/nodes/accounts/artifacts/{sales['artifact_id']}.parquet",
+                   headers=bearer(key)).status_code == 404
+    assert hub.get(f"/api/data/projects/sales/nodes/orders/artifacts/{crm['artifact_id']}.parquet",
+                   headers=bearer(key)).status_code == 404
+    assert hub.get(own, headers=bearer(secret)).status_code == 404
+    assert hub.get(own).status_code == 401
+    assert hub.get(own.replace(".parquet", ".json"), headers=bearer(key)).status_code == 404
+    assert hub.get(own.replace(".parquet", ".exe"), headers=bearer(key)).status_code == 404
+    assert hub.get("/api/data/projects/crm/nodes/accounts/artifacts/..%2F..%2Fhub.db", headers=bearer(key)).status_code == 404
+    assert hub.get("/api/data/projects/crm/nodes/nothing/artifacts/x.parquet", headers=bearer(key)).status_code == 404
+
+
+def test_a_part_of_several_outputs_is_fetched_by_the_hash_of_the_whole(hub):
+    project(hub, "market", "prices", MULTI)
+    key = make_key(hub, ["market"])
+    [prices] = hub.get("/api/data/projects/market", headers=bearer(key)).json()["nodes"]
+    assert prices["kind"] == "multi" and prices["url"].endswith(f"{prices['artifact_id']}.zip")
+    assert hub.get(prices["url"], headers=bearer(key)).headers["content-type"] == "application/zip"
+    base = f"/api/data/projects/market/nodes/prices/artifacts/{prices['artifact_id']}"
+    close = hub.get(f"{base}/close.parquet", headers=bearer(key))
+    assert close.status_code == 200 and close.headers["etag"] == f'"{prices["artifact_id"]}/close"'
+    assert close.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert hub.get(f"{base}/meta.json", headers=bearer(key)).json() == {"source": "test"}
+    assert hub.get(f"{base}/close.parquet", headers={**bearer(key), "If-None-Match": close.headers["etag"]}).status_code == 304
+    assert hub.get(f"{base}/close.json", headers=bearer(key)).status_code == 404
+    assert hub.get(f"{base}/nothing.parquet", headers=bearer(key)).status_code == 404

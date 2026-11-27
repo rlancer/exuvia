@@ -17,6 +17,12 @@ from .outputs import encode_json
 from .workspace import Workspace
 
 
+# A stored output's file, by its extension: ``<artifact_id>.parquet`` and so on.
+ARTIFACT_KINDS = {"parquet": "table", "json": "json", "zip": "multi"}
+ARTIFACT_EXTENSIONS = {kind: ext for ext, kind in ARTIFACT_KINDS.items()}
+ARTIFACT_MEDIA_TYPES = {"table": "application/vnd.apache.parquet", "json": "application/json", "multi": "application/zip"}
+
+
 class FastJSON(JSONResponse):
     """JSON written straight from an answer, skipping FastAPI's
     ``jsonable_encoder``, which walks every value again and took over half

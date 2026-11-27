@@ -3651,6 +3651,16 @@ makes one and picks the projects it reads.
   it has no tag (`no-store`); errors are never cached. A 304 counts as a
   request in the key's usage. `deploy/nginx/exuvia.conf` puts nginx in
   front of a hub with a cache on disk for `/api/data/`.
+- **Outputs by their hash, cached for good.** The listing gives each
+  node's `artifact_id` (a hash of its output's content) and `url`,
+  `/api/data/projects/{project}/nodes/{node}/artifacts/{artifact_id}.parquet`
+  (`.json` for a JSON output, `.zip` for several, or
+  `.../{artifact_id}/{part}.parquet` for one of them): the stored file,
+  byte for byte, with `Cache-Control: public, max-age=31536000, immutable`,
+  since what an id names never changes. An app revalidates the listing,
+  and fetches data only when an id changed. The key must read the project,
+  and only an output that node produced is served: a hash from another
+  project gets a 404.
 - **A query as a GET.** `GET /api/data/query?sql=...&limit=...&projects=...`
   is the POST as a URL, which browsers and proxies cache (they don't cache
   POST). The URL is limited in length (8 KB in nginx unless raised; the
@@ -3676,8 +3686,9 @@ rest. (`/openapi.json` and `/docs` cover the whole HTTP API.)
 | Route | |
 |---|---|
 | `GET /api/data/openapi.json` | the data API's OpenAPI spec (no key needed) |
-| `GET /api/data/projects` | the projects the key reads, each with its nodes: `kind` (`table`, `multi`, `json`, or null before a run), `rows`, `columns`, `parts`, `partitioned`, `history` (whether `<node>__runs` exists) and the current `run_id` / `artifact_id` |
+| `GET /api/data/projects` | the projects the key reads, each with its nodes: `kind` (`table`, `multi`, `json`, or null before a run), `rows`, `columns`, `parts`, `partitioned`, `history` (whether `<node>__runs` exists) and the current `run_id` / `artifact_id` / `url` (the output by its hash) |
 | `GET /api/data/projects/{project}` | one of them |
+| `GET /api/data/projects/{project}/nodes/{node}/artifacts/{artifact_id}.parquet` | the node's stored output by its hash (`.json`, `.zip`; `/{artifact_id}/{part}.parquet` for one of several), cached for good; `Range` honoured |
 | `GET /api/data/projects/{project}/nodes/{node}` | a node's output, as `/api/nodes/{name}/data` answers it (`limit`, `offset`, `params`, `part`, `partitions`; JSON or Arrow) |
 | `POST /api/data/query` | `{sql, limit, projects}`: one SELECT across the key's projects. JSON: the first `limit` rows (500 unless given, 5000 at most) and the `projects` attached; Arrow: every row unless `limit` |
 | `GET /api/data/query` | the same as `?sql=...&limit=...&projects=a&projects=b`, which caches keep; with `If-None-Match`, 304 while nothing it read has changed |
