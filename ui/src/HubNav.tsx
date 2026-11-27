@@ -10,7 +10,7 @@ import { IconHome, IconPlus, IconSliders } from "./icons";
 import { sortProjects } from "./projectOrder";
 import { useMe } from "./useMe";
 
-/** Where on the hub the page is: its home, its admin page (with that page's own sections), or a project's workbench. */
+/** Where on the hub the page is: its home, its admin page (with that page's own sections, the nav's items there), or a project's workbench. */
 export type HubPlace = { page: "home" } | { page: "admin"; sections?: ReactNode } | { page: "project"; id: string };
 
 export const workbenchUrl = (id: string) => `/p/${encodeURIComponent(id)}/`;
@@ -66,6 +66,10 @@ function useListing(given: HubListing | null | undefined): HubListing | null {
  * foot, the admin page (for an admin). It folds to a rail of Home's and
  * Admin's icons; the projects show when it is open.
  *
+ * On the admin page the nav is the admin page's own: Home to go back, then
+ * the page's sections, each an item of its own (no projects, no Admin item
+ * that opens to show them).
+ *
  * `listing` is the page's own when it has loaded one (the home and admin
  * pages); left out, the nav asks for it (the workbench), and shows nothing to
  * someone who may not list the hub's projects (a share link, a token not yet
@@ -84,6 +88,18 @@ export function HubNav(props: { place: HubPlace; listing?: HubListing | null; on
   const projects = sortProjects(listing.projects, "used");
   const current = place.page === "project" ? place.id : null;
 
+  if (place.page === "admin")
+    return (
+      <SideNav xstyle={styles.nav} collapsible={{ isCollapsed: railOnly || folded, onCollapsedChange: setFolded, hasButton: !railOnly }}>
+        <SideNavSection title="Home" isHeaderHidden>
+          <SideNavItem label="Home" icon={<IconHome />} href="/" />
+        </SideNavSection>
+        <SideNavSection title="Admin">
+          {place.sections ?? <SideNavItem label="Admin" icon={<IconSliders />} href="/admin" isSelected />}
+        </SideNavSection>
+      </SideNav>
+    );
+
   return (
     <SideNav
       xstyle={styles.nav}
@@ -91,9 +107,7 @@ export function HubNav(props: { place: HubPlace; listing?: HubListing | null; on
       footer={
         isAdmin && (
           <SideNavSection title="Hub" isHeaderHidden>
-            <SideNavItem label="Admin" icon={<IconSliders />} href="/admin" isSelected={place.page === "admin" && !place.sections}>
-              {place.page === "admin" ? place.sections : undefined}
-            </SideNavItem>
+            <SideNavItem label="Admin" icon={<IconSliders />} href="/admin" />
           </SideNavSection>
         )
       }

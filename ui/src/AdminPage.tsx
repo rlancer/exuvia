@@ -83,7 +83,7 @@ const isSection = (s: string | null): s is AdminSection => !!s && s in SECTIONS;
 
 /**
  * The hub's admin page, at `/admin`: everything an admin manages for the whole hub, one section at a time
- * (`/admin?section=<id>`), listed under Admin in the hub's left nav, and as tabs on a narrow screen. An admin, or the operator
+ * (`/admin?section=<id>`), listed in the page's own left nav, and as tabs on a narrow screen. An admin, or the operator
  * (the API token, or a hub nobody signs in to), uses it; anyone else is told it is for admins.
  */
 export default function AdminPage() {
@@ -217,7 +217,7 @@ export default function AdminPage() {
         <HubNav
           place={{
             page: "admin",
-            // The sections, under Admin in the nav; on a narrow screen they are tabs over the section instead.
+            // The sections, the left nav's own items here; on a narrow screen they are tabs over the section instead.
             sections:
               listing && isAdmin && !narrow
                 ? sections.map((s) => (
