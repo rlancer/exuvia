@@ -2499,6 +2499,7 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        hub.start()  # the runners every project shares warm now, not at the first run
         if SCHEDULER == "internal":
             # Each workspace runs its own schedule loop, so every project has
             # to be loaded. With an external scheduler they load on demand.

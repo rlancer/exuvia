@@ -65,6 +65,7 @@ from .artifacts import artifact_key, artifact_store
 from .events import EventBus
 from . import runners as runners_mod
 from .executor import ExecRequest, ExecResult, LocalExecutor, make_executor
+from .pool import WarmPool
 from .notify import failure_webhook, payload, send
 from .npm import Npm, bare_imports
 from .packages import Packages, missing_package
@@ -124,14 +125,17 @@ def params_key(params: dict[str, Any]) -> str:
 
 class Workspace:
     def __init__(
-        self, root: str | Path, origin: str = "load", packages_store: Path | None = None, npm_store: Path | None = None
+        self, root: str | Path, origin: str = "load", packages_store: Path | None = None, npm_store: Path | None = None,
+        pool: WarmPool | None = None,
     ):
         """``origin`` labels code found changed since the last recorded
         revision when the project loads (a template applied, an import, edits
         made while nothing was watching). ``packages_store`` is where a
         server shared by many projects (a hub) keeps their package installs
         (see packages.py), and ``npm_store`` the modules its views' npm
-        packages are made of (npm.py); without them the project keeps its own."""
+        packages are made of (npm.py); without them the project keeps its own.
+        ``pool`` is the warm runners a hub shares between its projects
+        (Hub.pool); without it the project warms its own as it loads."""
         self.project = Project(root)
         # Held while project files are written and reloaded (see editing()).
         self._edit_lock = threading.RLock()
@@ -171,13 +175,11 @@ class Workspace:
         self._executing: set[str] = set()
         self._stop_watching: threading.Event | None = None
         self._backfill: dict[str, Any] | None = None
-        self.executor = make_executor(self.project.root, MAX_PARALLEL)
-        # Warm the executor's runners when the project loads (pool.py). A hub
-        # turns it off: each warm runner is a Python process with pandas,
-        # pyarrow and duckdb imported (about 120 MB, a second of CPU), four
-        # per project, so loading 40 projects started 160 of them. Its
-        # projects warm theirs at their first run instead (WarmPool.take).
-        self.prewarm = True
+        # Its runners (pool.py): a pool of its own, warmed as it loads, or the
+        # hub's, shared by every project on it. Each warm runner is a Python
+        # process with pandas, pyarrow and duckdb imported (about 55 MB PSS,
+        # a second of CPU): a pool per project put 160 of them on a hub of 40.
+        self.executor = make_executor(self.project.root, MAX_PARALLEL, pool)
         # Where runs_on nodes go (runners.py): set by the server that serves
         # the project (one broker per hub); None when nothing serves it, and
         # then nothing can hand them to a runner.
@@ -199,8 +201,7 @@ class Workspace:
     # -- lifecycle ---------------------------------------------------------
     async def start(self) -> None:
         self.bus.bind(asyncio.get_running_loop())
-        if self.prewarm:
-            self.executor.start()
+        self.executor.start()  # a pool of its own: a shared one is its owner's to start
         self.packages.prebuild()  # install a changed list now, not at the next run
         # Fresh contexts: a change the watcher sees was made by editing files,
         # and a scheduled run was started by the clock, not by whichever
