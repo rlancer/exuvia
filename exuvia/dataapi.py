@@ -428,15 +428,33 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
     # reads every node's last run, so it is kept until the project changes
     # (or CACHE_TTL passes: a default parameter like "today" moves on its own).
     described: dict[str, tuple[tuple[int, int], float, list[dict[str, Any]]]] = {}
+    # project -> the lock held while its listing is built: requests that find
+    # it stale together wait for one describe() instead of each running their
+    # own (every listing expires CACHE_TTL after it was built, so 32 clients
+    # listing 40 projects ran up to 32 x 40 of them, each through the
+    # database connection, which a shared database has one of per process).
+    describing: dict[str, threading.Lock] = {}
+    describing_lock = threading.Lock()
 
     def nodes_of(pid: str, ws: Workspace) -> list[dict[str, Any]]:
-        stamp, now = (id(ws), ws.bus.version), time.monotonic()
-        hit = described.get(pid)
-        if hit and hit[0] == stamp and now - hit[1] < CACHE_TTL:
-            return hit[2]
-        out = describe(ws)
-        described[pid] = (stamp, now, out)
-        return out
+        stamp = (id(ws), ws.bus.version)
+
+        def fresh() -> list[dict[str, Any]] | None:
+            hit = described.get(pid)
+            return hit[2] if hit and hit[0] == stamp and time.monotonic() - hit[1] < CACHE_TTL else None
+
+        out = fresh()
+        if out is not None:
+            return out
+        with describing_lock:
+            lock = describing.setdefault(pid, threading.Lock())
+        with lock:
+            out = fresh()  # built while this request waited
+            if out is None:
+                now = time.monotonic()
+                out = describe(ws)
+                described[pid] = (stamp, now, out)
+            return out
     access_cache: dict[str, tuple[tuple[str, ...], float]] = {}
     access_lock = threading.Lock()
 

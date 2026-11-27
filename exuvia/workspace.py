@@ -169,9 +169,15 @@ class Workspace:
         # cancelling the task; one in _executing by its executor.
         self._run_tasks: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Task[str]]] = {}
         self._executing: set[str] = set()
-        self._stop_watching: asyncio.Event | None = None
+        self._stop_watching: threading.Event | None = None
         self._backfill: dict[str, Any] | None = None
         self.executor = make_executor(self.project.root, MAX_PARALLEL)
+        # Warm the executor's runners when the project loads (pool.py). A hub
+        # turns it off: each warm runner is a Python process with pandas,
+        # pyarrow and duckdb imported (about 120 MB, a second of CPU), four
+        # per project, so loading 40 projects started 160 of them. Its
+        # projects warm theirs at their first run instead (WarmPool.take).
+        self.prewarm = True
         # Where runs_on nodes go (runners.py): set by the server that serves
         # the project (one broker per hub); None when nothing serves it, and
         # then nothing can hand them to a runner.
@@ -193,12 +199,13 @@ class Workspace:
     # -- lifecycle ---------------------------------------------------------
     async def start(self) -> None:
         self.bus.bind(asyncio.get_running_loop())
-        self.executor.start()
+        if self.prewarm:
+            self.executor.start()
         self.packages.prebuild()  # install a changed list now, not at the next run
         # Fresh contexts: a change the watcher sees was made by editing files,
         # and a scheduled run was started by the clock, not by whichever
         # request (and signed-in person) happened to load the project.
-        self._stop_watching = asyncio.Event()
+        self._stop_watching = threading.Event()
         self.spawn(self._watch_files(self._stop_watching), context=Context())
         if artifact_store() is not None:
             self.spawn(self._sync_artifacts(), context=Context())
@@ -445,24 +452,52 @@ class Workspace:
                 self.reload()
         return self.view_info(name)
 
-    async def _watch_files(self, stop: asyncio.Event) -> None:
-        from watchfiles import awatch
+    async def _watch_files(self, stop: threading.Event) -> None:
+        """Reload when a project file changes. The watcher waits in Rust for
+        up to 5 seconds at a time, so it runs on a thread of its own: on
+        anyio's (``awatch``), every loaded project's watcher would hold one
+        of the 40 tokens that every sync route and streamed answer of the
+        server shares, and with 40 projects loaded each of those would wait
+        for a watcher's 5 seconds to run out."""
+        from watchfiles import watch
 
         # Helpers count too: an edit in lib/ changes the code hash of every
         # node that imports it.
         # Views too: their files are versioned like node files.
         dirs = (self.project.nodes_dir, self.project.lib_dir, self.project.views_dir)
-        async for _ in awatch(*dirs, debounce=200, stop_event=stop):
-            # In a thread: it may wait for an API or agent edit to finish. A
-            # thread cannot be cancelled, so when the workspace stops mid-reload
-            # this waits for the reload to finish instead of leaving it reading
-            # files that the caller of stop() is about to delete.
-            reload = asyncio.ensure_future(asyncio.to_thread(self.reload))
+        loop = asyncio.get_running_loop()
+        done: asyncio.Future[None] = loop.create_future()
+
+        def ended(error: BaseException | None) -> None:
+            if done.done():
+                return
+            if error is None:
+                done.set_result(None)
+            else:
+                done.set_exception(error)
+
+        def run() -> None:
+            error: BaseException | None = None
             try:
-                await asyncio.shield(reload)
-            except asyncio.CancelledError:
-                await reload
-                raise
+                # The reload runs on this thread: it may wait for an API or
+                # agent edit to finish.
+                for _ in watch(*dirs, debounce=200, stop_event=stop, raise_interrupt=False):
+                    self.reload()
+            except BaseException as e:  # noqa: BLE001 - handed to the task that awaits it
+                error = e
+            with suppress(RuntimeError):  # the loop closed first
+                loop.call_soon_threadsafe(ended, error)
+
+        threading.Thread(target=run, daemon=True, name=f"exuvia-watch-{self.project.root.name}").start()
+        try:
+            await asyncio.shield(done)
+        except asyncio.CancelledError:
+            # A thread cannot be cancelled: when the workspace stops
+            # mid-reload, wait for the reload to finish instead of leaving it
+            # reading files that the caller of stop() is about to delete.
+            stop.set()
+            await done
+            raise
 
     @property
     def busy(self) -> bool:

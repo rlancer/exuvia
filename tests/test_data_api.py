@@ -398,6 +398,34 @@ def test_a_listing_is_kept_until_its_project_changes(hub, monkeypatch):
     assert len(calls) == 2 and [n["name"] for n in got["nodes"]] == ["accounts"]
 
 
+def test_requests_that_find_a_listing_stale_together_describe_it_once(hub, monkeypatch):
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    key = make_key(hub, ["crm"])
+    calls = []
+    real = dataapi.describe
+    gate = threading.Event()
+
+    def slow(ws):
+        calls.append(1)
+        gate.wait(5)  # the others arrive while this one builds
+        return real(ws)
+
+    monkeypatch.setattr(dataapi, "describe", slow)
+
+    def listing(_):
+        return hub.get("/api/data/projects/crm", headers=bearer(key)).json()["nodes"][0]["name"]
+
+    with ThreadPoolExecutor(8) as pool:
+        got = [pool.submit(listing, i) for i in range(8)]
+        time.sleep(0.3)
+        gate.set()
+        assert [f.result() for f in got] == ["accounts"] * 8
+    assert len(calls) == 1
+
+
 def test_node_reads_share_one_database_and_keep_their_temp_tables_apart():
     """outputs.reader: a cursor each, on one database; a temp table one
     cursor makes (a partitioned read's filter) is not another's."""

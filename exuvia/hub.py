@@ -73,7 +73,13 @@ class Hub:
         self.root.mkdir(parents=True, exist_ok=True)
         self.templates_dir = Path(templates).resolve() if templates else None
         self._ctxs: dict[str, Any] = {}
+        # Held by create / delete / apply_template / restore / close; each of
+        # them that changes a project also holds that project's lock.
         self._lock = asyncio.Lock()
+        # project id -> the lock held while it loads (get) or changes under
+        # the hub lock: projects load side by side, and never while one of
+        # those changes it.
+        self._project_locks: dict[str, asyncio.Lock] = {}
         self._structural = 0  # creates / deletes / restores
         self._retired = 0  # change counts of workspaces that were unloaded
         self._export_path: Path | None = None
@@ -143,13 +149,22 @@ class Hub:
             return []
         return sorted(p.name for p in self.templates_dir.iterdir() if p.is_dir() and PROJECT_ID.match(p.name))
 
+    def _project_lock(self, project_id: str) -> asyncio.Lock:
+        return self._project_locks.setdefault(project_id, asyncio.Lock())
+
     async def get(self, project_id: str) -> Any:
-        """The loaded project (workspace + agent), starting it on first use."""
+        """The loaded project (workspace + agent), starting it on first use.
+        A loaded project is returned at once; loading one waits only for
+        that project (another load of it, or a change to it), not for other
+        projects' loads."""
+        ctx = self._ctxs.get(project_id)
+        if ctx is not None:
+            return ctx
         from .agent import Agent
         from .server import Ctx
         from .workspace import Workspace
 
-        async with self._lock:
+        async with self._project_lock(project_id):
             ctx = self._ctxs.get(project_id)
             if ctx is None:
                 ws = Workspace(
@@ -160,9 +175,15 @@ class Hub:
                 )
                 ws.api_prefix = f"/p/{project_id}/api"
                 ws.runners, ws.project_id = self.runners, project_id
+                ws.prewarm = False  # runners warm at the project's first run (Workspace.prewarm)
                 if self.groups is not None:
                     ws.inherited_env = lambda pid=project_id: self.inherited_env(pid)
-                await ws.start()
+                try:
+                    await ws.start()
+                except BaseException:
+                    await ws.stop()
+                    ws.store.close()
+                    raise
                 ctx = Ctx(ws, Agent(ws, command="hub"))
                 ctx.agent.mcp = self.mcp
                 self._ctxs[project_id] = ctx
@@ -221,7 +242,7 @@ class Hub:
         assert self.templates_dir is not None
         source = self.templates_dir / template
         target = self.root / project_id
-        async with self._lock:
+        async with self._lock, self._project_lock(project_id):
             await self._unload(project_id)
             name = Project(target).name
             source_nodes = source / "nodes"
@@ -308,7 +329,7 @@ class Hub:
         self._retired += ctx.ws.bus.version
 
     async def delete(self, project_id: str) -> None:
-        async with self._lock:
+        async with self._lock, self._project_lock(project_id):
             await self._unload(project_id)
             try:
                 await _remove_tree(self.root / project_id)
@@ -335,8 +356,9 @@ class Hub:
 
     async def close(self) -> None:
         async with self._lock:
-            for pid in list(self._ctxs):
-                await self._unload(pid)
+            for pid in list(self._project_locks):
+                async with self._project_lock(pid):  # a load in progress finishes first
+                    await self._unload(pid)
         if self.data_keys is not None:
             self.data_keys.close()  # writes the usage still counted in memory, before the database closes
         if self.sharing is not None:
@@ -499,12 +521,13 @@ class Hub:
             async with self._lock:
                 try:
                     for pid in found:
-                        await self._unload(pid)
-                        # The target must be gone: moving onto a folder that
-                        # survived would put the project inside it, at pid/pid.
-                        await _remove_tree(self.root / pid)
-                        shutil.move(str(Path(scratch) / pid), str(self.root / pid))
-                        self._load_origin[pid] = "import"
+                        async with self._project_lock(pid):
+                            await self._unload(pid)
+                            # The target must be gone: moving onto a folder that
+                            # survived would put the project inside it, at pid/pid.
+                            await _remove_tree(self.root / pid)
+                            shutil.move(str(Path(scratch) / pid), str(self.root / pid))
+                            self._load_origin[pid] = "import"
                 finally:
                     self._structural += 1
         return found

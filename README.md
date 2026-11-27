@@ -1977,7 +1977,9 @@ The **control plane** is the only stateful part. **Executors** run one node
 at a time and return a content-addressed artifact; they hold no project state.
 
 - **Local (default):** a pool of pre-warmed, single-use subprocesses on the
-  same machine.
+  same machine (`EXUVIA_MAX_PARALLEL`, 4, per project). In a hub a project
+  fills its pool at its first run rather than when it loads, so a hub of
+  many projects keeps runners warm only for those that run.
 - **Remote:** `exuvia executor` is a plain HTTP service — the same image runs
   on Cloudflare Containers, Fly, Cloud Run, Kubernetes, or a box under a desk.
   Point a control plane at it with `--executor URL` / `EXUVIA_EXECUTOR_URL`.
