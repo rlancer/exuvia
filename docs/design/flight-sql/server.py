@@ -12,7 +12,7 @@ HTTP on one port, and this server serves Flight on another, sharing the hub
 locked, cached DuckDB connection (``dataapi.QueryConnections``).
 
 What it implements of Flight SQL, which is enough for ADBC's DB-API cursor,
-its ``adbc_get_objects`` and DBeaver's schema browser:
+its ``adbc_get_objects``, and the Flight SQL JDBC driver (jdbc_check.py):
 
 * ``CommandStatementQuery``: a query. GetFlightInfo binds it (so a bad
   statement fails before any data moves) and returns its schema and a
@@ -20,7 +20,13 @@ its ``adbc_get_objects`` and DBeaver's schema browser:
 * ``CommandGetCatalogs``, ``CommandGetDbSchemas``, ``CommandGetTables``,
   ``CommandGetTableTypes``: discovery, from DuckDB's information_schema over
   the key's projects.
-* ``CommandGetSqlInfo``: the server's name and version, read-only.
+* ``CommandGetSqlInfo``: the server's name and version, read-only, the
+  identifier quote, and DuckDB's keywords.
+* ``CommandGetPrimaryKeys``, ``CommandGetImportedKeys``,
+  ``CommandGetExportedKeys``, ``CommandGetCrossReference``: no rows (outputs
+  are views, with no keys), which JDBC tools ask for when they open a table.
+* ``Handshake``: the JDBC driver opens with one; it exchanges nothing and
+  hands back the same bearer token.
 * ``CreatePreparedStatement`` / ``CommandPreparedStatementQuery`` /
   ``ClosePreparedStatement``: ADBC's DB-API cursor prepares every query.
   Without parameters a prepared statement is the same stateless handle as a
@@ -140,8 +146,14 @@ def like(pattern: str | None, value: str) -> bool:
 
 # -- auth ----------------------------------------------------------------------------
 class KeyMiddleware(fl.ServerMiddleware):
-    def __init__(self, token: str):
+    def __init__(self, token: str, handshake: bool = False):
         self.token = token
+        self.handshake = handshake
+
+    def sending_headers(self) -> dict[str, str]:
+        # The JDBC driver opens with a Handshake and then sends whatever bearer
+        # token the handshake's answer carries; ADBC skips the handshake.
+        return {"authorization": f"Bearer {self.token}"} if self.handshake else {}
 
 
 class KeyMiddlewareFactory(fl.ServerMiddlewareFactory):
@@ -152,13 +164,25 @@ class KeyMiddlewareFactory(fl.ServerMiddlewareFactory):
         token = value[7:].strip() if value[:7].lower() == "bearer " else ""
         if not looks_like_key(token):
             raise fl.FlightUnauthenticatedError("send a data key: authorization: Bearer exd_...")
-        return KeyMiddleware(token)
+        return KeyMiddleware(token, handshake=info.method == fl.FlightMethod.HANDSHAKE)
+
+
+class HandshakeOnly(fl.ServerAuthHandler):
+    """Answers the Handshake the JDBC driver opens with. The key itself is
+    checked on every call (KeyMiddlewareFactory, then `_projects`), so the
+    handshake has nothing to exchange and no session to make."""
+
+    def authenticate(self, outgoing: Any, incoming: Any) -> None:
+        pass
+
+    def is_valid(self, token: bytes) -> str:
+        return ""
 
 
 # -- the server --------------------------------------------------------------------------
 class DataFlightServer(fl.FlightServerBase):
     def __init__(self, location: str, hub: Any, loop: asyncio.AbstractEventLoop):
-        super().__init__(location, middleware={"key": KeyMiddlewareFactory()})
+        super().__init__(location, auth_handler=HandshakeOnly(), middleware={"key": KeyMiddlewareFactory()})
         self.hub = hub
         self.loop = loop  # the HTTP server's loop, where workspaces live
         self.connections = QueryConnections()
@@ -275,6 +299,9 @@ class DataFlightServer(fl.FlightServerBase):
             return _sql_info()
         if kind == "CommandGetTableTypes":
             return pa.table({"table_type": ["VIEW"]}, schema=schema)
+        if kind in KEYLESS:
+            self._projects(context)  # still checks the key
+            return schema.empty_table()
         rows = self._tables(context)
         if kind == "CommandGetCatalogs":
             cats = sorted({r[0] for r in rows})
@@ -329,6 +356,19 @@ META: dict[str, pa.Schema] = {
     "CommandGetTableTypes": pa.schema([_text("table_type", pa.utf8(), False)]),
 }
 TABLES_WITH_SCHEMA = META["CommandGetTables"].append(pa.field("table_schema", pa.binary(), False))
+# Outputs are views with no keys, so these always answer no rows; JDBC tools
+# ask for them when they open a table (DBeaver: to know if rows are editable).
+META["CommandGetPrimaryKeys"] = pa.schema([
+    _text("catalog_name", pa.utf8()), _text("db_schema_name", pa.utf8()), _text("table_name", pa.utf8(), False),
+    _text("column_name", pa.utf8(), False), _text("key_name", pa.utf8()), pa.field("key_sequence", pa.int32(), False),
+])
+META["CommandGetImportedKeys"] = META["CommandGetExportedKeys"] = META["CommandGetCrossReference"] = pa.schema([
+    *(_text(f"{side}_{n}", pa.utf8(), n in ("table_name", "column_name"))
+      for side in ("pk", "fk") for n in ("catalog_name", "db_schema_name", "table_name", "column_name")),
+    pa.field("key_sequence", pa.int32(), False), _text("fk_key_name", pa.utf8()), _text("pk_key_name", pa.utf8()),
+    pa.field("update_rule", pa.uint8(), False), pa.field("delete_rule", pa.uint8(), False),
+])
+KEYLESS = {"CommandGetPrimaryKeys", "CommandGetImportedKeys", "CommandGetExportedKeys", "CommandGetCrossReference"}
 
 # CommandGetSqlInfo's answer is a dense union (FlightSql.proto, "SqlInfo").
 _INFO_VALUE = pa.dense_union([
@@ -342,15 +382,32 @@ _INFO_VALUE = pa.dense_union([
 META["CommandGetSqlInfo"] = pa.schema([pa.field("info_name", pa.uint32(), False), pa.field("value", _INFO_VALUE, False)])
 
 
+def _keywords() -> list[str]:
+    import duckdb
+
+    with duckdb.connect() as con:
+        return [k for (k,) in con.execute("select keyword_name from duckdb_keywords() order by 1").fetchall()]
+
+
 def _sql_info() -> pa.Table:
-    # FLIGHT_SQL_SERVER_NAME 0, _VERSION 1, _ARROW_VERSION 2, _READ_ONLY 3
-    names = [0, 1, 2, 3]
-    strings = pa.array(["exuvia", __version__, pa.__version__], pa.utf8())
-    bools = pa.array([True], pa.bool_())
-    empty = [pa.array([], t.type) for t in list(_INFO_VALUE)[2:]]
+    """The SqlInfo values a JDBC client reads for DatabaseMetaData (codes from
+    FlightSql.proto). DBeaver quotes the names in the SQL it writes with
+    SQL_IDENTIFIER_QUOTE_CHAR, and highlights SQL_KEYWORDS."""
+    strings = {
+        0: "exuvia", 1: __version__, 2: pa.__version__,  # FLIGHT_SQL_SERVER_NAME, _VERSION, _ARROW_VERSION
+        504: '"',  # SQL_IDENTIFIER_QUOTE_CHAR
+        529: "schema", 531: "project",  # SQL_SCHEMA_TERM, SQL_CATALOG_TERM
+    }
+    bools = {3: True, 8: False, 9: False}  # FLIGHT_SQL_SERVER_READ_ONLY, _TRANSACTION, _CANCEL
+    lists = {508: _keywords()}  # SQL_KEYWORDS
+    names = [*strings, *bools, *lists]
     value = pa.UnionArray.from_dense(
-        pa.array([0, 0, 0, 1], pa.int8()), pa.array([0, 1, 2, 0], pa.int32()),
-        [strings, bools, *empty], [f.name for f in _INFO_VALUE], [0, 1, 2, 3, 4, 5],
+        pa.array([0] * len(strings) + [1] * len(bools) + [4] * len(lists), pa.int8()),
+        pa.array([*range(len(strings)), *range(len(bools)), *range(len(lists))], pa.int32()),
+        [pa.array(list(strings.values()), pa.utf8()), pa.array(list(bools.values()), pa.bool_()),
+         pa.array([], pa.int64()), pa.array([], pa.int32()), pa.array(list(lists.values()), pa.list_(pa.utf8())),
+         pa.array([], _INFO_VALUE[5].type)],
+        [f.name for f in _INFO_VALUE], [0, 1, 2, 3, 4, 5],
     )
     return pa.Table.from_arrays([pa.array(names, pa.uint32()), value], schema=META["CommandGetSqlInfo"])
 
