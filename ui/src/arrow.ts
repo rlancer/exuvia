@@ -24,8 +24,9 @@ export function isArrow(res: Response): boolean {
   return (res.headers.get("Content-Type") ?? "").toLowerCase().startsWith(ARROW_STREAM);
 }
 
+/** The answer's batches, decoded as they arrive rather than once the whole body is in. */
 export async function readArrow(res: Response): Promise<Table> {
-  return tableFromIPC(new Uint8Array(await res.arrayBuffer()));
+  return tableFromIPC(res);
 }
 
 export function arrowMeta(table: Table): ArrowMeta {

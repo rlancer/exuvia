@@ -93,7 +93,7 @@ def fails(key: str | None, sql: str) -> str | None:
             cur.execute(sql)
             cur.fetch_arrow_table()
         return None
-    except Exception as e:
+    except flight_sql.Error as e:
         return f"{type(e).__name__}: {str(e).splitlines()[0][:120]}"
 
 
