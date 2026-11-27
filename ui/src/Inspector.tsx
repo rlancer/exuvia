@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { EditorView } from "@uiw/react-codemirror";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { python } from "@codemirror/lang-python";
 import { sql } from "@codemirror/lang-sql";
 import * as stylex from "@stylexjs/stylex";
@@ -14,27 +13,23 @@ import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { List, ListItem } from "@astryxdesign/core/List";
-import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Text } from "@astryxdesign/core/Text";
-import { Token } from "@astryxdesign/core/Token";
-import { TextInput } from "@astryxdesign/core/TextInput";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { api, type Column, type GraphNode, type RunRow } from "./api";
 import { ago, dur, fmtNum, until } from "./util";
-import { IconClock, IconCode, IconPlay, IconSpark, IconTrash, MOD } from "./icons";
+import { IconClock, IconPlay, IconSpark, IconTrash, MOD } from "./icons";
 import { failed } from "./toast";
 import { HistoryBrowser } from "./History";
 import { useAccess } from "./Access";
 import { codeGroup, DownloadMenu, outputGroups, tableItems } from "./Export";
 import { nodeExportUrl, saveQuery, saveUrl } from "./download";
 import { CodeEditor } from "./ui/CodeEditor";
-import { oneOf, usePersisted } from "./ui/usePersisted";
-import { chartBrush, chartedPart, ChartPick, DatasetSummary, DataTable, NodeChart, OutputPicker, RowsTable, rowsSource, useAskedRows, useNodePreview, useOutputPart, useRowPages, useTableStats, type ChartSelection } from "./NodeOutput";
+import { chartedPart, DatasetSummary, DataTable, NodeChart, OutputPicker, useNodePreview, useOutputPart, useTableStats } from "./NodeOutput";
+import { OutputChartPick, OutputRows, QUERY, useOutputTable } from "./OutputTable";
 import { PAGE_ROWS } from "./rowWindow";
-import { baseQuery, filterText, filterWhere, isNumeric, nextSort, tableOf, withFilter, type ColumnFilter, type Sort, type TableAsk } from "./tableQuery";
 import { StateDot, statusOf, statusText } from "./ui/state";
 import { useColorMode } from "./theme/colorMode";
 
@@ -380,112 +375,22 @@ export function Inspector(props: {
 }
 
 /**
- * A node's output: every row of a table, drawn as it scrolls into view and
- * read a page at a time, under its chart when it has one; or its JSON. The
- * rows can be asked for another way (tableQuery.ts): filtered by a SQL
- * condition, typed or (`canPrompt`: a model is set up and the person may
- * spend it) written by the model from a prompt, or a column at a time (the
- * funnel in its header), sorted by a column (its header is pressed), picked
- * on the chart, or as a query of one's own over the output.
+ * A node's output: every row of a table under its chart when it has one,
+ * asked for as OutputTable.tsx lets them be (filtered, sorted, picked on the
+ * chart, queried); or its JSON.
  */
 function DataTab({ node, dark, canPrompt }: { node: GraphNode; dark: boolean; canPrompt: boolean }) {
   // A node with several outputs shows one at a time.
   const { parts, shown, pick } = useOutputPart(node);
   // The chart, over the rows, when the output shown is the one it charts;
-  // what is selected on it is what the table shows. A new `cleared` draws
-  // it again, unselected.
+  // what is selected on it is what the table shows.
   const hasChart = !!node.chart && !!node.artifact_id && shown === chartedPart(node);
-  const [sel, setSel] = useState<ChartSelection>(null);
-  const [cleared, setCleared] = useState(0);
-  // What is asked of the rows: a condition (`filter`, as applied; `draft` as
-  // it is typed), filters of single columns (`byColumn`), a column to sort
-  // by, or a query written out (`sql` as run, null while none is written;
-  // `sqlDraft` as it is typed).
-  const [filter, setFilter] = useState("");
-  const [draft, setDraft] = useState("");
-  const [byColumn, setByColumn] = useState<ColumnFilter[]>([]);
-  const [sort, setSort] = useState<Sort | null>(null);
-  const [sql, setSql] = useState<string | null>(null);
-  const [sqlDraft, setSqlDraft] = useState("");
-  const writing = sql !== null;
-  // How the filter is written: as SQL, or as a prompt the model makes the
-  // SQL of (`words` as typed; `prompted`, the prompt and the condition it
-  // became, while that is the filter; `prompting`, the one the model is
-  // writing now). The browser remembers which.
-  const [kept, setKept] = usePersisted<FilterBy>("exuvia-filter-by", "sql", FILTER_BY);
-  const by: FilterBy = canPrompt ? kept : "sql";
-  const [words, setWords] = useState("");
-  const [prompted, setPrompted] = useState<{ words: string; where: string } | null>(null);
-  const [prompting, setPrompting] = useState<string | null>(null);
-  const [promptError, setPromptError] = useState<string | null>(null);
-  // The latest prompt sent: an answer to an earlier one, or for another table, is dropped.
-  const promptSeq = useRef(0);
-  const noPrompt = () => {
-    promptSeq.current += 1;
-    setPrompting(null);
-    setPromptError(null);
-  };
-  // Another output, or another node: nothing is selected or asked.
-  useEffect(() => {
-    setSel(null);
-    setFilter("");
-    setDraft("");
-    setByColumn([]);
-    setSort(null);
-    setSql(null);
-    setWords("");
-    setPrompted(null);
-    noPrompt();
-  }, [node.name, shown]);
-  // The model writes the condition for `words`: it becomes the filter, and the SQL box holds it to read and change.
-  const prompt = async () => {
-    const text = words.trim();
-    if (!text) return;
-    const seq = ++promptSeq.current;
-    setPrompting(text);
-    setPromptError(null);
-    try {
-      const where = await api.filterFromWords(node.name, text, shown);
-      if (promptSeq.current !== seq) return;
-      setFilter(where);
-      setDraft(where);
-      setPrompted({ words: text, where });
-    } catch (e) {
-      if (promptSeq.current !== seq) return;
-      setPromptError((e as Error).message);
-    }
-    setPrompting(null);
-  };
-  // A query of one's own is not the chart's rows: the chart picks nothing while one is written.
-  const brush = hasChart && !writing ? chartBrush(node.chart) : null;
   const multi = node.output_kind === "multi";
   const { preview: p } = useNodePreview(node, PAGE_ROWS, shown);
   const isTable = p?.kind === "table";
   // What the output's Parquet footers say: no row is read for it.
   const stats = useTableStats(node, shown, isTable);
-  // Every row of the output, its first page here and the rest read as they scroll into view.
-  const all = useRowPages(node, shown, p);
-  // The rows asked for, when anything is: read with SQL, a page at a time too.
-  const table = tableOf(node.name, shown);
-  const picked = sel?.where ?? "";
-  // Each column's filter as a condition, by the column's type in the output; one whose column the output no longer has is left out.
-  const columns = p?.kind === "table" ? p.columns : undefined;
-  const columnFilters = useMemo(
-    () =>
-      byColumn.flatMap((f) => {
-        const type = columns?.find((c) => c.name === f.column)?.type;
-        if (type === undefined) return [];
-        const where = filterWhere(f, type);
-        return where ? [{ filter: f, where, text: filterText(f, type) }] : [];
-      }),
-    [byColumn, columns],
-  );
-  const conditions = useMemo(() => [filter, ...columnFilters.map((f) => f.where)], [filter, columnFilters]);
-  const ask = useMemo<TableAsk>(() => ({ sql, where: [...conditions, picked], sort }), [sql, conditions, picked, sort]);
-  const asked = useAskedRows(table, ask, node.artifact_id, isTable);
-  const filtered = conditions.some(Boolean);
-  // The charted rows a selection holds show at once, until all of its rows are read.
-  const quick = useMemo(() => (sel && !filtered && !sort && !writing ? rowsSource(sel.columns, sel.rows) : null), [sel, filtered, sort, writing]);
+  const t = useOutputTable(node, shown, p, { canPrompt, isTable });
   const picker = (shown !== null || (isTable && stats)) && (
     <div {...stylex.props(styles.strip)}>
       {shown !== null && <OutputPicker node={node} parts={parts} shown={shown} onPick={pick} />}
@@ -518,215 +423,19 @@ function DataTab({ node, dark, canPrompt }: { node: GraphNode; dark: boolean; ca
         <EmptyState isCompact title="No output yet" description="Run the node." />
       </div>
     );
-  if (p.kind === "table" && p.columns && p.rows && all) {
-    // What the table shows: the rows asked for once they are read; until
-    // then the charted rows of a selection, else what it showed before.
-    const answer = asked.table && (asked.current || !quick) ? asked.table : null;
-    const view = answer
-      ? { columns: answer.columns, source: answer.source, key: answer.sql }
-      : quick && sel
-        ? { columns: sel.columns, source: quick, key: sel as unknown }
-        : { columns: p.columns, source: all, key: `${node.artifact_id}/${shown ?? ""}` as unknown };
-    const narrowed = filtered || !!sel;
-    const runSql = () => {
-      setSort(null);
-      setSql(sqlDraft);
-    };
-    const example = p.columns.find((c) => isNumeric(c.type));
-    // Whether the filter is the condition the model wrote for the last prompt (not one typed since).
-    const ofPrompt = prompted !== null && prompted.where === filter;
+  if (p.kind === "table" && p.columns && p.rows)
     return (
       <div {...stylex.props(styles.fill, styles.tableFill)}>
         {picker}
         {hasChart && (
           <div {...stylex.props(styles.chart)}>
-            <NodeChart node={node} dark={dark} height={200} onSelect={writing ? undefined : setSel} reset={cleared} />
-            {brush && (
-              <ChartPick
-                kind={brush.kind}
-                selected={
-                  !sel
-                    ? null
-                    : asked.current && asked.table
-                      ? `${fmtNum(asked.table.total)} row${asked.table.total === 1 ? "" : "s"} selected${filtered ? " that pass the filter" : ""}`
-                      : `${fmtNum(sel.rows.length)} of ${fmtNum(sel.of)} charted rows selected${asked.error ? " (the rest could not be read)" : ", counting all…"}`
-                }
-                onClear={() => {
-                  setSel(null);
-                  setCleared((n) => n + 1);
-                }}
-              />
-            )}
+            <NodeChart node={node} dark={dark} height={200} onSelect={t.onSelect} reset={t.cleared} />
+            <OutputChartPick t={t} />
           </div>
         )}
-        {writing ? (
-          <div {...stylex.props(styles.ask, styles.askSql)}>
-            <div
-              {...stylex.props(styles.query)}
-              onKeyDownCapture={(e) => {
-                if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  runSql();
-                }
-              }}
-            >
-              <CodeEditor value={sqlDraft} onChange={setSqlDraft} dark={dark} activeLine={false} extensions={QUERY} />
-            </div>
-            <div {...stylex.props(styles.queryRow)}>
-              <Button size="sm" label="Run" isLoading={asked.loading} onClick={runSql} />
-              <Button size="sm" variant="ghost" label="Back to the rows" tooltip="Leave the query: the output's own rows again" onClick={() => setSql(null)} />
-              <Text type="supporting" color="secondary" maxLines={1}>
-                DuckDB · every table node is a view · {MOD}Enter
-              </Text>
-            </div>
-          </div>
-        ) : (
-          <div {...stylex.props(styles.ask)}>
-            {canPrompt && (
-              <SegmentedControl
-                size="sm"
-                label="Write the filter as"
-                value={by}
-                onChange={(v) => {
-                  setKept(v as FilterBy);
-                  setPromptError(null);
-                }}
-              >
-                <SegmentedControlItem value="sql" label="SQL" />
-                <SegmentedControlItem value="prompt" label="Prompt" />
-              </SegmentedControl>
-            )}
-            {by === "prompt" ? (
-              <TextInput
-                size="sm"
-                type="search"
-                label="Filter the rows with a prompt"
-                isLabelHidden
-                placeholder={`Filter: say which rows, e.g. ${example ? `the largest ${example.name}` : "the latest ones"} (Enter)`}
-                value={words}
-                onChange={(v) => {
-                  setWords(v);
-                  if (!v) {
-                    // cleared: every row again, without a press of Enter
-                    noPrompt();
-                    setPrompted(null);
-                    setFilter("");
-                    setDraft("");
-                  }
-                }}
-                onEnter={prompt}
-                hasClear
-                autoComplete="off"
-                isLoading={prompting !== null || asked.loading}
-                status={promptError || asked.error ? { type: "error" } : words.trim() !== (prompting ?? (ofPrompt ? prompted.words : "")) ? { type: "warning" } : undefined}
-                containerXstyle={styles.askInput}
-              />
-            ) : (
-              <TextInput
-                size="sm"
-                type="search"
-                label="Filter the rows with a SQL condition"
-                isLabelHidden
-                placeholder={`Filter: a SQL condition, e.g. ${example ? `${example.name} > 0` : `${p.columns[0]?.name ?? "column"} = '…'`} (Enter)`}
-                value={draft}
-                onChange={(v) => {
-                  setDraft(v);
-                  if (!v) setFilter(""); // cleared: every row again, without a press of Enter
-                }}
-                onEnter={() => setFilter(draft.trim())}
-                hasClear
-                hasSpellCheck={false}
-                autoComplete="off"
-                autoCapitalize="off"
-                isLoading={asked.loading}
-                status={asked.error ? { type: "error" } : draft.trim() !== filter ? { type: "warning" } : undefined}
-                containerXstyle={styles.askInput}
-              />
-            )}
-            <IconButton
-              size="sm"
-              variant="ghost"
-              label="Write a SQL query"
-              tooltip="Write a SQL query of your own over this output"
-              icon={<IconCode />}
-              onClick={() => {
-                const text = baseQuery(table, { sql: null, where: conditions, sort: null });
-                setSqlDraft(text);
-                setSort(null);
-                setSel(null);
-                setSql(text);
-              }}
-            />
-            {by === "prompt" && filter && (
-              <Text type="supporting" color="secondary" maxLines={2} xstyle={styles.askWhere}>
-                {ofPrompt ? "Filtered where " : "Filtered, by a condition typed as SQL, where "}
-                <Code size="inherit">{filter}</Code>
-              </Text>
-            )}
-          </div>
-        )}
-        {promptError && by === "prompt" && !writing && <Banner status="error" title={promptError} />}
-        {!writing && columnFilters.length > 0 && (
-          <div {...stylex.props(styles.strip)}>
-            {columnFilters.map(({ filter: f, text }) => (
-              <Token key={f.column} size="sm" label={text} onRemove={() => setByColumn((all) => withFilter(all, f.column, null))} />
-            ))}
-            {columnFilters.length > 1 && <Button size="sm" variant="ghost" label="Clear all" onClick={() => setByColumn([])} />}
-          </div>
-        )}
-        {asked.error && (
-          <Banner
-            status="error"
-            title={
-              <Text type="code" wordBreak="break-word" xstyle={styles.pre}>
-                {asked.error}
-              </Text>
-            }
-          />
-        )}
-        <RowsTable
-          columns={view.columns}
-          source={view.source}
-          stats={writing ? null : stats}
-          resetKey={view.key}
-          sort={sort}
-          onSort={(column) => setSort(nextSort(sort, column))}
-          filters={byColumn}
-          // A query of one's own says which rows it wants itself.
-          onFilter={writing ? undefined : (column, f) => setByColumn((all) => withFilter(all, column, f))}
-        />
-        <div {...stylex.props(styles.foot)}>
-          <Text type="supporting" color="secondary" maxLines={1} hasTabularNumbers xstyle={styles.footText}>
-            {answer
-              ? `${fmtNum(answer.total)}${narrowed && !writing ? ` of ${fmtNum(p.total)}` : ""} rows · ${answer.columns.length} columns`
-              : `${fmtNum(p.total)} rows · ${p.columns.length} columns · ${ago(node.finished_at)}`}
-            {answer && writing ? " · your query" : ""}
-            {answer && sort ? ` · by ${sort.column}${sort.desc ? ", largest first" : ""}` : ""}
-          </Text>
-          <div {...stylex.props(styles.footEnd)}>
-            {answer && (narrowed || writing || sort) ? (
-              <DownloadMenu
-                small
-                up
-                label="Download"
-                title="Download the rows shown: every row of what is asked for"
-                groups={[{ title: "The rows shown", items: tableItems((f) => saveQuery(answer.sql, f), answer.total) }]}
-              />
-            ) : (
-              <DownloadMenu
-                small
-                up
-                label="Download"
-                title={`Download every row of ${shown ? `${node.name}.${shown}` : node.name}`}
-                groups={[{ title: "Every row", items: tableItems((f) => saveUrl(nodeExportUrl(node.name, f, { part: shown })), p.total) }, ...zipAll]}
-              />
-            )}
-          </div>
-        </div>
+        <OutputRows t={t} dark={dark} stats={stats} />
       </div>
     );
-  }
   return (
     <div {...stylex.props(styles.fill)}>
       {picker}
@@ -954,12 +663,6 @@ export function Overview(props: { nodes: GraphNode[]; onSelect: (n: string) => v
   );
 }
 
-/** The query box's language, and its name for a screen reader. */
-/** How the Data tab's filter is written: a SQL condition, or a prompt the model writes the condition for. */
-type FilterBy = "sql" | "prompt";
-const FILTER_BY = oneOf<FilterBy>("sql", "prompt");
-
-const QUERY = [sql(), EditorView.contentAttributes.of({ "aria-label": "SQL over the nodes' outputs" })];
 
 const rule = {
   borderBottomWidth: "1px",
@@ -1028,22 +731,6 @@ const styles = stylex.create({
     borderTopColor: colorVars["--color-border"],
   },
   footText: { flexGrow: 1, minWidth: 0 },
-  // What is asked of the rows, over them: a condition to filter by, or a query written out.
-  ask: {
-    display: "flex",
-    flexWrap: "wrap",
-    alignItems: "center",
-    gap: spacingVars["--spacing-2"],
-    flexShrink: 0,
-    paddingBlock: spacingVars["--spacing-2"],
-    paddingInline: spacingVars["--spacing-4"],
-    ...rule,
-  },
-  askSql: { flexDirection: "column", alignItems: "stretch" },
-  // The box takes the room the controls beside it leave, and stays on their line.
-  askInput: { flexGrow: 1, flexBasis: 0, minWidth: "120px" },
-  // The condition a prompt became, on a line of its own under the box.
-  askWhere: { flexBasis: "100%", minWidth: 0 },
   // What can be done, at the bar's end: it keeps its width, and the text gives way.
   footEnd: { display: "flex", flexShrink: 0 },
   // A bar over a tab's content: which output, which run.

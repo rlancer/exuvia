@@ -13,7 +13,9 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { api, type GraphNode, type Preview, type Project, type ProjectView } from "./api";
 import { useAccess } from "./Access";
-import { chartBrush, chartedPart, ChartPick, DatasetSummary, DataTable, NodeChart, OutputPicker, SelectionText, useNodePreview, useOutputPart, useSelectedRows, useTableStats, type ChartSelection } from "./NodeOutput";
+import { chartedPart, NodeChart, OutputPicker, useNodePreview, useOutputPart, useTableStats } from "./NodeOutput";
+import { OutputChartPick, OutputRows, useOutputTable } from "./OutputTable";
+import { PAGE_ROWS } from "./rowWindow";
 import { notebook, type Cell, type Section } from "./notebookOrder";
 import { ago, fmtNum } from "./util";
 import { failed } from "./toast";
@@ -25,9 +27,6 @@ import { StateDot, statusOf, statusText } from "./ui/state";
 import { nodeCard, StateCounts, stripeColor } from "./ui/nodeCard";
 
 const PinnedView = lazy(() => import("./PinnedView"));
-
-/** Rows an output's preview shows: enough to see its shape. */
-const PREVIEW_ROWS = 8;
 
 /** A pinned view's header, above the height its manifest names (as on the canvas). */
 const PIN_HEAD = 38;
@@ -41,6 +40,9 @@ const openClosed = oneOf("open", "closed");
 
 /** The notebook's scroller, which cells watch to know when they come into view. */
 const Scroller = createContext<HTMLElement | null>(null);
+
+/** Whether a model is set up to write a filter from a prompt (as in the Data tab). */
+const CanPrompt = createContext(false);
 
 /** Whether `el` has come near the scroller's view (once it has, it stays true): what a cell waits for before it loads. */
 function useSeen(el: HTMLElement | null): boolean {
@@ -72,6 +74,8 @@ export function Notebook(props: {
   onOpenView: (name: string) => void;
   /** Show the node's code in the inspector, to change it. */
   onEdit: (name: string) => void;
+  /** A model is set up: a cell's rows can be filtered from a prompt. */
+  aiEnabled?: boolean;
 }) {
   const { project, selected, onSelect } = props;
   const stages = project.stages;
@@ -171,6 +175,7 @@ export function Notebook(props: {
 
   return (
     <Scroller.Provider value={scroller}>
+    <CanPrompt.Provider value={!!props.aiEnabled}>
       <div ref={setFrame} {...stylex.props(styles.frame, contentsOpen && !over && styles.frameOpen)}>
       {contentsOpen && !over ? (
         <NotebookContents sections={sections} order={order} cells={cells} scroller={scroller} onPick={goTo} onClose={() => setContentsOpen(false)} />
@@ -220,6 +225,7 @@ export function Notebook(props: {
         </div>
       </div>
       </div>
+    </CanPrompt.Provider>
     </Scroller.Provider>
   );
 }
@@ -430,40 +436,30 @@ function Source({ node, onOpen }: { node: GraphNode; onOpen: () => void }) {
 }
 
 /**
- * The first rows of a node's output, under its chart when it has one (what
- * is selected on the chart is what the rows show); loaded when the cell
- * comes into view.
+ * A node's output, under its chart when it has one: the Data tab's rows
+ * (OutputTable.tsx), filtered, sorted and queried the same way, and what is
+ * selected on the chart is what they show. Loaded when the cell comes into
+ * view.
  */
 function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
   const { parts, shown, pick } = useOutputPart(node);
+  const { canEdit } = useAccess();
+  const canPrompt = useContext(CanPrompt) && canEdit;
   // A node with several outputs charts its first table: the chart shows over that one.
   const chart = !!node.chart && !!node.artifact_id && shown === chartedPart(node);
-  const brush = chart ? chartBrush(node.chart) : null;
-  const [sel, setSel] = useState<ChartSelection>(null);
-  // Clear draws the chart again (a new `cleared`), with nothing selected.
-  const [cleared, setCleared] = useState(0);
-  useEffect(() => setSel(null), [node.name, shown]);
-  // The selection's rows in the whole output (the charted ones until those are read).
-  const picked = useSelectedRows(node, shown, sel);
-  const { preview, failed } = useNodePreview(node, PREVIEW_ROWS, shown);
+  const { preview, failed } = useNodePreview(node, PAGE_ROWS, shown);
   // A read that failed shows as no output.
   const p: Preview | null = failed ? { kind: null } : preview;
-  // The quick insights and the summary line, from the output's Parquet footers.
-  const stats = useTableStats(node, shown, p?.kind === "table");
+  const isTable = p?.kind === "table";
+  // The quick insights, from the output's Parquet footers.
+  const stats = useTableStats(node, shown, isTable);
+  const t = useOutputTable(node, shown, preview, { canPrompt, isTable });
 
+  // A click in the chart or the rows (their popovers too) is not a click on the cell.
   const chartBox = chart && (
     <div {...stylex.props(styles.output, styles.chart)} onClick={(e) => e.stopPropagation()}>
-      <NodeChart node={node} dark={dark} height={220} onSelect={setSel} reset={cleared} />
-      {brush && (
-        <ChartPick
-          kind={brush.kind}
-          selected={sel && picked ? <SelectionText sel={sel} picked={picked} /> : null}
-          onClear={() => {
-            setSel(null);
-            setCleared((n) => n + 1);
-          }}
-        />
-      )}
+      <NodeChart node={node} dark={dark} height={220} onSelect={t.onSelect} reset={t.cleared} />
+      <OutputChartPick t={t} />
     </div>
   );
   const picker = parts.length > 1 && shown !== null && (
@@ -483,21 +479,9 @@ function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
       <>
         {picker}
         {chartBox}
-        <div {...stylex.props(styles.output, styles.table)}>
-          {picked ? (
-            <DataTable columns={picked.columns} rows={picked.rows} stats={stats} />
-          ) : (
-            <DataTable columns={p.columns} rows={p.rows} stats={stats} />
-          )}
+        <div {...stylex.props(styles.output, styles.table)} onClick={(e) => e.stopPropagation()}>
+          <OutputRows t={t} dark={dark} stats={stats} />
         </div>
-        {sel && picked ? null : stats ? (
-          <DatasetSummary stats={stats} shown={p.rows.length} storage={false} />
-        ) : (
-          <Text type="supporting" color="secondary" hasTabularNumbers>
-            {p.rows.length < (p.total ?? 0) ? `first ${p.rows.length} of ` : ""}
-            {fmtNum(p.total)} rows · {p.columns.length} columns
-          </Text>
-        )}
       </>
     );
   if (p.kind === "pickle")
@@ -692,7 +676,8 @@ const styles = stylex.create({
     borderColor: colorVars["--color-border"],
     borderRadius: radiusVars["--radius-element"],
   },
-  table: { overflow: "auto", maxHeight: "320px" },
+  // The rows, with their filter over them and their count under: the rows scroll, inside the cell's room.
+  table: { display: "flex", flexDirection: "column", maxHeight: "440px", overflow: "hidden" },
   chart: { padding: spacingVars["--spacing-3"] },
   json: {
     margin: 0,

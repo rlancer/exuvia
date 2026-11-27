@@ -525,6 +525,7 @@ function Workbench() {
                             onSelect={setSelected}
                             onOpenView={openView}
                             onEdit={editNode}
+                            aiEnabled={aiOn}
                           />
                         )}
                       </Suspense>
