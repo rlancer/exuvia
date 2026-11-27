@@ -81,6 +81,11 @@ function click(href: string, filename = ""): void {
   a.remove();
 }
 
+/** Have the browser save `href` (a data: or blob: URL made here) as `filename`. */
+export function saveAs(href: string, filename: string): void {
+  click(href, filename);
+}
+
 /** Have the browser save what a GET of `url` answers (the server names the file). */
 export function saveUrl(url: string): void {
   click(url);
