@@ -3811,6 +3811,10 @@ itself has two other ways to read it.
 **Arrow stream.** Send `Accept: application/vnd.apache.arrow.stream` to either
 route and the answer is an [Arrow IPC stream](https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format):
 typed columns, every row unless `limit` is given, written batch by batch.
+Read it as it arrives: pass the response itself to the Arrow reader, not
+the whole body once it has been read. For 2,000,000 rows (46 MB) that is
+about 100 ms against 160–170 ms buffered, since the reader decodes each
+batch while the next is still on its way.
 
 ```js
 import { tableFromIPC } from "apache-arrow";
@@ -3820,8 +3824,28 @@ const res = await fetch("/api/query", {
   headers: { "Content-Type": "application/json", Accept: "application/vnd.apache.arrow.stream" },
   body: JSON.stringify({ sql: "select * from rolling_vol where ticker = 'AAPL'" }),
 });
-const table = tableFromIPC(new Uint8Array(await res.arrayBuffer()));
+const table = await tableFromIPC(res); // reads the body as it streams; not res.arrayBuffer()
 JSON.parse(table.schema.metadata.get("exuvia")); // { columns: [{ name, type }] }
+```
+
+In Python, `pyarrow` reads a response straight off the socket, with nothing
+but the standard library to fetch it (with `requests`, pass `stream=True`
+and read `r.raw`). The same works for the [data API](#data-api-read-only-keys-for-your-own-apps) with a data
+key:
+
+```python
+import json, urllib.request
+import pyarrow as pa
+
+req = urllib.request.Request(
+    "https://exuvia.example.com/api/data/query",
+    data=json.dumps({"sql": "select * from market.ticks"}).encode(),
+    headers={"Content-Type": "application/json", "Accept": "application/vnd.apache.arrow.stream",
+             "Authorization": f"Bearer {key}"},
+)
+with urllib.request.urlopen(req) as res:
+    table = pa.ipc.open_stream(res).read_all()  # or iterate it, batch by batch
+df = table.to_pandas()
 ```
 
 - The schema metadata key `exuvia` holds, as JSON, what the JSON answer has

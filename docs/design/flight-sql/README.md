@@ -165,6 +165,20 @@ or re-encodes the body.
   it was not kept. Larger batches would change the bytes and the batch
   sizes clients see, for a few milliseconds at most (1,000,000-row batches
   took DuckDB 65 ms against 78 ms), so the server is unchanged.
+- **The auth middleware costs nothing measurable.** `require_auth`
+  (`server.py`) is a Starlette `@app.middleware("http")`, which re-streams
+  every response body through itself, even for the data API it passes
+  straight through. With it unregistered, in three alternating rounds:
+  2,000,000 rows took 94–112 ms against 98–111 ms with it, and `select 1`
+  3.6–3.9 ms against 3.7–4.0 ms. 50,000 rows took 23–26 ms against
+  24–27 ms. Every difference is inside the run-to-run noise, so rewriting
+  it as plain ASGI middleware would not buy throughput.
+- **Clients have to stream too.** In JavaScript, `await tableFromIPC(res)`
+  read the 2,000,000 rows in 119 ms against 172 ms for
+  `tableFromIPC(new Uint8Array(await res.arrayBuffer()))`. In Python,
+  `pa.ipc.open_stream(urllib.request.urlopen(...))` took 100 ms against
+  162 ms for `requests` with the whole body first. The main README's
+  "Binary data" examples now stream.
 - **What this means for shipping Flight.** "Large pulls into dataframes"
   is not a reason to ship Flight, provided the client streams. A Python
   client can stream with pyarrow and httpx, as `check.py` does. Flight's
