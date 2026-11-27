@@ -35,13 +35,16 @@ what a hub serves.
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import os
 import re
 import sys
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, AsyncIterator, Callable, Literal
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Security
 from fastapi.openapi.utils import get_openapi
@@ -66,8 +69,13 @@ JSON_MAX = 5000
 # rows; after that the client's reading paces it). 0 turns it off.
 QUERY_TIMEOUT = float(os.environ.get("EXUVIA_DATA_QUERY_TIMEOUT") or 60)
 # Queries and node reads one key may have running at once; more answer 429.
-# Keeps one app from taking every core from the others. 0 turns it off.
-KEY_CONCURRENCY = int(os.environ.get("EXUVIA_DATA_KEY_CONCURRENCY") or 8)
+# Below DATA_WORKERS, so one app's requests never take every worker. 0
+# turns it off.
+KEY_CONCURRENCY = int(os.environ.get("EXUVIA_DATA_KEY_CONCURRENCY") or 4)
+# Threads the data API's blocking work runs on: its own, not the event
+# loop's default pool (cpu + 4 threads) the rest of the hub shares, so a
+# burst of queries neither waits behind the hub's work nor holds it up.
+DATA_WORKERS = int(os.environ.get("EXUVIA_DATA_WORKERS") or max(16, 2 * (os.cpu_count() or 1)))
 # DuckDB's own catalogs: a project of one of these names can't be attached.
 RESERVED_CATALOGS = {"main", "memory", "system", "temp"}
 
@@ -410,6 +418,12 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
     app.state.data_connections = connections
     slots = KeySlots()
     app.state.data_slots = slots
+    pool = ThreadPoolExecutor(DATA_WORKERS, thread_name_prefix="exuvia-data")
+
+    def blocking(fn: Callable[..., Any], *args: Any) -> Awaitable[Any]:
+        """``asyncio.to_thread`` on the data API's own threads."""
+        ctx = contextvars.copy_context()
+        return asyncio.get_running_loop().run_in_executor(pool, functools.partial(ctx.run, fn, *args))
     # project -> ((workspace, its version), built at, describe()): a listing
     # reads every node's last run, so it is kept until the project changes
     # (or CACHE_TTL passes: a default parameter like "today" moves on its own).
@@ -575,7 +589,7 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         counts when they are due."""
         if store.note(kid, query=query, ok=ok):
             try:
-                await asyncio.to_thread(store.flush)
+                await blocking(store.flush)
             except Exception as e:  # noqa: BLE001 - a count not written must not fail the request; it is kept for next time
                 print(f"exuvia: could not write data key usage: {e}", file=sys.stderr)
 
@@ -586,7 +600,7 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         token = creds.credentials.strip() if creds else ""
         if not looks_like_key(token):
             raise HTTPException(401, "send a data key: Authorization: Bearer exd_... (make one in the hub's account menu, Data API keys)")
-        key = await asyncio.to_thread(store.by_key, token)
+        key = await blocking(store.by_key, token)
         query = request.url.path.endswith("/query")
         if key is None:
             await count(TURNED_AWAY, query, False)
@@ -594,7 +608,7 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         # The request counts once it is answered: a failure in it (here or in the route) counts as an error.
         ok = False
         try:
-            yield key, await asyncio.to_thread(readable, key)
+            yield key, await blocking(readable, key)
             ok = True
         finally:
             await count(key.id, query, ok)
@@ -616,14 +630,14 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         out = []
         for pid in projects:
             ws = (await hub.get(pid)).ws
-            out.append({"id": pid, "name": ws.project.name, "nodes": await asyncio.to_thread(nodes_of, pid, ws)})
+            out.append({"id": pid, "name": ws.project.name, "nodes": await blocking(nodes_of, pid, ws)})
         return FastJSON({"key": {"id": key.id, "name": key.name}, "projects": out})
 
     @app.get(PREFIX + "projects/{project}", responses={200: {"model": DataProject}, **PROBLEMS}, **route)
     async def data_project(project: str, access: Access = Depends(key_projects)) -> Any:
         """One of the key's projects, with its nodes."""
         ws = await workspace(project, access[1])
-        return FastJSON({"id": project, "name": ws.project.name, "nodes": await asyncio.to_thread(nodes_of, project, ws)})
+        return FastJSON({"id": project, "name": ws.project.name, "nodes": await blocking(nodes_of, project, ws)})
 
     @app.get(
         PREFIX + "projects/{project}/nodes/{node}",
@@ -669,7 +683,7 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
                 if give is not None:
                     give()
 
-        return await asyncio.to_thread(read)
+        return await blocking(read)
 
     @app.post(PREFIX + "query", responses={200: {"model": QueryAnswer, "content": ARROW_DOC}, **PROBLEMS}, **route)
     async def data_query(body: DataQueryReq, request: Request, access: Access = Depends(key_projects)) -> Any:
@@ -723,7 +737,7 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
                     if cur is not None:
                         cur.close()
 
-        return await asyncio.to_thread(run)
+        return await blocking(run)
 
     spec_cache: dict[str, dict[str, Any]] = {}
 
