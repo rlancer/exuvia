@@ -398,8 +398,9 @@ Besides `nodes/`,
 `lib/**/*.py` and view folders (see "Views") are the only places the API and
 the agent can write.
 
-The workbench's side panel has three tabs: **Agent**, **Files** and
-**History**. **Files** shows those files as one tree: `nodes/`, `lib/` and
+The workbench's side panel has four tabs: **Agent**, **Files**,
+**History** and **Settings** (the project's packages, environment, schedule
+and storage: see below). **Files** shows those files as one tree: `nodes/`, `lib/` and
 each view's folder under `views/`, with each node's and view's state. It only
 finds files; picking one opens it where it is edited. A node file selects the
 node on the graph and opens the inspector's Code tab, a view file opens that
@@ -1181,8 +1182,9 @@ requires-python = ">=3.11"
 dependencies = ["scikit-learn==1.9.1", "acme-models>=2.3"]
 ```
 
-**Adding a package in the workbench.** The **Packages** button above the graph, in the project's
-bar lists what the project has and what is installed for it, adds packages
+**Adding a package in the workbench.** **Packages**, in the side panel's
+**Settings** tab, lists the project's packages and what is installed for
+them; **Manage packages** opens the dialog that adds packages
 (`scikit-learn`, `acme-models>=2`) and removes them, edits `pyproject.toml`
 directly, and shows the install's status and log. A package added without a
 version is pinned to the exact version installed, so the project stays
@@ -1199,8 +1201,8 @@ hand. exuvia picks the change up on the next run.
 with `environment: true` it also lists every package installed where nodes
 import from, with its version, so the agent can check before it asks. On a
 node that fails for want of a package it asks for
-it, and the request waits in the Packages panel, with the agent's reason,
-for someone to install or dismiss it. Set `EXUVIA_AGENT_PACKAGES=install` to
+it, and the request waits under Packages in the Settings tab (a count on
+the tab), with the agent's reason, for someone to install or dismiss it. Set `EXUVIA_AGENT_PACKAGES=install` to
 let the agent add packages itself, or `off` to keep it from asking. MCP
 clients get the same tools and the same rule.
 
@@ -1351,7 +1353,7 @@ network (see "Rendering a view"). A package therefore runs only inside that
 sandbox, never on the server. One that fetches anything itself (map tiles,
 web fonts, an API) will not work there.
 
-- **Adding one.** The **Packages** button's **npm, for views** tab lists the
+- **Adding one.** The Packages dialog's **npm, for views** tab lists the
   packages, adds them (`recharts`, `date-fns@^4`, `@tanstack/react-table`)
   and removes them. Each is checked on the CDN first; one added without a
   version is pinned to its newest release, so the view shows the same thing
@@ -1374,8 +1376,8 @@ web fonts, an API) will not work there.
 ## Environment variables and secrets
 
 API keys, tokens and settings your nodes read go in the project's
-**Environment** (the button next to Packages in the workbench), not in the
-code. Every node gets them in `os.environ`:
+**Environment** (in the side panel's **Settings** tab, where **Manage
+variables** opens the dialog), not in the code. Every node gets them in `os.environ`:
 
 ```python
 import os
@@ -1495,8 +1497,9 @@ secret's value, and it has no tool to set one. When a node needs a key that
 isn't set, it calls `request_secret` with the name and why, and you enter
 the value yourself:
 
-- **In the workbench.** The request waits in **Environment** (a count on
-  the button, and a banner with **Set it** and **Dismiss**), and the agent
+- **In the workbench.** The request waits under **Environment** in the
+  side panel's **Settings** tab (a count on the tab, and a banner with
+  **Set it** and **Dismiss**), and the agent
   passes on a link that opens the dialog on it: `<project>/#env=FRED_API_KEY`.
 - **Through your MCP client.** Over `exuvia mcp --url`, a client that
   supports MCP's URL elicitation asks you directly whether to open that
@@ -1620,15 +1623,16 @@ it at start.
   cron. If it produces *different* output, downstream nodes with
   `cascade=True` refresh automatically; identical output stops the cascade.
   Schedules can be paused from the UI without editing code.
-- **The Schedule tab** (next to Graph and Views, `#schedule`) shows when the
-  graph runs by itself: every scheduled node, soonest first, with its cron,
+- **Schedule**, in the side panel's **Settings** tab, lists the scheduled
+  nodes and when each runs next; **Open schedule** (`#schedule`) shows when
+  the graph runs by itself in the main area: every scheduled node, soonest first, with its cron,
   its next run (its next few in a tooltip) on the project's clock, its last
   scheduled run, the nodes a new output from it re-runs, and Pause/Resume;
   the next dozen fires across the project; and the live nodes with the views
   that refresh them. `GET /api/schedule` is the same as JSON (times in Unix
   seconds).
-- **The Storage tab** (after Schedule, `#storage`) shows what the project
-  keeps on disk, by node, with Parquet compression and compaction: see
+- **Storage**, in the same tab (**Open storage**, `#storage`), shows what
+  the project keeps on disk, by node, with Parquet compression and compaction: see
   [Storage](#storage-every-output-kept-as-parquet).
 - **A scheduled run is for its cron slot.** A `date` run parameter whose
   default is `today` gets the date of the slot the run was due at, in the
@@ -1913,8 +1917,9 @@ schedules, code versions, conversations) go to SQLite or Postgres: see
 | Your own apps | [Data API](#data-api-read-only-keys-for-your-own-apps) keys: read-only, one SQL query across the projects a key reads, JSON or Arrow |
 | Any Parquet reader | `GET /api/artifacts/{node}/{artifact_id}.parquet`: the stored file, immutable and cacheable, with `Range` requests for readers that fetch only the footer and the columns they need. A partitioned output's files are listed by `GET /api/nodes/{name}/partitions` (see [Binary data](#binary-data-arrow-and-parquet)) |
 
-**The Storage tab** (after Schedule, `#storage`) shows what the project
-keeps: `.exuvia/` by what is in it (outputs, the records database,
+**Storage**, in the workbench's **Settings** tab, sums up what the
+project keeps on disk; **Open storage** (`#storage`) shows it all in the
+main area: `.exuvia/` by what is in it (outputs, the records database,
 packages, caches) beside the project's own files; every node's outputs,
 the current one and those kept from earlier runs, with rows and Parquet
 compression; the Parquet files' rows, row groups and codecs from their
@@ -1928,7 +1933,7 @@ records and the Parquet footers, never an output's rows.
 and pushes, not by other engines writing into a table, and other tools read
 the files rather than a table format with a catalog (Iceberg, Delta).
 Nothing is ever removed to save space, so a node that runs often grows;
-the Storage tab shows by how much.
+Storage shows by how much.
 
 ## Records: SQLite, Postgres, or your own adapter
 
@@ -2390,7 +2395,7 @@ What follows from baking packages in:
   version of a package that the image has; it is held to that version, as
   it is to exuvia's pandas. A project may still list the package (for its
   editor, or to run somewhere else): on this image the install skips it,
-  and the Packages panel shows it as exuvia's.
+  and the Packages dialog shows it as exuvia's.
 - **Upgrading a package means a new image.** Change the version in the
   file, rebuild and redeploy. On a new image (or exuvia release), each
   project's own packages are resolved again when the server starts, and
@@ -3422,7 +3427,8 @@ to has no sharing: everyone can do everything.
   can open it, can hand it to someone else (they stay on as an editor), and
   is the only one besides an admin who can delete it or replace its code
   with a template.
-- **People.** The **Share** button (in the workbench's top bar, and on each
+- **People.** The **Share** button (in the workbench's top bar, beside the
+  project's name, and on each
   project on the hub's home page) adds people as a **viewer** or an
   **editor**, by name, or by email for someone who has never signed in: the
   invite takes effect on their first sign-in with that email.

@@ -17,7 +17,7 @@ import { VStack } from "@astryxdesign/core/VStack";
 import { API_BASE, api, apiUrl, streamAgent, type AgentChat, type AgentEvent, type GraphNode } from "./api";
 import { chatKey, itemsOf, type Item } from "./chat";
 import { AgentMcpDialog } from "./AgentMcp";
-import { IconChevronRight, IconClock, IconFolder, IconPlug, IconPlus, IconSpark } from "./icons";
+import { IconChevronRight, IconClock, IconFolder, IconPlug, IconPlus, IconSliders, IconSpark } from "./icons";
 import { ago } from "./util";
 import { Markdown } from "./ui/Markdown";
 
@@ -48,8 +48,8 @@ export interface AgentHandle {
   send: (text: string) => void;
 }
 
-/** What the side panel shows: the agent's chat, the project's files or its code history. */
-export type SideTab = "agent" | "files" | "history";
+/** What the side panel shows: the agent's chat, the project's files, its code history or its settings. */
+export type SideTab = "agent" | "files" | "history" | "settings";
 
 function toolLabel(it: Extract<Item, { kind: "tool" }>): string {
   const i = it.input ?? {};
@@ -120,8 +120,9 @@ function blocks(items: Item[]): Block[] {
 }
 
 /**
- * The side panel: the agent's chat, the project's files and its code history,
- * one tab each. On a narrow window (`sheet`) it is a sheet over the main area.
+ * The side panel: the agent's chat, the project's files, its code history and
+ * its settings, one tab each. On a narrow window (`sheet`) it is a sheet over
+ * the main area.
  */
 export const SidePanel = forwardRef<
   AgentHandle,
@@ -137,13 +138,16 @@ export const SidePanel = forwardRef<
     sheet?: boolean;
     tab: SideTab;
     onTab: (tab: SideTab) => void;
-    /** The Files and History tabs' contents. The chat stays mounted under them, so a reply keeps streaming. */
+    /** The Files, History and Settings tabs' contents. The chat stays mounted under them, so a reply keeps streaming. */
     files: ReactNode;
     history: ReactNode;
+    settings: ReactNode;
+    /** Beside the Settings tab's name: what waits there (a count of requests, a failed install). */
+    settingsEnd?: ReactNode;
     /** Whether this page has the Agent tab: not for a viewer of a shared project (the agent changes it). */
     agent?: boolean;
   }
->(function SidePanel({ enabled, model, selected, hasNodes, onTouch, onSelect, onCollapse, sheet, tab, onTab, files, history, agent = true }, ref) {
+>(function SidePanel({ enabled, model, selected, hasNodes, onTouch, onSelect, onCollapse, sheet, tab, onTab, files, history, settings, settingsEnd, agent = true }, ref) {
   const [items, setItems] = useState<Item[]>([]);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [input, setInput] = useState("");
@@ -368,8 +372,9 @@ export const SidePanel = forwardRef<
               endContent={news ? <StatusDot variant="accent" isPulsing={busy} label={busy ? "The agent is working" : "New in the chat"} /> : undefined}
             />
           )}
-          <Tab value="files" label="Files" icon={<IconFolder />} />
-          <Tab value="history" label="History" icon={<IconClock />} />
+          <Tab value="files" label="Files" icon={<IconFolder />} isLabelHidden={tab !== "files"} />
+          <Tab value="history" label="History" icon={<IconClock />} isLabelHidden={tab !== "history"} />
+          <Tab value="settings" label="Settings" icon={<IconSliders />} isLabelHidden={tab !== "settings"} endContent={settingsEnd} />
         </TabList>
         <span {...stylex.props(styles.grow)} />
         {tab === "agent" && agent && enabled && (
@@ -397,6 +402,7 @@ export const SidePanel = forwardRef<
       {mcpOpen && <AgentMcpDialog onClose={() => setMcpOpen(false)} />}
       {tab === "files" && files}
       {tab === "history" && history}
+      {tab === "settings" && settings}
       {/* The chat stays mounted under the other tabs, so a reply keeps streaming. */}
       <div {...stylex.props(styles.body, (tab !== "agent" || !agent) && styles.hidden)}>
         {!enabled ? (
@@ -520,21 +526,41 @@ export const SidePanel = forwardRef<
  * The collapsed side panel: its tabs as a rail of icons beside the main area,
  * or, on a narrow window (`bar`), as a bar of buttons along the bottom.
  */
-export function SideRail(props: { agent: boolean; bar?: boolean; onOpen: (tab: SideTab) => void }) {
+export function SideRail(props: {
+  agent: boolean;
+  bar?: boolean;
+  onOpen: (tab: SideTab) => void;
+  /** Something waits in Settings (the agent's requests, a failed install): said in its button's name and by a dot on it. */
+  settingsWaiting?: string;
+}) {
+  const waiting = props.settingsWaiting;
   const tabs: { tab: SideTab; label: string; tip: string; icon: ReactNode }[] = [
     ...(props.agent ? [{ tab: "agent" as const, label: "Agent", tip: "Open the agent", icon: <IconSpark /> }] : []),
     { tab: "files", label: "Files", tip: "Open the files of the graph and the views", icon: <IconFolder /> },
     { tab: "history", label: "History", tip: "Open the code's history", icon: <IconClock /> },
+    {
+      tab: "settings",
+      label: waiting ? `Settings: ${waiting}` : "Settings",
+      tip: waiting ? `Open the project's settings: ${waiting}` : "Open the project's packages, environment and storage",
+      icon: <IconSliders />,
+    },
   ];
   return (
     <div {...stylex.props(styles.rail, props.bar && styles.railBar)} role="group" aria-label="Side panel">
-      {tabs.map((t) =>
-        props.bar ? (
-          <Button key={t.tab} variant="ghost" label={t.label} icon={t.icon} onClick={() => props.onOpen(t.tab)} />
-        ) : (
-          <IconButton key={t.tab} variant="ghost" label={t.label} tooltip={t.tip} icon={t.icon} onClick={() => props.onOpen(t.tab)} />
-        ),
-      )}
+      {tabs.map((t) => (
+        <span key={t.tab} {...stylex.props(styles.railItem)}>
+          {props.bar ? (
+            <Button variant="ghost" label={t.label} icon={t.icon} onClick={() => props.onOpen(t.tab)} />
+          ) : (
+            <IconButton variant="ghost" label={t.label} tooltip={t.tip} icon={t.icon} onClick={() => props.onOpen(t.tab)} />
+          )}
+          {t.tab === "settings" && waiting && !props.bar && (
+            <span {...stylex.props(styles.railDot)} aria-hidden>
+              <StatusDot variant="accent" label={waiting} />
+            </span>
+          )}
+        </span>
+      ))}
     </div>
   );
 }
@@ -593,6 +619,9 @@ const styles = stylex.create({
     borderInlineStartStyle: "solid",
     borderInlineStartColor: colorVars["--color-border"],
   },
+  railItem: { position: "relative", display: "inline-flex" },
+  // The dot sits on the button's corner, out of the way of its icon; the button's name says the same in words.
+  railDot: { position: "absolute", top: "2px", insetInlineEnd: "2px", display: "flex", pointerEvents: "none" },
   railBar: {
     flexDirection: "row",
     justifyContent: "space-around",

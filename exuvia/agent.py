@@ -635,7 +635,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "`group` (inherited from the hub group the project is in, named in `group`) or `hub` (set by the "
             "hub's admins for every project on it); a project variable wins over its group's of the same name "
             "(`overrides_group`), and both over the hub's (`overrides_hub`). People set them in the workbench's "
-            "Environment panel, on the group's page or (admins) on the hub's page; you cannot set them. Check here "
+            "Settings tab (Environment), on the group's page or (admins) on the hub's page; you cannot set them. Check here "
             "for the name of an API key or setting before writing a node that reads one."
         ),
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -647,7 +647,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "description": (
             "Ask the user to set an API key, token or other secret a node needs, without it ever passing "
             "through you: give only the variable's name and why it is needed. The user enters the value "
-            "themselves, in the workbench's Environment panel or with `exuvia env set` in their own terminal, "
+            "themselves, in the workbench's Settings tab (Environment) or with `exuvia env set` in their own terminal, "
             "and it is stored encrypted. The result says whether it is already set, and otherwise how the user "
             "sets it (a link, a terminal command): pass that on. Never ask for the value in the chat, never "
             "write one into a file, a node or a command, and never run `exuvia env set` yourself. Call "
@@ -1360,7 +1360,7 @@ class Agent:
             res["message"] = f"{res['name']} is already set: nodes read it with os.environ[{res['name']!r}]."
         else:
             res["message"] = (
-                f"Asked the user to set {res['name']}. It waits for them in the workbench's Environment panel, "
+                f"Asked the user to set {res['name']}. It waits for them in the workbench's Settings tab, under Environment, "
                 f"where they enter the value (it is stored encrypted and never shown to you). From a terminal "
                 f"they can run `exuvia env set {res['name']}` instead. Tell them, without asking for the value; "
                 "call list_env to see when it is set, then run the node."
@@ -1377,7 +1377,7 @@ class Agent:
             return False, str(e)[-3000:], {}
         if res["status"] == "requested":
             text = (
-                f"Requested {', '.join(res['packages'])}. A person approves it in the workbench's Packages panel; "
+                f"Requested {', '.join(res['packages'])}. A person approves it in the workbench's Settings tab, under Packages; "
                 "tell the user it is waiting for them, and re-run the node once list_packages shows it installed."
             )
         else:

@@ -220,7 +220,7 @@ const FIGURES: Record<string, Figure[]> = {
     },
     {
       shot: "files",
-      after: "The workbench's side panel has three tabs",
+      after: "The workbench's side panel has four tabs",
       alt: "The Files tab of the side panel: nodes/, lib/ and views/vol_board/ as one tree. lib/stats.py is open in place of the graph, used by rolling_vol.",
       caption: "The Files tab. A helper opens in place of the graph, with the nodes that import it.",
     },
@@ -236,9 +236,9 @@ const FIGURES: Record<string, Figure[]> = {
   storage: [
     {
       shot: "storage",
-      after: "**The Storage tab**",
-      alt: "The Storage tab of the example project: every node's outputs on disk, the current one and those kept from earlier runs, with rows and compression; the Parquet files' rows, row groups and codecs; the partitioned prices output against its compaction limit; and the records' counts of runs and code versions.",
-      caption: "The Storage tab: outputs by node, current and earlier, with Parquet compression and compaction.",
+      after: "**Storage**",
+      alt: "The Storage page of the example project: every node's outputs on disk, the current one and those kept from earlier runs, with rows and compression; the Parquet files' rows, row groups and codecs; the partitioned prices output against its compaction limit; and the records' counts of runs and code versions.",
+      caption: "Storage: outputs by node, current and earlier, with Parquet compression and compaction.",
     },
   ],
   packages: [
@@ -246,7 +246,7 @@ const FIGURES: Record<string, Figure[]> = {
       shot: "packages",
       after: "**Adding a package in the workbench.**",
       alt: "The Packages dialog over the workbench: a field to add packages, scipy 1.18.1 installed, and buttons to edit pyproject.toml and show the install log.",
-      caption: "The Packages button in the top bar: scipy added and installed for this project alone.",
+      caption: "Packages, from the side panel's Settings tab: scipy added and installed for this project alone.",
     },
   ],
   views: [
