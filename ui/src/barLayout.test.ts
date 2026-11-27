@@ -8,8 +8,8 @@ describe("barLayout", () => {
     expect(barLayout(1580, editor)).toEqual({ toggleLabels: true, buttonLabels: true, counts: true });
   });
 
-  it("gives up the switch's words first: a 1480px window with the side panel open", () => {
-    expect(barLayout(1140, editor)).toEqual({ toggleLabels: false, buttonLabels: true, counts: true });
+  it("gives up the switch's words first: a 1520px window with the side panel open", () => {
+    expect(barLayout(1180, editor)).toEqual({ toggleLabels: false, buttonLabels: true, counts: true });
   });
 
   it("then the buttons' words, then the counts", () => {

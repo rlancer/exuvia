@@ -12,7 +12,6 @@ import { IconButton } from "@astryxdesign/core/IconButton";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Text } from "@astryxdesign/core/Text";
-import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { useMediaQuery } from "@astryxdesign/core/hooks";
 import { access, api, apiUrl, HUB_PROJECT, type Access, type CodeRevision, type PackagesState, type Project } from "./api";
 import { AccessContext, accessState, NoAccess, useAccess, ViewOnlyBanner } from "./Access";
@@ -31,7 +30,7 @@ import { HelpMenu } from "./Help";
 import { HubNav } from "./HubNav";
 import { useColorMode } from "./theme/colorMode";
 import { Brand, Mark } from "./Brand";
-import { IconClock, IconClose, IconGear, IconGraph, IconKey, IconNotebook, IconTag, IconMoon, IconPackage, IconPlay, IconPlus, IconShare, IconSun } from "./icons";
+import { IconClock, IconClose, IconGraph, IconKey, IconNotebook, IconTag, IconMoon, IconPackage, IconPlay, IconPlus, IconShare, IconSun } from "./icons";
 import { StateDot } from "./ui/state";
 import { failed, Toasts } from "./toast";
 import { appViewOf } from "./appMode";
@@ -392,9 +391,7 @@ function Workbench() {
                   <Tab value="graph" label="Graph" />
                   <Tab value="views" label="Views" endContent={project?.views.length && !phone ? <Badge label={project.views.length} /> : undefined} />
                   <Tab value="schedule" label="Schedule" endContent={scheduled && !phone ? <Badge label={scheduled} /> : undefined} />
-                  <Tooltip content="Storage: what this project keeps on disk">
-                    <Tab value="storage" label="Storage" icon={<IconGear />} isLabelHidden />
-                  </Tooltip>
+                  <Tab value="storage" label="Storage" />
                 </TabList>
                 {/* Two ways to read the same graph: drawn, or top to bottom as a notebook. On a phone, one button that switches. */}
                 {mode === "graph" && nodes.length > 0 &&
