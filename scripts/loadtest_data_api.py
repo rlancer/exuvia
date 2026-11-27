@@ -222,6 +222,14 @@ class HubProcess:
             pass
         return rss, threads
 
+    def cpu(self) -> float:
+        """CPU seconds (user + system) the hub process has used."""
+        try:
+            fields = Path(f"/proc/{self.proc.pid}/stat").read_text().rsplit(")", 1)[1].split()
+        except OSError:
+            return 0.0
+        return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+
     def stop(self) -> None:
         self.proc.send_signal(signal.SIGINT)
         try:
@@ -302,6 +310,7 @@ class Result:
     peak_rss: float = 0.0
     peak_threads: int = 0
     rss_after: float = 0.0
+    cpu_seconds: float = 0.0  # the hub process's CPU time (user + system) while the scenario ran
     note: str = ""
 
     def row(self) -> dict[str, Any]:
@@ -317,7 +326,10 @@ class Result:
             "max_ms": round(lat[-1] * 1000, 1) if lat else None,
             "mean_ms": round(statistics.mean(lat) * 1000, 1) if lat else None,
             "peak_rss_mb": round(self.peak_rss), "rss_after_mb": round(self.rss_after),
-            "peak_threads": self.peak_threads, "errors": self.errors, "note": self.note,
+            "peak_threads": self.peak_threads,
+            "hub_cpu_pct": round(100 * self.cpu_seconds / self.seconds) if self.seconds else 0,
+            "cpu_ms_per_req": round(1000 * self.cpu_seconds / len(lat), 2) if lat else None,
+            "errors": self.errors, "note": self.note,
         }
 
 
@@ -378,6 +390,7 @@ async def drive(
                 i += concurrency
 
         with Sampler(hub) as s:
+            cpu0 = hub.cpu()
             t0 = time.perf_counter()
             clients = [asyncio.create_task(client(n)) for n in range(concurrency)]
             if max_requests is None:
@@ -385,6 +398,7 @@ async def drive(
                 stop.set()
             await asyncio.gather(*clients)
             res.seconds = time.perf_counter() - t0
+            res.cpu_seconds = hub.cpu() - cpu0
             stop.set()
             if bg:
                 await bg
@@ -399,6 +413,7 @@ def print_row(r: dict[str, Any]) -> None:
     print(
         f"{r['scenario']:<16} c={r['conc']:<3} ok={r['ok']:<6} err={r['err']:<4} 429={r['429']:<5} rps={r['rps']:<8} "
         f"p50={r['p50_ms']}ms p95={r['p95_ms']}ms p99={r['p99_ms']}ms max={r['max_ms']}ms "
+        f"cpu={r.get('hub_cpu_pct')}% ({r.get('cpu_ms_per_req')}ms/req) "
         f"rss peak/after={r['peak_rss_mb']}/{r['rss_after_mb']}MiB threads={r['peak_threads']}{note}{errs}",
         flush=True,
     )
@@ -519,6 +534,8 @@ async def run_scenarios(args: argparse.Namespace, root: Path, env: dict[str, str
                     n, args.duration, timeout=300,
                 ))
 
+        await large_json(hub, args, pids, auth_two, want, conc, record)
+
         if want("heavy_query"):
             # Queries heavy enough to keep DuckDB busy, from one key: do they
             # starve a cheap one another app sends at the same time?
@@ -556,6 +573,35 @@ async def run_scenarios(args: argparse.Namespace, root: Path, env: dict[str, str
     return out
 
 
+async def large_json(
+    hub: HubProcess, args: argparse.Namespace, pids: list[str], auth: dict[str, str],
+    want: Callable[[str], bool], conc: list[int], record: Callable[[Result], None],
+) -> None:
+    """Large JSON answers, 5,000 rows each, where writing the JSON is much of
+    the work: ``wide_json`` a query over a join (10 columns: ints, floats,
+    strings, a timestamp), ``wide_node`` a node's rows. Each request reads
+    other rows (``offset``), so no answer repeats."""
+    two = f'"{pids[0]}"', f'"{pids[1]}"'
+    pages = max(1, args.rows // 5000)
+    if want("wide_json"):
+        def query(c: httpx.AsyncClient, i: int) -> Awaitable[httpx.Response]:
+            sql = (
+                f"select o.*, a.name, a.segment, a.account * 1.5 as score from {two[0]}.orders o "
+                f"join {two[1]}.accounts a using (account) order by o.order_id limit 5000 offset {(i % pages) * 5000}"
+            )
+            return drained(c, "POST", "/api/data/query", json={"sql": sql, "limit": 5000}, headers=auth)
+
+        for n in conc:
+            record(await drive(hub, "wide_json", query, n, args.duration))
+    if want("wide_node"):
+        def node(c: httpx.AsyncClient, i: int) -> Awaitable[httpx.Response]:
+            url = f"/api/data/projects/{pids[i % 2]}/nodes/orders?limit=5000&offset={(i % pages) * 5000}"
+            return drained(c, "GET", url, headers=auth)
+
+        for n in conc:
+            record(await drive(hub, "wide_node", node, n, args.duration))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--hub", help="the hub folder: seeded once and reused (default: a temporary folder)")
@@ -567,7 +613,7 @@ def main() -> None:
     ap.add_argument("--concurrency", default="1,8,32", help="clients at once, per scenario")
     ap.add_argument("--churn-every", type=float, default=0.25, help="seconds between runs in churn_query")
     ap.add_argument("--only", help="comma-separated scenarios: cold_list, warm_list, hot_query, point_query, "
-                    "node_read, history, churn_query, distinct_sets, arrow_scan, heavy_query")
+                    "node_read, history, churn_query, distinct_sets, arrow_scan, wide_json, wide_node, heavy_query")
     ap.add_argument("--json", help="write the results to this file")
     ap.add_argument("--db", help="EXUVIA_DB for the hub (a postgresql:// URL): run records in a shared database, not "
                     "each project's SQLite file. Seed a separate --hub for it")

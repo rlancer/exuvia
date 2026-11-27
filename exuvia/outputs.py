@@ -10,9 +10,12 @@ Workspace keeps thin wrappers (``query``, ``query_arrow``, ``_outputs_db``,
 
 from __future__ import annotations
 
+import json
+import math
 import re
 import threading
-from datetime import datetime
+from datetime import date, datetime, time
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from .arrowstream import ArrowStream
@@ -153,15 +156,17 @@ def add_output_views(
     return [f for f in files if f]
 
 
-def query_json(con: Any, sql: str, limit: int, offset: int = 0) -> dict[str, Any]:
-    """``limit`` rows of ``sql`` on ``con`` from row ``offset`` on, as JSON-ready columns and rows."""
+def query_json(con: Any, sql: str, limit: int, offset: int = 0, raw: bool = False) -> dict[str, Any]:
+    """``limit`` rows of ``sql`` on ``con`` from row ``offset`` on, as JSON-ready columns and rows.
+    ``raw`` leaves the rows as DuckDB fetched them, for ``encode_json``
+    (FastJSON) to write: the same JSON, without a Python pass over every value."""
     rel = _sql(con, sql)
     if rel is None:
         return {"columns": [], "rows": []}
     rows = rel.limit(limit, offset).fetchall()
     return {
         "columns": [{"name": c, "type": str(t)} for c, t in zip(rel.columns, rel.types, strict=True)],
-        "rows": jsonable([list(r) for r in rows]),
+        "rows": rows if raw else jsonable([list(r) for r in rows]),
     }
 
 
@@ -318,24 +323,70 @@ def _lit(value: Any) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def json_value(v: Any) -> Any:
+    """``v`` as a JSON value, the way every JSON data answer writes it:
+    NaN and infinities as null, a Decimal as a number, a date or a
+    timestamp in ISO 8601 (``isoformat``), lists, tuples and dicts
+    (structs, maps) value by value with ``str`` keys, anything else
+    (bytes, UUID, an interval, a time) as its ``str``."""
+    if v is None or isinstance(v, (str, bool, int)):
+        return v
+    if isinstance(v, float):
+        return None if math.isnan(v) or math.isinf(v) else v
+    if isinstance(v, Decimal):
+        return float(v)
+    if isinstance(v, (datetime, date)):
+        return v.isoformat()
+    if isinstance(v, (list, tuple)):
+        return [json_value(x) for x in v]
+    if isinstance(v, dict):
+        return {str(k): json_value(x) for k, x in v.items()}
+    return str(v)
+
+
 def jsonable(rows: list[list[Any]]) -> list[list[Any]]:
-    import math
-    from datetime import date
-    from decimal import Decimal
+    return [[json_value(v) for v in r] for r in rows]
 
-    def conv(v: Any) -> Any:
-        if v is None or isinstance(v, (str, bool, int)):
-            return v
-        if isinstance(v, float):
-            return None if math.isnan(v) or math.isinf(v) else v
-        if isinstance(v, Decimal):
-            return float(v)
-        if isinstance(v, (datetime, date)):
-            return v.isoformat()
-        if isinstance(v, (list, tuple)):
-            return [conv(x) for x in v]
-        if isinstance(v, dict):
-            return {str(k): conv(x) for k, x in v.items()}
-        return str(v)
 
-    return [[conv(v) for v in r] for r in rows]
+def encode_json(content: Any) -> bytes:
+    """``content`` as compact UTF-8 JSON, each value written as
+    ``json_value`` writes it, whether or not it went through ``jsonable``
+    first: a data answer's rows can stay as DuckDB fetched them (``raw``).
+
+    orjson writes it, in native code: for a large answer that is several
+    times faster than ``jsonable`` and ``json.dumps``, and it holds the GIL
+    for less. Its output is the same bytes, but for a few values it cannot
+    write that way, and those take the slower path instead of changing the
+    format: an integer beyond 64 bits (HUGEINT), a dict key that is not a
+    string (a MAP's), a time with a time zone. A float between 1e-9 and
+    1e-4 is spelled differently (``1e-7`` or ``0.00001`` for ``1e-07`` and
+    ``1e-05``), the same number to any JSON reader. With a time zone
+    column, its timestamps are written by ``isoformat``: orjson drops the
+    seconds of an offset (``-04:56:02``, a zone's local mean time before
+    1900)."""
+    import orjson
+
+    try:
+        if _has_time_zone(content):
+            return orjson.dumps(content, default=_exact_datetime, option=orjson.OPT_PASSTHROUGH_DATETIME)
+        return orjson.dumps(content, default=_json_default)
+    except orjson.JSONEncodeError:
+        return json.dumps(
+            json_value(content), ensure_ascii=False, allow_nan=False, separators=(",", ":"), default=str
+        ).encode()
+
+
+def _json_default(v: Any) -> Any:
+    """What orjson writes for a value it has no encoding of: ``json_value``'s."""
+    return float(v) if isinstance(v, Decimal) else str(v)
+
+
+def _exact_datetime(v: Any) -> Any:
+    return v.isoformat() if isinstance(v, (datetime, date, time)) else _json_default(v)
+
+
+def _has_time_zone(content: Any) -> bool:
+    """Whether a data answer (``columns`` of DuckDB types) has a column
+    with a time zone, at any depth (a list or a struct of them)."""
+    cols = content.get("columns") if isinstance(content, dict) else None
+    return isinstance(cols, list) and any(isinstance(c, dict) and "TIME ZONE" in str(c.get("type")) for c in cols)
