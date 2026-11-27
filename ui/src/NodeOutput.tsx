@@ -18,7 +18,7 @@ import { columnChars, MAX_ROWS_HEIGHT, PAGE_ROWS, pagesFor, pagesToDrop, rowWind
 import { IconExpand, IconFilter, IconFilterOn, IconSort, IconSortDown, IconSortUp } from "./icons";
 import { DownloadMenu } from "./Export";
 import { saveAs } from "./download";
-import { asks, baseQuery, columnKind, countQuery, filterOps, filterText, ident, isNumeric, needsValue, opLabel, pageQuery, type ColumnFilter, type FilterOp, type Sort, type TableAsk } from "./tableQuery";
+import { asks, baseQuery, columnKind, countQuery, filterOps, filterText, ident, isNumeric, needsValue, opLabel, pageQuery, tableOf, type ColumnFilter, type FilterOp, type Sort, type TableAsk } from "./tableQuery";
 import { fmtBytes, fmtCell, fmtNum, pressable } from "./util";
 
 // A chart full screen, with its rows under it: fetched when one is first opened.
@@ -939,30 +939,45 @@ export const CHART_ROWS = 50_000;
  * The rows a chart draws: every row of the output (or of `part`) when it
  * has at most CHART_ROWS, else a random sample of CHART_ROWS from all of
  * them (the same one each time), not its first rows. `sampled` says which.
+ * With `where` (the table's filter under the chart: conditions on the
+ * output's rows, all of which hold) it draws only the rows that pass it, the
+ * same way. A filter that cannot be read leaves the chart as it was.
  */
-function useChartData(node: GraphNode, part: string | null): { data: Preview | null; sampled: boolean } {
+function useChartData(node: GraphNode, part: string | null, where: string[] = []): { data: Preview | null; sampled: boolean; filtered: boolean } {
+  const conditions = where.map((w) => w.trim()).filter(Boolean);
+  const filtered = conditions.length > 0;
   // A node with one output says how many rows it has: one that big is sampled from the start.
   const big = part === null && (node.rows ?? 0) > CHART_ROWS;
   const { preview } = useNodePreview(node, CHART_ROWS, part, !big);
   const sampled = big || (preview?.kind === "table" && (preview.total ?? 0) > (preview.rows?.length ?? 0));
-  const [sample, setSample] = useState<{ key: string; data: Preview } | null>(null);
-  const key = `${node.name}:${node.artifact_id}:${part}`;
+  // Rows read with SQL (a sample, or the rows a filter passes), held with what they are of.
+  const [read, setRead] = useState<{ of: string; key: string; data: Preview; sampled: boolean; filtered: boolean } | null>(null);
+  const of = JSON.stringify([node.name, part]);
+  const key = JSON.stringify([node.name, node.artifact_id, part, conditions]);
+  const reads = filtered || sampled;
   useEffect(() => {
-    if (!sampled) return;
+    if (!reads) return;
     let live = true;
-    const from = ident(part ? `${node.name}.${part}` : node.name);
-    const total = big ? node.rows : preview?.total;
-    api.query(`select * from ${from} using sample ${CHART_ROWS} rows (reservoir, 1)`, CHART_ROWS).then(
-      (r) => live && setSample({ key, data: { kind: "table", columns: r.columns, rows: r.rows, total } }),
-      () => live && setSample({ key, data: { kind: null } }),
+    const from = tableOf(node.name, part);
+    const ask = { sql: null, where: conditions, sort: null };
+    const count = filtered ? api.query(countQuery(from, ask), 1).then((r) => Number(r.rows[0]?.[0] ?? 0)) : Promise.resolve(big ? node.rows : preview?.total);
+    // A sample of more rows than there are is every one of them.
+    Promise.all([api.query(`select * from (${baseQuery(from, ask)}) as q using sample ${CHART_ROWS} rows (reservoir, 1)`, CHART_ROWS), count]).then(
+      ([r, total]) => live && setRead({ of, key, data: { kind: "table", columns: r.columns, rows: r.rows, total: total ?? r.rows.length }, sampled: (total ?? 0) > r.rows.length, filtered }),
+      // A filter that cannot be read leaves the chart as it was (the table says why).
+      () => live && !filtered && setRead({ of, key, data: { kind: null }, sampled: true, filtered: false }),
     );
     return () => {
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, sampled]);
-  if (!sampled) return { data: preview, sampled: false };
-  return { data: sample?.key === key ? sample.data : null, sampled: true };
+  }, [key, reads]);
+  if (!reads) return { data: preview, sampled: false, filtered: false };
+  if (read?.key === key) return read;
+  // On their way, or a filter that failed: the rows drawn before stay, so a filter does not blank the chart.
+  if (read?.of === of) return read;
+  if (!sampled && preview) return { data: preview, sampled: false, filtered: false };
+  return { data: null, sampled, filtered };
 }
 
 /**
@@ -985,6 +1000,8 @@ export function ChartPick({ kind, selected, onClear }: { kind: "interval" | "poi
  * A node's chart (`chart` in its decorator): its Vega-Lite spec over its
  * output, in the theme's colours. With `onSelect` it is linked to a table
  * (`chartBrush`); a new `reset` draws it again with nothing selected.
+ * `where` is that table's filter (conditions on the charted output's rows):
+ * the chart draws only the rows that pass it.
  *
  * Its tools (save it as an image, open it full screen) float over its top
  * corner while it is pointed at, so they take none of its room. `height`
@@ -999,6 +1016,7 @@ export function NodeChart({
   onSelect,
   reset = 0,
   canExpand = true,
+  where,
 }: {
   node: GraphNode;
   dark: boolean;
@@ -1006,6 +1024,7 @@ export function NodeChart({
   onSelect?: (s: ChartSelection) => void;
   reset?: number;
   canExpand?: boolean;
+  where?: string[];
 }) {
   // The latest onSelect, so a new one does not draw the chart again.
   const select = useRef(onSelect);
@@ -1018,7 +1037,7 @@ export function NodeChart({
   // The chart as drawn, for saving it as an image and for following a "fill" box.
   const [view, setView] = useState<VegaView | null>(null);
   // A node with several outputs charts its first table.
-  const { data: d, sampled } = useChartData(node, chartedPart(node));
+  const { data: d, sampled, filtered } = useChartData(node, chartedPart(node), where);
   // "fill": the box's height, measured. The chart is drawn once it is known and
   // resized after that (drawn again, it would lose what is selected on it).
   const fill = height === "fill";
@@ -1159,10 +1178,11 @@ export function NodeChart({
             )}
         </div>
       </div>
-      {sampled && d?.rows && (
+      {(sampled || filtered) && d?.rows && (
         <Text type="supporting" color="secondary" hasTabularNumbers>
-          A random sample of {fmtNum(d.rows.length)} of {fmtNum(d.total)} rows
-          {linked ? "; a selection holds every row in it" : ""}
+          {sampled ? `A random sample of ${fmtNum(d.rows.length)} of ${fmtNum(d.total)} rows` : `${fmtNum(d.rows.length)} row${d.rows.length === 1 ? "" : "s"}`}
+          {filtered ? " that pass the filter" : ""}
+          {sampled && linked ? "; a selection holds every row in it" : ""}
         </Text>
       )}
       {full && (

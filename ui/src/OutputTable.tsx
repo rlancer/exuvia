@@ -19,7 +19,7 @@ import { DownloadMenu, tableItems } from "./Export";
 import { nodeExportUrl, saveQuery, saveUrl } from "./download";
 import { CodeEditor } from "./ui/CodeEditor";
 import { oneOf, usePersisted } from "./ui/usePersisted";
-import { chartBrush, ChartPick, RowsTable, rowsSource, useAskedRows, useRowPages, type ChartSelection } from "./NodeOutput";
+import { chartBrush, chartedPart, ChartPick, RowsTable, rowsSource, useAskedRows, useRowPages, type ChartSelection } from "./NodeOutput";
 import { baseQuery, filterText, filterWhere, isNumeric, nextSort, tableOf, withFilter, type ColumnFilter, type Sort, type TableAsk } from "./tableQuery";
 
 /*
@@ -33,7 +33,8 @@ import { baseQuery, filterText, filterWhere, isNumeric, nextSort, tableOf, withF
  * query of one's own over the output.
  *
  * `useOutputTable` holds what is asked; the host draws the chart (its
- * selection is `t.sel`, `t.setSel`) with `OutputChartPick` under it, and
+ * selection is `t.sel`, `t.setSel`; the rows it draws are those the filter
+ * passes, `t.chartWhere`) with `OutputChartPick` under it, and
  * `OutputRows` where the rows go, in a column that gives them room.
  */
 
@@ -140,6 +141,9 @@ export function useOutputTable(node: GraphNode, shown: string | null, preview: P
   const ask = useMemo<TableAsk>(() => ({ sql, where: [...conditions, picked], sort }), [sql, conditions, picked, sort]);
   const asked = useAskedRows(table, ask, node.artifact_id, isTable);
   const filtered = conditions.some(Boolean);
+  // The chart draws the rows the filter passes: when it is of the output shown, and no query of one's own is written.
+  const charted = chartedPart(node);
+  const chartWhere = useMemo(() => (!writing && shown === charted ? conditions.filter(Boolean) : []), [writing, shown, charted, conditions]);
   // The charted rows a selection holds show at once, until all of its rows are read.
   const quick = useMemo(() => (sel && !filtered && !sort && !writing ? rowsSource(sel.columns, sel.rows) : null), [sel, filtered, sort, writing]);
   const clearSel = () => {
@@ -187,6 +191,7 @@ export function useOutputTable(node: GraphNode, shown: string | null, preview: P
     conditions,
     asked,
     filtered,
+    chartWhere,
     quick,
   };
 }

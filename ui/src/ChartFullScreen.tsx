@@ -33,7 +33,7 @@ export default function ChartFullScreen({ node, dark, onClose }: { node: GraphNo
         content={
           <LayoutContent isScrollable={false}>
             <div {...stylex.props(styles.body)}>
-              <NodeChart node={node} dark={dark} height="fill" onSelect={t.onSelect} reset={t.cleared} canExpand={false} />
+              <NodeChart node={node} dark={dark} height="fill" onSelect={t.onSelect} reset={t.cleared} where={t.chartWhere} canExpand={false} />
               <OutputChartPick t={t} />
               <Collapsible
                 chevronPosition="start"

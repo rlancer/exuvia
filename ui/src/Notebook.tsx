@@ -458,7 +458,7 @@ function Output({ node, dark }: { node: GraphNode; dark: boolean }) {
   // A click in the chart or the rows (their popovers too) is not a click on the cell.
   const chartBox = chart && (
     <div {...stylex.props(styles.output, styles.chart)} onClick={(e) => e.stopPropagation()}>
-      <NodeChart node={node} dark={dark} height={220} onSelect={t.onSelect} reset={t.cleared} />
+      <NodeChart node={node} dark={dark} height={220} onSelect={t.onSelect} reset={t.cleared} where={t.chartWhere} />
       <OutputChartPick t={t} />
     </div>
   );
