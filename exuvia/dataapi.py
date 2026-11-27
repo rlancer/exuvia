@@ -694,7 +694,9 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
                         return answer
                 rows = 200 if limit is None else min(limit, JSON_MAX)
                 try:
-                    return FastJSON(ws.preview(node, limit=rows, offset=offset, params=resolved, part=part, partitions=rng))
+                    return FastJSON(
+                        ws.preview(node, limit=rows, offset=offset, params=resolved, part=part, partitions=rng, raw=True)
+                    )
                 except KeyError as e:
                     raise HTTPException(404, str(e.args[0])) from e
             finally:
@@ -737,7 +739,7 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
                     streaming = True
                     return arrow_response(Finally(stream, give))  # gives the slot back once read
                 rows = JSON_ROWS if body.limit is None else min(body.limit, JSON_MAX)
-                return FastJSON({**query_json(cur, body.sql, rows), "projects": chosen})
+                return FastJSON({**query_json(cur, body.sql, rows, raw=True), "projects": chosen})
             except HTTPException:
                 raise
             except duckdb.InterruptException as e:

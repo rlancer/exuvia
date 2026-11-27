@@ -2105,9 +2105,11 @@ class Workspace:
         run_id: str | None = None,
         part: str | None = None,
         partitions: tuple[str | None, str | None] | None = None,
+        raw: bool = False,
     ) -> dict[str, Any]:
         """A node's current output for a parameter set, or the output of one
-        specific historical run. For a node with several outputs, ``part``
+        specific historical run. ``raw`` leaves a table's rows as DuckDB
+        fetched them, for ``outputs.encode_json`` (FastJSON) to write. For a node with several outputs, ``part``
         picks one; without it the answer lists them (``parts``). For a
         partitioned output, ``partitions`` (lo, hi) keeps only those
         partitions, reading only the files that hold them.
@@ -2129,7 +2131,7 @@ class Workspace:
             return {
                 "kind": "table",
                 "columns": [{"name": c, "type": str(t)} for c, t in zip(rel.columns, rel.types, strict=True)],
-                "rows": jsonable([list(r) for r in rel.fetchall()]),
+                "rows": rel.fetchall() if raw else jsonable([list(r) for r in rel.fetchall()]),
                 "total": total,
                 **meta,
                 **extra,
@@ -2155,11 +2157,11 @@ class Workspace:
             con = outputs.reader()
             rel = con.sql(f"select * from read_parquet(?) limit {int(limit)} offset {int(offset)}", params=[path])
             cols = rel.columns
-            rows = [list(r) for r in rel.fetchall()]
+            rows = rel.fetchall()
             return {
                 "kind": "table",
                 "columns": [{"name": c, "type": str(t)} for c, t in zip(cols, rel.types, strict=True)],
-                "rows": jsonable(rows),
+                "rows": rows if raw else jsonable([list(r) for r in rows]),
                 "total": total,
                 **meta,
             }
@@ -2366,11 +2368,12 @@ class Workspace:
         return outputs.query_arrow(self._outputs_db(params, only=self._view_reads(view)), sql, limit)
 
     def query(
-        self, sql: str, limit: int = 500, params: dict[str, Any] | None = None, offset: int = 0
+        self, sql: str, limit: int = 500, params: dict[str, Any] | None = None, offset: int = 0, raw: bool = False
     ) -> dict[str, Any]:
         """Ad-hoc DuckDB SQL over node outputs (the views of ``_outputs_db``):
-        ``limit`` rows of the result from row ``offset`` on."""
-        return outputs.query_json(self._outputs_db(params), sql, limit, offset)
+        ``limit`` rows of the result from row ``offset`` on (``raw``: see
+        ``outputs.query_json``)."""
+        return outputs.query_json(self._outputs_db(params), sql, limit, offset, raw=raw)
 
     def query_arrow(
         self, sql: str, limit: int | None = None, params: dict[str, Any] | None = None, offset: int = 0

@@ -365,7 +365,14 @@ def test_data_answers_are_the_same_bytes_as_jsonable_encoder(client, path):
     assert r.content == JSONResponse(jsonable_encoder(want)).body
 
 
-@pytest.mark.parametrize("sql", ["select * from prices", "select * from day__runs order by all", "select 1.5 as x, null as y, 'é' as z"])
+@pytest.mark.parametrize("sql", [
+    "select * from prices",
+    "select * from day__runs order by all",
+    "select 1.5 as x, null as y, 'é' as z",
+    "select timestamp '2024-01-02 03:04:05.5' as t, timestamptz '2024-01-02 03:04:05+00' as tz, 12.30::decimal(5,2) as d,"
+    " [1, 2] as l, {'a': date '2024-01-01'} as s, 'nan'::double as n, interval '1 hour' as i, '\\x00'::blob as b",
+    "select map([1], ['x']) as m, 2::hugeint ** 100 as h",
+])
 def test_query_answers_are_the_same_bytes_as_jsonable_encoder(client, sql):
     from fastapi.encoders import jsonable_encoder
     from fastapi.responses import JSONResponse

@@ -13,19 +13,21 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .arrowstream import MEDIA_TYPE as ARROW_STREAM, ArrowStream
+from .outputs import encode_json
 from .workspace import Workspace
 
 
 class FastJSON(JSONResponse):
-    """JSON written straight from an answer whose values are already JSON
-    (``outputs.jsonable``), skipping FastAPI's ``jsonable_encoder``, which
-    walks every value again and took over half of a large answer's time.
-    The bytes are the same as a plain JSONResponse's for such an answer."""
+    """JSON written straight from an answer, skipping FastAPI's
+    ``jsonable_encoder``, which walks every value again and took over half
+    of a large answer's time. Its rows can be ``raw``, as DuckDB fetched
+    them: ``outputs.encode_json`` writes them in native code, the same JSON
+    as ``outputs.jsonable`` and a plain JSONResponse."""
 
     media_type = "application/json"
 
     def render(self, content: Any) -> bytes:
-        return json.dumps(content, ensure_ascii=False, allow_nan=False, separators=(",", ":"), default=str).encode()
+        return encode_json(content)
 
 
 def static_file(root: Path, path: str) -> Path | None:
