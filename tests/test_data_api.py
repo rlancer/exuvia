@@ -340,3 +340,118 @@ def test_a_json_output_with_nan_is_served_as_null(hub):
     r = hub.get("/api/data/projects/lab/nodes/stats", headers=bearer(make_key(hub, ["lab"])))
     assert r.status_code == 200, r.text
     assert r.json()["value"] == want
+
+
+class FakeWorkspace:
+    """Just what QueryConnections reads of a workspace: its version and views."""
+
+    def __init__(self):
+        from exuvia.events import EventBus
+
+        self.bus = EventBus()
+        self.built = 0
+
+    def add_output_views(self, con, params, only=None, catalog=None):
+        import time
+
+        self.built += 1
+        time.sleep(0.2)  # long enough for every request below to miss together
+        con.execute(f'attach \':memory:\' as "{catalog}"')
+        con.execute(f'create view "{catalog}".main.t as select 1 as x')
+        return []
+
+
+def test_requests_that_miss_together_wait_for_one_build():
+    """A run finishing invalidates the connection for every request at once:
+    they wait for one build instead of each making their own."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    conns, ws = dataapi.QueryConnections(), FakeWorkspace()
+
+    def query(_):
+        cur = conns.cursor({"sales": ws})
+        try:
+            return cur.execute("select x from sales.t").fetchall()
+        finally:
+            cur.close()
+
+    with ThreadPoolExecutor(8) as pool:
+        assert list(pool.map(query, range(8))) == [[(1,)]] * 8
+    assert ws.built == 1 and conns.builds == 1
+
+    ws.bus.touch()  # the project changed: the next requests build once more
+    with ThreadPoolExecutor(8) as pool:
+        assert list(pool.map(query, range(8))) == [[(1,)]] * 8
+    assert ws.built == 2 and conns.builds == 2
+
+
+def test_a_listing_is_kept_until_its_project_changes(hub, monkeypatch):
+    key = make_key(hub, ["crm"])
+    calls = []
+    real = dataapi.describe
+    monkeypatch.setattr(dataapi, "describe", lambda ws: calls.append(1) or real(ws))
+    for _ in range(3):
+        assert hub.get("/api/data/projects", headers=bearer(key)).status_code == 200
+    assert len(calls) == 1
+    hub.app.state.hub._ctxs["crm"].ws.bus.touch()
+    got = hub.get("/api/data/projects/crm", headers=bearer(key)).json()
+    assert len(calls) == 2 and [n["name"] for n in got["nodes"]] == ["accounts"]
+
+
+def test_node_reads_share_one_database_and_keep_their_temp_tables_apart():
+    """outputs.reader: a cursor each, on one database; a temp table one
+    cursor makes (a partitioned read's filter) is not another's."""
+    from exuvia import outputs
+
+    a, b = outputs.reader(), outputs.reader()
+    a.execute("create temp table __keep (v varchar)")
+    a.execute("insert into __keep values ('a')")
+    b.execute("create temp table __keep (v varchar)")
+    assert a.execute("select count(*) from __keep").fetchone() == (1,)
+    assert b.execute("select count(*) from __keep").fetchone() == (0,)
+    assert a.execute("select current_setting('threads')").fetchone() == b.execute("select current_setting('threads')").fetchone()
+
+
+def test_a_query_that_runs_too_long_is_stopped(hub, monkeypatch):
+    monkeypatch.setattr(dataapi, "QUERY_TIMEOUT", 0.3)
+    key = make_key(hub, ["crm"])
+    slow = {"sql": "select count(*) from crm.accounts, range(200000) a, range(200000) b where a.range * b.range = 7"}
+    for headers in (bearer(key), {**bearer(key), **ARROW}):
+        r = hub.post("/api/data/query", json=slow, headers=headers)
+        assert r.status_code == 400 and "ran longer than 0.3 seconds" in r.json()["detail"], r.text
+    # The connection it ran on still answers the next query.
+    r = hub.post("/api/data/query", json={"sql": "select count(*) from crm.accounts"}, headers=bearer(key))
+    assert r.json()["rows"] == [[2]]
+
+
+def test_a_key_has_a_limit_of_requests_running_at_once(hub, monkeypatch):
+    monkeypatch.setattr(dataapi, "KEY_CONCURRENCY", 2)
+    key, other = make_key(hub, ["crm"]), make_key(hub, ["crm"], name="other")
+    slots = hub.app.state.data_slots
+    sql = {"sql": "select count(*) from crm.accounts"}
+    held = [slots.take(key["id"]), slots.take(key["id"])]  # two requests of its own still running
+    r = hub.post("/api/data/query", json=sql, headers=bearer(key))
+    assert r.status_code == 429 and r.headers["retry-after"] == "1"
+    assert hub.get("/api/data/projects/crm/nodes/accounts", headers=bearer(key)).status_code == 429
+    assert hub.get("/api/data/projects", headers=bearer(key)).status_code == 200  # a listing needs no slot
+    assert hub.post("/api/data/query", json=sql, headers=bearer(other)).status_code == 200  # other keys go on
+    held[0]()
+    held[0]()  # giving back twice gives back once
+    assert slots.held(key["id"]) == 1
+    assert hub.post("/api/data/query", json=sql, headers=bearer(key)).status_code == 200
+    held[1]()
+    # Every answer gives its slot back, Arrow streams once they are read, failures too.
+    hub.post("/api/data/query", json=sql, headers={**bearer(key), **ARROW})
+    hub.get("/api/data/projects/crm/nodes/accounts", headers={**bearer(key), **ARROW})
+    hub.post("/api/data/query", json={"sql": "select * from nope"}, headers=bearer(key))
+    hub.get("/api/data/projects/crm/nodes/accounts?part=nope", headers=bearer(key))
+    assert slots.held(key["id"]) == 0
+
+
+def test_an_outputs_connection_keeps_few_threads():
+    """async_threads: DuckDB starts 16 per database unless told otherwise,
+    and the server keeps many databases open."""
+    from exuvia.outputs import outputs_connection
+
+    con = outputs_connection()
+    assert con.execute("select current_setting('async_threads')").fetchone() == (1,)

@@ -2035,12 +2035,10 @@ class Workspace:
         that isn't partitioned."""
         if not self.is_partitioned(ls):
             return None
-        import duckdb
-
         lo, hi = partitions or (None, None)
         files = self.manifest_files(ls, lo, hi)
         meta: dict[str, Any] = {"partition_by": ls.get("partition_by")}
-        con = duckdb.connect()
+        con = outputs.reader()
         if partitions is None:
             total = int(ls.get("rows") or 0)
             keep = None
@@ -2119,9 +2117,7 @@ class Workspace:
         else:
             path = self.artifact_path(ls)
         if kind == "table":
-            import duckdb
-
-            con = duckdb.connect()
+            con = outputs.reader()
             rel = con.sql(f"select * from read_parquet(?) limit {int(limit)} offset {int(offset)}", params=[path])
             cols = rel.columns
             rows = [list(r) for r in rel.fetchall()]
@@ -2178,9 +2174,7 @@ class Workspace:
             path = self.artifact_path(ls)
         else:
             return None
-        import duckdb
-
-        con = duckdb.connect()
+        con = outputs.reader()
         rel = con.sql("select * from read_parquet(?)", params=[path])
         if limit is not None or offset:
             rel = rel.limit(_ALL_ROWS if limit is None else int(limit), int(offset))
@@ -2219,14 +2213,12 @@ class Workspace:
             return None
         if not files:
             return None
-        import duckdb
-
         from .tablestats import parquet_stats
 
         out = parquet_stats(files)
         by_name = out.pop("columns")
         # The types the Data tab and SQL show (DuckDB's), from the footers too.
-        con = duckdb.connect()
+        con = outputs.reader()
         try:
             rel = con.read_parquet(files, union_by_name=True).limit(0)
             out["columns"] = [

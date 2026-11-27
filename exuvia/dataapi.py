@@ -22,18 +22,29 @@ on it (microseconds); it is built again once any of its projects changes
 change made on another replica takes to show. Only projects whose id
 appears in the SQL are attached, unless the request names its ``projects``.
 Only one ``SELECT`` (or ``EXPLAIN``) runs per request, so nothing a key
-sends can change a connection other requests share.
+sends can change a connection other requests share. Requests that find
+the connection stale together wait for one build (a run finishing makes it
+stale for every request at once).
+
+One key may have KEY_CONCURRENCY queries and node reads running at once
+(more answer 429), and a query stops after QUERY_TIMEOUT, so one app can't
+take every core from the others. ``scripts/loadtest_data_api.py`` measures
+what a hub serves.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
+import os
 import re
 import sys
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, AsyncIterator, Callable, Literal
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Security
 from fastapi.openapi.utils import get_openapi
@@ -54,6 +65,17 @@ CACHE_MAX = 32  # query connections kept (one per set of projects queried togeth
 ACCESS_TTL = 10.0  # seconds a key's readable projects are answered from memory
 JSON_ROWS = 500  # rows a JSON answer has unless `limit` says otherwise
 JSON_MAX = 5000
+# Seconds a query may run before it is stopped (as Arrow: until its first
+# rows; after that the client's reading paces it). 0 turns it off.
+QUERY_TIMEOUT = float(os.environ.get("EXUVIA_DATA_QUERY_TIMEOUT") or 60)
+# Queries and node reads one key may have running at once; more answer 429.
+# Below DATA_WORKERS, so one app's requests never take every worker. 0
+# turns it off.
+KEY_CONCURRENCY = int(os.environ.get("EXUVIA_DATA_KEY_CONCURRENCY") or 4)
+# Threads the data API's blocking work runs on: its own, not the event
+# loop's default pool (cpu + 4 threads) the rest of the hub shares, so a
+# burst of queries neither waits behind the hub's work nor holds it up.
+DATA_WORKERS = int(os.environ.get("EXUVIA_DATA_WORKERS") or max(16, 2 * (os.cpu_count() or 1)))
 # DuckDB's own catalogs: a project of one of these names can't be attached.
 RESERVED_CATALOGS = {"main", "memory", "system", "temp"}
 
@@ -222,22 +244,43 @@ class QueryConnections:
         self._lock = threading.Lock()
         # projects -> (stamp, built at, connection)
         self._cons: "OrderedDict[tuple[str, ...], tuple[Any, float, Any]]" = OrderedDict()
+        # projects -> the lock held while that set's connection is built, so
+        # requests that miss together wait for one build instead of each
+        # making their own (a run finishing invalidates the connection for
+        # every request at once).
+        self._building: dict[tuple[str, ...], threading.Lock] = {}
+        self.builds = 0  # connections built, for tests and the load test
 
     @staticmethod
     def _stamp(workspaces: dict[str, Workspace]) -> tuple[Any, ...]:
         return tuple((pid, id(ws), ws.bus.version) for pid, ws in sorted(workspaces.items()))
+
+    def _cached(self, key: tuple[str, ...], stamp: tuple[Any, ...]) -> Any:
+        with self._lock:
+            hit = self._cons.get(key)
+            if hit and hit[0] == stamp and time.monotonic() - hit[1] < CACHE_TTL:
+                self._cons.move_to_end(key)
+                return hit[2].cursor()
+        return None
 
     def cursor(self, workspaces: dict[str, Workspace]) -> Any:
         """A cursor on a connection with each project's outputs in a catalog
         named after it. Blocking (a build may download outputs)."""
         key = tuple(sorted(workspaces))
         stamp = self._stamp(workspaces)
-        now = time.monotonic()
+        cur = self._cached(key, stamp)
+        if cur is not None:
+            return cur
         with self._lock:
-            hit = self._cons.get(key)
-            if hit and hit[0] == stamp and now - hit[1] < CACHE_TTL:
-                self._cons.move_to_end(key)
-                return hit[2].cursor()
+            building = self._building.setdefault(key, threading.Lock())
+        with building:
+            cur = self._cached(key, stamp)  # built while this request waited
+            if cur is not None:
+                return cur
+            return self._build(key, workspaces, stamp)
+
+    def _build(self, key: tuple[str, ...], workspaces: dict[str, Workspace], stamp: tuple[Any, ...]) -> Any:
+        now = time.monotonic()
         con = outputs_connection()
         files: list[str] = []
         for pid in key:
@@ -249,15 +292,88 @@ class QueryConnections:
             files += workspaces[pid].add_output_views(con, None, catalog=pid)
         lock_outputs(con, files)
         with self._lock:
+            self.builds += 1
             self._cons[key] = (stamp, now, con)
             self._cons.move_to_end(key)
             while len(self._cons) > CACHE_MAX:
-                self._cons.popitem(last=False)  # a cursor still reading keeps it alive
+                old, _ = self._cons.popitem(last=False)  # a cursor still reading keeps it alive
+                self._building.pop(old, None)
         return con.cursor()
 
     def clear(self) -> None:
         with self._lock:
             self._cons.clear()
+            self._building.clear()
+
+
+class KeySlots:
+    """The queries and node reads each key has running, up to
+    KEY_CONCURRENCY at once. Taken in the worker thread that runs the
+    request (a request cancelled before its thread starts takes none) and
+    given back when the answer is written, or its Arrow stream read."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._held: dict[str, int] = {}
+
+    def take(self, kid: str) -> Callable[[], None]:
+        """Take a slot (429 when the key has none left); returns what gives
+        it back, which may be called more than once."""
+        limit = KEY_CONCURRENCY
+        with self._lock:
+            held = self._held.get(kid, 0)
+            if limit > 0 and held >= limit:
+                raise HTTPException(
+                    429, f"this key already has {held} requests running, its limit: wait for one to finish",
+                    headers={"Retry-After": "1"},
+                )
+            self._held[kid] = held + 1
+        given = False
+
+        def give() -> None:
+            nonlocal given
+            with self._lock:
+                if given:
+                    return
+                given = True
+                left = self._held.get(kid, 1) - 1
+                if left > 0:
+                    self._held[kid] = left
+                else:
+                    self._held.pop(kid, None)
+
+        return give
+
+    def held(self, kid: str) -> int:
+        with self._lock:
+            return self._held.get(kid, 0)
+
+
+class Finally:
+    """An Arrow stream that calls ``done`` once it has been read, or
+    dropped unread (a client that went away before the body)."""
+
+    def __init__(self, stream: Any, done: Callable[[], None]):
+        self._stream, self._done = stream, done
+
+    def __iter__(self) -> Any:
+        try:
+            yield from self._stream
+        finally:
+            self._done()
+
+    def __del__(self) -> None:
+        self._done()
+
+
+def deadline(cur: Any, seconds: float) -> threading.Timer | None:
+    """Interrupt ``cur``'s query after ``seconds`` (None: no limit)."""
+    if seconds <= 0:
+        return None
+    timer = threading.Timer(seconds, cur.interrupt)
+    timer.daemon = True
+    timer.start()
+    return timer
 
 
 def describe(ws: Workspace) -> list[dict[str, Any]]:
@@ -299,6 +415,28 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
 
     store: DataKeyStore = hub.data_keys
     connections = QueryConnections()
+    app.state.data_connections = connections
+    slots = KeySlots()
+    app.state.data_slots = slots
+    pool = ThreadPoolExecutor(DATA_WORKERS, thread_name_prefix="exuvia-data")
+
+    def blocking(fn: Callable[..., Any], *args: Any) -> Awaitable[Any]:
+        """``asyncio.to_thread`` on the data API's own threads."""
+        ctx = contextvars.copy_context()
+        return asyncio.get_running_loop().run_in_executor(pool, functools.partial(ctx.run, fn, *args))
+    # project -> ((workspace, its version), built at, describe()): a listing
+    # reads every node's last run, so it is kept until the project changes
+    # (or CACHE_TTL passes: a default parameter like "today" moves on its own).
+    described: dict[str, tuple[tuple[int, int], float, list[dict[str, Any]]]] = {}
+
+    def nodes_of(pid: str, ws: Workspace) -> list[dict[str, Any]]:
+        stamp, now = (id(ws), ws.bus.version), time.monotonic()
+        hit = described.get(pid)
+        if hit and hit[0] == stamp and now - hit[1] < CACHE_TTL:
+            return hit[2]
+        out = describe(ws)
+        described[pid] = (stamp, now, out)
+        return out
     access_cache: dict[str, tuple[tuple[str, ...], float]] = {}
     access_lock = threading.Lock()
 
@@ -451,7 +589,7 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         counts when they are due."""
         if store.note(kid, query=query, ok=ok):
             try:
-                await asyncio.to_thread(store.flush)
+                await blocking(store.flush)
             except Exception as e:  # noqa: BLE001 - a count not written must not fail the request; it is kept for next time
                 print(f"exuvia: could not write data key usage: {e}", file=sys.stderr)
 
@@ -462,7 +600,7 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         token = creds.credentials.strip() if creds else ""
         if not looks_like_key(token):
             raise HTTPException(401, "send a data key: Authorization: Bearer exd_... (make one in the hub's account menu, Data API keys)")
-        key = await asyncio.to_thread(store.by_key, token)
+        key = await blocking(store.by_key, token)
         query = request.url.path.endswith("/query")
         if key is None:
             await count(TURNED_AWAY, query, False)
@@ -470,7 +608,7 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         # The request counts once it is answered: a failure in it (here or in the route) counts as an error.
         ok = False
         try:
-            yield key, await asyncio.to_thread(readable, key)
+            yield key, await blocking(readable, key)
             ok = True
         finally:
             await count(key.id, query, ok)
@@ -492,14 +630,14 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         out = []
         for pid in projects:
             ws = (await hub.get(pid)).ws
-            out.append({"id": pid, "name": ws.project.name, "nodes": await asyncio.to_thread(describe, ws)})
+            out.append({"id": pid, "name": ws.project.name, "nodes": await blocking(nodes_of, pid, ws)})
         return FastJSON({"key": {"id": key.id, "name": key.name}, "projects": out})
 
     @app.get(PREFIX + "projects/{project}", responses={200: {"model": DataProject}, **PROBLEMS}, **route)
     async def data_project(project: str, access: Access = Depends(key_projects)) -> Any:
         """One of the key's projects, with its nodes."""
         ws = await workspace(project, access[1])
-        return FastJSON({"id": project, "name": ws.project.name, "nodes": await asyncio.to_thread(describe, ws)})
+        return FastJSON({"id": project, "name": ws.project.name, "nodes": await blocking(nodes_of, project, ws)})
 
     @app.get(
         PREFIX + "projects/{project}/nodes/{node}",
@@ -528,17 +666,24 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         need_partitioned(ws, node, rng, None)
 
         def read() -> Any:
-            if wants_arrow(request.headers.get("accept")):
-                stream = ws.preview_arrow(node, limit=limit, offset=offset, params=resolved, part=part, partitions=rng)
-                if stream is not None:
-                    return arrow_response(stream)
-            rows = 200 if limit is None else min(limit, JSON_MAX)
+            give = slots.take(access[0].id)
             try:
-                return FastJSON(ws.preview(node, limit=rows, offset=offset, params=resolved, part=part, partitions=rng))
-            except KeyError as e:
-                raise HTTPException(404, str(e.args[0])) from e
+                if wants_arrow(request.headers.get("accept")):
+                    stream = ws.preview_arrow(node, limit=limit, offset=offset, params=resolved, part=part, partitions=rng)
+                    if stream is not None:
+                        answer = arrow_response(Finally(stream, give))  # gives the slot back once read
+                        give = None
+                        return answer
+                rows = 200 if limit is None else min(limit, JSON_MAX)
+                try:
+                    return FastJSON(ws.preview(node, limit=rows, offset=offset, params=resolved, part=part, partitions=rng))
+                except KeyError as e:
+                    raise HTTPException(404, str(e.args[0])) from e
+            finally:
+                if give is not None:
+                    give()
 
-        return await asyncio.to_thread(read)
+        return await blocking(read)
 
     @app.post(PREFIX + "query", responses={200: {"model": QueryAnswer, "content": ARROW_DOC}, **PROBLEMS}, **route)
     async def data_query(body: DataQueryReq, request: Request, access: Access = Depends(key_projects)) -> Any:
@@ -559,26 +704,40 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         workspaces = {pid: (await hub.get(pid)).ws for pid in chosen}
 
         def run() -> Any:
+            import duckdb
+
+            give = slots.take(access[0].id)
             cur = None
+            timer = None
             streaming = False
             try:
                 cur = read_only(connections.cursor(workspaces))
                 check_select(cur, body.sql)
+                timer = deadline(cur, QUERY_TIMEOUT)
                 if wants_arrow(request.headers.get("accept")):
                     stream = query_arrow(cur, body.sql, body.limit)  # closes the cursor when it has been read
                     streaming = True
-                    return arrow_response(stream)
+                    return arrow_response(Finally(stream, give))  # gives the slot back once read
                 rows = JSON_ROWS if body.limit is None else min(body.limit, JSON_MAX)
                 return FastJSON({**query_json(cur, body.sql, rows), "projects": chosen})
             except HTTPException:
                 raise
+            except duckdb.InterruptException as e:
+                raise HTTPException(
+                    400, f"the query ran longer than {QUERY_TIMEOUT:g} seconds, the data API's limit: "
+                    "filter or aggregate more, or ask for fewer rows",
+                ) from e
             except Exception as e:
                 raise HTTPException(400, str(e) if type(e) is ValueError else f"{type(e).__name__}: {e}") from e
             finally:
-                if cur is not None and not streaming:
-                    cur.close()
+                if timer is not None:
+                    timer.cancel()  # Arrow: the first rows are in; the client's reading paces the rest
+                if not streaming:
+                    give()
+                    if cur is not None:
+                        cur.close()
 
-        return await asyncio.to_thread(run)
+        return await blocking(run)
 
     spec_cache: dict[str, dict[str, Any]] = {}
 
