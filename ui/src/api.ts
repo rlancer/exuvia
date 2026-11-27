@@ -714,7 +714,31 @@ export const dataKeysApi = {
   revoke: async (id: string) => {
     await sendTo("DELETE", `/api/data-keys/${encodeURIComponent(id)}`);
   },
+  /** Every key on the hub with how much it was used (admins only). */
+  usage: (days = 30) => json<DataKeysUsage>(sendTo("GET", `/api/data-keys/usage?days=${days}`)),
 };
+
+/** Requests counted over a span of days (exuvia/datakeys.py, usage): `today` and `week` are requests too. */
+export interface KeyUsage {
+  today: number;
+  week: number;
+  requests: number;
+  queries: number;
+  errors: number;
+}
+
+/** `GET /api/data-keys/usage`: every data key on the hub, how much each was used, and the hub's use by day. */
+export interface DataKeysUsage {
+  days: number;
+  keys: (DataKey & {
+    owner: { id: string; name: string; disabled: boolean } | null;
+    usage: KeyUsage;
+    daily: { day: string; requests: number }[];
+  })[];
+  daily: { day: string; requests: number; queries: number; errors: number }[];
+  /** Requests with a key that is unknown or revoked. */
+  turned_away: KeyUsage;
+}
 
 /** One of the MCP servers the built-in agent connects to for you: never the header values. */
 export interface AgentMcpServer {
@@ -1048,9 +1072,50 @@ export interface AdminSetting {
   note?: string;
 }
 
+/** Bytes and files, as `GET /api/admin/storage` counts both. */
+export type Sized = { bytes: number; files: number };
+
+/** The kinds of space a hub's project takes, in `GET /api/admin/storage`. */
+export type HubStorageKind = "outputs" | "code" | "database" | "caches" | "other";
+
+/** One project's size in `GET /api/admin/storage`. */
+export interface HubStorageProject {
+  id: string;
+  name: string;
+  nodes: number;
+  bytes: number;
+  files: number;
+  kinds: Record<HubStorageKind, Sized>;
+  /** How many nodes have outputs stored. */
+  outputs_nodes: number;
+  /** When an output was last written, and the project's own files last changed (null: never). */
+  written_at: number | null;
+  code_changed_at: number | null;
+}
+
+/** `GET /api/admin/storage` (exuvia/storage.py hub_report): what the hub keeps on disk. */
+export interface HubStorage {
+  generated_at: number;
+  total_bytes: number;
+  projects_bytes: number;
+  shared_bytes: number;
+  /** The disk the hub is on; null when it can't be told. */
+  disk: { total: number; used: number; free: number } | null;
+  kinds: Record<HubStorageKind, Sized>;
+  /** The hub's own folder beside the projects: shared installs and its database. */
+  shared: StoragePart[];
+  projects: HubStorageProject[];
+  /** The hub's largest outputs: one node's, every run of it kept, in one project. */
+  largest: { project: string; node: string; bytes: number; files: number }[];
+  database: { shared: boolean; where: string };
+  artifact_store: { configured: boolean; where: string | null };
+}
+
 /** What the hub's admin page reads beyond the other APIs (`/api/admin/*`, admins only). */
 export const adminApi = {
   settings: () => json<{ groups: { title: string; items: AdminSetting[] }[] }>(sendTo("GET", "/api/admin/settings")),
+  /** What the hub keeps on disk: every project by kind, the shared folders, the disk. */
+  storage: () => json<HubStorage>(sendTo("GET", "/api/admin/storage")),
   /** `GET /api/hub/state`: whether runs, backfills or agent turns are in flight. */
   state: () => json<{ version: number; busy: boolean }>(sendTo("GET", "/api/hub/state")),
   /** Where the browser downloads an export of every project (`GET`, admins only). */

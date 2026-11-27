@@ -31,6 +31,8 @@ import {
   type HubListing,
   type HubProject,
 } from "./api";
+import { ApiKeysPanel } from "./AdminKeys";
+import { HubStoragePanel } from "./AdminStorage";
 import { McpPresetsPanel } from "./AgentMcp";
 import { Brand, Mark } from "./Brand";
 import { EnvEditor, type EnvClient } from "./EnvDialog";
@@ -43,7 +45,9 @@ import { useColorMode } from "./theme/colorMode";
 import { useMe } from "./useMe";
 import { ago } from "./util";
 import {
+  IconActivity,
   IconChevronRight,
+  IconDisk,
   IconDownload,
   IconFolder,
   IconKey,
@@ -58,12 +62,22 @@ import {
 } from "./icons";
 
 /** The admin page's sections, in the order the admin panel's nav lists them. */
-export type AdminSection = "overview" | "users" | "projects" | "variables" | "mcp" | "backup" | "server";
+export type AdminSection = "overview" | "users" | "projects" | "storage" | "keys" | "variables" | "mcp" | "backup" | "server";
 
 const SECTIONS: Record<AdminSection, { title: string; about: string; icon: ReactNode }> = {
   overview: { title: "Overview", about: "This hub at a glance: its version, and what is on it.", icon: <IconSpark /> },
   users: { title: "Users", about: "Everyone who has signed in, what each may do, and who is turned away.", icon: <IconUser /> },
   projects: { title: "Projects", about: "Every project on the hub, whoever owns it.", icon: <IconFolder /> },
+  storage: {
+    title: "Storage",
+    about: "What the hub keeps on disk: every project's size, what takes the space, and the disk it is on.",
+    icon: <IconDisk />,
+  },
+  keys: {
+    title: "API keys",
+    about: "Every data API key on the hub: whose it is, what it reads, and how much it is used.",
+    icon: <IconActivity />,
+  },
   variables: {
     title: "Hub variables",
     about: "Every project on the hub gets these in os.environ, unless the project or its group sets the same name.",
@@ -123,6 +137,8 @@ export default function AdminPage() {
     "overview",
     ...(who?.user?.role === "admin" ? (["users"] as const) : []),
     "projects",
+    "storage",
+    "keys",
     ...(listing?.hub_env ? (["variables"] as const) : []),
     ...(listing?.agent_mcp?.can_edit ? (["mcp"] as const) : []),
     "backup",
@@ -179,6 +195,8 @@ export default function AdminPage() {
           {shown === "overview" && <Overview listing={listing} people={people} onGo={go} />}
           {shown === "users" && <UsersPanel self={who?.user?.uid ?? null} />}
           {shown === "projects" && <Projects listing={listing} people={people} self={who?.user?.uid ?? null} onChanged={load} />}
+          {shown === "storage" && <HubStoragePanel listing={listing} people={people} self={who?.user?.uid ?? null} />}
+          {shown === "keys" && <ApiKeysPanel people={people} self={who?.user?.uid ?? null} />}
           {shown === "variables" && <HubVariablesPanel canEdit />}
           {shown === "mcp" && <McpPresetsPanel />}
           {shown === "backup" && <Backup onRestored={load} />}

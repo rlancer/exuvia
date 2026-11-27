@@ -2701,6 +2701,15 @@ def create_hub_app(root: str | Path, templates: str | Path | None = None) -> Fas
 
         return {"groups": settings(_auth_method())}
 
+    @app.get("/api/admin/storage")
+    async def admin_storage() -> dict[str, Any]:
+        """What the hub keeps on disk, for the admin page (storage.hub_report):
+        every project's size by kind, the shared folders and the disk."""
+        require_admin()
+        from .storage import hub_report
+
+        return await asyncio.to_thread(hub_report, hub.root, hub.list())
+
     @app.get("/api/hub/export")
     async def hub_export() -> FileResponse:
         """All projects with their run history and artifacts, as one .tar.gz."""

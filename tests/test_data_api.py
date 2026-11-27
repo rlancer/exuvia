@@ -221,6 +221,55 @@ def test_keys_are_renamed_repointed_revoked_and_lose_deleted_projects(hub):
     assert hub.get("/api/data/projects", headers=bearer(key)).status_code == 401
 
 
+def test_an_admin_sees_how_much_each_key_is_used(hub):
+    """Each request with a key counts by day (datakeys.py, usage): its
+    queries and its failures too, and a request with an unknown key counts
+    as turned away. Only an admin reads the counts."""
+    used, idle = make_key(hub, ["sales", "crm"]), make_key(hub, ["crm"], as_=BOB, name="spare")
+    assert hub.get("/api/data/projects", headers=bearer(used)).status_code == 200
+    assert hub.post("/api/data/query", json={"sql": JOIN}, headers=bearer(used)).status_code == 200
+    assert hub.post("/api/data/query", json={"sql": "select * from nope.t"}, headers=bearer(used)).status_code == 400
+    assert hub.get("/api/data/projects/crm/nodes/nope", headers=bearer(used)).status_code == 404
+    assert hub.get("/api/data/projects", headers={"Authorization": "Bearer exd_" + "x" * 40}).status_code == 401
+
+    assert hub.get("/api/data-keys/usage", headers=ALICE).status_code == 403
+    r = hub.get("/api/data-keys/usage", headers=ROOT).json()
+    keys = {k["id"]: k for k in r["keys"]}
+    assert keys[used["id"]]["usage"] == {"today": 4, "week": 4, "requests": 4, "queries": 2, "errors": 2}
+    assert keys[used["id"]]["owner"]["name"] == "alice" and keys[used["id"]]["daily"][0]["requests"] == 4
+    assert keys[idle["id"]]["usage"]["requests"] == 0 and keys[idle["id"]]["daily"] == []
+    assert keys[idle["id"]]["owner"]["name"] == "bob"
+    assert r["turned_away"]["requests"] == 1
+    assert len(r["daily"]) == 30 and r["daily"][-1] == {"day": r["daily"][-1]["day"], "requests": 4, "queries": 2, "errors": 2}
+    assert sum(d["requests"] for d in r["daily"][:-1]) == 0
+
+    # Written to the database added to what is there, and kept when the hub closes.
+    store = hub.app.state.hub.data_keys
+    store.note(used["id"])
+    store.flush()
+    store.note(used["id"], query=True)
+    assert store.usage()["keys"][used["id"]][-1] == {"day": r["daily"][-1]["day"], "requests": 6, "queries": 3, "errors": 2}
+
+
+def test_usage_is_counted_by_day_and_old_days_are_dropped(tmp_path):
+    from exuvia.datakeys import KEEP_DAYS, DataKeyStore
+    from exuvia.db import SQLiteDatabase
+
+    store = DataKeyStore(SQLiteDatabase(tmp_path / "k.db"))
+    now = 1_790_000_000.0
+    store.note("k1", now=now - (KEEP_DAYS + 5) * 86400)
+    store.note("k1", now=now - 86400, ok=False)
+    store.note("k1", now=now, query=True)
+    store.flush(now)
+    got = store.usage(days=7, now=now)
+    assert got["days"][-1] == "2026-09-21" and len(got["days"]) == 7
+    assert got["keys"]["k1"] == [
+        {"day": "2026-09-20", "requests": 1, "queries": 0, "errors": 1},
+        {"day": "2026-09-21", "requests": 1, "queries": 1, "errors": 0},
+    ]
+    assert len(store._q("select * from data_key_usage")) == 2  # the day past KEEP_DAYS is gone
+
+
 def test_keys_travel_with_a_hub_export(hub, tmp_path):
     key = make_key(hub, ["sales"])
     blob = hub.get("/api/hub/export", headers=ROOT).content

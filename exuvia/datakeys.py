@@ -19,6 +19,13 @@ Keys start with ``exd_`` and only ever work under ``/api/data/``. Only a
 hash of each key is kept; the key itself is shown once, when it is made.
 The rows live in the database the hub's groups use (groups.py), and a hub
 export carries them beside the user list.
+
+Each key's use is counted by day (``data_key_usage``): its requests, how
+many were queries, and how many failed; requests with an unknown or revoked
+key count under the key id ``''``. The counts gather in memory and are
+written every FLUSH_EVERY seconds (added to what is there, so replicas
+sharing a database each add their own), when the counts are read, and when
+the hub closes. Days older than KEEP_DAYS are dropped.
 """
 
 from __future__ import annotations
@@ -44,6 +51,12 @@ SEEN_EVERY = 60.0
 SEEN_MAX = 4096
 # The maker of a key made by the operator.
 OPERATOR = ""
+# How often the usage counted in memory is written to the database (seconds).
+FLUSH_EVERY = 60.0
+# How many days of usage are kept.
+KEEP_DAYS = 90
+# The key id requests with an unknown or revoked key are counted under.
+TURNED_AWAY = ""
 
 TABLES = {
     "data_keys": """create table if not exists data_keys (
@@ -62,6 +75,15 @@ TABLES = {
     key_id text not null,
     project text not null,
     primary key (scope, key_id, project)
+)""",
+    "data_key_usage": """create table if not exists data_key_usage (
+    scope text not null default '',
+    key_id text not null,        -- '' for requests with an unknown or revoked key
+    day text not null,           -- YYYY-MM-DD, UTC
+    requests integer not null default 0,
+    queries integer not null default 0,
+    errors integer not null default 0,
+    primary key (scope, key_id, day)
 )""",
 }
 INDEXES = (
@@ -99,9 +121,16 @@ class DataKey:
     projects: tuple[str, ...]
 
 
+def day_of(t: float) -> str:
+    """The UTC day of a time, as usage is counted: ``2026-11-27``."""
+    return time.strftime("%Y-%m-%d", time.gmtime(t))
+
+
 class DataKeyStore(HubRecordStore):
     TABLES, INDEXES = TABLES, INDEXES
     ARCHIVE_WHAT = "data keys"
+    # An export from before usage was counted has no data_key_usage: it reads as no use.
+    OPTIONAL = frozenset({"data_key_usage"})
 
     def __init__(self, db: Database, scope: str = "", owns_db: bool = False):
         super().__init__(db, scope, owns_db)
@@ -110,6 +139,10 @@ class DataKeyStore(HubRecordStore):
         self._seen: dict[str, tuple[DataKey | None, float]] = {}
         # Counts the changes to the keys: what was read before one is not kept after it.
         self._version = 0
+        # Usage not yet written: (key id, day) -> [requests, queries, errors].
+        self._pending: dict[tuple[str, str], list[int]] = {}
+        self._flushed = time.time()
+        self._flush_lock = threading.Lock()
 
     def _replaced(self, data: dict[str, list[dict[str, Any]]]) -> None:
         self._changed()
@@ -223,6 +256,73 @@ class DataKeyStore(HubRecordStore):
                         self._seen.clear()
                 self._seen[h] = (found, now)
         return found
+
+    # -- usage ---------------------------------------------------------------------
+    def note(self, kid: str, query: bool = False, ok: bool = True, now: float | None = None) -> bool:
+        """Count one request with key ``kid`` (TURNED_AWAY: an unknown or
+        revoked key), in memory. True when it is time to ``flush``."""
+        now = time.time() if now is None else now
+        with self._lock:
+            c = self._pending.setdefault((kid, day_of(now)), [0, 0, 0])
+            c[0] += 1
+            c[1] += bool(query)
+            c[2] += not ok
+            return now - self._flushed >= FLUSH_EVERY
+
+    def flush(self, now: float | None = None) -> None:
+        """Write the usage counted in memory, added to what the database
+        has, and drop the days older than KEEP_DAYS."""
+        now = time.time() if now is None else now
+        with self._flush_lock:
+            with self._lock:
+                pending, self._pending = self._pending, {}
+                self._flushed = now
+            if not pending:
+                return
+            try:
+                with self.db.transaction():
+                    for (kid, day), (req, qs, errs) in pending.items():
+                        self._q(
+                            "insert into data_key_usage (scope, key_id, day, requests, queries, errors) values (?,?,?,?,?,?) "
+                            "on conflict (scope, key_id, day) do update set requests = data_key_usage.requests + excluded.requests, "
+                            "queries = data_key_usage.queries + excluded.queries, errors = data_key_usage.errors + excluded.errors",
+                            (self.scope, kid, day, req, qs, errs),
+                        )
+                    self._q("delete from data_key_usage where scope=? and day < ?",
+                            (self.scope, day_of(now - KEEP_DAYS * 86400)))
+            except Exception:
+                # Not written: counted again next time rather than lost.
+                with self._lock:
+                    for k, v in pending.items():
+                        c = self._pending.setdefault(k, [0, 0, 0])
+                        for i in range(3):
+                            c[i] += v[i]
+                raise
+
+    def usage(self, days: int = 30, now: float | None = None) -> dict[str, Any]:
+        """Each key's use over the last ``days`` days (today included), by
+        day, with what is still in memory: ``{"days": [...], "keys": {key
+        id: [{"day", "requests", "queries", "errors"}, ...]}}``, oldest day
+        first, days without use left out."""
+        now = time.time() if now is None else now
+        self.flush(now)
+        span = [day_of(now - i * 86400) for i in range(days - 1, -1, -1)]
+        out: dict[str, list[dict[str, Any]]] = {}
+        for r in self._q(
+            "select key_id, day, requests, queries, errors from data_key_usage where scope=? and day >= ? order by day, key_id",
+            (self.scope, span[0]),
+        ):
+            out.setdefault(r["key_id"], []).append(
+                {"day": r["day"], "requests": int(r["requests"]), "queries": int(r["queries"]), "errors": int(r["errors"])}
+            )
+        return {"days": span, "keys": out}
+
+    def close(self) -> None:
+        try:
+            self.flush()
+        except Exception:  # noqa: BLE001 - closing anyway: a minute of counts is all that is lost
+            pass
+        super().close()
 
     def forget_project(self, project: str) -> None:
         """Take a deleted project off every key."""
