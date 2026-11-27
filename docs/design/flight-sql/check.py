@@ -14,7 +14,7 @@ small ones and one with BIG_ROWS rows), makes data keys, then checks:
 3. the key rules: no key, a bad key, a project the key does not read, a
    revoked key, and statements that would write, all fail;
 4. timings: a small join and BIG_ROWS rows, Flight SQL against HTTP Arrow
-   and HTTP JSON.
+   (read as it arrives, and buffered whole first) and HTTP JSON.
 """
 
 from __future__ import annotations
@@ -95,6 +95,28 @@ def fails(key: str | None, sql: str) -> str | None:
         return None
     except Exception as e:
         return f"{type(e).__name__}: {str(e).splitlines()[0][:120]}"
+
+
+class Body(io.RawIOBase):
+    """A streamed response body as a file, so pyarrow reads record batches as
+    they arrive instead of after the whole body (as ADBC does over Flight)."""
+
+    def __init__(self, response: httpx.Response):
+        self._chunks = response.iter_raw()
+        self._left = b""
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b) -> int:  # type: ignore[no-untyped-def]
+        while not self._left:
+            self._left = next(self._chunks, b"")
+            if not self._left:
+                return 0
+        n = min(len(b), len(self._left))
+        b[:n] = self._left[:n]
+        self._left = self._left[n:]
+        return n
 
 
 def median_ms(fn, n: int) -> float:
@@ -178,6 +200,10 @@ def main() -> None:
                 return cur.fetch_arrow_table()
 
         def http_arrow(sql: str) -> pa.Table:
+            with http.stream("POST", "/api/data/query", json={"sql": sql}, headers={**h, "Accept": ARROW}) as r:
+                return pa.ipc.open_stream(io.BufferedReader(Body(r), 1 << 20)).read_all()
+
+        def http_arrow_buffered(sql: str) -> pa.Table:  # the whole body first, then parse it
             r = http.post("/api/data/query", json={"sql": sql}, headers={**h, "Accept": ARROW})
             return pa.ipc.open_stream(io.BytesIO(r.content)).read_all()
 
@@ -186,19 +212,20 @@ def main() -> None:
 
         big = "select * from market.ticks"
         check("all rows over Flight SQL", flight(big).num_rows == BIG_ROWS)
-        check("all rows over HTTP Arrow", http_arrow(big).num_rows == BIG_ROWS)
+        check("all rows over HTTP Arrow", http_arrow(big).equals(http_arrow_buffered(big)) and http_arrow(big).num_rows == BIG_ROWS)
+        agg = "select sym, avg(px) from market.ticks group by 1"
         rows = [
-            ("small join", lambda: flight(JOIN), lambda: http_arrow(JOIN), lambda: http_json(JOIN, 500), 200),
+            ("small join", lambda: flight(JOIN), lambda: http_arrow(JOIN), lambda: http_arrow_buffered(JOIN),
+             lambda: http_json(JOIN, 500), 200),
             ("5,000 rows", lambda: flight(big + " limit 5000"), lambda: http_arrow(big + " limit 5000"),
-             lambda: http_json(big, 5000), 50),
-            (f"{BIG_ROWS:,} rows", lambda: flight(big), lambda: http_arrow(big), None, 10),
-            ("aggregate over them", lambda: flight("select sym, avg(px) from market.ticks group by 1"),
-             lambda: http_arrow("select sym, avg(px) from market.ticks group by 1"),
-             lambda: http_json("select sym, avg(px) from market.ticks group by 1", 500), 50),
+             lambda: http_arrow_buffered(big + " limit 5000"), lambda: http_json(big, 5000), 50),
+            (f"{BIG_ROWS:,} rows", lambda: flight(big), lambda: http_arrow(big), lambda: http_arrow_buffered(big), None, 10),
+            ("aggregate over them", lambda: flight(agg), lambda: http_arrow(agg), lambda: http_arrow_buffered(agg),
+             lambda: http_json(agg, 500), 50),
         ]
-        print(f"     {'':24s} {'Flight SQL':>12s} {'HTTP Arrow':>12s} {'HTTP JSON':>12s}")
-        for name, f, a, j, n in rows:
-            cells = [median_ms(f, n), median_ms(a, n), median_ms(j, n) if j else None]
+        print(f"     {'':24s} {'Flight SQL':>12s} {'HTTP Arrow':>12s} {'(buffered)':>12s} {'HTTP JSON':>12s}")
+        for name, f, a, b, j, n in rows:
+            cells = [median_ms(f, n), median_ms(a, n), median_ms(b, n), median_ms(j, n) if j else None]
             print(f"     {name:24s} " + " ".join(f"{c:9.1f} ms" if c is not None else f"{'(capped)':>12s}" for c in cells))
         conn.close()
     finally:

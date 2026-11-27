@@ -98,18 +98,22 @@ All checks pass with the stock ADBC Flight SQL driver (1.13):
   answers afterwards.
 
 Timings, median, one client on the same machine (`market.ticks` is 2,000,000
-rows of int64, double and text; HTTP is the data API on the same server):
+rows of int64, double and text; HTTP is the data API on the same server).
+HTTP Arrow reads the body as it arrives, as ADBC does; "buffered" is the
+benchmark's first client, which took the whole body and then parsed it:
 
-| | Flight SQL | HTTP Arrow | HTTP JSON |
-|---|---|---|---|
-| small cross-project join | 13.1 ms | 5.6 ms | 5.4 ms |
-| 5,000 rows | 18.5 ms | 10.9 ms | 21.4 ms |
-| 2,000,000 rows | 86.7 ms | 133.2 ms | (capped at 5,000) |
-| an aggregate over them | 27.4 ms | 21.2 ms | 21.2 ms |
+| | Flight SQL | HTTP Arrow | (buffered) | HTTP JSON |
+|---|---|---|---|---|
+| small cross-project join | 15.3 ms | 7.3 ms | 7.5 ms | 8.1 ms |
+| 5,000 rows | 21.8 ms | 16.5 ms | 16.0 ms | 4.2 ms |
+| 2,000,000 rows | 92.6 ms | 103.2 ms | 172.3 ms | (capped at 5,000) |
+| an aggregate over them | 36.4 ms | 28.1 ms | 28.2 ms | 1.7 ms |
 
-- **Big results are faster over Flight**, about 1.5× for 2 million rows:
-  gRPC streams record batches as they are, where HTTP sends one chunked body
-  the client reads and parses.
+Over runs, 2,000,000 rows took 89–102 ms over Flight, 103–117 ms over
+streamed HTTP Arrow and 168–186 ms buffered.
+
+- **Big results: HTTP is within about 10% of Flight.** Most of the old 2×
+  gap was the benchmark. See "HTTP Arrow" below.
 - **Small queries cost about 7 ms more.** ADBC makes four calls per query
   (prepare, plan, fetch, close), and each checks the key and reaches the
   hub's loaded projects from the Flight thread. Some of that can go: carry
@@ -120,6 +124,52 @@ rows of int64, double and text; HTTP is the data API on the same server):
   schema with `to_arrow_reader` executes the query; the server now binds a
   `LIMIT 0` of it instead, which took the aggregate from 64 ms to 27 ms.
   Worth remembering for any code that needs a schema before the data.
+
+## HTTP Arrow: where the 2,000,000 rows go
+
+The question was whether the data API's Arrow answers are slower than
+Flight because they are HTTP, or because of something we can fix. The test
+was `select * from market.ticks` over `POST /api/data/query` with
+`Accept: application/vnd.apache.arrow.stream`, timed in stages, with
+timestamps inside `ArrowStream` and py-spy on the server:
+
+| stage | time |
+|---|---|
+| request to first byte (key, plan, connection, first batch) | ~16 ms |
+| DuckDB producing the batches (`to_arrow_reader`, in process) | 65–80 ms |
+| Arrow IPC writes of those batches (`write_batch`) | 10–20 ms of that |
+| between handing Starlette a chunk and being asked for the next | ~30 ms (43 chunks, ~0.7 ms each) |
+| all bytes to a client that discards them (httpx streaming; curl) | 95–110 ms |
+| client decode of the body once it is in memory | 5–9 ms |
+| buffered client: `r.content`, then parse | +45–50 ms over streaming |
+
+The body is 46 MB, 41 record batches of up to 50,000 rows. DuckDB splits a
+batch where a row group ends, giving 50,000, 48,576 and 1,424 rows. That
+comes to 43 chunks with the schema and end marker. No middleware compresses
+or re-encodes the body.
+
+- **The gap was mostly the client.** The benchmark's HTTP client waited for
+  the whole 46 MB body, joined about 720 reads into one buffer, then parsed
+  it. ADBC decodes batches as they arrive. With the client reading the
+  stream as it comes (`check.py` now does both), 2,000,000 rows went from
+  about 172 ms to about 103 ms, against about 93 ms over Flight.
+- **The server is close to DuckDB's floor.** Producing the Arrow batches
+  takes 65–80 ms in process, and `to_arrow_table()` is no faster. The
+  Flight prototype reads the same way (`to_arrow_reader`), so both pay that.
+- **What is left, about 10 ms, is Python per chunk.** Over HTTP each batch
+  is written to the IPC stream in Python, then handed through Starlette's
+  thread hop and the auth middleware to uvicorn. Flight writes from C++.
+  One fix was tried: read one batch ahead on a worker thread, so DuckDB
+  works while the previous chunk is sent. In three alternating rounds it
+  made no measurable difference (curl 103–110 ms with and without it), so
+  it was not kept. Larger batches would change the bytes and the batch
+  sizes clients see, for a few milliseconds at most (1,000,000-row batches
+  took DuckDB 65 ms against 78 ms), so the server is unchanged.
+- **What this means for shipping Flight.** "Large pulls into dataframes"
+  is not a reason to ship Flight, provided the client streams. A Python
+  client can stream with pyarrow and httpx, as `check.py` does. Flight's
+  remaining advantages are the drivers (ADBC, JDBC, and BI tools that
+  speak Flight SQL), not throughput.
 
 ## What the JDBC check showed
 
@@ -193,10 +243,12 @@ stateless handles here avoid; answering "ok" and ignoring it would be worse.
 ## Leaning
 
 Worth shipping as an opt-in, for what HTTP can't do: BI tools and SQL
-clients that connect through a Flight SQL driver, and code that pulls large
-results into dataframes in another language. HTTP stays the data API's
-default, for agents and apps: it is faster for small queries, needs no
-second port, and has the OpenAPI spec (`/api/data/openapi.json`).
+clients that connect through a Flight SQL driver, and code in another
+language that already speaks ADBC. Speed for large pulls is not a reason:
+streamed HTTP Arrow comes within about 10% of Flight (see "HTTP Arrow"
+above). HTTP stays the data API's default, for agents and apps: it is faster
+for small queries, needs no second port, and has the OpenAPI spec
+(`/api/data/openapi.json`).
 
 The JDBC check took away the main unknown: with three small fixes the stock
 JDBC driver connects, browses and queries, so DBeaver and other JDBC tools
