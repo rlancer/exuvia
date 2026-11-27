@@ -3705,7 +3705,11 @@ curl -s https://hub.example.com/api/data/query \
 its own at `GET /api/data/openapi.json`: only the routes a key can use, the
 `exd_` bearer scheme, typed answers and errors, and the Arrow option. It
 needs no key, so hand an agent the hub's URL and a key and it can find the
-rest. (`/openapi.json` and `/docs` cover the whole HTTP API.)
+rest. The dialog that shows a new key does that for you: beside the `curl`
+example it has a prompt to paste into a coding agent, with the address, the
+key, how to keep the key out of a commit and the spec to start from, and it
+links these docs and the spec. (`/openapi.json` and `/docs` cover the whole
+HTTP API.)
 
 | Route | |
 |---|---|

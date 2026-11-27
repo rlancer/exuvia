@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useState, type ReactNode } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { spacingVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { Banner } from "@astryxdesign/core/Banner";
@@ -8,8 +8,10 @@ import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { Code as InlineCode } from "@astryxdesign/core/Code";
 import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
+import { Link } from "@astryxdesign/core/Link";
 import { List, ListItem } from "@astryxdesign/core/List";
 import { Spinner } from "@astryxdesign/core/Spinner";
+import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { VStack } from "@astryxdesign/core/VStack";
@@ -27,14 +29,50 @@ function Note({ children }: { children: ReactNode }) {
   );
 }
 
+/** The data API's section of the docs, and the same page as Markdown for an agent. */
+const DOCS = "https://exuvia.lobster.mp/docs/hub/#data-api-read-only-keys-for-your-own-apps";
+const DOCS_MD = "https://exuvia.lobster.mp/docs/hub.md";
+
+/** The data API's own OpenAPI spec on the hub at `origin`: the routes a key can use, read with no key. */
+export const specUrl = (origin: string) => `${origin}/api/data/openapi.json`;
+
+/**
+ * A prompt to paste into a coding agent with a new key: where the API is,
+ * how to send the key and keep it out of a commit, and to start from the
+ * spec, which describes the rest.
+ */
+export function agentPrompt(origin: string, key: string, projects: string[]): string {
+  const [first] = projects;
+  return [
+    "Build on data from an exuvia hub through its data API: read-only HTTP over the outputs of the projects this key reads.",
+    "",
+    `- Address: ${origin}/api/data/`,
+    `- Key: ${key}`,
+    "- Send the key as the header `Authorization: Bearer <key>`, and keep it out of code you commit: read it from an environment variable such as EXUVIA_DATA_KEY, set in a .env file that git ignores.",
+    `- Projects it reads: ${projects.join(", ")}. In SQL each project is a catalog of its own: "${first}".<node>.`,
+    "",
+    `1. Fetch ${specUrl(origin)} (no key needed). It describes every route, its answers and its errors: follow it.`,
+    `2. GET ${origin}/api/data/projects with the key: each project's nodes, with their columns and row counts.`,
+    "3. Read a node's output, or POST one SELECT to /api/data/query (it can join projects). For typed columns and every row, send `Accept: application/vnd.apache.arrow.stream`.",
+    "",
+    `The data API's docs, as Markdown: ${DOCS_MD} (the section "Data API: read-only keys for your own apps").`,
+  ].join("\n");
+}
+
+type Try = "agent" | "curl";
+const TRY: { id: Try; label: string; hint: string }[] = [
+  { id: "agent", label: "Ask your agent", hint: "Paste this into Claude Code, Cursor, Codex or any coding agent: it reads the spec and builds from there." },
+  { id: "curl", label: "curl", hint: "Run this in a terminal to see what the key reads." },
+];
+
 /** What an app sends with a new key: one query across the projects it reads. */
-function example(key: string, projects: string[]): string {
+export function curlExample(origin: string, key: string, projects: string[]): string {
   const [first] = projects;
   const sql = `select * from "${first}".<node> limit 10`;
   return [
-    `curl -s ${location.origin}/api/data/projects -H "Authorization: Bearer ${key}"`,
+    `curl -s ${origin}/api/data/projects -H "Authorization: Bearer ${key}"`,
     "",
-    `curl -s ${location.origin}/api/data/query \\`,
+    `curl -s ${origin}/api/data/query \\`,
     `  -H "Authorization: Bearer ${key}" -H "Content-Type: application/json" \\`,
     `  -d '${JSON.stringify({ sql })}'`,
   ].join("\n");
@@ -55,6 +93,9 @@ export function DataKeysDialog(props: { onClose: () => void }) {
   const [name, setName] = useState("");
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  const [tryWith, setTryWith] = useState<Try>("agent");
+  const panel = useId();
+  const current = TRY.find((t) => t.id === tryWith)!;
 
   const load = useCallback(() => dataKeysApi.list().then(setKeys).catch((e: Error) => setErr(e.message)), []);
   useEffect(() => {
@@ -126,6 +167,14 @@ export function DataKeysDialog(props: { onClose: () => void }) {
           its projects at once, each project a schema of its own (<InlineCode>"sales".orders</InlineCode>), as JSON or
           Arrow. It can't change anything, and it never reads more than you can open.
         </Text>
+        <HStack gap={4} wrap="wrap">
+          <Link isExternalLink href={DOCS}>
+            Data API docs
+          </Link>
+          <Link isExternalLink href={specUrl(location.origin)}>
+            OpenAPI spec
+          </Link>
+        </HStack>
         {err && <Banner role="alert" status="error" title={err} />}
         {made && (
           <VStack gap={2}>
@@ -133,9 +182,23 @@ export function DataKeysDialog(props: { onClose: () => void }) {
             <Code text={made.key} />
             <Note>
               <InlineCode>{made.name}</InlineCode> reads {made.projects.join(", ")}. This is the only time it is shown: keep it out of
-              code you commit, and make another if you lose it. To try it:
+              code you commit, and make another if you lose it.
             </Note>
-            <Code text={example(made.key, made.projects)} />
+            <TabList role="tablist" size="sm" hasDivider value={tryWith} onChange={(t) => setTryWith(t as Try)}>
+              {TRY.map((t) => (
+                <Tab key={t.id} value={t.id} label={t.label} panelId={panel} />
+              ))}
+            </TabList>
+            <VStack gap={2} id={panel} role="tabpanel" aria-label={current.label}>
+              {tryWith === "agent" ? (
+                <Code text={agentPrompt(location.origin, made.key, made.projects)} wrap />
+              ) : (
+                <Code text={curlExample(location.origin, made.key, made.projects)} />
+              )}
+              <Note>
+                {current.hint} The key is in it: keep it to yourself, and don't commit it.
+              </Note>
+            </VStack>
           </VStack>
         )}
         <form onSubmit={save}>
