@@ -32,6 +32,7 @@ from typing import Any
 from . import envvars
 from .artifacts import artifact_store
 from .db import HUB_STORES, database_url, shared_database
+from .pool import WarmPool
 from .project import VIEW_DIR, Project
 from .store import Store, project_scope, stored_paths_at
 
@@ -59,6 +60,10 @@ HUB_PACKAGES = ".exuvia/packages"
 # cache shared by them, beside them.
 HUB_NPM = ".exuvia/npm"
 NPM_REL = ".exuvia/npm/"
+# Where the hub's warm runners (Hub.pool) start: a folder of their own, so
+# their warm imports never search the hub's folder, where a project named
+# like a library would shadow it.
+HUB_RUNNERS = ".exuvia/runners"
 # Pauses between attempts to remove a folder (see _remove_tree).
 REMOVE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8)
 
@@ -111,6 +116,19 @@ class Hub:
         # The hub's ASGI app (set by create_hub_app): its MCP endpoint calls
         # the hub's API in process (mcp_http.HubLocalBackend).
         self.app: Any = None
+        # Warm runners for every project's runs (pool.py), started with the
+        # hub (start) and closed with it; a project stopping leaves them be.
+        # None when nodes run on a remote executor (EXUVIA_EXECUTOR_URL).
+        self.pool: WarmPool | None = (
+            None if os.environ.get("EXUVIA_EXECUTOR_URL") else WarmPool(self.root / HUB_RUNNERS, warm_runners())
+        )
+        self._pool_started = False
+
+    def start(self) -> None:
+        """Warm the shared runners (once; get() does it too)."""
+        if self.pool is not None and not self._pool_started:
+            self._pool_started = True
+            self.pool.start()
 
     # -- projects ------------------------------------------------------------
     def exists(self, project_id: str) -> bool:
@@ -164,6 +182,7 @@ class Hub:
         from .server import Ctx
         from .workspace import Workspace
 
+        self.start()
         async with self._project_lock(project_id):
             ctx = self._ctxs.get(project_id)
             if ctx is None:
@@ -172,10 +191,10 @@ class Hub:
                     origin=self._load_origin.pop(project_id, "load"),
                     packages_store=self.root / HUB_PACKAGES,
                     npm_store=self.root / HUB_NPM,
+                    pool=self.pool,
                 )
                 ws.api_prefix = f"/p/{project_id}/api"
                 ws.runners, ws.project_id = self.runners, project_id
-                ws.prewarm = False  # runners warm at the project's first run (Workspace.prewarm)
                 if self.groups is not None:
                     ws.inherited_env = lambda pid=project_id: self.inherited_env(pid)
                 try:
@@ -359,6 +378,8 @@ class Hub:
             for pid in list(self._project_locks):
                 async with self._project_lock(pid):  # a load in progress finishes first
                     await self._unload(pid)
+        if self.pool is not None:
+            self.pool.close()
         if self.data_keys is not None:
             self.data_keys.close()  # writes the usage still counted in memory, before the database closes
         if self.sharing is not None:
@@ -531,6 +552,16 @@ class Hub:
                 finally:
                     self._structural += 1
         return found
+
+
+def warm_runners() -> int:
+    """How many runners a hub keeps warm for all its projects together:
+    ``EXUVIA_HUB_WARM_RUNNERS``, by default ``EXUVIA_MAX_PARALLEL`` (4)."""
+    raw = os.environ.get("EXUVIA_HUB_WARM_RUNNERS") or os.environ.get("EXUVIA_MAX_PARALLEL") or "4"
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        raise ValueError(f"EXUVIA_HUB_WARM_RUNNERS must be a whole number, not {raw!r}") from None
 
 
 async def _remove_tree(path: Path) -> None:

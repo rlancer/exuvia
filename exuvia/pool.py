@@ -58,16 +58,29 @@ def kill(proc: "subprocess.Popen[bytes]") -> None:
 
 
 class WarmPool:
+    """``size`` idle runners, started in ``cwd``. A runner holds nothing of a
+    project until it is handed a spec (runner.execute moves into the
+    project's folder and takes its packages and variables from the spec), so
+    one pool can serve many projects: a hub's projects share one
+    (Hub.pool). Its ``cwd`` is then a folder of its own, not the hub's: the
+    warm imports search the folder a runner starts in, where a project
+    folder named like a library would shadow it."""
+
     def __init__(self, cwd: Path, size: int):
         self.cwd = cwd
         self.size = max(0, size)
         self._idle: list[subprocess.Popen[bytes]] = []
         self._lock = threading.Lock()
         self._closed = False
+        # One thread refills at a time: with one per take(), a burst of
+        # takes from many projects each saw the pool short and each started
+        # a runner, leaving far more than ``size`` idle afterwards.
+        self._refilling = False
 
     def _spawn(self) -> subprocess.Popen[bytes]:
         env = {**node_environ(), "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        self.cwd.mkdir(parents=True, exist_ok=True)
         return subprocess.Popen(
             [sys.executable, "-m", "exuvia.runner", "--warm"],
             stdin=subprocess.PIPE,
@@ -83,20 +96,39 @@ class WarmPool:
         )
 
     def _refill(self) -> None:
-        while True:
+        try:
+            while True:
+                with self._lock:
+                    self._idle = [p for p in self._idle if p.poll() is None]
+                    if self._closed or len(self._idle) >= self.size:
+                        self._refilling = False
+                        return
+                proc = self._spawn()
+                with self._lock:
+                    if self._closed:
+                        kill(proc)
+                        self._refilling = False
+                        return
+                    self._idle.append(proc)
+        except BaseException:
             with self._lock:
-                self._idle = [p for p in self._idle if p.poll() is None]
-                if self._closed or len(self._idle) >= self.size:
-                    return
-            proc = self._spawn()
-            with self._lock:
-                if self._closed:
-                    kill(proc)
-                    return
-                self._idle.append(proc)
+                self._refilling = False
+            raise
+
+    def _start_refill(self) -> None:
+        with self._lock:
+            if self._refilling or self._closed or not self.size:
+                return
+            self._refilling = True
+        threading.Thread(target=self._refill, daemon=True).start()
 
     def start(self) -> None:
-        threading.Thread(target=self._refill, daemon=True).start()
+        self._start_refill()
+
+    def idle(self) -> int:
+        """Runners waiting, warm or still warming."""
+        with self._lock:
+            return sum(1 for p in self._idle if p.poll() is None)
 
     def take(self) -> subprocess.Popen[bytes]:
         """A worker waiting for a spec path on stdin (warm if one is ready)."""
@@ -107,8 +139,7 @@ class WarmPool:
                     break
             else:
                 proc = None
-        if self.size:
-            threading.Thread(target=self._refill, daemon=True).start()
+        self._start_refill()
         return proc or self._spawn()
 
     def close(self) -> None:

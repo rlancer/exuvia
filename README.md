@@ -1977,9 +1977,14 @@ The **control plane** is the only stateful part. **Executors** run one node
 at a time and return a content-addressed artifact; they hold no project state.
 
 - **Local (default):** a pool of pre-warmed, single-use subprocesses on the
-  same machine (`EXUVIA_MAX_PARALLEL`, 4, per project). In a hub a project
-  fills its pool at its first run rather than when it loads, so a hub of
-  many projects keeps runners warm only for those that run.
+  same machine (`EXUVIA_MAX_PARALLEL`, 4, per project). A hub keeps one
+  pool for all its projects (`EXUVIA_HUB_WARM_RUNNERS`, by default
+  `EXUVIA_MAX_PARALLEL`), warmed as it starts: a warm runner holds nothing
+  of a project until it is handed a run, and each is about 55 MB, so a hub
+  of many projects keeps a few warm, not a few per project. A run that finds
+  none warm starts its own, about a second slower; raise the setting for
+  hubs whose projects often run in bursts (many schedules due in the same
+  minute).
 - **Remote:** `exuvia executor` is a plain HTTP service — the same image runs
   on Cloudflare Containers, Fly, Cloud Run, Kubernetes, or a box under a desk.
   Point a control plane at it with `--executor URL` / `EXUVIA_EXECUTOR_URL`.
@@ -2864,6 +2869,7 @@ empty file, stops exuvia with an error.
 | `EXUVIA_FAILURE_TRIGGERS` | `schedule,cascade` | which failed runs the env webhook reports (`all`, or any of `schedule`, `cascade`, `manual`, `backfill`) |
 | `EXUVIA_PUBLIC_URL` | — | where this server is reachable (e.g. `https://exuvia.example.com`), for run links in failure webhooks |
 | `EXUVIA_MAX_PARALLEL` | 4 | concurrent node runs (control plane and executor) |
+| `EXUVIA_HUB_WARM_RUNNERS` | `EXUVIA_MAX_PARALLEL` | on a hub: runners kept warm for all its projects together (about 55 MB each; see [Architecture](#architecture-control-plane--executors)) |
 | `EXUVIA_RUN_TIMEOUT` | 1800 | seconds before a node run is killed |
 | `EXUVIA_RUNNER_WAIT` | 3600 | seconds a run of a `runs_on` node waits for a runner to take it before it fails (see "Runners") |
 | `EXUVIA_RUNNER_SILENCE` | 120 | seconds without a heartbeat after which a run a runner took fails |

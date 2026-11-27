@@ -1,15 +1,18 @@
 """How a hub loads its projects: one at a time per project, never behind
-another project's load, without warming runners until a project runs, and
+another project's load, with one pool of warm runners for all of them, and
 with file watchers that hold none of the threads the server's sync routes
 and streamed answers share."""
 
 import asyncio
+import subprocess
+import sys
+import threading
 import time
 from pathlib import Path
 
 import anyio.to_thread
 
-from exuvia import workspace as workspace_mod
+from exuvia import pool as pool_mod
 from exuvia.hub import Hub
 from exuvia.workspace import Workspace
 
@@ -87,27 +90,87 @@ def test_delete_waits_for_the_projects_load(tmp_path, monkeypatch):
     asyncio.run(go())
 
 
-def test_hub_projects_warm_their_runners_at_their_first_run(tmp_path, monkeypatch):
+def test_hub_projects_share_the_hubs_warm_runners(tmp_path, monkeypatch):
     started = []
-    monkeypatch.setattr(workspace_mod.LocalExecutor, "start", lambda self: started.append(self))
-    hub = make_hub(tmp_path, "a")
+    monkeypatch.setattr(pool_mod.WarmPool, "start", lambda self: started.append(self))
+    hub = make_hub(tmp_path, "a", "b")
 
     async def go():
-        ctx = await hub.get("a")
-        assert ctx.ws.prewarm is False and started == []
+        a, b = await hub.get("a"), await hub.get("b")
+        assert a.ws.executor.pool is hub.pool and b.ws.executor.pool is hub.pool
+        assert started == [hub.pool]  # warmed once, for both
+        # Its runners start in a folder of their own, not the hub's (where
+        # a project named like a library would shadow it).
+        assert hub.pool.cwd == hub.root / ".exuvia" / "runners"
         await hub.close()
 
     asyncio.run(go())
 
-    # A project served on its own still warms them as it loads.
+    # A project served on its own still warms a pool of its own as it loads.
     async def alone():
         ws = Workspace(tmp_path / "alone")
         await ws.start()
-        assert started == [ws.executor]
+        assert started[1:] == [ws.executor.pool] and ws.executor.pool is not hub.pool
         await ws.stop()
         ws.store.close()
 
     asyncio.run(alone())
+
+
+def wait_for(cond, timeout: float = 30) -> None:
+    deadline = time.time() + timeout
+    while not cond():
+        assert time.time() < deadline, "timed out"
+        time.sleep(0.05)
+
+
+def sleeper(self) -> subprocess.Popen:
+    """A stand-in runner: a process that waits, with no imports to pay for."""
+    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+
+
+def test_a_project_stopping_leaves_the_shared_runners_and_the_hub_closing_ends_them(tmp_path, monkeypatch):
+    monkeypatch.setattr(pool_mod.WarmPool, "_spawn", sleeper)
+    hub = make_hub(tmp_path, "a", "b")
+    hub.pool.size = 2  # tests run with empty pools (conftest.py)
+
+    async def go():
+        await hub.get("a")
+        await hub.get("b")
+        wait_for(lambda: hub.pool.idle() == 2)
+        warm = list(hub.pool._idle)
+        await hub.delete("a")  # stops a's workspace and closes its executor
+        await hub._unload("b")
+        assert hub.pool.idle() == 2 and all(p.poll() is None for p in warm)
+        assert not hub.pool._closed
+        await hub.close()
+        assert hub.pool._closed
+        for p in warm:
+            p.wait(10)  # killed
+
+    asyncio.run(go())
+
+
+def test_a_burst_of_takes_refills_the_pool_to_its_size_not_beyond(tmp_path, monkeypatch):
+    monkeypatch.setattr(pool_mod.WarmPool, "_spawn", sleeper)
+    pool = pool_mod.WarmPool(tmp_path, 0)
+    pool.size = 2
+    pool.start()
+    wait_for(lambda: pool.idle() == 2)
+    taken = []
+    threads = [threading.Thread(target=lambda: taken.append(pool.take())) for _ in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    wait_for(lambda: not pool._refilling)
+    try:
+        assert len(taken) == 12 and pool.idle() == 2
+    finally:
+        pool.close()
+        for p in taken:
+            pool_mod.kill(p)
+            p.wait(10)
 
 
 def test_file_watchers_hold_none_of_anyios_threads(tmp_path):

@@ -106,12 +106,17 @@ class Executor(Protocol):
 
 # -- local ------------------------------------------------------------------
 class LocalExecutor:
-    def __init__(self, cwd: Path, workers: int, packages_dir: Path | None = None):
+    def __init__(
+        self, cwd: Path, workers: int, packages_dir: Path | None = None, pool: WarmPool | None = None,
+    ):
         """``packages_dir`` holds the installs of the packages projects
         declare in their pyproject.toml, shared by every project run here (an
         executor service); by default each project keeps its own, under
-        ``.exuvia/packages``."""
-        self.pool = WarmPool(cwd, size=workers)
+        ``.exuvia/packages``. ``pool``: warm runners shared with other
+        executors (a hub's, Hub.pool), which its owner starts and closes;
+        by default the executor has a pool of ``workers`` of its own."""
+        self._owns_pool = pool is None
+        self.pool = WarmPool(cwd, size=workers) if pool is None else pool
         self.packages_dir = packages_dir
         # A workspace's live view of its project's packages (set by
         # Workspace): installs through it show up in the workbench.
@@ -122,12 +127,15 @@ class LocalExecutor:
         self._lock = threading.Lock()
 
     def start(self) -> None:
-        self.pool.start()
+        if self._owns_pool:
+            self.pool.start()
 
     def close(self) -> None:
+        """Stop this executor's runs, and its own pool (a shared one stays)."""
         for p in list(self._procs.values()):
             kill(p)
-        self.pool.close()
+        if self._owns_pool:
+            self.pool.close()
 
     def execute(self, req: ExecRequest, on_log: LogFn) -> ExecResult:
         with self._lock:
@@ -492,8 +500,8 @@ def _combined(paths: list[str]) -> bytes:
         return out.read_bytes()
 
 
-def make_executor(root: Path, workers: int) -> Executor:
+def make_executor(root: Path, workers: int, pool: WarmPool | None = None) -> Executor:
     url = os.environ.get("EXUVIA_EXECUTOR_URL")
     if url:
         return RemoteExecutor(url, os.environ.get("EXUVIA_EXECUTOR_TOKEN"))
-    return LocalExecutor(root, workers)
+    return LocalExecutor(root, workers, pool=pool)
