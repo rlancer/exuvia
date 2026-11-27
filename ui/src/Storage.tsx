@@ -13,7 +13,7 @@ import { Text } from "@astryxdesign/core/Text";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { VStack } from "@astryxdesign/core/VStack";
 import { api, type StorageNode, type StoragePart, type StoragePartitioned, type StorageState } from "./api";
-import { IconGear } from "./icons";
+import { IconDisk } from "./icons";
 import { ago, fmtBytes, fmtNum } from "./util";
 
 /** How long the page waits after a graph or run event before reading again. */
@@ -339,7 +339,7 @@ export function Storage(props: {
   return (
     <section {...stylex.props(styles.page)}>
       <div {...stylex.props(styles.head)}>
-        <IconGear />
+        <IconDisk />
         <Heading level={4} accessibilityLevel={2}>
           Storage
         </Heading>

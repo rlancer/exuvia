@@ -100,10 +100,10 @@ export const IconFilter = icon(<path d="M2.5 3h11L9.5 8.2v4l-3 1.3V8.2z" />);
 export const IconFilterOn = icon(<path d="M2.5 3h11L9.5 8.2v4l-3 1.3V8.2z" fill="currentColor" />);
 /** A table of contents: entries, the second level indented. */
 export const IconContents = icon(<path d="M2.5 3.5h.01M5 3.5h8.5M5 8h.01M7.5 8h6M5 12.5h.01M7.5 12.5h6" />);
-/** A gear: the project's own details (its storage). */
-export const IconGear = icon(
+/** A disk: what a project keeps stored (the Storage page). */
+export const IconDisk = icon(
   <>
-    <path d="M12.54 6.16 L14.3 6.89 L14.3 9.11 L12.54 9.84 L12.51 9.91 L13.24 11.67 L11.67 13.24 L9.91 12.51 L9.84 12.54 L9.11 14.3 L6.89 14.3 L6.16 12.54 L6.09 12.51 L4.33 13.24 L2.76 11.67 L3.49 9.91 L3.46 9.84 L1.7 9.11 L1.7 6.89 L3.46 6.16 L3.49 6.09 L2.76 4.33 L4.33 2.76 L6.09 3.49 L6.16 3.46 L6.89 1.7 L9.11 1.7 L9.84 3.46 L9.91 3.49 L11.67 2.76 L13.24 4.33 L12.51 6.09z" />
-    <circle cx="8" cy="8" r="2" />
+    <ellipse cx="8" cy="3.8" rx="5.2" ry="1.8" />
+    <path d="M2.8 3.8v8.4c0 1 2.3 1.8 5.2 1.8s5.2-.8 5.2-1.8V3.8M2.8 8c0 1 2.3 1.8 5.2 1.8s5.2-.8 5.2-1.8" />
   </>,
 );

@@ -1553,7 +1553,7 @@ it at start.
   the next dozen fires across the project; and the live nodes with the views
   that refresh them. `GET /api/schedule` is the same as JSON (times in Unix
   seconds).
-- **The Storage tab** (the gear after Schedule, `#storage`) shows what the
+- **The Storage tab** (after Schedule, `#storage`) shows what the
   project keeps on disk: `.exuvia/` by what is in it (outputs, the records
   database, packages, caches) beside the project's own files; every node's
   outputs, the current one and those kept from earlier runs, with rows and
