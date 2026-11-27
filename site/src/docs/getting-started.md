@@ -308,7 +308,7 @@ flash on the canvas. What it writes are ordinary files in `nodes/`, which you
 can read, edit and commit like the ones you wrote. [The agent](#the-agent)
 covers providers, local models and project notes.
 
-![The workbench after an agent turn. The agent panel lists its steps: looked at the graph, read prices, wrote drawdown, ran drawdown, then a summary. The new drawdown node is selected on the canvas, with its chart.](shot:agent "The agent on the example project in the repository (`examples/markets`), asked for a drawdown node per ticker with a chart.")
+![The workbench after an agent turn. The agent panel shows the request, the run of drawdown, the agent fixing a stray index column it noticed in the output, then a summary. The new drawdown node is selected in its stage on the canvas, with its chart over its rows.](shot:agent "The agent on the example project in the repository (`examples/markets`), asked for a drawdown node per ticker with a chart.")
 
 ## Where to go next
 

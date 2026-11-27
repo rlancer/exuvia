@@ -28,6 +28,8 @@ universe ──► prices (cron 17:00 weekdays) ──► returns ──► roll
 | Dependencies | hidden state / reactive cells | declared in code | **function parameters & SQL table names** |
 | Scheduling | none | whole DAG / asset jobs | **per node, cron, cascades downstream** |
 | Iteration loop | fast | slow (deploy) | **fast — edit, run, see data** |
+| Reading it | top to bottom | a DAG diagram and a run log | **a canvas, or the same graph as a notebook** |
+| Outputs | in memory, gone when the kernel restarts | whatever each task writes | **Parquet for every run, in your bucket, queryable with SQL** |
 | AI | sidebar chat | none | **agent with tools over the graph** |
 | Custom UI | widgets and HTML built from Python | none (a separate app) | **views: TypeScript, React and CSS in files of their own** |
 | Storage | `.ipynb` JSON | Python package | **one plain file per node, git-friendly** |
@@ -235,6 +237,10 @@ row in the selection, read with SQL once the selection stops moving. Clear
 shows them all again. A chart that sets its own `params`, or layers, facets
 or concatenates views, is drawn as written, without the link. A node
 with several outputs opens on the one its chart draws (its first table).
+A filter on the rows (below) narrows the chart too: it draws the rows that
+pass it, and says how many. Pointed at, the chart shows its tools in its top
+corner: save it as PNG or SVG, or open it full screen, where it fills the
+window and its rows fold away under it until asked for.
 
 **The Data tab** shows every row of a table output, whether it has ten or
 ten million. Only the rows in view are drawn, and they are read from the
@@ -246,7 +252,8 @@ count, because a browser lays out only so tall a page. Over the rows, each
 column's header says how many values are missing and its smallest and
 largest, and a line gives the output's shape and size: these come from the
 output's Parquet footers, so they cost the same for any number of rows. A
-notebook cell shows the first rows only.
+notebook cell and a chart opened full screen hold the same table, with all
+of what follows.
 
 The rows can be asked for another way, and each way reads the whole output
 with SQL, a page at a time like the rest:
@@ -1093,8 +1100,9 @@ node's cell.
 - **Each node is a cell**: its state, what it is for (its docstring or
   description, rendered as Markdown: see "Nodes"), what it reads (each a
   link to that cell), its code (folded;
-  a click opens it in the inspector's editor), the first rows of its output
-  under its chart when it has one, and Run.
+  a click opens it in the inspector's editor), its output's rows under its
+  chart when it has one (the Data tab's table: every row, filtered, sorted
+  or queried the same way, with the column insights), and Run.
 - **Views** come right after the last node they read: a pinned view
   (`canvas` in its view.json) rendered live, as on the canvas; any other
   view a line that opens it.
@@ -1112,7 +1120,7 @@ node's cell.
   rail with one button; the browser remembers which, and on a notebook
   wider than 1000px they start open. Where the notebook is narrower than
   600px they open over it and close after a pick.
-- Cells load as they scroll into view, each output's preview with them.
+- Cells load as they scroll into view, each output's rows with them.
   A viewer of a shared project reads the notebook without Run and Edit.
 
 ## Downloads
@@ -1619,15 +1627,9 @@ it at start.
   the next dozen fires across the project; and the live nodes with the views
   that refresh them. `GET /api/schedule` is the same as JSON (times in Unix
   seconds).
-- **The Storage tab** (after Schedule, `#storage`) shows what the
-  project keeps on disk: `.exuvia/` by what is in it (outputs, the records
-  database, packages, caches) beside the project's own files; every node's
-  outputs, the current one and those kept from earlier runs, with rows and
-  Parquet compression; the Parquet files' rows, row groups and codecs from
-  their footers; each partitioned output's files against its compaction
-  limit and the chunks compaction or corrections replaced; and how many
-  runs, code versions and conversations the records hold. Nothing is
-  deleted from it. `GET /api/storage` is the same as JSON.
+- **The Storage tab** (after Schedule, `#storage`) shows what the project
+  keeps on disk, by node, with Parquet compression and compaction: see
+  [Storage](#storage-every-output-kept-as-parquet).
 - **A scheduled run is for its cron slot.** A `date` run parameter whose
   default is `today` gets the date of the slot the run was due at, in the
   project `timezone`, not the date it happened to start. A run delayed past
@@ -1834,6 +1836,99 @@ jobs:
 
 With `main` checked out, its files move along with each project's commits.
 One branch per project (`--branch sales`) still works too, without a prefix.
+
+## Storage: every output kept, as Parquet
+
+A project is its own small data lake. Every run of every node stores what it
+returned as a Parquet file, beside a record of the code and the inputs that
+made it, on the project's disk or in a bucket of yours, and all of it can be
+read with SQL: from the workbench, by the agent, from your own apps, or by
+anything that reads Parquet. There is nothing to set up first: no table
+format to pick, no catalog to run, no query engine to host, and no job that
+copies results somewhere they can be queried.
+
+**What is kept**
+
+- **Every output, as a file named by its content.** A run writes its result
+  to `.exuvia/artifacts/<node>/<digest>.parquet` (a JSON value as `.json`,
+  several outputs as one `.zip` with a member each). The name is a hash of
+  the bytes, so a file never changes once written, and a run that returns
+  the same rows writes the same file: nothing new is stored, and nothing
+  downstream runs again (see "Execution model").
+- **Nothing is overwritten, and exuvia never deletes an output.** A new
+  run's output is a new file beside the last, and every earlier one stays
+  readable: `?run_id=` on `GET /api/nodes/{name}/data` and `/export`, a
+  run's Download in the Runs tab, or the file itself (below). Outputs go
+  only when their project is deleted.
+- **Each output knows its code.** A run records the hash of the code it ran
+  and the outputs it read, and every saved version of the code is kept
+  under the same hash, so any number in any output can be traced to the
+  file that made it (see "Execution model").
+- **One output per run date.** A node that reads a run parameter keeps one
+  output per value, and `<node>__runs` reads all of them as one table, with
+  a column per parameter (see "Run parameters and replays").
+- **A history that grows each run.** A partitioned node keeps one output
+  that each run adds to, a day (or any value) at a time: a run replaces the
+  partitions it returns and keeps the rest, or, with `merge=True`, updates
+  and inserts rows by key. Rows identical to what is stored write nothing
+  (see "Partitioned nodes").
+- **No row twice.** A `key` is checked on every output before it is stored,
+  across the whole history of a partitioned node; a run that would store a
+  duplicate fails and the previous output stays (see "Keys").
+- **Compacted as it grows.** Each file costs a reader a little, so once a
+  partitioned output has more than `EXUVIA_COMPACT_AFTER` (default 30)
+  files beyond one per year, each year's files are merged into one.
+  Compaction moves rows between files and nothing else: the output keeps
+  its id, nothing goes stale, and every earlier version of the file list
+  stays in the records, so an earlier run's output still reads as it was.
+
+**The files.** Tables are written as current Parquet: format version 2.6,
+v2 data pages, zstd compression, page indexes (readers skip pages they
+don't need) and page checksums. pyarrow, pandas and DuckDB read them as
+they are, and so does DuckDB-Wasm in a browser. Paths are stored
+relative to the project, so a project folder can be moved or restored with
+its outputs. A push node's uploads and a runner's outputs land here like
+any other run's.
+
+**Where they live.** By default, in the project's `.exuvia/` folder. Set
+`EXUVIA_ARTIFACT_STORE=s3://bucket/prefix` and an S3-compatible bucket (AWS
+S3, Cloudflare R2, MinIO, ...) becomes the durable copy: each output is
+uploaded when its run finishes, under
+`<prefix>/<project>/<node>/<digest>.<ext>`, and the local folder becomes a
+cache that a fresh container fills as it reads. The bucket can be one you
+already use: [Outputs in an existing bucket](#outputs-in-an-existing-bucket)
+says what exuvia touches in it and how to limit its credentials to its
+prefix, and [Schedules, auth and settings](#schedules-auth-and-settings)
+lists the `EXUVIA_S3_*` settings. The small rows beside the files (runs,
+schedules, code versions, conversations) go to SQLite or Postgres: see
+"Records".
+
+**Reading it**
+
+| From | How |
+|---|---|
+| The workbench | A node's Data tab and its notebook cell: every row, filtered with SQL or in words, sorted, queried; Download as CSV, Excel, Parquet or JSON (see "Nodes" and "Downloads") |
+| SQL | `query_data` (the agent's, and over MCP) and `POST /api/query`: DuckDB over every node's current output, each a table named after its node, with `<node>__runs` for every parameter set that has run |
+| Views | `useTable` and `useQuery` read outputs into your own React UI (see "Views") |
+| Your own apps | [Data API](#data-api-read-only-keys-for-your-own-apps) keys: read-only, one SQL query across the projects a key reads, JSON or Arrow |
+| Any Parquet reader | `GET /api/artifacts/{node}/{artifact_id}.parquet`: the stored file, immutable and cacheable, with `Range` requests for readers that fetch only the footer and the columns they need. A partitioned output's files are listed by `GET /api/nodes/{name}/partitions` (see [Binary data](#binary-data-arrow-and-parquet)) |
+
+**The Storage tab** (after Schedule, `#storage`) shows what the project
+keeps: `.exuvia/` by what is in it (outputs, the records database,
+packages, caches) beside the project's own files; every node's outputs,
+the current one and those kept from earlier runs, with rows and Parquet
+compression; the Parquet files' rows, row groups and codecs from their
+footers; each partitioned output's files against its compaction limit and
+the chunks compaction or corrections replaced; and how many runs, code
+versions and conversations the records hold. It reads the disk, the
+records and the Parquet footers, never an output's rows.
+`GET /api/storage` is the same as JSON.
+
+**What it is not.** exuvia is the only writer: outputs are made by runs
+and pushes, not by other engines writing into a table, and other tools read
+the files rather than a table format with a catalog (Iceberg, Delta).
+Nothing is ever removed to save space, so a node that runs often grows;
+the Storage tab shows by how much.
 
 ## Records: SQLite, Postgres, or your own adapter
 
@@ -2774,6 +2869,7 @@ empty file, stops exuvia with an error.
 | `HTTPS_PROXY` / `NO_PROXY` | direct | the proxy that package installs, exuvia's other outbound HTTPS and nodes' own requests go through, and the hosts reached without it (see "Package installs on an isolated network" and "Nodes that can't reach their data" above) |
 | `EXUVIA_EXECUTOR_DIR` | temp | executor scratch space |
 | `EXUVIA_CHUNK_TTL_DAYS` | 7 | days an executor keeps a partitioned input's file that no run has used |
+| `EXUVIA_COMPACT_AFTER` | 30 | files a partitioned output may have beyond one per year before each year's files are merged into one (see "Storage") |
 | `EXUVIA_PROVIDER` | auto | `anthropic`, `openrouter`, `portkey`, or `openai` (any OpenAI-compatible server) |
 | `EXUVIA_MODEL` | per provider | agent model (see below) |
 | `EXUVIA_EFFORT` | `medium` | Claude effort level |
