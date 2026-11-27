@@ -1694,10 +1694,14 @@ exuvia mirror ../sales-code --project .
   commit it did not make. Edit the code in exuvia, not in the mirror.
 
 To keep a GitHub mirror current without a machine of your own, run it on a
-schedule in the mirror repository itself:
+schedule in the mirror repository itself. The workflow file is a commit the
+mirror did not make, so keep it off the `exuvia` branch: leave it on the
+repository's default branch (`main`). The job checks out `main`, and
+`mirror .` fetches `exuvia` from `origin`, adds the new commits to it and
+pushes it; the files of `main` aren't touched.
 
 ```yaml
-# .github/workflows/mirror.yml in me/sales-code
+# .github/workflows/mirror.yml on the main branch of me/sales-code
 on:
   schedule: [{cron: "17 * * * *"}]
   workflow_dispatch:
@@ -1713,6 +1717,57 @@ jobs:
         env:
           EXUVIA_API_TOKEN: ${{ secrets.EXUVIA_API_TOKEN }}
 ```
+
+### Several projects in one git repository: `exuvia mirror --prefix`
+
+`--prefix DIR` puts a project's files under `DIR/` and leaves the rest of
+the branch alone, so one branch can hold several projects side by side
+(`sales/nodes/...`, `marketing/nodes/...`), next to files of your own such
+as a README or the workflow:
+
+```bash
+exuvia mirror ./code --url https://exuvia.example.com/p/sales --prefix sales --branch main --remote origin
+exuvia mirror ./code --url https://exuvia.example.com/p/marketing --prefix marketing --branch main --remote origin
+```
+
+- Each commit also carries an `Exuvia-Prefix: DIR` trailer. A project
+  carries on from the last commit with its own prefix, whatever was
+  committed to the branch since (another project's saves, a README).
+- Only a commit that changed `DIR/` and wasn't the mirror's stops it, and
+  only for that project. Another project's folder, or a `DIR/` already
+  holding another project, is refused as without a prefix.
+- Its tags are named `DIR/<tag>` (`sales/v1`, `marketing/v1`), so the same
+  tag name in two projects doesn't clash.
+- A branch holding prefixed projects is refused without `--prefix`, rather
+  than read as one project's mirror.
+
+The scheduled workflow for several projects loops over them, on the branch
+it lives on:
+
+```yaml
+# .github/workflows/mirror.yml on the main branch of me/exuvia-code
+on:
+  schedule: [{cron: "17 * * * *"}]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency: mirror
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: |
+          for p in sales marketing; do
+            uvx exuvia mirror . --url "https://exuvia.example.com/p/$p" --prefix "$p" --branch main --remote origin
+          done
+        env:
+          EXUVIA_API_TOKEN: ${{ secrets.EXUVIA_API_TOKEN }}
+```
+
+With `main` checked out, its files move along with each project's commits.
+One branch per project (`--branch sales`) still works too, without a prefix.
 
 ## Records: SQLite, Postgres, or your own adapter
 
@@ -3084,7 +3139,7 @@ section named after each one has the details.
 | `exuvia tool [NAME] [INPUT]` | call one of the agent's tools and print its answer, for agents without a working MCP connection: `--url URL` (or `EXUVIA_URL`) or the project in `.`; no `NAME` lists them. `-a KEY=VALUE`, `--schema`, `--json` | When MCP doesn't connect |
 | `exuvia push NODE FILE --url URL` | upload a push node's output (`.parquet`, `.csv`, `.json`) from the machine that has the data. `--param`, `--note`, `--allow-http` | Push nodes |
 | `exuvia cancel RUN_ID --url URL` | stop a queued or running run of a running exuvia (a hub project or `exuvia serve`); sends `EXUVIA_API_TOKEN`. `--allow-http` | Stopping a run |
-| `exuvia mirror DEST` | the project's code history as git commits on branch `exuvia` in `DEST`, from `--url URL` or `--project DIR` (default `.`); `--remote REMOTE` or `--github OWNER/NAME` pushes it. `--branch`, `--allow-http` | The history in git |
+| `exuvia mirror DEST` | the project's code history as git commits on branch `exuvia` in `DEST`, from `--url URL` or `--project DIR` (default `.`); `--remote REMOTE` or `--github OWNER/NAME` pushes it; `--prefix DIR` puts it under a folder, so one branch holds several projects. `--branch`, `--allow-http` | The history in git |
 | `exuvia env list`, `set`, `rm` | a project's (or, with `--group`, a hub group's; with `--hub`, the hub's) environment variables and secrets, in a folder or over `--url` | Environment variables and secrets |
 | `exuvia executor` | serve node execution over HTTP for a control plane. `--host`, `--port` (8080) | Architecture |
 | `exuvia secrets-key` | print a new key for `EXUVIA_SECRETS_KEY` | Encryption |

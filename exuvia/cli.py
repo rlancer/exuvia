@@ -277,14 +277,17 @@ def cmd_mirror(args: argparse.Namespace) -> None:
                 raise MirrorError(f"{dest} is inside the project: mirror into a folder outside it")
             _load_dotenv(root)
             source = LocalSource(root)
-        done = mirror(source, dest, branch=args.branch, remote=args.remote, github=args.github, log=print)
+        done = mirror(
+            source, dest, branch=args.branch, remote=args.remote, github=args.github, prefix=args.prefix, log=print
+        )
     except MirrorError as e:
         raise SystemExit(f"exuvia mirror: {e}") from None
     if not done["tip"]:
         print(f"nothing to mirror: {source.where} has no code revisions yet")
         return
-    line = f"{done['commits']} new commit{'s' * (done['commits'] != 1)} on {args.branch} in {dest}" if done["commits"] else (
-        f"{args.branch} in {dest} is up to date"
+    where = f"{args.branch} in {dest}" + (f" under {args.prefix.strip().strip('/')}/" if args.prefix else "")
+    line = f"{done['commits']} new commit{'s' * (done['commits'] != 1)} on {where}" if done["commits"] else (
+        f"{where} is up to date"
     )
     if done["pushed"]:
         line += f", pushed to {done['remote']}"
@@ -385,6 +388,9 @@ def main() -> None:
                    help="the project: <hub>/p/<project>, or an `exuvia serve` address; sends EXUVIA_API_TOKEN")
     p.add_argument("--project", metavar="DIR", help="a project folder on this machine instead (default: .)")
     p.add_argument("--branch", default="exuvia", help="the branch the history goes on (default: exuvia)")
+    p.add_argument("--prefix", metavar="DIR",
+                   help="put the project's files under this folder and leave the rest of the branch alone, "
+                        "so one branch can hold several projects; its tags are named DIR/<tag>")
     p.add_argument("--remote", metavar="REMOTE", help="push the branch here afterwards: a remote's name or a git URL")
     p.add_argument("--github", metavar="OWNER/NAME",
                    help="push to this GitHub repository through the gh CLI, creating it (private) when missing")
