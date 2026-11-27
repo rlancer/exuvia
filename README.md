@@ -254,9 +254,15 @@ with SQL, a page at a time like the rest:
 - **Filter.** The box over the rows takes a SQL condition
   (`ticker = 'AAPL' and close > 100`), applied with Enter. What is picked
   on the chart narrows the rows the same way, and the two add up.
-- **Sort.** Press a column's name: smallest first, then largest first, then
-  the order stored. Rows that tie are ordered by every other column, so the
-  pages agree with each other.
+- **Filter a column.** The funnel in a column's header filters the rows by
+  that column: a test fit for its type (`contains`, `≥`, `is before`, `is
+  missing`…) and a value, applied with Enter. One filter a column; they add
+  up with each other and with the box, show as removable tokens over the
+  rows, and a filtered column's funnel is filled.
+- **Sort.** Press a column's header (the arrows after its name say it can
+  be): smallest first, then largest first, then the order stored, and the
+  arrow shows which. Rows that tie are ordered by every other column, so
+  the pages agree with each other.
 - **SQL.** The SQL button turns the box into an editor with the query the
   table is showing, to rewrite as any DuckDB query over this output and
   every other table node (`select ticker, avg(close) from prices group by
