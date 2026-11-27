@@ -429,7 +429,7 @@ function DataTab({ node, dark, canPrompt }: { node: GraphNode; dark: boolean; ca
         {picker}
         {hasChart && (
           <div {...stylex.props(styles.chart)}>
-            <NodeChart node={node} dark={dark} height={200} onSelect={t.onSelect} reset={t.cleared} />
+            <NodeChart node={node} dark={dark} height={200} onSelect={t.onSelect} reset={t.cleared} where={t.chartWhere} />
             <OutputChartPick t={t} />
           </div>
         )}
