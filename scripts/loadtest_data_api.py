@@ -19,7 +19,7 @@ The seeded hub has ``--projects`` projects, each with
   so ``daily__runs`` is a view over that many files;
 * ``--small`` small nodes, as real projects have.
 
-Each row also has the hub's CPU time over the scenario (``cpu``) and per
+Each row also has the hub's CPU use over the scenario (``cpu``, % of one core) and per
 answered request.
 
 Caching (exuvia/dataapi.py, HTTP caching):
@@ -410,8 +410,8 @@ class Result:
     peak_rss: float = 0.0
     peak_threads: int = 0
     rss_after: float = 0.0
-    cpu: float = 0.0  # hub CPU seconds over the scenario
-    proxy_cpu: float | None = None
+    cpu_seconds: float = 0.0  # the hub process's CPU time (user + system) while the scenario ran
+    proxy_cpu: float | None = None  # nginx's, with --proxy nginx
     note: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -428,8 +428,10 @@ class Result:
             "max_ms": round(lat[-1] * 1000, 1) if lat else None,
             "mean_ms": round(statistics.mean(lat) * 1000, 1) if lat else None,
             "peak_rss_mb": round(self.peak_rss), "rss_after_mb": round(self.rss_after),
-            "peak_threads": self.peak_threads, "errors": self.errors, "note": self.note,
-            "cpu_s": round(self.cpu, 2), "cpu_ms_per_req": round(self.cpu * 1000 / len(lat), 2) if lat else None,
+            "peak_threads": self.peak_threads,
+            "hub_cpu_pct": round(100 * self.cpu_seconds / self.seconds) if self.seconds else 0,
+            "cpu_ms_per_req": round(1000 * self.cpu_seconds / len(lat), 2) if lat else None,
+            "errors": self.errors, "note": self.note,
             **({"proxy_cpu_s": round(self.proxy_cpu, 2)} if self.proxy_cpu is not None else {}),
             **self.extra,
         }
@@ -491,9 +493,9 @@ async def drive(
                     res.errors[key] = res.errors.get(key, 0) + 1
                 i += concurrency
 
-        cpu0 = hub.cpu()
         pcpu0 = hub.proxy.cpu() if hub.proxy else None
         with Sampler(hub) as s:
+            cpu0 = hub.cpu()
             t0 = time.perf_counter()
             clients = [asyncio.create_task(client(n)) for n in range(concurrency)]
             if max_requests is None:
@@ -501,13 +503,13 @@ async def drive(
                 stop.set()
             await asyncio.gather(*clients)
             res.seconds = time.perf_counter() - t0
+            res.cpu_seconds = hub.cpu() - cpu0
+            if hub.proxy is not None and pcpu0 is not None:
+                res.proxy_cpu = hub.proxy.cpu() - pcpu0
             stop.set()
             if bg:
                 await bg
         res.peak_rss, res.peak_threads = s.peak_rss, s.peak_threads
-    res.cpu = hub.cpu() - cpu0
-    if hub.proxy is not None and pcpu0 is not None:
-        res.proxy_cpu = hub.proxy.cpu() - pcpu0
     res.rss_after = hub.stat()[0]
     return res
 
@@ -519,8 +521,8 @@ def print_row(r: dict[str, Any]) -> None:
     print(
         f"{r['scenario']:<16} c={r['conc']:<3} ok={r['ok']:<6} err={r['err']:<4} 429={r['429']:<5} rps={r['rps']:<8} "
         f"p50={r['p50_ms']}ms p95={r['p95_ms']}ms p99={r['p99_ms']}ms max={r['max_ms']}ms "
-        f"rss peak/after={r['peak_rss_mb']}/{r['rss_after_mb']}MiB threads={r['peak_threads']} "
-        f"cpu={r['cpu_s']}s ({r['cpu_ms_per_req']}ms/req){proxy}{note}{errs}",
+        f"cpu={r.get('hub_cpu_pct')}% ({r.get('cpu_ms_per_req')}ms/req) "
+        f"rss peak/after={r['peak_rss_mb']}/{r['rss_after_mb']}MiB threads={r['peak_threads']}{proxy}{note}{errs}",
         flush=True,
     )
 
@@ -722,7 +724,7 @@ async def isolation(hub: HubProcess, args: argparse.Namespace, pids: list[str], 
                 checks[f"{url[:40]}: key B with A's ETag gets no 304"] = stolen.status_code != 304
             res.extra.setdefault("a_cached", {})[url[:40]] = cached
     res.seconds = time.perf_counter() - t0
-    res.cpu = hub.cpu() - cpu0
+    res.cpu_seconds = hub.cpu() - cpu0
     failed = [k for k, v in checks.items() if not v]
     res.extra["isolation"] = {"checks": checks, "pass": not failed}
     caching_on = any(res.extra.get("a_cached", {}).values())
@@ -862,6 +864,8 @@ async def run_scenarios(args: argparse.Namespace, root: Path, env: dict[str, str
                     n, args.duration, timeout=300,
                 ))
 
+        await large_json(hub, args, pids, auth_two, want, conc, record)
+
         if want("heavy_query"):
             # Queries heavy enough to keep DuckDB busy, from one key: do they
             # starve a cheap one another app sends at the same time?
@@ -953,6 +957,35 @@ async def run_scenarios(args: argparse.Namespace, root: Path, env: dict[str, str
     return out
 
 
+async def large_json(
+    hub: HubProcess, args: argparse.Namespace, pids: list[str], auth: dict[str, str],
+    want: Callable[[str], bool], conc: list[int], record: Callable[[Result], None],
+) -> None:
+    """Large JSON answers, 5,000 rows each, where writing the JSON is much of
+    the work: ``wide_json`` a query over a join (10 columns: ints, floats,
+    strings, a timestamp), ``wide_node`` a node's rows. Each request reads
+    other rows (``offset``), so no answer repeats."""
+    two = f'"{pids[0]}"', f'"{pids[1]}"'
+    pages = max(1, args.rows // 5000)
+    if want("wide_json"):
+        def query(c: httpx.AsyncClient, i: int) -> Awaitable[httpx.Response]:
+            sql = (
+                f"select o.*, a.name, a.segment, a.account * 1.5 as score from {two[0]}.orders o "
+                f"join {two[1]}.accounts a using (account) order by o.order_id limit 5000 offset {(i % pages) * 5000}"
+            )
+            return drained(c, "POST", "/api/data/query", json={"sql": sql, "limit": 5000}, headers=auth)
+
+        for n in conc:
+            record(await drive(hub, "wide_json", query, n, args.duration))
+    if want("wide_node"):
+        def node(c: httpx.AsyncClient, i: int) -> Awaitable[httpx.Response]:
+            url = f"/api/data/projects/{pids[i % 2]}/nodes/orders?limit=5000&offset={(i % pages) * 5000}"
+            return drained(c, "GET", url, headers=auth)
+
+        for n in conc:
+            record(await drive(hub, "wide_node", node, n, args.duration))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--hub", help="the hub folder: seeded once and reused (default: a temporary folder)")
@@ -964,7 +997,8 @@ def main() -> None:
     ap.add_argument("--concurrency", default="1,8,32", help="clients at once, per scenario")
     ap.add_argument("--churn-every", type=float, default=0.25, help="seconds between runs in churn_query")
     ap.add_argument("--only", help="comma-separated scenarios: cold_list, warm_list, hot_query, point_query, "
-                    "node_read, history, churn_query, distinct_sets, arrow_scan, heavy_query, dashboard, staleness, isolation")
+                    "node_read, history, churn_query, distinct_sets, arrow_scan, wide_json, wide_node, heavy_query, dashboard, "
+                    "staleness, isolation")
     ap.add_argument("--cache-seconds", type=float, default=0.0, help="EXUVIA_DATA_CACHE_SECONDS for the hub (0: no-cache)")
     ap.add_argument("--proxy", choices=["nginx"], help="put a proxy in front of the hub (deploy/nginx/exuvia.conf)")
     ap.add_argument("--dashboard-churn", type=float, default=3.0, help="seconds between runs in dashboard")

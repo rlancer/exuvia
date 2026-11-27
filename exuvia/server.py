@@ -1066,7 +1066,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         rows = 200 if limit is None else min(limit, 5000)
         try:
             return FastJSON(ctx.ws.preview(
-                name, limit=rows, offset=offset, params=resolved, run_id=run_id, part=part, partitions=rng
+                name, limit=rows, offset=offset, params=resolved, run_id=run_id, part=part, partitions=rng, raw=True
             ))
         except KeyError as e:
             raise HTTPException(404, str(e.args[0])) from e
@@ -1308,7 +1308,7 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
                     ctx.ws.query_arrow(body.sql, limit=body.limit, params=body.params, offset=body.offset)
                 )
             rows = 500 if body.limit is None else min(body.limit, 5000)
-            return FastJSON(ctx.ws.query(body.sql, limit=rows, params=body.params, offset=body.offset))
+            return FastJSON(ctx.ws.query(body.sql, limit=rows, params=body.params, offset=body.offset, raw=True))
         except Exception as e:
             raise HTTPException(400, f"{type(e).__name__}: {e}") from e
 
