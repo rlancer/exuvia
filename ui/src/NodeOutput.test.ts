@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { GraphNode } from "./api";
-import { chartBrush, isNumeric, outputPart, pct, rowsSource, selectedRows, selectionWhere } from "./NodeOutput";
+import { chartBrush, outputPart, pct, rowsSource, selectedRows, selectionWhere } from "./NodeOutput";
+import { isNumeric } from "./tableQuery";
 
 const node = (kind: GraphNode["output_kind"], parts: string[] = []): GraphNode =>
   ({ name: "n", output_kind: kind, schema: parts.map((name) => ({ name, type: "table" })) }) as GraphNode;

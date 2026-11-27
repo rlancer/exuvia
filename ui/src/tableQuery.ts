@@ -67,3 +67,114 @@ export function nextSort(sort: Sort | null, column: string): Sort | null {
   if (sort?.column !== column) return { column, desc: false };
   return sort.desc ? null : { column, desc: true };
 }
+
+/** Whether a column's values are numbers (written at the end of their cells, in tabular figures), by its SQL type. */
+export const isNumeric = (type: string) => /^(u?(tiny|small|big|huge)?int(eger|\d+)?$|float|double|decimal|numeric|real)/i.test(type);
+
+/** How a column's values are tested by a filter of its own (the funnel in its header). */
+export type FilterOp = "contains" | "not_contains" | "eq" | "ne" | "starts" | "ends" | "gt" | "ge" | "lt" | "le" | "null" | "not_null";
+
+/** One column's filter: its values are tested against `value` (which `null` and `not_null` do not read). */
+export interface ColumnFilter {
+  column: string;
+  op: FilterOp;
+  value: string;
+}
+
+/** What a column holds, as far as filtering it goes: numbers and times are compared, anything else is matched as text. */
+export type ColumnKind = "number" | "time" | "text";
+
+export const columnKind = (type: string): ColumnKind => (isNumeric(type) ? "number" : /^(date|time)/i.test(type) ? "time" : "text");
+
+const COMPARED: FilterOp[] = ["eq", "ne", "gt", "ge", "lt", "le", "null", "not_null"];
+const MATCHED: FilterOp[] = ["contains", "not_contains", "eq", "ne", "starts", "ends", "null", "not_null"];
+
+/** The tests a column of this kind can be filtered by, the first the one offered. */
+export const filterOps = (kind: ColumnKind): FilterOp[] => (kind === "text" ? MATCHED : COMPARED);
+
+/** Whether a test reads a value. */
+export const needsValue = (op: FilterOp) => op !== "null" && op !== "not_null";
+
+/** A test in words, as a column of this kind reads it: `price ≥ 100`, `date is after 2024-01-01`. */
+export function opLabel(op: FilterOp, kind: ColumnKind): string {
+  const time = kind === "time";
+  switch (op) {
+    case "contains":
+      return "contains";
+    case "not_contains":
+      return "does not contain";
+    case "starts":
+      return "starts with";
+    case "ends":
+      return "ends with";
+    case "eq":
+      return kind === "number" ? "=" : "is";
+    case "ne":
+      return kind === "number" ? "≠" : "is not";
+    case "gt":
+      return time ? "is after" : ">";
+    case "ge":
+      return time ? "is on or after" : "≥";
+    case "lt":
+      return time ? "is before" : "<";
+    case "le":
+      return time ? "is on or before" : "≤";
+    case "null":
+      return "is missing";
+    case "not_null":
+      return "is not missing";
+  }
+}
+
+/** A column's filter in a few words: `price ≥ 100`, `name contains "inc"`, `note is missing`. */
+export function filterText(f: ColumnFilter, type: string): string {
+  const kind = columnKind(type);
+  const label = opLabel(f.op, kind);
+  if (!needsValue(f.op)) return `${f.column} ${label}`;
+  return `${f.column} ${label} ${kind === "text" ? `"${f.value}"` : f.value.trim()}`;
+}
+
+const quoted = (v: string) => `'${v.replace(/'/g, "''")}'`;
+const SYMBOL: Partial<Record<FilterOp, string>> = { eq: "=", gt: ">", ge: ">=", lt: "<", le: "<=" };
+
+/**
+ * A column's filter as a SQL condition, for a column of this `type`; null
+ * when it tests nothing (a test that reads a value, and none is typed).
+ * What is typed is only ever a number or a quoted string. Text is matched
+ * whatever its case (`contains`, `starts with`, `ends with`), `is` is the
+ * value itself; a row without a value passes `is not` and `does not
+ * contain`, and no other test but `is missing`.
+ */
+export function filterWhere(f: ColumnFilter, type: string): string | null {
+  const c = ident(f.column);
+  if (f.op === "null") return `${c} is null`;
+  if (f.op === "not_null") return `${c} is not null`;
+  const kind = columnKind(type);
+  // A number or a time is as typed without the space around it; text may be about a space.
+  const typed = kind === "text" ? f.value : f.value.trim();
+  if (!typed) return null;
+  // A number as itself, anything else as a string DuckDB reads as the column's type (a date, a time).
+  const value = kind === "number" && /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(typed) ? typed : quoted(typed);
+  // What is not text already (a boolean, a list) is matched as the grid writes it.
+  const left = kind === "text" && !/^(varchar|string|text|char)/i.test(type) ? `cast(${c} as varchar)` : c;
+  switch (f.op) {
+    case "contains":
+      return `contains(lower(${left}), lower(${value}))`;
+    case "not_contains":
+      return `(${c} is null or not contains(lower(${left}), lower(${value})))`;
+    case "starts":
+      return `starts_with(lower(${left}), lower(${value}))`;
+    case "ends":
+      return `ends_with(lower(${left}), lower(${value}))`;
+    case "ne":
+      return `${left} is distinct from ${value}`;
+    default:
+      return `${left} ${SYMBOL[f.op]} ${value}`;
+  }
+}
+
+/** The filters after `column`'s is set to `next` (null: taken off): one a column, in the order they were first set. */
+export function withFilter(filters: ColumnFilter[], column: string, next: ColumnFilter | null): ColumnFilter[] {
+  if (!next) return filters.filter((f) => f.column !== column);
+  return filters.some((f) => f.column === column) ? filters.map((f) => (f.column === column ? next : f)) : [...filters, next];
+}

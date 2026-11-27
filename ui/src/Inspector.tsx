@@ -19,6 +19,7 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Text } from "@astryxdesign/core/Text";
+import { Token } from "@astryxdesign/core/Token";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { api, type Column, type GraphNode, type RunRow } from "./api";
@@ -31,9 +32,9 @@ import { codeGroup, DownloadMenu, outputGroups, tableItems } from "./Export";
 import { nodeExportUrl, saveQuery, saveUrl } from "./download";
 import { CodeEditor } from "./ui/CodeEditor";
 import { oneOf, usePersisted } from "./ui/usePersisted";
-import { chartBrush, chartedPart, ChartPick, DatasetSummary, DataTable, isNumeric, NodeChart, OutputPicker, RowsTable, rowsSource, useAskedRows, useNodePreview, useOutputPart, useRowPages, useTableStats, type ChartSelection } from "./NodeOutput";
+import { chartBrush, chartedPart, ChartPick, DatasetSummary, DataTable, NodeChart, OutputPicker, RowsTable, rowsSource, useAskedRows, useNodePreview, useOutputPart, useRowPages, useTableStats, type ChartSelection } from "./NodeOutput";
 import { PAGE_ROWS } from "./rowWindow";
-import { baseQuery, nextSort, tableOf, type Sort, type TableAsk } from "./tableQuery";
+import { baseQuery, filterText, filterWhere, isNumeric, nextSort, tableOf, withFilter, type ColumnFilter, type Sort, type TableAsk } from "./tableQuery";
 import { StateDot, statusOf, statusText } from "./ui/state";
 import { useColorMode } from "./theme/colorMode";
 
@@ -383,9 +384,9 @@ export function Inspector(props: {
  * read a page at a time, under its chart when it has one; or its JSON. The
  * rows can be asked for another way (tableQuery.ts): filtered by a SQL
  * condition, typed or (`canPrompt`: a model is set up and the person may
- * spend it) written by the model from a prompt, sorted by a column (its name
- * is pressed), picked on the chart, or as a query of one's own over the
- * output.
+ * spend it) written by the model from a prompt, or a column at a time (the
+ * funnel in its header), sorted by a column (its header is pressed), picked
+ * on the chart, or as a query of one's own over the output.
  */
 function DataTab({ node, dark, canPrompt }: { node: GraphNode; dark: boolean; canPrompt: boolean }) {
   // A node with several outputs shows one at a time.
@@ -397,10 +398,12 @@ function DataTab({ node, dark, canPrompt }: { node: GraphNode; dark: boolean; ca
   const [sel, setSel] = useState<ChartSelection>(null);
   const [cleared, setCleared] = useState(0);
   // What is asked of the rows: a condition (`filter`, as applied; `draft` as
-  // it is typed), a column to sort by, or a query written out (`sql` as run,
-  // null while none is written; `sqlDraft` as it is typed).
+  // it is typed), filters of single columns (`byColumn`), a column to sort
+  // by, or a query written out (`sql` as run, null while none is written;
+  // `sqlDraft` as it is typed).
   const [filter, setFilter] = useState("");
   const [draft, setDraft] = useState("");
+  const [byColumn, setByColumn] = useState<ColumnFilter[]>([]);
   const [sort, setSort] = useState<Sort | null>(null);
   const [sql, setSql] = useState<string | null>(null);
   const [sqlDraft, setSqlDraft] = useState("");
@@ -427,6 +430,7 @@ function DataTab({ node, dark, canPrompt }: { node: GraphNode; dark: boolean; ca
     setSel(null);
     setFilter("");
     setDraft("");
+    setByColumn([]);
     setSort(null);
     setSql(null);
     setWords("");
@@ -464,10 +468,24 @@ function DataTab({ node, dark, canPrompt }: { node: GraphNode; dark: boolean; ca
   // The rows asked for, when anything is: read with SQL, a page at a time too.
   const table = tableOf(node.name, shown);
   const picked = sel?.where ?? "";
-  const ask = useMemo<TableAsk>(() => ({ sql, where: [filter, picked], sort }), [sql, filter, picked, sort]);
+  // Each column's filter as a condition, by the column's type in the output; one whose column the output no longer has is left out.
+  const columns = p?.kind === "table" ? p.columns : undefined;
+  const columnFilters = useMemo(
+    () =>
+      byColumn.flatMap((f) => {
+        const type = columns?.find((c) => c.name === f.column)?.type;
+        if (type === undefined) return [];
+        const where = filterWhere(f, type);
+        return where ? [{ filter: f, where, text: filterText(f, type) }] : [];
+      }),
+    [byColumn, columns],
+  );
+  const conditions = useMemo(() => [filter, ...columnFilters.map((f) => f.where)], [filter, columnFilters]);
+  const ask = useMemo<TableAsk>(() => ({ sql, where: [...conditions, picked], sort }), [sql, conditions, picked, sort]);
   const asked = useAskedRows(table, ask, node.artifact_id, isTable);
+  const filtered = conditions.some(Boolean);
   // The charted rows a selection holds show at once, until all of its rows are read.
-  const quick = useMemo(() => (sel && !filter && !sort && !writing ? rowsSource(sel.columns, sel.rows) : null), [sel, filter, sort, writing]);
+  const quick = useMemo(() => (sel && !filtered && !sort && !writing ? rowsSource(sel.columns, sel.rows) : null), [sel, filtered, sort, writing]);
   const picker = (shown !== null || (isTable && stats)) && (
     <div {...stylex.props(styles.strip)}>
       {shown !== null && <OutputPicker node={node} parts={parts} shown={shown} onPick={pick} />}
@@ -509,7 +527,7 @@ function DataTab({ node, dark, canPrompt }: { node: GraphNode; dark: boolean; ca
       : quick && sel
         ? { columns: sel.columns, source: quick, key: sel as unknown }
         : { columns: p.columns, source: all, key: `${node.artifact_id}/${shown ?? ""}` as unknown };
-    const narrowed = !!filter || !!sel;
+    const narrowed = filtered || !!sel;
     const runSql = () => {
       setSort(null);
       setSql(sqlDraft);
@@ -530,7 +548,7 @@ function DataTab({ node, dark, canPrompt }: { node: GraphNode; dark: boolean; ca
                   !sel
                     ? null
                     : asked.current && asked.table
-                      ? `${fmtNum(asked.table.total)} row${asked.table.total === 1 ? "" : "s"} selected${filter ? " that pass the filter" : ""}`
+                      ? `${fmtNum(asked.table.total)} row${asked.table.total === 1 ? "" : "s"} selected${filtered ? " that pass the filter" : ""}`
                       : `${fmtNum(sel.rows.length)} of ${fmtNum(sel.of)} charted rows selected${asked.error ? " (the rest could not be read)" : ", counting all…"}`
                 }
                 onClear={() => {
@@ -633,7 +651,7 @@ function DataTab({ node, dark, canPrompt }: { node: GraphNode; dark: boolean; ca
               tooltip="Write a SQL query of your own over this output"
               icon={<IconCode />}
               onClick={() => {
-                const text = baseQuery(table, { sql: null, where: [filter], sort: null });
+                const text = baseQuery(table, { sql: null, where: conditions, sort: null });
                 setSqlDraft(text);
                 setSort(null);
                 setSel(null);
@@ -649,6 +667,14 @@ function DataTab({ node, dark, canPrompt }: { node: GraphNode; dark: boolean; ca
           </div>
         )}
         {promptError && by === "prompt" && !writing && <Banner status="error" title={promptError} />}
+        {!writing && columnFilters.length > 0 && (
+          <div {...stylex.props(styles.strip)}>
+            {columnFilters.map(({ filter: f, text }) => (
+              <Token key={f.column} size="sm" label={text} onRemove={() => setByColumn((all) => withFilter(all, f.column, null))} />
+            ))}
+            {columnFilters.length > 1 && <Button size="sm" variant="ghost" label="Clear all" onClick={() => setByColumn([])} />}
+          </div>
+        )}
         {asked.error && (
           <Banner
             status="error"
@@ -666,6 +692,9 @@ function DataTab({ node, dark, canPrompt }: { node: GraphNode; dark: boolean; ca
           resetKey={view.key}
           sort={sort}
           onSort={(column) => setSort(nextSort(sort, column))}
+          filters={byColumn}
+          // A query of one's own says which rows it wants itself.
+          onFilter={writing ? undefined : (column, f) => setByColumn((all) => withFilter(all, column, f))}
         />
         <div {...stylex.props(styles.foot)}>
           <Text type="supporting" color="secondary" maxLines={1} hasTabularNumbers xstyle={styles.footText}>

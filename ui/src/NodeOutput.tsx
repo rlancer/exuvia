@@ -1,15 +1,21 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode, type Ref } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode, type Ref } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { colorVars, fontWeightVars, radiusVars, spacingVars, textSizeVars, typeScaleVars, typographyVars } from "@astryxdesign/core/theme/tokens.stylex";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { HStack } from "@astryxdesign/core/HStack";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { Popover } from "@astryxdesign/core/Popover";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
+import { Selector } from "@astryxdesign/core/Selector";
 import { Text } from "@astryxdesign/core/Text";
+import { TextInput } from "@astryxdesign/core/TextInput";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
+import { VStack } from "@astryxdesign/core/VStack";
 import { api, type Column, type ColumnStats, type GraphNode, type Preview, type TableStats } from "./api";
 import { columnChars, MAX_ROWS_HEIGHT, PAGE_ROWS, pagesFor, pagesToDrop, rowWindow } from "./rowWindow";
-import { asks, baseQuery, countQuery, ident, pageQuery, type Sort, type TableAsk } from "./tableQuery";
+import { IconFilter, IconFilterOn, IconSort, IconSortDown, IconSortUp } from "./icons";
+import { asks, baseQuery, columnKind, countQuery, filterOps, filterText, ident, isNumeric, needsValue, opLabel, pageQuery, type ColumnFilter, type FilterOp, type Sort, type TableAsk } from "./tableQuery";
 import { fmtBytes, fmtCell, fmtNum, pressable } from "./util";
 
 /*
@@ -147,9 +153,6 @@ export function OutputPicker({ node, parts, shown, onPick }: { node: GraphNode; 
   );
 }
 
-/** Whether a column's values are numbers (written at the end of their cells, in tabular figures), by its SQL type. */
-export const isNumeric = (type: string) => /^(u?(tiny|small|big|huge)?int(eger|\d+)?$|float|double|decimal|numeric|real)/i.test(type);
-
 /** The widest a cell is, in the mono's characters: past it a cell is cut short (`grid.cell`). */
 const CELL_CHARS = 44;
 /** Room for a cell's padding, in characters. */
@@ -157,10 +160,170 @@ const CHARS_PAD = 4;
 /** How many characters of a cell count towards its column's width. */
 const CHARS_CAP = CELL_CHARS - CHARS_PAD;
 
+/** Room in a column's header for its sort icon, and for its filter button, in characters. */
+const SORT_CHARS = 3;
+const FILTER_CHARS = 5;
+
 /**
- * The header of a table: each column's name, its type and, with `stats`,
- * its quick insights. With `onSort`, a column's name is pressed to sort by
- * it (`sort` is the column sorted by now, and which way).
+ * One column's filter, behind the funnel in its header: a test (`contains`,
+ * `≥`, `is missing`…) and the value it reads, applied with Enter or Apply.
+ * The funnel is filled, in the accent, while the column is filtered.
+ */
+function ColumnFilterButton({ column, filter, onFilter }: { column: Column; filter: ColumnFilter | null; onFilter: (column: string, filter: ColumnFilter | null) => void }) {
+  const [open, setOpen] = useState(false);
+  const label = filter ? `Filtered: ${filterText(filter, column.type)}` : `Filter ${column.name}`;
+  return (
+    <Popover
+      label={`Filter ${column.name}`}
+      isOpen={open}
+      onOpenChange={setOpen}
+      placement="below"
+      alignment="end"
+      width={260}
+      padding={3}
+      // Made when it opens: it starts from the filter as applied each time.
+      content={
+        open ? (
+          <ColumnFilterForm
+            column={column}
+            filter={filter}
+            onApply={(f) => {
+              onFilter(column.name, f);
+              setOpen(false);
+            }}
+          />
+        ) : null
+      }
+    >
+      <IconButton size="sm" variant="ghost" label={label} tooltip={label} icon={filter ? <IconFilterOn /> : <IconFilter />} xstyle={filter && grid.sorted} />
+    </Popover>
+  );
+}
+
+function ColumnFilterForm({ column, filter, onApply }: { column: Column; filter: ColumnFilter | null; onApply: (filter: ColumnFilter | null) => void }) {
+  const kind = columnKind(column.type);
+  const ops = filterOps(kind);
+  const [op, setOp] = useState<FilterOp>(filter?.op ?? ops[0]);
+  const [value, setValue] = useState(filter?.value ?? "");
+  const reads = needsValue(op);
+  const ready = !reads || !!value.trim();
+  const apply = () => ready && onApply({ column: column.name, op, value: reads ? value : "" });
+  return (
+    <VStack gap={2}>
+      <Text type="supporting" color="secondary" maxLines={1}>
+        Rows where {column.name}
+      </Text>
+      <Selector
+        size="sm"
+        label={`How ${column.name} is tested`}
+        isLabelHidden
+        width="100%"
+        options={ops.map((o) => ({ value: o, label: opLabel(o, kind) }))}
+        value={op}
+        onChange={(v) => v && setOp(v as FilterOp)}
+      />
+      {reads && (
+        <TextInput
+          size="sm"
+          label="Value"
+          isLabelHidden
+          placeholder={kind === "number" ? "a number" : kind === "time" ? "e.g. 2024-01-31" : "text"}
+          value={value}
+          onChange={setValue}
+          onEnter={apply}
+          hasAutoFocus
+          hasSpellCheck={false}
+          autoComplete="off"
+          autoCapitalize="off"
+        />
+      )}
+      <HStack gap={2}>
+        <Button size="sm" variant="primary" label="Apply" isDisabled={!ready} onClick={apply} />
+        <Button size="sm" variant="ghost" label="Clear" isDisabled={!filter} onClick={() => onApply(null)} />
+      </HStack>
+    </VStack>
+  );
+}
+
+/**
+ * A column's header: its name, its type and, with `stats`, its quick
+ * insights. With `onSort`, its name and the arrows after it are pressed to
+ * sort by it (the arrows are always there, so it shows that it can be; an
+ * arrow in the accent says which way it is sorted now). With `onFilter`, a
+ * funnel at its end filters the rows by this column. Drawn again only when
+ * something of its own changes: a table's rows scroll under it.
+ */
+const HeadCell = memo(function HeadCell({
+  column: c,
+  numeric,
+  hasStats,
+  insights,
+  rows,
+  chars,
+  sorted,
+  onSort,
+  filter,
+  onFilter,
+}: {
+  column: Column;
+  numeric: boolean;
+  hasStats: boolean;
+  insights?: ColumnStats;
+  rows: number;
+  /** The widest cell the column has held, in characters; undefined for a table as wide as its rows make it. */
+  chars?: number;
+  /** Which way the rows are sorted by this column; null when they are not. */
+  sorted: "asc" | "desc" | null;
+  onSort?: (column: string) => void;
+  filter: ColumnFilter | null;
+  onFilter?: (column: string, filter: ColumnFilter | null) => void;
+}) {
+  // Room for the name with its controls, so that neither a sort nor a filter widens the column.
+  const controls = (onSort ? SORT_CHARS : 0) + (onFilter ? FILTER_CHARS : 0);
+  const width = chars === undefined ? undefined : Math.max(Math.min(chars, CHARS_CAP), Math.min(c.name.length, CHARS_CAP - controls) + controls) + CHARS_PAD;
+  const SortIcon = sorted === "asc" ? IconSortUp : sorted === "desc" ? IconSortDown : IconSort;
+  const now = sorted === "asc" ? "smallest first" : sorted === "desc" ? "largest first" : null;
+  const next = sorted === "asc" ? "largest first" : sorted === "desc" ? "the order stored" : "smallest first";
+  return (
+    <th
+      aria-sort={sorted ? (sorted === "desc" ? "descending" : "ascending") : undefined}
+      {...stylex.props(grid.cell, grid.head, numeric && grid.num, hasStats && grid.withInsights, width !== undefined && (hasStats ? grid.charsWithInsights : grid.chars)(width))}
+    >
+      {onSort || onFilter ? (
+        <span {...stylex.props(grid.title)}>
+          {onSort ? (
+            <span
+              {...pressable(() => onSort(c.name))}
+              title={`Sort by ${c.name}${now ? ` (now ${now})` : ""}: press for ${next}`}
+              {...stylex.props(grid.sorter, numeric && grid.sorterEnd, stylex.defaultMarker())}
+            >
+              <span {...stylex.props(grid.side)}>{c.name}</span>
+              <span {...stylex.props(grid.arrows, sorted && grid.sorted)}>
+                <SortIcon size={12} />
+              </span>
+            </span>
+          ) : (
+            <span {...stylex.props(grid.side, numeric && grid.sorterEnd)}>{c.name}</span>
+          )}
+          {onFilter && (
+            <span {...stylex.props(grid.funnel, !!onSort && numeric && grid.funnelAfter)}>
+              <ColumnFilterButton column={c} filter={filter} onFilter={onFilter} />
+            </span>
+          )}
+        </span>
+      ) : (
+        c.name
+      )}
+      <span {...stylex.props(grid.type)}>{c.type.toLowerCase()}</span>
+      {hasStats && <Insights col={insights} rows={rows} />}
+    </th>
+  );
+});
+
+/**
+ * The header of a table: a HeadCell for each column. `sort` is the column
+ * sorted by now, and which way; `filters` are the columns filtered. `onSort`
+ * and `onFilter` are the same functions for as long as the table is.
  */
 function Head({
   columns,
@@ -169,6 +332,8 @@ function Head({
   chars,
   sort,
   onSort,
+  filters,
+  onFilter,
   ref,
 }: {
   columns: Column[];
@@ -177,6 +342,8 @@ function Head({
   chars?: number[];
   sort?: Sort | null;
   onSort?: (column: string) => void;
+  filters?: ColumnFilter[];
+  onFilter?: (column: string, filter: ColumnFilter | null) => void;
   ref?: Ref<HTMLTableSectionElement>;
 }) {
   // Each column's quick insights (its missing values and range), from the footers.
@@ -184,39 +351,21 @@ function Head({
   return (
     <thead ref={ref}>
       <tr>
-        {columns.map((c, j) => {
-          const sorted = sort?.column === c.name ? sort : null;
-          const how = sorted ? (sorted.desc ? "largest first" : "smallest first") : null;
-          return (
-          <th
+        {columns.map((c, j) => (
+          <HeadCell
             key={c.name}
-            aria-sort={sorted ? (sorted.desc ? "descending" : "ascending") : undefined}
-            {...stylex.props(
-              grid.cell,
-              grid.head,
-              numeric[j] && grid.num,
-              stats && grid.withInsights,
-              // Room for the arrow a sorted column gets, so sorting does not widen it.
-              chars && (stats ? grid.charsWithInsights : grid.chars)(Math.min(chars[j] ?? 0, CHARS_CAP) + CHARS_PAD + (onSort ? 2 : 0)),
-            )}
-          >
-            {onSort ? (
-              <span
-                {...pressable(() => onSort(c.name))}
-                title={`Sort by ${c.name}${how ? ` (now ${how}: press for ${sorted!.desc ? "the order stored" : "largest first"})` : ""}`}
-                {...stylex.props(grid.sorter, sorted && grid.sorted)}
-              >
-                {c.name}
-                {sorted && <span aria-hidden>{sorted.desc ? " ↓" : " ↑"}</span>}
-              </span>
-            ) : (
-              c.name
-            )}
-            <span {...stylex.props(grid.type)}>{c.type.toLowerCase()}</span>
-            {stats && <Insights col={insights.get(c.name)} rows={stats.rows} />}
-          </th>
-          );
-        })}
+            column={c}
+            numeric={numeric[j]}
+            hasStats={!!stats}
+            insights={insights.get(c.name)}
+            rows={stats?.rows ?? 0}
+            chars={chars ? (chars[j] ?? 0) : undefined}
+            sorted={sort?.column === c.name ? (sort.desc ? "desc" : "asc") : null}
+            onSort={onSort}
+            filter={filters?.find((f) => f.column === c.name) ?? null}
+            onFilter={onFilter}
+          />
+        ))}
       </tr>
     </thead>
   );
@@ -474,8 +623,9 @@ const FETCH_AFTER = 80;
  * `source` is told which rows those are so it can fetch them. A row that is
  * not here yet shows as a line of `…`. A column never narrows as rows scroll
  * through it (`source.chars`). `resetKey` changes when other rows are shown:
- * the table goes back to its top. With `onSort`, a column's name is pressed
- * to sort by it.
+ * the table goes back to its top. With `onSort`, a column's header is pressed
+ * to sort by it; with `onFilter`, a funnel in it filters the rows by that
+ * column (`filters` are the ones applied).
  */
 export function RowsTable({
   columns,
@@ -484,6 +634,8 @@ export function RowsTable({
   resetKey,
   sort,
   onSort,
+  filters,
+  onFilter,
 }: {
   columns: Column[];
   source: RowSource;
@@ -491,7 +643,14 @@ export function RowsTable({
   resetKey?: unknown;
   sort?: Sort | null;
   onSort?: (column: string) => void;
+  filters?: ColumnFilter[];
+  onFilter?: (column: string, filter: ColumnFilter | null) => void;
 }) {
+  // The latest onSort and onFilter, behind functions that stay the same: a header cell is not drawn again for a new one.
+  const latest = useRef({ onSort, onFilter });
+  latest.current = { onSort, onFilter };
+  const sortBy = useCallback((column: string) => latest.current.onSort?.(column), []);
+  const filterBy = useCallback((column: string, filter: ColumnFilter | null) => latest.current.onFilter?.(column, filter), []);
   const scroller = useRef<HTMLDivElement>(null);
   const head = useRef<HTMLTableSectionElement>(null);
   const firstRow = useRef<HTMLTableRowElement>(null);
@@ -572,7 +731,17 @@ export function RowsTable({
   return (
     <div ref={scroller} onScroll={onScroll} {...stylex.props(grid.scroller)}>
       <table aria-rowcount={total + 1} {...stylex.props(grid.table)}>
-        <Head ref={head} columns={columns} numeric={numeric} stats={stats} chars={source.chars} sort={sort} onSort={onSort} />
+        <Head
+          ref={head}
+          columns={columns}
+          numeric={numeric}
+          stats={stats}
+          chars={source.chars}
+          sort={sort}
+          onSort={onSort && sortBy}
+          filters={filters}
+          onFilter={onFilter && filterBy}
+        />
         <tbody>
           {win.padTop > 0 && (
             <tr aria-hidden {...stylex.props(grid.space(win.padTop))}>
@@ -1042,12 +1211,27 @@ const grid = stylex.create({
   pad: { padding: 0, borderStyle: "none" },
   // A row that is on its way.
   waiting: { color: colorVars["--color-text-secondary"] },
-  // A column's name, pressed to sort by it.
+  // A header's first line: the column's name with its sort arrows, and its funnel at the end.
+  title: { display: "flex", alignItems: "center", gap: spacingVars["--spacing-1"] },
+  // A column's name and the arrows after it, pressed to sort by it.
   sorter: {
+    display: "flex",
+    alignItems: "center",
+    gap: spacingVars["--spacing-1"],
+    minWidth: 0,
     cursor: "pointer",
     borderRadius: radiusVars["--radius-inner"],
-    textDecorationLine: { default: "none", ":hover": "underline" },
     outlineOffset: "2px",
+    color: { default: "inherit", ":hover": colorVars["--color-accent"] },
   },
+  // A column of numbers: its name at the end, over its figures.
+  sorterEnd: { marginInlineStart: "auto" },
+  // The arrows: quiet until the column is sorted, or its name is pointed at.
+  arrows: { flexShrink: 0, color: { default: colorVars["--color-text-secondary"], [stylex.when.ancestor(":hover")]: "inherit" } },
+  // The column the rows are sorted by, or filtered by.
   sorted: { color: colorVars["--color-accent"] },
+  // The funnel keeps to the header's end, and to the line's height.
+  funnel: { display: "flex", flexShrink: 0, marginInlineStart: "auto", marginBlock: `calc(${spacingVars["--spacing-1"]} * -1)` },
+  // After a name that is at the end already (a column of numbers).
+  funnelAfter: { marginInlineStart: 0 },
 });

@@ -265,15 +265,21 @@ with SQL, a page at a time like the rest:
   that is no filter (a total, a grouping) is refused with the reason. The
   browser remembers which of the two was last used. Like the agent, a
   prompt is for editors: a viewer has the SQL box alone.
-- **Sort.** Press a column's name: smallest first, then largest first, then
-  the order stored. Rows that tie are ordered by every other column, so the
-  pages agree with each other.
+- **Filter a column.** The funnel in a column's header filters the rows by
+  that column: a test fit for its type (`contains`, `≥`, `is before`, `is
+  missing`…) and a value, applied with Enter. One filter a column; they add
+  up with each other and with the box, show as removable tokens over the
+  rows, and a filtered column's funnel is filled.
+- **Sort.** Press a column's header (the arrows after its name say it can
+  be): smallest first, then largest first, then the order stored, and the
+  arrow shows which. Rows that tie are ordered by every other column, so
+  the pages agree with each other.
 - **SQL.** The `</>` button at the box's end turns it into an editor with
   the query the table is showing, to rewrite as any DuckDB query over this
   output and every other table node (`select ticker, avg(close) from prices
-  group by 1`). Its result is the table, sortable like any other. Up to 10,000 rows
-  are one read; a longer result whose order is not fixed should be sorted,
-  by an `order by` of its own or by a column's name.
+  group by 1`). Its result is the table, sortable like any other. Up to
+  10,000 rows are one read; a longer result whose order is not fixed should
+  be sorted, by an `order by` of its own or by a column's name.
 
 Download then saves the rows shown, all of them, not the output.
 
