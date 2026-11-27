@@ -91,3 +91,10 @@ export const IconUncollapse = icon(<path d="M4.5 5.5 8 2l3.5 3.5M4.5 10.5 8 14l3
 export const IconGraph = icon(<path d="M4 2.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM12 2.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM8 10.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM4.8 5.3l2.4 5.4M11.2 5.3l-2.4 5.4" />);
 /** The graph read as a notebook: a page of cells, top to bottom. */
 export const IconNotebook = icon(<path d="M3.5 1.8h9a.7.7 0 0 1 .7.7v11a.7.7 0 0 1-.7.7h-9a.7.7 0 0 1-.7-.7v-11a.7.7 0 0 1 .7-.7zM5.5 4.8h5M5.5 8h5M5.5 11.2h3" />);
+/** A column that can be sorted: arrows both ways. Sorted, the one arrow of the way it is. */
+export const IconSort = icon(<path d="M5 6 8 3l3 3M5 10l3 3 3-3" />);
+export const IconSortUp = icon(<path d="M8 13V3M4 7l4-4 4 4" />);
+export const IconSortDown = icon(<path d="M8 3v10M4 9l4 4 4-4" />);
+/** Filter a column: a funnel, filled while a filter is on. */
+export const IconFilter = icon(<path d="M2.5 3h11L9.5 8.2v4l-3 1.3V8.2z" />);
+export const IconFilterOn = icon(<path d="M2.5 3h11L9.5 8.2v4l-3 1.3V8.2z" fill="currentColor" />);
