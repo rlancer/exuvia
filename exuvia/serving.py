@@ -26,6 +26,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from collections.abc import Generator
 from types import FrameType
@@ -80,6 +81,16 @@ class _Server(uvicorn.Server):
         # that a caller sees the KeyboardInterrupt; here nothing follows
         # (the command returns), and raising it inside the event loop is
         # what turned the tasks still open into tracebacks.
+        #
+        # uvicorn puts back the handlers it found once it has stopped. They
+        # are set to ignore first, so that what it puts back ignores a signal
+        # arriving after that (the second copy of a forwarded Ctrl+C, when
+        # shutdown was quicker than the copy) until _die_of ends the process;
+        # Python's own handler would raise a KeyboardInterrupt from wherever
+        # the process then is.
+        if threading.current_thread() is threading.main_thread():
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                signal.signal(sig, signal.SIG_IGN)
         with super().capture_signals():
             try:
                 yield
