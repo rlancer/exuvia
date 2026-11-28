@@ -5,7 +5,7 @@
  *
  *   node tools/render.mjs                    -> out/exuvia-overview.mp4 (with out/../audio/mix.wav if it exists)
  *   node tools/render.mjs --fps 60 --workers 6
- *   node tools/render.mjs --fps 60 --scale 2 -> 3840x2160: the same 1920x1080 layout at twice the pixels
+ *   node tools/render.mjs --fps 60 --scale 2 -> out/exuvia-overview_4k.mp4 and _4k.srt: the same 1920x1080 layout at 3840x2160
  *   node tools/render.mjs --stills 2,8.5,31  -> out/stills/<t>.png, to look at single frames (--dir names another folder in out/)
  *   node tools/render.mjs --serve            -> serves the page to open in a browser (it plays itself; ?t=12 holds a frame)
  */
@@ -120,7 +120,12 @@ await run("ffmpeg", ["-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", li
 for (const part of [...parts, list]) fs.rmSync(part);
 
 const mix = path.join(VIDEO, "audio", "mix.wav");
-const final = path.join(OUT, "exuvia-overview.mp4");
+// 1080p keeps the plain names; any other scale is named for its size, so the two are never mixed up.
+const suffix = scale === 1 ? "" : scale === 2 ? "_4k" : `_${1080 * scale}p`;
+const final = path.join(OUT, `exuvia-overview${suffix}.mp4`);
+// The captions are the same at every size (audio.py writes them); a copy under the same name goes with the video.
+const captions = path.join(OUT, "exuvia-overview.srt");
+if (suffix && fs.existsSync(captions)) fs.copyFileSync(captions, path.join(OUT, `exuvia-overview${suffix}.srt`));
 if (fs.existsSync(mix)) {
   await run("ffmpeg", ["-v", "error", "-y", "-i", silent, "-i", mix, "-c:v", "copy", "-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-shortest", "-movflags", "+faststart", final]);
   fs.rmSync(silent);
