@@ -115,6 +115,13 @@ bun run doctor                     # Astryx's own checks of the setup and the co
 Look at it in both colour modes and at a narrow width (the workbench stacks
 under 1100px, and its bars lose their words under 900px).
 
+Capture in dark mode. A screenshot of a change, whether to check it or to
+show it in a PR, is taken in the dark theme, as the website's are: a
+Playwright context with `colorScheme: "dark"` and
+`localStorage["exuvia-theme"] = "dark"` set before the page loads
+(`site/tools/capture.mjs` does both). Take a light one as well when the
+change touches colour.
+
 A change to what the workbench shows on every screen (its bars, the side
 panel's tabs, where a control lives) makes the website's screenshots wrong,
 and nothing checks them: recapture them in the same PR with
