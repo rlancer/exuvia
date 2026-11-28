@@ -179,9 +179,9 @@ def test_one_output_of_a_node_with_several(client, model):
 def test_what_is_not_a_table_or_not_a_request_never_reaches_the_model(client, model):
     assert client.post("/api/nodes/nope/filter", json={"prompt": "x"}).status_code == 404
     # JSON, not a table; a node with several outputs asked for as one.
-    for name in ("note", "fit"):
+    for name, said in (("note", "note's output is JSON, not a table"), ("fit", "fit has several outputs")):
         res = client.post(f"/api/nodes/{name}/filter", json={"prompt": "x"})
-        assert res.status_code == 400 and "Catalog" in res.json()["detail"], res.text
+        assert res.status_code == 400 and said in res.json()["detail"], res.text
     assert client.post("/api/nodes/orders/filter", json={"prompt": "   "}).status_code == 422
     assert client.post("/api/nodes/orders/filter", json={"prompt": ""}).status_code == 422
     assert client.post("/api/nodes/orders/filter", json={"prompt": "x" * (rowfilter.PROMPT_MAX + 1)}).status_code == 422
