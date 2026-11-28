@@ -61,7 +61,7 @@ from croniter import croniter
 
 from . import auth, envvars
 from .arrowstream import ArrowStream
-from .artifacts import artifact_key, artifact_store
+from .artifacts import artifact_key, artifact_store, cache_limit, trim_cache
 from .events import EventBus
 from . import runners as runners_mod
 from .executor import CappedLog, ExecRequest, ExecResult, LocalExecutor, make_executor
@@ -88,6 +88,8 @@ _ALL_ROWS = 2**62  # the limit of an offset-only read
 # How soon an external scheduler should tick again while a fire waits for the
 # node's run in progress to end (overlap="queue"; see next_fire_at).
 QUEUED_RECHECK_S = 30
+# How often the local copies of outputs are trimmed to EXUVIA_ARTIFACT_CACHE_MB.
+CACHE_TRIM_EVERY_S = 10 * 60
 # What _execute returns for a failed attempt that will be tried again.
 RETRY = "retry"
 # Run statuses that leave a node's output good to read: "cached" is a run
@@ -210,6 +212,8 @@ class Workspace:
         self.spawn(self._watch_files(self._stop_watching), context=Context())
         if artifact_store() is not None:
             self.spawn(self._sync_artifacts(), context=Context())
+            if cache_limit() is not None:  # a bad EXUVIA_ARTIFACT_CACHE_MB stops the start here
+                self.spawn(self._trim_cache_loop(), context=Context())
         if SCHEDULER == "internal":
             self.spawn(self._schedule_loop(), context=Context())
 
@@ -1407,6 +1411,10 @@ class Workspace:
         local = Path(rel) if Path(rel).is_absolute() else self.project.root / rel
         if not local.exists():
             self._download(rel, local)
+        elif cache_limit() is not None:
+            # Read now: the cache keeps what was read most recently (trim_cache).
+            with suppress(OSError):
+                os.utime(local)
         return str(local)
 
     @staticmethod
@@ -1580,6 +1588,23 @@ class Workspace:
         if uploaded:
             # Nothing a client needs to hear, but the next export is smaller.
             self.bus.touch()
+
+    def trim_cache(self) -> tuple[int, int]:
+        """Keep the local copies of outputs within EXUVIA_ARTIFACT_CACHE_MB,
+        dropping what the remote store has and was read longest ago
+        (artifacts.trim_cache). (files, bytes) deleted. Blocking."""
+        limit = cache_limit()
+        if limit is None:
+            return 0, 0
+        return trim_cache(self.project.root, self.store.stored_paths(), limit)
+
+    async def _trim_cache_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.to_thread(self.trim_cache)
+            except Exception as e:  # noqa: BLE001 - a failed trim keeps the files; the next one retries
+                print(f"exuvia: could not trim the output cache: {e}", file=sys.stderr)
+            await asyncio.sleep(CACHE_TRIM_EVERY_S)
 
     async def _execute(
         self,

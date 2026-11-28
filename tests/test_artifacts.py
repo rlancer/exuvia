@@ -4,6 +4,7 @@ outputs live in a bucket instead of its export."""
 import datetime as dt
 import io
 import json
+import os
 import shutil
 import tarfile
 import time
@@ -225,3 +226,72 @@ def test_partitioned_chunks_live_in_the_store(tmp_path, s3):
     assert ws.store.unstored_outputs() == []
     shutil.rmtree(root / ".exuvia" / "artifacts")  # a cold cache
     assert ws.query("select sum(v) from daily")["rows"] == [[3]]
+
+
+# -- EXUVIA_ARTIFACT_CACHE_MB: the local cache's size ----------------------------
+
+
+def output(root, rel, size, age_s):
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"x" * size)
+    t = time.time() - age_s
+    os.utime(p, (t, t))
+    return rel
+
+
+def test_the_cache_drops_what_the_store_has_and_was_read_longest_ago(tmp_path):
+    old = output(tmp_path, ".exuvia/artifacts/a/old.parquet", 400, 3600 * 5)
+    older = output(tmp_path, ".exuvia/artifacts/a/older.parquet", 400, 3600 * 9)
+    recent = output(tmp_path, ".exuvia/artifacts/b/recent.parquet", 400, 3600)
+    local_only = output(tmp_path, ".exuvia/artifacts/b/unstored.parquet", 400, 3600 * 24)
+    just_read = output(tmp_path, ".exuvia/artifacts/c/just-read.parquet", 400, 60)
+    stored = {old, older, recent, just_read}
+
+    # 2000 bytes held, 1200 allowed: the two read longest ago go, oldest first.
+    assert artifacts.trim_cache(tmp_path, stored, 1200) == (2, 800)
+    assert not (tmp_path / older).exists() and not (tmp_path / old).exists()
+    assert (tmp_path / recent).exists()
+
+    # However small the limit, a file only on this disk stays (it is the only
+    # copy), and so does one read moments ago (a run may be opening it).
+    assert artifacts.trim_cache(tmp_path, stored, 0) == (1, 400)
+    assert (tmp_path / local_only).exists() and (tmp_path / just_read).exists()
+    assert not (tmp_path / recent).exists()
+
+    # Within the limit, nothing goes.
+    assert artifacts.trim_cache(tmp_path, stored | {local_only}, 10_000) == (0, 0)
+
+
+def test_the_cache_limit_needs_a_remote_store(monkeypatch, s3):
+    monkeypatch.setenv("EXUVIA_ARTIFACT_CACHE_MB", "1.5")
+    assert artifacts.cache_limit() == 1572864
+    monkeypatch.setenv("EXUVIA_ARTIFACT_CACHE_MB", "lots")
+    with pytest.raises(ValueError, match="EXUVIA_ARTIFACT_CACHE_MB"):
+        artifacts.cache_limit()
+    # The local folder is the only copy without a store: nothing may go.
+    monkeypatch.setenv("EXUVIA_ARTIFACT_CACHE_MB", "0")
+    set_artifact_store(None)
+    monkeypatch.delenv("EXUVIA_ARTIFACT_STORE")
+    assert artifacts.cache_limit() is None
+
+
+def test_a_trimmed_output_is_downloaded_again_when_read(tmp_path, s3, monkeypatch):
+    root = tmp_path / "hub"
+    with TestClient(create_hub_app(root, template(tmp_path))) as hub:
+        hub.post("/api/projects", json={"id": "wf", "template": "dated"})
+        hub.post("/p/wf/api/run", json={"params": {"as_of": "2026-03-02"}})
+        wait_idle(hub)
+        assert len(s3.objects) == 1
+        project = root / "wf"
+        files = list((project / ".exuvia" / "artifacts").rglob("*.parquet"))
+        assert files
+        for f in files:  # read long ago
+            os.utime(f, (time.time() - 3600, time.time() - 3600))
+        monkeypatch.setenv("EXUVIA_ARTIFACT_CACHE_MB", "0")
+        removed, _ = hub.app.state.hub._ctxs["wf"].ws.trim_cache()
+        assert removed == len(files)
+        assert not any(f.exists() for f in files)
+        # The next read fetches it from the bucket, as a fresh container does.
+        assert hub.get("/p/wf/api/nodes/prices/data", params=AS_OF).json()["rows"]
+        assert all(f.exists() for f in files)

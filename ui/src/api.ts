@@ -133,7 +133,8 @@ export interface StorageState {
   nodes: StorageNode[];
   partitioned: StoragePartitioned[];
   compact_after: number;
-  remote: { configured: boolean; uploaded: number; missing: number };
+  /** cache_limit: bytes of outputs kept on local disk (EXUVIA_ARTIFACT_CACHE_MB), null for all of them. */
+  remote: { configured: boolean; cache_limit: number | null; uploaded: number; missing: number };
   database: { kind: string; in_project: boolean; bytes: number | null; rows: Record<string, number> };
 }
 

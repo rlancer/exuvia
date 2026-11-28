@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from . import partitioned
-from .artifacts import artifact_store
+from .artifacts import artifact_store, cache_limit
 from .db import SQLiteDatabase
 
 if TYPE_CHECKING:
@@ -332,6 +332,8 @@ def report(ws: "Workspace") -> dict[str, Any]:
         "compact_after": partitioned.COMPACT_AFTER,
         "remote": {
             "configured": artifact_store() is not None,
+            # Bytes of outputs the local folder keeps (EXUVIA_ARTIFACT_CACHE_MB), or None: all of them.
+            "cache_limit": cache_limit(),
             "uploaded": len(stored),
             "missing": len(missing),
         },
