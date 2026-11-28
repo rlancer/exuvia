@@ -9,3 +9,5 @@ audio/voices.json
 help/*/audio/*.mp3
 help/*/audio/*.wav
 help/*/audio/voices.json
+# The 4K render's product shots, captured at 3x (README): made again, like the audio.
+shots/

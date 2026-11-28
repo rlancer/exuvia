@@ -16,6 +16,9 @@
  *   EXUVIA_AUTH=headers EXUVIA_ADMINS=ada uv run exuvia hub /tmp/hub --port 7432
  *   node tools/capture.mjs hub http://127.0.0.1:7432           -> hub, share, data-keys, admin-keys
  *
+ *   # either mode at 3x, somewhere else: the overview video's 4K shots, beside the site's, not over them
+ *   node tools/capture.mjs app http://127.0.0.1:7431 --scale 3 --out ../video/shots
+ *
  *   # the getting-started project, from `exuvia init`
  *   uv run exuvia init /tmp/my-research && uv run exuvia serve /tmp/my-research --port 7433
  *   node tools/capture.mjs tutorial http://127.0.0.1:7433      -> tutorial-graph, tutorial-view
@@ -43,8 +46,12 @@ import sharp from "sharp";
 
 const SITE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = path.resolve(SITE, "..");
-const SHOTS = path.join(SITE, "src/assets/shots");
 const [mode, address, ...flags] = process.argv.slice(2);
+const option = (name, fallback) => (flags.includes(`--${name}`) ? flags[flags.indexOf(`--${name}`) + 1] : fallback);
+// --out puts the shots somewhere else (the overview video's 4K shots, say), and --scale sets their pixels
+// per CSS pixel: 2 by default (2880x1800), 3 for 4320x2700. The layout is the same 1440x900 either way.
+const SHOTS = path.resolve(option("out", path.join(SITE, "src/assets/shots")));
+const SCALE = +option("scale", 2);
 if (!["app", "hub", "tutorial", "cards"].includes(mode) || !address) {
   console.error("usage: node tools/capture.mjs app <exuvia url> [--no-agent] | hub <hub url> | tutorial <exuvia url> | cards <site url>");
   process.exit(2);
@@ -99,13 +106,15 @@ async function runStale(prefix = "", headers = {}) {
 async function workbench({ headers, height = 900 } = {}) {
   const context = await browser.newContext({
     viewport: { width: 1440, height },
-    deviceScaleFactor: 2,
+    deviceScaleFactor: SCALE,
     colorScheme: "dark",
     extraHTTPHeaders: headers,
   });
   await context.addInitScript(() => localStorage.setItem("exuvia-theme", "dark"));
   return context.newPage();
 }
+
+await fs.mkdir(SHOTS, { recursive: true });
 
 async function shot(page, name, locator) {
   await page.waitForTimeout(600);
