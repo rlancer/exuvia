@@ -1062,6 +1062,28 @@ export function NodeChart({
   // The spec as text: the graph is read again whenever anything in it runs,
   // and the same chart must not be drawn again (and lose its selection) for that.
   const chartText = JSON.stringify(node.chart ?? null);
+  // A chart as wide as its box follows the box. Vega measures a "container"
+  // width only on a window resize, and the box also changes without one (the
+  // notebook's Contents opening, the side panel folding): the chart then kept
+  // its old width and spilled past its cell.
+  const followsWidth = (node.chart?.width ?? "container") === "container";
+  useEffect(() => {
+    const el = ref.current;
+    if (!view || !el || !followsWidth || typeof ResizeObserver === "undefined") return;
+    let drawn = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      const w = el.clientWidth;
+      if (w === drawn || w === 0) return; // hidden, or only its height changed
+      drawn = w;
+      try {
+        view.width(w).runAsync();
+      } catch {
+        // A spec without one width (a concat of charts): left as drawn.
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [view, followsWidth]);
   useEffect(() => {
     if (!d || !ref.current || !ready) return;
     const chart = JSON.parse(chartText) as GraphNode["chart"];
