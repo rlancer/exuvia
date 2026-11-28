@@ -42,7 +42,7 @@ function said(id, phrase) {
   return LEAD + T[id].voice * (at / text.length);
 }
 /** Scenes with nothing behind them but the sea fade out; the rest are covered by the next one. */
-const FADES_OUT = new Set(["hook", "scale"]);
+const FADES_OUT = new Set(["hook", "api"]);
 
 // ---- pieces ----------------------------------------------------------------
 
@@ -309,6 +309,17 @@ $("#storage-files").innerHTML = BUCKET.map(
 const CODE_STORAGE = `select ticker, max(vol_20d) as peak
 from rolling_vol
 group by 1 order by 2 desc`;
+
+// A request made with a data key, and its answer, as the hub gives them (tested against a hub; README, "Data API").
+const API_LINES = [
+  `<span class="dollar">$</span> curl -G https://hub.example.com/api/data/query \\`,
+  `    <span class="flag">-H</span> <span class="str">"Authorization: Bearer $EXUVIA_DATA_KEY"</span> \\`,
+  `    <span class="flag">--data-urlencode</span> <span class="str">'sql=select sector, round(avg_vol, 2) as vol</span>`,
+  `<span class="str">        from markets.sector_summary order by 2 desc limit 3'</span>`,
+  `<span class="outp">{"columns": [{"name": "sector", "type": "VARCHAR"}, {"name": "vol", "type": "DOUBLE"}],</span>`,
+  `<span class="outp"> "rows": [["Health", 0.43], ["Staples", 0.42], ["Industrials", 0.32]]}</span>`,
+];
+$("#api-cmd").innerHTML = API_LINES.map((line) => `<span class="line">${line}</span>`).join("\n");
 
 const MCP_TOOLS = "list_nodes read_node write_node run_node query_data write_view list_revisions restore_node request_packages docs".split(" ");
 $("#mcp-tools").innerHTML = MCP_TOOLS.map((tool) => `<span>${tool}</span>`).join("");
@@ -601,8 +612,6 @@ const SCENES = {
 
   scale(lt, d) {
     const hubAt = said("scale", "Move to a hub") - 0.2;
-    const keysAt = said("scale", "and give your own apps") - 0.2;
-    const keys = prog(lt, keysAt, keysAt + 0.6, out);
     const hub = prog(lt, hubAt, hubAt + 0.8, out);
     // The terminal steps aside for the hub, which needs the height of the stage.
     show($("#scale-term"), prog(lt, 0, 0.6, out) * (1 - prog(lt, hubAt - 0.1, hubAt + 0.4)));
@@ -615,22 +624,32 @@ const SCENES = {
     $("#scale-cmd").innerHTML = html;
 
     $("#scale-hub").style.transform = `translate(80px, ${64 + (1 - hub) * 60}px) scale(1.1)`;
-    $("#scale-hub").style.opacity = hub * (1 - keys);
-    $("#scale-chips").childNodes.forEach((chip, i) => chip.nodeType === 1 && show(chip, prog(lt, hubAt + 0.6 + i * 0.12, hubAt + 1 + i * 0.12, out) * (1 - keys), 14));
+    $("#scale-hub").style.opacity = hub;
+    $("#scale-chips").childNodes.forEach((chip, i) => chip.nodeType === 1 && show(chip, prog(lt, hubAt + 0.6 + i * 0.12, hubAt + 1 + i * 0.12, out), 14));
+    const later = lt > hubAt;
+    $("#scale-kicker").textContent = later ? "to a hub for the team" : "from a laptop";
+    $("#scale .head").textContent = later ? "Grow into a hub" : "Start with one command";
+    show($("#scale .cap"), 1 - prog(lt, hubAt - 0.3, hubAt) + prog(lt, hubAt, hubAt + 0.4), 0);
+  },
 
-    // A data API key, with the prompt that hands it to a coding agent.
-    $("#scale-keys").style.opacity = keys;
-    $("#scale-scrim").style.opacity = keys;
-    camera($("#scale-keys"), lt - keysAt, [
-      [0, 0.5, 0.42, 1.2],
-      [d - keysAt, 0.5, 0.48, 1.32],
+  api(lt, d) {
+    // A key made on the hub, then a request made with it from outside exuvia, and the rows it answers.
+    const key = said("api", "Make a read-only key");
+    const code = said("api", "and your code");
+    camera($("#api-shot"), lt, [
+      [0, 0.5, 0.45, 1.05],
+      [key, 0.5, 0.36, 1.3],
+      [d, 0.5, 0.4, 1.36],
     ]);
-
-    const stage = lt < hubAt ? 0 : lt < keysAt ? 1 : 2;
-    $("#scale-kicker").textContent = ["from a laptop", "to a hub for the team", "the data API"][stage];
-    $("#scale .head").textContent = ["Start with one command", "Grow into a hub", "A key for your own apps"][stage];
-    const swapK = (at) => 1 - prog(lt, at - 0.3, at) + prog(lt, at, at + 0.4);
-    show($("#scale .cap"), Math.min(swapK(hubAt), swapK(keysAt)), 0);
+    const ring = $("#api-ring");
+    ring.style.cssText = "left:28.6%;top:31%;width:42.8%;height:4.6%";
+    ring.style.opacity = prog(lt, key, key + 0.4) * (1 - prog(lt, code - 0.3, code)) * (0.65 + 0.35 * Math.sin((lt - key) * 5));
+    $("#api-shade").style.opacity = prog(lt, code - 0.3, code + 0.2);
+    show($("#api-term"), prog(lt, code - 0.2, code + 0.3, out));
+    document.querySelectorAll("#api-cmd .line").forEach((line, i) => {
+      const at = code + (i < 4 ? i * 0.35 : 1.9 + (i - 4) * 0.2);
+      line.style.opacity = prog(lt, at, at + 0.25);
+    });
   },
 
   end(lt, d) {
@@ -663,7 +682,7 @@ function seek(t) {
     if (opacity > 0) SCENES[id](t - scene.start, scene.dur);
   }
 
-  const sea = t < T.title.end + FADE || t > T.scale.end - FADE;
+  const sea = t < T.title.end + FADE || t > T.api.end - FADE;
   $("#sea").style.opacity = sea ? 1 : 0;
   if (sea) {
     const dive = t < T.title.end + FADE ? t / T.title.end : 1 + (t - T.end.start) / T.end.dur;

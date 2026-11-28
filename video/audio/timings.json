@@ -33,7 +33,10 @@
   "duration": 8.803
  },
  "scale": {
-  "duration": 9.665
+  "duration": 6.348
+ },
+ "api": {
+  "duration": 13.166
  },
  "end": {
   "duration": 3.892
