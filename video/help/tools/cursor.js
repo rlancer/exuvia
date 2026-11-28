@@ -5,6 +5,8 @@
 (() => {
   if (window.__helpCursor) return;
   window.__helpCursor = true;
+  // The recorder films slowly at 4K (studio.mjs): the pointer's own timers slow down with it.
+  const slow = () => window.__helpSlow || 1;
   const SVG =
     '<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 26 26">' +
     '<path d="M3 2 L3 21 L8 16.5 L11.5 24 L15 22.5 L11.5 15 L18 15 Z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg>';
@@ -30,7 +32,7 @@
         "transition:transform .45s ease-out, opacity .45s ease-out;";
       root.insertBefore(ring, arrow);
       requestAnimationFrame(() => requestAnimationFrame(() => { ring.style.transform = "scale(1.4)"; ring.style.opacity = "0"; }));
-      setTimeout(() => ring.remove(), 600);
+      setTimeout(() => ring.remove(), 600 * slow());
     }, true);
     // The recorder hides the pointer while it types, as a person's hand leaves the mouse.
     window.__helpCursorShow = (on) => (arrow.style.opacity = on ? "1" : "0");
@@ -49,8 +51,8 @@
         caps.appendChild(cap);
       }
       root.appendChild(caps);
-      setTimeout(() => (caps.style.opacity = "0"), 1100);
-      setTimeout(() => caps.remove(), 1500);
+      setTimeout(() => (caps.style.opacity = "0"), 1100 * slow());
+      setTimeout(() => caps.remove(), 1500 * slow());
     };
   }
   if (document.documentElement) mount();
