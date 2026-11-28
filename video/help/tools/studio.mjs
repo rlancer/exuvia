@@ -23,13 +23,17 @@ import { fileURLToPath } from "node:url";
 const HELP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CURSOR = fs.readFileSync(path.join(HELP, "tools", "cursor.js"), "utf8");
 export const VIEWPORT = { width: 1280, height: 720 };
-export const SCALE = 1.5; // 1280x720 laid out, 1920x1080 recorded: the app's text reads on a phone.
+export const SCALE = 1.5; // the default: 1280x720 laid out, 1920x1080 recorded, so the app's text reads on a phone. 3 records 4K.
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 
 export class Studio {
-  constructor({ browser, script, timings, frames }) {
+  constructor({ browser, script, timings, frames, scale = SCALE, slow = 1 }) {
+    this.scale = scale;
+    // Slow capture: everything a person does (and the page's animations) runs `slow` times slower
+    // while filming, and the video clock plays it back at speed. 4K frames come too slowly to film live.
+    this.slow = slow;
     this.browser = browser;
     this.script = script;
     this.segments = new Map(script.segments.map((s) => [s.id, s]));
@@ -40,14 +44,14 @@ export class Studio {
     this.children = [];
     this.pointer = new WeakMap();
     // The video's clock: wall time, slowed to 1/factor inside fast().
-    this.factor = 1;
+    this.factor = slow;
     this.mark = { wall: 0, video: 0 };
     this.breaks = []; // [wall ms, video s, factor]: how to place a frame stamped with wall time
   }
 
   async open() {
     // Dark mode: the app follows the system setting, and the videos keep to dark.
-    this.context = await this.browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: SCALE, colorScheme: "dark" });
+    this.context = await this.browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: this.scale, colorScheme: "dark" });
     await this.context.addInitScript(CURSOR);
   }
 
@@ -58,13 +62,29 @@ export class Studio {
 
   start() {
     this.mark = { wall: Date.now(), video: 0 };
-    this.breaks = [[this.mark.wall, 0, 1]];
+    this.breaks = [[this.mark.wall, 0, this.factor]];
   }
 
   setFactor(factor) {
     this.mark = { wall: Date.now(), video: this.now() };
     this.factor = factor;
     this.breaks.push([this.mark.wall, this.mark.video, factor]);
+    return this.pace(this.page);
+  }
+
+  /** Waits `ms` of video time: a person's pause, slowed with everything else while filming slowly. */
+  pause(ms) {
+    return sleep(ms * this.factor);
+  }
+
+  /** Slows the page's CSS animations and the pointer's own to the filming speed. */
+  async pace(page) {
+    if (!page) return;
+    await page.evaluate((k) => (window.__helpSlow = k), this.factor).catch(() => {});
+    if (page === this.page && this.cdp) {
+      await this.cdp.send("Animation.enable").catch(() => {});
+      await this.cdp.send("Animation.setPlaybackRate", { playbackRate: 1 / this.factor }).catch(() => {});
+    }
   }
 
   videoTime(wallMs) {
@@ -119,11 +139,11 @@ export class Studio {
         "font:600 13px system-ui,sans-serif;color:#fff;background:rgba(15,19,28,.82);pointer-events:none;";
       document.documentElement.appendChild(badge);
     }, factor);
-    this.setFactor(factor);
+    await this.setFactor(this.slow * factor);
     try {
       return await fn();
     } finally {
-      this.setFactor(1);
+      await this.setFactor(this.slow);
       await page.evaluate(() => document.getElementById("__helpFast")?.remove());
     }
   }
@@ -163,9 +183,10 @@ export class Studio {
     await this.cdp.send("Page.startScreencast", {
       format: "jpeg",
       quality: 92,
-      maxWidth: VIEWPORT.width * SCALE,
-      maxHeight: VIEWPORT.height * SCALE,
+      maxWidth: VIEWPORT.width * this.scale,
+      maxHeight: VIEWPORT.height * this.scale,
     });
+    await this.pace(page);
   }
 
   // ---- the hand on the mouse ---------------------------------------------
@@ -180,7 +201,7 @@ export class Studio {
     for (let i = 1; i <= steps; i++) {
       const t = ease(i / steps);
       await page.mouse.move(from.x + (x - from.x) * t, from.y + (y - from.y) * t);
-      await sleep(ms / steps);
+      await this.pause(ms / steps);
     }
     this.pointer.set(page, { x, y });
   }
@@ -195,11 +216,11 @@ export class Studio {
 
   async click(locator, options = {}) {
     await this.point(locator, options);
-    await sleep(140);
+    await this.pause(140);
     await this.page.mouse.down();
-    await sleep(70);
+    await this.pause(70);
     await this.page.mouse.up();
-    await sleep(options.after ?? 250);
+    await this.pause(options.after ?? 250);
   }
 
   async hover(locator, seconds = 0.6, options) {
@@ -213,21 +234,21 @@ export class Studio {
     for (const ch of text) {
       if (ch === "\n") await this.page.keyboard.press("Enter");
       else await this.page.keyboard.type(ch);
-      await sleep((1000 / cps) * (0.6 + Math.random() * 0.8));
+      await this.pause((1000 / cps) * (0.6 + Math.random() * 0.8));
     }
   }
 
   async press(key, pause = 120) {
     await this.page.keyboard.press(key);
-    await sleep(pause);
+    await this.pause(pause);
   }
 
   /** A keyboard shortcut, with its keycaps shown on screen. */
   async shortcut(key, pause = 600) {
     await this.page.evaluate((k) => window.__helpKeys?.(k.replace("Control", "Ctrl")), key);
-    await sleep(250);
+    await this.pause(250);
     await this.page.keyboard.press(key);
-    await sleep(pause);
+    await this.pause(pause);
   }
 
   // ---- a code editor (CodeMirror) on the page ----------------------------
@@ -264,22 +285,22 @@ export class Studio {
     const a = await this.codeAt(from[0], from[1], editor);
     const b = await this.codeAt(to[0], to[1], editor);
     await this.move(a.x, a.y);
-    await sleep(120);
+    await this.pause(120);
     await this.page.mouse.down();
     await this.move(b.x, b.y, { duration: 450 });
     await this.page.mouse.up();
-    await sleep(250);
+    await this.pause(250);
   }
 
   /** Clicks in code at (line, col). */
   async clickCode(line, col, editor) {
     const a = await this.codeAt(line, col, editor);
     await this.move(a.x, a.y);
-    await sleep(120);
+    await this.pause(120);
     await this.page.mouse.down();
-    await sleep(60);
+    await this.pause(60);
     await this.page.mouse.up();
-    await sleep(200);
+    await this.pause(200);
   }
 
   // ---- terminals ----------------------------------------------------------
@@ -330,7 +351,7 @@ export class Terminal {
     if (this.studio.page !== this.page) throw new Error("terminal.run: this terminal is not on camera");
     const since = (await this.text()).length;
     await this.studio.type(command, { cps });
-    await sleep(250);
+    await this.studio.pause(250);
     await this.page.keyboard.press("Enter");
     if (until) return this.waitFor(until, { since, timeout });
     // Done when the last line is a bare prompt again: the folder, a dollar, nothing typed after it.

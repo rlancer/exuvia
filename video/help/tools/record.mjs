@@ -6,6 +6,8 @@
  *   node help/tools/record.mjs getting-started --draft    -> out/help/getting-started-draft.mp4, silent,
  *                                                            timed from each line's estimate (no voice needed)
  *   node help/tools/record.mjs getting-started --stills   -> also out/help/getting-started-stills/<beat>.jpg
+ *   node help/tools/record.mjs getting-started --scale 3  -> 3840x2160 (4K) from the same 1280x720 layout; 1.5 (1080p) by default.
+ *                                                            4K is filmed 3x slower and played back at speed (--slow N to change)
  *
  * Without --draft it times the beats from help/<name>/audio/timings.json, so
  * run `python tools/audio.py --script help/<name>/script.json voice` first.
@@ -22,12 +24,16 @@ import { SCALE, Studio, VIEWPORT } from "./studio.mjs";
 
 const VIDEO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const args = process.argv.slice(2);
-const name = args.find((a) => !a.startsWith("--"));
+const name = args.find((a, i) => !a.startsWith("--") && !["--scale", "--slow"].includes(args[i - 1]));
 if (!name || !fs.existsSync(path.join(VIDEO, "help", name, "video.mjs"))) {
   console.error("usage: node help/tools/record.mjs <name> [--draft] [--stills]   (a folder in help/ with video.mjs)");
   process.exit(2);
 }
 const draft = args.includes("--draft");
+const scale = args.includes("--scale") ? Number(args[args.indexOf("--scale") + 1]) : SCALE;
+// Chrome films 1080p live at about 40 frames a second but 4K at about 12, so above 1080p the
+// recording is filmed three times slower and played back at speed (Studio's `slow`).
+const slow = args.includes("--slow") ? Number(args[args.indexOf("--slow") + 1]) : scale > 2 ? 3 : 1;
 const dir = path.join(VIDEO, "help", name);
 const scriptPath = path.join(dir, "script.json");
 const script = JSON.parse(fs.readFileSync(scriptPath, "utf8"));
@@ -52,8 +58,10 @@ fs.mkdirSync(frames, { recursive: true });
 fs.mkdirSync(stage, { recursive: true });
 
 const { default: film } = await import(path.join(dir, "video.mjs"));
-const browser = await launch();
-const studio = new Studio({ browser, script, timings, frames });
+// Headless Chrome's screencast sends frames at the layout's size (1280x720) whatever the page's
+// device scale factor, unless the whole browser is told the scale: hence the flag.
+const browser = await launch({ args: [`--force-device-scale-factor=${scale}`] });
+const studio = new Studio({ browser, script, timings, frames, scale, slow });
 await studio.open();
 let failed = null;
 try {
@@ -87,7 +95,7 @@ fs.writeFileSync(path.join(work, "frames.txt"), lines.join("\n") + "\n");
 fs.writeFileSync(path.join(work, "timeline.json"), JSON.stringify({ duration: end, beats: studio.beats }, null, 1) + "\n");
 
 const silent = path.join(work, "silent.mp4");
-const size = `${VIEWPORT.width * SCALE}x${VIEWPORT.height * SCALE}`;
+const size = `${VIEWPORT.width * scale}x${VIEWPORT.height * scale}`;
 execFileSync("ffmpeg", [
   "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", path.join(work, "frames.txt"),
   "-vf", `scale=${size}:flags=lanczos,fps=30,format=yuv420p`, "-c:v", "libx264", "-preset", "medium", "-crf", "18",

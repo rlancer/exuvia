@@ -133,8 +133,11 @@ Everything on screen is real. Commands run in bash with a fresh home folder
 (`/tmp/exuvia-<name>`, so the paths exuvia prints stay short) and uv's own
 cache; `uvx exuvia` there is the release on PyPI, which every merge to
 `main` that touches the package publishes. The browser is 1280x720 at 1.5x,
-so the recording is 1920x1080 with text that reads on a phone, and dark, as
-every help video is. A bug that shows on camera is filed as an issue and
+so the recording is 1920x1080 with text that reads on a phone (or 3x for
+4K), and dark, as every help video is. The whole browser is told the scale
+(`--force-device-scale-factor`): headless Chrome's screencast otherwise sends
+frames at the layout's size, 1280x720, whatever the page's scale.
+A bug that shows on camera is filed as an issue and
 left showing, not hidden by the script.
 
 ### Recording one
@@ -152,6 +155,17 @@ python tools/audio.py --script help/getting-started/script.json --dry-run   # th
 python tools/audio.py --script help/getting-started/script.json voice       # voices the lines that changed
 node help/tools/record.mjs getting-started                     # out/help/getting-started.mp4 and .srt
 ```
+
+`--scale 3` records 4K (3840x2160) from the same 1280x720 layout, for
+YouTube; 1.5 (1080p) is the default. Chrome films 1080p live at about 40
+frames a second but 4K at about 12, so a 4K take is filmed three times
+slower: the pointer, the typing, every pause and the page's CSS animations
+run at a third of their speed, and the beat clock plays it back at speed
+(about 35 frames a second). What the app does on its own (a run, the agent,
+a toast's timer) keeps its real pace while filming, so it looks three times
+quicker on screen. `--slow N` sets the factor. A 4K take takes about three
+times its length to film, and its frames need several gigabytes of disk
+until the mp4 is made.
 
 `--draft` needs no voice, so the wording and the actions can be settled
 before any is paid for. `--stills` also writes a frame per beat to
