@@ -406,7 +406,11 @@ const icon = (d: string) => `<svg viewBox="0 0 16 16" width="16" height="16" ari
     width: 100%;
     height: auto;
   }
-  .prose :global(figure.shot figcaption) {
+  .prose :global(figure.video-figure) {
+    margin: 1.75rem 0;
+  }
+  .prose :global(figure.shot figcaption),
+  .prose :global(figure.video-figure figcaption) {
     margin-top: 0.6rem;
     color: var(--muted);
     font-size: 0.95em;
