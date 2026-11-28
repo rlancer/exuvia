@@ -71,7 +71,7 @@ from there wherever one of the same name exists, and the site's otherwise:
 node tools/capture.mjs app http://127.0.0.1:7431 --scale 3 --out ../video/shots
 node tools/capture.mjs hub http://127.0.0.1:7432 --scale 3 --out ../video/shots
 # in video/:
-node tools/render.mjs --fps 60 --scale 2 --workers 2 # out/exuvia-overview.mp4, 3840x2160
+node tools/render.mjs --fps 60 --scale 2 --workers 2 # out/exuvia-overview_4k.mp4 and _4k.srt, 3840x2160
 ```
 
 Each worker is a page and an encoder, and a 4K encoder takes about 2.5 GB:
@@ -99,7 +99,9 @@ shot from `video/shots/`, and the site's is used for it.
 ### Uploading
 
 Upload `out/exuvia-overview.mp4` and add `out/exuvia-overview.srt` as its
-English captions.
+English captions; for 4K, `out/exuvia-overview_4k.mp4` and
+`out/exuvia-overview_4k.srt`. A render at a scale other than 1 or 2 is named
+for its height (`--scale 3` writes `_3240p`).
 
 ## Help videos
 
