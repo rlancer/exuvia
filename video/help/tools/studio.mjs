@@ -344,7 +344,8 @@ export class Terminal {
 
   /** Ctrl+C (shown on screen), then waits for the shell's prompt. */
   async interrupt() {
-    const prompt = /(^|\n)[~/]\S* \$ ?$/;
+    // The prompt may come back on the line the terminal echoed ^C on.
+    const prompt = /(^|\n)(\^C)?[~/]\S* \$ ?$/;
     // A second Ctrl+C after a few seconds, as a person would press it when the first does
     // nothing: `exuvia serve` waits for open browser tabs on the first (rlancer/exuvia#246).
     for (let tries = 0; ; tries++) {
