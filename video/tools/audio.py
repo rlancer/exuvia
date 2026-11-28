@@ -224,10 +224,14 @@ def stamp(t):
     return f"{ms // 3600000:02}:{ms // 60000 % 60:02}:{ms // 1000 % 60:02},{ms % 1000:03}"
 
 
+def write_timings():
+    """Each segment's length, which the overview's scenes (src/main.js) and a help video's beats are timed by."""
+    lengths = {s["id"]: {"duration": round(seconds(AUDIO / f"voice-{s['id']}.mp3"), 3)} for s in segments}
+    (AUDIO / "timings.json").write_text(json.dumps(lengths, indent=1) + "\n", encoding="utf-8")
+
+
 def mix(rows, total):
-    (AUDIO / "timings.json").write_text(
-        json.dumps({row["id"]: {"duration": round(row["duration"], 3)} for row in rows}, indent=1) + "\n", encoding="utf-8"
-    )
+    write_timings()
     OUT.mkdir(parents=True, exist_ok=True)
     CAPTIONS.write_text(
         "\n".join(f"{i}\n{stamp(row['at'])} --> {stamp(row['at'] + row['duration'])}\n{row['text']}\n" for i, row in enumerate(rows, 1)),
@@ -275,6 +279,12 @@ if dry:
         print("and the music")
     sys.exit(0)
 voice(todo)
+if HELP and not TIMELINE:
+    # A help video is recorded to these lengths first (help/tools/record.mjs), and mixed from what it recorded.
+    write_timings()
+    if step == "mix":
+        sys.exit("a help video's mix needs --timeline: help/tools/record.mjs passes it")
+    sys.exit(0)
 rows, total = timeline()
 if step == "music" or (step == "all" and WANTS_MUSIC and not music_file()):
     music(total)

@@ -1,0 +1,89 @@
+{
+ "intro": {
+  "duration": 10.736
+ },
+ "install": {
+  "duration": 12.722
+ },
+ "init": {
+  "duration": 14.681
+ },
+ "hello": {
+  "duration": 13.845
+ },
+ "serve": {
+  "duration": 4.545
+ },
+ "canvas": {
+  "duration": 9.718
+ },
+ "output": {
+  "duration": 7.837
+ },
+ "watch": {
+  "duration": 7.706
+ },
+ "newnode": {
+  "duration": 8.803
+ },
+ "param": {
+  "duration": 12.121
+ },
+ "sql": {
+  "duration": 11.964
+ },
+ "runall": {
+  "duration": 9.822
+ },
+ "result": {
+  "duration": 3.37
+ },
+ "cli": {
+  "duration": 9.744
+ },
+ "change": {
+  "duration": 12.304
+ },
+ "status": {
+  "duration": 6.818
+ },
+ "rerun": {
+  "duration": 12.199
+ },
+ "four": {
+  "duration": 5.12
+ },
+ "history": {
+  "duration": 10.501
+ },
+ "schedule": {
+  "duration": 17.162
+ },
+ "view": {
+  "duration": 14.838
+ },
+ "viewfiles": {
+  "duration": 20.402
+ },
+ "viewopen": {
+  "duration": 12.225
+ },
+ "viewlive": {
+  "duration": 10.188
+ },
+ "agent": {
+  "duration": 16.3
+ },
+ "ask": {
+  "duration": 6.243
+ },
+ "agentwork": {
+  "duration": 6.008
+ },
+ "agentdone": {
+  "duration": 6.74
+ },
+ "outro": {
+  "duration": 11.468
+ }
+}
