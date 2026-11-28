@@ -13,6 +13,9 @@ terminal has already sent it), not a request to force quit. A second Ctrl+C
 after that does force quit, as in uvicorn, but without printing the
 tracebacks of the requests and the lifespan it cuts short; nor does a
 request the grace period cuts short print one.
+
+Once stopped, the process ends by the signal that stopped it, so the shell
+sees an interrupted command (a new line after ``^C``, exit status 130).
 """
 
 from __future__ import annotations
@@ -20,7 +23,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import signal
+import sys
 import time
 from collections.abc import Generator
 from types import FrameType
@@ -55,6 +60,8 @@ class _Server(uvicorn.Server):
         super().__init__(config)
         self._app = app
         self._first_signal: float | None = None
+        # The signal that stopped the server, if one did (see run()).
+        self.stopped_by: int | None = None
 
     def handle_exit(self, sig: int, frame: FrameType | None) -> None:
         now = time.monotonic()
@@ -77,6 +84,8 @@ class _Server(uvicorn.Server):
             try:
                 yield
             finally:
+                if self._captured_signals:
+                    self.stopped_by = self._captured_signals[0]
                 self._captured_signals.clear()
 
     async def shutdown(self, sockets: list[Any] | None = None) -> None:
@@ -91,4 +100,24 @@ def run(app: Any, host: str, port: int) -> None:
     """Serve ``app`` until Ctrl+C (or SIGTERM)."""
     app.state.closing = asyncio.Event()
     config = uvicorn.Config(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=GRACE_SECONDS)
-    _Server(config, app).run()
+    server = _Server(config, app)
+    server.run()
+    if server.stopped_by is not None:
+        _die_of(server.stopped_by)
+
+
+def _die_of(sig: int) -> None:
+    """End the process by the signal that stopped it, now that shutdown is
+    done, as it would have ended had nothing caught it. The shell then knows
+    the command was interrupted: bash starts a new line after the terminal's
+    ``^C`` (it does not for a program that exits normally, so the prompt
+    landed on the ``^C`` line), and a script sees exit status 130 (SIGINT)
+    or 143 (SIGTERM). Windows has no such convention: there it just returns."""
+    if sys.platform == "win32":
+        return
+    sys.stdout.flush()
+    sys.stderr.flush()
+    logging.shutdown()
+    signal.signal(sig, signal.SIG_DFL)
+    os.kill(os.getpid(), sig)
+    sys.exit(128 + sig)  # not reached: the default action ends the process

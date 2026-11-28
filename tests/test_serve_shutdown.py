@@ -1,7 +1,8 @@
 """Ctrl+C stops `exuvia serve` promptly and quietly while a workbench tab is
 open (its event stream would otherwise hold uvicorn's graceful shutdown for
 as long as the tab stays open), and the same Ctrl+C delivered twice (as under
-`uvx`) does not turn into a force quit full of tracebacks."""
+`uvx`) does not turn into a force quit full of tracebacks. Once stopped,
+it ends by the signal, so the shell knows it was interrupted."""
 
 import signal
 import socket
@@ -59,6 +60,9 @@ def test_ctrl_c_stops_the_server_with_a_tab_open(tmp_path, signals):
         except subprocess.TimeoutExpired:
             proc.kill()
             raise AssertionError("the server kept running with an event stream open") from None
+        # It ends by the SIGINT, as an uncaught Ctrl+C would: the shell then
+        # starts a new line after ^C, and a script sees status 130.
+        assert proc.returncode == -signal.SIGINT
         out = proc.stdout.read().decode()
         assert "Traceback" not in out and "ERROR" not in out, out
         assert stream.read().strip() == b""  # the stream ended rather than being cut
