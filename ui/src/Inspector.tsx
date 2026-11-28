@@ -310,10 +310,10 @@ export function Inspector(props: {
               </Text>
               {canEdit ? (
                 <>
-                  <Text type="supporting" color="secondary" textWrap="nowrap">
+                  <Text type="supporting" color="secondary" maxLines={1} xstyle={styles.footHint}>
                     {dirty ? `unsaved · ${MOD}S save · ${MOD}Enter run` : "saved"}
                   </Text>
-                  <Button size="sm" label="Save" isDisabled={!dirty} onClick={save} />
+                  <Button size="sm" label="Save" isDisabled={!dirty} onClick={save} xstyle={styles.footButton} />
                 </>
               ) : (
                 <Text type="supporting" color="secondary">
@@ -731,6 +731,9 @@ const styles = stylex.create({
     borderTopColor: colorVars["--color-border"],
   },
   footText: { flexGrow: 1, minWidth: 0 },
+  // The shortcut hint gives way after the path; the Save button never does.
+  footHint: { flexShrink: 1, minWidth: 0 },
+  footButton: { flexShrink: 0 },
   // What can be done, at the bar's end: it keeps its width, and the text gives way.
   footEnd: { display: "flex", flexShrink: 0 },
   // A bar over a tab's content: which output, which run.
