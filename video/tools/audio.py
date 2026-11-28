@@ -94,7 +94,7 @@ def voice(todo):
     for segment in todo:
         target = AUDIO / f"voice-{segment['id']}.mp3"
         raw = AUDIO / f"raw-{segment['id']}.mp3"
-        url = f"{ELEVENLABS}/text-to-speech/{VOICE}?output_format=mp3_44100_192"
+        url = f"{ELEVENLABS}/text-to-speech/{VOICE}?output_format=mp3_44100_128"
         try:
             with post(url, {"text": segment["text"], "model_id": VOICE_MODEL}, ELEVENLABS_HEADERS) as response:
                 raw.write_bytes(response.read())
@@ -140,7 +140,7 @@ def music_elevenlabs(total):
         "music_length_ms": round((total + 4) * 1000),
         "force_instrumental": True,
     }
-    with post(f"{ELEVENLABS}/music?output_format=mp3_44100_192", body, ELEVENLABS_HEADERS, timeout=900) as response:
+    with post(f"{ELEVENLABS}/music?output_format=mp3_44100_128", body, ELEVENLABS_HEADERS, timeout=900) as response:
         keep_music(response.read(), "mp3")
 
 
