@@ -111,7 +111,7 @@ recorded again by running its script, not by hand.
 
 | | |
 |---|---|
-| `help/<name>/script.json` | the narration: one segment per beat, in order, with the pause after each |
+| `help/<name>/script.json` | the narration: one segment per beat, in order, with the pause after each and the chapters |
 | `help/<name>/video.mjs` | the actions: `beat(id, fn)` per segment, the clicks and typing that line describes |
 | `help/<name>/audio/timings.json` | each line's length as last voiced; the voices themselves are not in git |
 | `help/tools/record.mjs` | records a video: runs `video.mjs`, films it, and puts the narration under it |
@@ -157,7 +157,10 @@ node help/tools/record.mjs getting-started                     # out/help/gettin
 ```
 
 `--scale 3` records 4K (3840x2160) from the same 1280x720 layout, for
-YouTube; 1.5 (1080p) is the default. Chrome films 1080p live at about 40
+YouTube; 1.5 (1080p) is the default. A 4K take's files carry `_4k` in their
+names (`out/help/getting-started_4k.mp4`, `_4k.srt`, `_4k-chapters.txt`), so
+they can't be mistaken for the 1080p ones; another non-default scale is named
+by its height (`_1440p`, `_720p`). Chrome films 1080p live at about 40
 frames a second but 4K at about 12, so a 4K take is filmed three times
 slower: the pointer, the typing, every pause and the page's CSS animations
 run at a third of their speed, and the beat clock plays it back at speed
@@ -166,6 +169,11 @@ a toast's timer) keeps its real pace while filming, so it looks three times
 quicker on screen. `--slow N` sets the factor. A 4K take takes about three
 times its length to film, and its frames need several gigabytes of disk
 until the mp4 is made.
+
+Each take also writes `out/help/<name>-chapters.txt`, YouTube's chapter
+list (`M:SS title`, from 0:00), from the times its beats really started: a
+segment of `script.json` with a `chapter` title starts one. It warns when two
+chapters are less than ten seconds apart, which YouTube refuses.
 
 `--draft` needs no voice, so the wording and the actions can be settled
 before any is paid for. `--stills` also writes a frame per beat to
@@ -178,5 +186,6 @@ shows the pieces.
 
 ### Uploading
 
-Upload `out/help/<name>.mp4` with `out/help/<name>.srt` as its English
-captions.
+Upload `out/help/<name>.mp4` (or `<name>_4k.mp4`) with the `.srt` of the
+same name as its English captions, and paste its `-chapters.txt` into the
+description.

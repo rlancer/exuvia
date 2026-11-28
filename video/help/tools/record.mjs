@@ -2,12 +2,14 @@
  * Records a help video: runs help/<name>/video.mjs against the real app,
  * films it, and puts the narration under it.
  *
- *   node help/tools/record.mjs getting-started            -> out/help/getting-started.mp4 (+ .srt)
+ *   node help/tools/record.mjs getting-started            -> out/help/getting-started.mp4 (+ .srt, -chapters.txt)
  *   node help/tools/record.mjs getting-started --draft    -> out/help/getting-started-draft.mp4, silent,
  *                                                            timed from each line's estimate (no voice needed)
  *   node help/tools/record.mjs getting-started --stills   -> also out/help/getting-started-stills/<beat>.jpg
  *   node help/tools/record.mjs getting-started --scale 3  -> 3840x2160 (4K) from the same 1280x720 layout; 1.5 (1080p) by default.
- *                                                            4K is filmed 3x slower and played back at speed (--slow N to change)
+ *                                                            4K is filmed 3x slower and played back at speed (--slow N to change).
+ *                                                            Its files are named getting-started_4k.mp4, _4k.srt, _4k-chapters.txt
+ *                                                            (another non-default scale by its height: _1440p, _720p)
  *
  * Without --draft it times the beats from help/<name>/audio/timings.json, so
  * run `python tools/audio.py --script help/<name>/script.json voice` first.
@@ -33,6 +35,10 @@ const draft = args.includes("--draft");
 const scale = args.includes("--scale") ? Number(args[args.indexOf("--scale") + 1]) : SCALE;
 // Chrome films 1080p live at about 40 frames a second but 4K at about 12, so above 1080p the
 // recording is filmed three times slower and played back at speed (Studio's `slow`).
+// What the files are called: the default (1080p) keeps the plain name, any other size says which it is.
+const height = Math.round(720 * scale);
+const suffix = scale === SCALE ? "" : height === 2160 ? "_4k" : `_${height}p`;
+const base = `${name}${suffix}`;
 const slow = args.includes("--slow") ? Number(args[args.indexOf("--slow") + 1]) : scale > 2 ? 3 : 1;
 const dir = path.join(VIDEO, "help", name);
 const scriptPath = path.join(dir, "script.json");
@@ -48,7 +54,7 @@ if (!draft) {
 }
 
 const out = path.join(VIDEO, "out", "help");
-const work = path.join(out, name);
+const work = path.join(out, base);
 const frames = path.join(work, "frames");
 // The video's own files (its home folder, its projects), at a short path: commands print it on camera.
 const stage = path.join(os.tmpdir(), `exuvia-${name}`);
@@ -103,21 +109,39 @@ execFileSync("ffmpeg", [
 ], { stdio: "inherit" });
 
 if (draft || failed) {
-  const target = path.join(out, `${name}-draft.mp4`);
+  const target = path.join(out, `${base}-draft.mp4`);
   fs.copyFileSync(silent, target);
   console.log(`${target}: ${end.toFixed(1)} s, silent`);
 } else {
   execFileSync("python3", [path.join(VIDEO, "tools", "audio.py"), "--script", scriptPath, "--timeline", path.join(work, "timeline.json"), "mix"], { stdio: "inherit" });
-  const target = path.join(out, `${name}.mp4`);
+  // audio.py writes the captions under the video's name; this size's file carries the suffix.
+  if (suffix) fs.renameSync(path.join(out, `${name}.srt`), path.join(out, `${base}.srt`));
+  const target = path.join(out, `${base}.mp4`);
   execFileSync("ffmpeg", [
     "-v", "error", "-y", "-i", silent, "-i", path.join(dir, "audio", "mix.wav"),
     "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", target,
   ], { stdio: "inherit" });
   console.log(`${target}: ${end.toFixed(1)} s`);
+  writeChapters();
+}
+
+/** YouTube's chapter list (M:SS title, from 0:00), from the beats that script.json marks with `chapter`. */
+function writeChapters() {
+  const titles = new Map(script.segments.filter((s) => s.chapter).map((s) => [s.id, s.chapter]));
+  const rows = studio.beats.filter((b) => titles.has(b.id)).map((b) => ({ at: Math.floor(b.at), title: titles.get(b.id) }));
+  if (!rows.length) return;
+  rows[0].at = 0; // YouTube wants the first chapter at 0:00
+  rows.forEach((row, i) => {
+    if (i && row.at - rows[i - 1].at < 10) console.warn(`chapter "${row.title}" starts ${row.at - rows[i - 1].at}s after the last; YouTube wants 10s`);
+  });
+  const stamp = (t) => `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
+  const file = path.join(out, `${base}-chapters.txt`);
+  fs.writeFileSync(file, rows.map((row) => `${stamp(row.at)} ${row.title}`).join("\n") + "\n");
+  console.log(`chapters: ${file}`);
 }
 
 if (args.includes("--stills")) {
-  const stills = path.join(out, `${name}-stills`);
+  const stills = path.join(out, `${base}-stills`);
   fs.rmSync(stills, { recursive: true, force: true });
   fs.mkdirSync(stills, { recursive: true });
   for (const [i, beat] of studio.beats.entries()) {
