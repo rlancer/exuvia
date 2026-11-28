@@ -71,8 +71,12 @@ from there wherever one of the same name exists, and the site's otherwise:
 node tools/capture.mjs app http://127.0.0.1:7431 --scale 3 --out ../video/shots
 node tools/capture.mjs hub http://127.0.0.1:7432 --scale 3 --out ../video/shots
 # in video/:
-node tools/render.mjs --fps 60 --scale 2 # out/exuvia-overview.mp4, 3840x2160
+node tools/render.mjs --fps 60 --scale 2 --workers 2 # out/exuvia-overview.mp4, 3840x2160
 ```
+
+Each worker is a page and an encoder, and a 4K encoder takes about 2.5 GB:
+keep `--workers` to what the memory holds (two on a 16 GB machine; six
+were killed for memory there).
 
 `app` mode sends the agent a real prompt, and what the agent builds varies.
 Check that the highlight rings still sit on what they point at (`main.js`
