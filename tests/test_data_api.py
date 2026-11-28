@@ -339,9 +339,46 @@ def test_a_json_output_with_nan_is_served_as_null(hub):
     r = hub.get("/p/lab/api/nodes/stats/data", headers=ALICE)
     assert r.status_code == 200, r.text
     assert r.json()["value"] == want
-    r = hub.get("/api/data/projects/lab/nodes/stats", headers=bearer(make_key(hub, ["lab"])))
+    key = bearer(make_key(hub, ["lab"]))
+    r = hub.get("/api/data/projects/lab/nodes/stats", headers=key)
     assert r.status_code == 200, r.text
     assert r.json()["value"] == want
+    r = hub.post("/api/data/query", json={"sql": "select * from lab.stats"}, headers=key)
+    assert (r.status_code, r.json()["detail"]) == (409, "\"lab\".stats's output is JSON, not a table: only tables can be queried")
+
+
+LOANS = ORDERS.replace("def orders():", "def loans():")
+
+
+def test_a_node_that_has_not_run_says_so_when_read_or_queried(hub):
+    """A node with no output yet is a 409 saying to run it: never an empty
+    table (which an app can't tell from one with no rows) nor DuckDB's
+    "does not exist" pointing at a system table."""
+    assert hub.post("/api/projects", json={"id": "unrun", "access": "view"}, headers=ALICE).status_code == 200
+    assert hub.put("/p/unrun/api/nodes/loans", json={"source": LOANS}, headers=ALICE).status_code == 200
+    key = bearer(make_key(hub, ["unrun", "sales"]))
+    [loans] = hub.get("/api/data/projects", headers=key).json()["projects"][1]["nodes"]
+    assert (loans["name"], loans["rows"], loans["run_id"]) == ("loans", None, None)
+    said = '"unrun".loans has not run yet, so it has no output to read: run it first'
+    for accept in ({}, ARROW):
+        r = hub.get("/api/data/projects/unrun/nodes/loans", headers={**key, **accept})
+        assert (r.status_code, r.json()["detail"]) == (409, said)
+        r = hub.post("/api/data/query", json={"sql": 'select * from "unrun".loans'}, headers={**key, **accept})
+        assert (r.status_code, r.json()["detail"]) == (409, said)
+    # Joined with a project that has the table, only the one without it is named.
+    sql = 'select * from "unrun".loans join sales.orders using (account)'
+    assert hub.post("/api/data/query", json={"sql": sql}, headers=key).json()["detail"] == said
+    # A name that is no node is still DuckDB's error.
+    r = hub.post("/api/data/query", json={"sql": 'select * from "unrun".nothing'}, headers=key)
+    assert r.status_code == 400 and "nothing does not exist" in r.json()["detail"]
+    # The workbench's own SQL says the same.
+    r = hub.post("/p/unrun/api/query", json={"sql": "select * from loans"}, headers=ALICE)
+    assert r.status_code == 400 and "loans has not run yet" in r.json()["detail"]
+
+    assert hub.post("/p/unrun/api/nodes/loans/run", json={"wait": 120}, headers=ALICE).json()["ok"]
+    assert hub.get("/api/data/projects/unrun/nodes/loans", headers=key).json()["total"] == 3
+    r = hub.post("/api/data/query", json={"sql": 'select count(*) from "unrun".loans'}, headers=key)
+    assert r.status_code == 200 and r.json()["rows"] == [[3]]
 
 
 class FakeWorkspace:

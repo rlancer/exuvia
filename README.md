@@ -3717,8 +3717,8 @@ HTTP API.)
 | `GET /api/data/projects` | the projects the key reads, each with its nodes: `kind` (`table`, `multi`, `json`, or null before a run), `rows`, `columns`, `parts`, `partitioned`, `history` (whether `<node>__runs` exists) and the current `run_id` / `artifact_id` / `url` (the output by its hash) |
 | `GET /api/data/projects/{project}` | one of them |
 | `GET /api/data/projects/{project}/nodes/{node}/artifacts/{artifact_id}.parquet` | the node's stored output by its hash (`.json`, `.zip`; `/{artifact_id}/{part}.parquet` for one of several), cached for good; `Range` honoured |
-| `GET /api/data/projects/{project}/nodes/{node}` | a node's output, as `/api/nodes/{name}/data` answers it (`limit`, `offset`, `params`, `part`, `partitions`; JSON or Arrow) |
-| `POST /api/data/query` | `{sql, limit, projects}`: one SELECT across the key's projects. JSON: the first `limit` rows (500 unless given, 5000 at most) and the `projects` attached; Arrow: every row unless `limit` |
+| `GET /api/data/projects/{project}/nodes/{node}` | a node's output, as `/api/nodes/{name}/data` answers it (`limit`, `offset`, `params`, `part`, `partitions`; JSON or Arrow); 409 for a node that has not run yet (for these `params`) |
+| `POST /api/data/query` | `{sql, limit, projects}`: one SELECT across the key's projects. JSON: the first `limit` rows (500 unless given, 5000 at most) and the `projects` attached; Arrow: every row unless `limit`. 409 when it names a node with no table to read (not run yet, or a JSON output), 400 for other bad SQL |
 | `GET /api/data/query` | the same as `?sql=...&limit=...&projects=a&projects=b`, which caches keep; with `If-None-Match`, 304 while nothing it read has changed |
 | `GET /api/data-keys`, `POST /api/data-keys` | your keys (`?all=true`: every key, for an admin) / make one (`{name, projects}`; each a project you can open). `key` is in the answer once: only a hash is kept |
 | `PATCH /api/data-keys/{id}`, `DELETE /api/data-keys/{id}` | rename it or replace its `projects` / revoke it (its maker, or an admin) |

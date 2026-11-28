@@ -16,7 +16,7 @@ import re
 import threading
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from .arrowstream import ArrowStream
 from .runner import PART_EXT
@@ -156,11 +156,42 @@ def add_output_views(
     return [f for f in files if f]
 
 
-def query_json(con: Any, sql: str, limit: int, offset: int = 0, raw: bool = False) -> dict[str, Any]:
+class NoOutput(LookupError):
+    """SQL named a node that has no table to read: it has not run (for
+    these parameters), or its output is not a table (see ``no_table``)."""
+
+
+Explain = Callable[[str], "str | None"]
+
+
+def no_table(ws: Workspace, name: str, params: dict[str, Any] | None, catalog: str | None = None) -> str | None:
+    """Why ``ws``'s node ``name`` has no table to query for ``params``
+    (``add_output_views`` made no view of it), said the way the SQL names
+    it (``"<catalog>".<name>`` in the data API). None when ``ws`` has no
+    node ``name``, or it has a table: then the name is wrong, not the node."""
+    if name not in ws.graph.nodes:
+        return None
+    shown = f"{_ident(catalog)}.{name}" if catalog else name
+    ls = ws.store.last_success(name, ws.node_params(name, ws.resolve_params(params))[1])
+    if ls is None:
+        if ws.graph.effective_params(name) and ws.store.history(name, 1):
+            return f"{shown} has not run with these parameters yet, so it has no output for them: run it with them first"
+        return f"{shown} has not run yet, so it has no output to read: run it first"
+    if ls["kind"] == "json":
+        return f"{shown}'s output is JSON, not a table: only tables can be queried"
+    if ls["kind"] not in ("table", "multi"):
+        return f"{shown} has no table output: only tables can be queried"
+    return None
+
+
+def query_json(
+    con: Any, sql: str, limit: int, offset: int = 0, raw: bool = False, explain: Explain | None = None
+) -> dict[str, Any]:
     """``limit`` rows of ``sql`` on ``con`` from row ``offset`` on, as JSON-ready columns and rows.
     ``raw`` leaves the rows as DuckDB fetched them, for ``encode_json``
-    (FastJSON) to write: the same JSON, without a Python pass over every value."""
-    rel = _sql(con, sql)
+    (FastJSON) to write: the same JSON, without a Python pass over every value.
+    ``explain``: see ``_sql``."""
+    rel = _sql(con, sql, explain)
     if rel is None:
         return {"columns": [], "rows": []}
     rows = rel.limit(limit, offset).fetchall()
@@ -170,9 +201,11 @@ def query_json(con: Any, sql: str, limit: int, offset: int = 0, raw: bool = Fals
     }
 
 
-def query_arrow(con: Any, sql: str, limit: int | None, offset: int = 0) -> ArrowStream:
+def query_arrow(
+    con: Any, sql: str, limit: int | None, offset: int = 0, explain: Explain | None = None
+) -> ArrowStream:
     """``sql`` on ``con`` as an Arrow stream: every row unless ``limit``, from row ``offset`` on."""
-    rel = _sql(con, sql)
+    rel = _sql(con, sql, explain)
     if rel is not None and (limit is not None or offset):
         rel = rel.limit(_ALL_ROWS if limit is None else int(limit), int(offset))
     return ArrowStream(rel, owner=con)
@@ -182,11 +215,14 @@ _ALL_ROWS = 2**62  # the limit of an offset-only read
 _MISSING_TABLE = re.compile(r'Table with name "?([^"\s!]+)"? does not exist')
 
 
-def _sql(con: Any, sql: str) -> Any:
+def _sql(con: Any, sql: str, explain: Explain | None = None) -> Any:
     """``con.sql(sql)`` over an outputs database, where a missing table that
     is a node with several outputs, or one of those outputs named without its
     node, gets an error naming the tables to query instead (DuckDB's own
-    hint can point at a name that is not there)."""
+    hint can point at a name that is not there). Any other missing name is
+    given to ``explain`` (``no_table`` for each project the SQL reads): a
+    node with no table to read raises NoOutput saying why, not DuckDB's
+    "does not exist" (the node does) with a hint at a system table."""
     import duckdb
 
     try:
@@ -214,6 +250,9 @@ def _sql(con: Any, sql: str) -> Any:
             raise duckdb.CatalogException(
                 f"{missing} is an output of a node with several: query it as {named}"
             ) from None
+        reason = explain(missing) if explain is not None else None
+        if reason:
+            raise NoOutput(reason) from None
         raise
 
 

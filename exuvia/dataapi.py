@@ -83,7 +83,7 @@ from .http_util import (
 )
 from .datakeys import MAX_PROJECTS, TURNED_AWAY, DataKey, DataKeyStore, clean_projects, looks_like_key
 from .sharing import at_least
-from .outputs import lock_outputs, output_parts, outputs_connection, query_arrow, query_json
+from .outputs import NoOutput, lock_outputs, no_table, output_parts, outputs_connection, query_arrow, query_json
 from .workspace import Workspace
 
 PREFIX = "/api/data/"
@@ -224,6 +224,8 @@ PROBLEMS: dict[int | str, dict[str, Any]] = {
     401: {"model": Problem, "description": "No data key, or an unknown or revoked one."},
     403: {"model": Problem, "description": "The person who made the key can no longer sign in."},
     404: {"model": Problem, "description": "A project the key does not read, or a node it does not have."},
+    409: {"model": Problem, "description": "The node exists but has no output to read yet (run it first), or a query "
+                                           "named a node whose output is not a table."},
 }
 SPEC_DESCRIPTION = """Read-only access to the outputs of the hub projects a data key reads.
 
@@ -976,6 +978,9 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
                     out = ws.preview(node, limit=rows, offset=offset, params=resolved, part=part, partitions=rng, raw=True)
                 except KeyError as e:
                     raise HTTPException(404, str(e.args[0])) from e
+                if out.get("kind") is None:
+                    # No output: not an empty table, which an app could not tell from one with no rows.
+                    raise HTTPException(409, no_table(ws, node, resolved, catalog=project) or f"{node} has no output yet")
                 return FastJSON(out, headers=caching(tag))
             finally:
                 if give is not None:
@@ -1058,6 +1063,12 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
         rows = limit if arrow else JSON_ROWS if limit is None else min(limit, JSON_MAX)
         cacheable = not volatile(sql)
 
+        def explain(name: str) -> str | None:
+            """Why the SQL's missing table ``name`` is a node with nothing to
+            read, in each project that has such a node (outputs.no_table)."""
+            reasons = [r for pid, ws in workspaces.items() if (r := no_table(ws, name, None, catalog=pid))]
+            return "; ".join(reasons) or None
+
         def tagged(digest: str) -> str | None:
             return etag("query", digest, sql, rows, chosen, arrow) if cacheable else None
 
@@ -1085,12 +1096,14 @@ def install(app: FastAPI, hub: Any, role_on: Callable[[str], str | None], is_adm
                 check_select(cur, sql)
                 timer = deadline(cur, QUERY_TIMEOUT)
                 if arrow:
-                    stream = query_arrow(cur, sql, rows)  # closes the cursor when it has been read
+                    stream = query_arrow(cur, sql, rows, explain=explain)  # closes the cursor when it has been read
                     streaming = True
                     return arrow_response(Finally(stream, give), caching(tag))  # gives the slot back once read
-                return FastJSON({**query_json(cur, sql, rows, raw=True), "projects": chosen}, headers=caching(tag))
+                return FastJSON({**query_json(cur, sql, rows, raw=True, explain=explain), "projects": chosen}, headers=caching(tag))
             except HTTPException:
                 raise
+            except NoOutput as e:
+                raise HTTPException(409, str(e)) from e
             except duckdb.InterruptException as e:
                 raise HTTPException(
                     400, f"the query ran longer than {QUERY_TIMEOUT:g} seconds, the data API's limit: "
