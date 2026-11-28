@@ -2374,13 +2374,17 @@ class Workspace:
         """Ad-hoc DuckDB SQL over node outputs (the views of ``_outputs_db``):
         ``limit`` rows of the result from row ``offset`` on (``raw``: see
         ``outputs.query_json``)."""
-        return outputs.query_json(self._outputs_db(params), sql, limit, offset, raw=raw)
+        return outputs.query_json(self._outputs_db(params), sql, limit, offset, raw=raw, explain=self._no_table(params))
 
     def query_arrow(
         self, sql: str, limit: int | None = None, params: dict[str, Any] | None = None, offset: int = 0
     ) -> ArrowStream:
         """``query`` as an Arrow stream: every row unless ``limit`` is given."""
-        return outputs.query_arrow(self._outputs_db(params), sql, limit, offset)
+        return outputs.query_arrow(self._outputs_db(params), sql, limit, offset, explain=self._no_table(params))
+
+    def _no_table(self, params: dict[str, Any] | None) -> outputs.Explain:
+        """``outputs.no_table`` for a query over this project's outputs."""
+        return lambda name: outputs.no_table(self, name, params)
 
 
 def _view_of(rel: str) -> str | None:

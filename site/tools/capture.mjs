@@ -217,8 +217,6 @@ async function app() {
   await nb.getByRole("button", { name: "Collapse the side panel" }).click();
   const contents = nb.getByRole("button", { name: "Show the contents" });
   if (await contents.count()) await contents.click();
-  // Charts keep the width they mounted with when Contents narrows the cells (#237): load again at the new width.
-  await nb.reload();
   await nb.locator(".vega-embed canvas, .vega-embed svg").first().waitFor();
   // A pick in the contents keeps the cell at the top while the ones above it load.
   await nb.getByRole("tree").getByText("rolling_vol", { exact: true }).click();
