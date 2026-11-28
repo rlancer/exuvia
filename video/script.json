@@ -2,16 +2,19 @@
   "voice": "The narration, one segment per scene. `est` is the length in seconds used until the voice has been generated; `pad` is the silence left after the segment.",
   "lead": 0.35,
   "segments": [
-    { "id": "hook", "est": 6.0, "pad": 0.9, "text": "Notebooks made exploring data fast. But they mix the data processing and the interface in the same cells, which makes it hard to excel at either." },
-    { "id": "title", "est": 6.2, "pad": 0.8, "text": "Exuvia is the notebook for the AI era. It keeps the two apart: a graph of steps that process the data, and views that present it, built side by side with your agent." },
-    { "id": "nodes", "est": 8.6, "pad": 0.6, "text": "Every step is a plain Python or SQL file. Its inputs are just function parameters and table names, so the steps wire themselves into a graph." },
-    { "id": "run", "est": 8.8, "pad": 0.6, "text": "Edit a node, run it, and see the data. Only what's stale runs again, and every output is kept: cached, and content-addressed." },
-    { "id": "schedule", "est": 6.4, "pad": 0.6, "text": "Unlike a notebook, any step can run on its own schedule. When its output changes, everything downstream follows." },
-    { "id": "agent", "est": 9.2, "pad": 0.5, "text": "And you're not working alone. An AI agent reads, writes, runs and debugs nodes, right on the canvas, with the same tools you have." },
-    { "id": "mcp", "est": 5.6, "pad": 0.6, "text": "Use the built-in agent, or bring Claude Code, Cursor or Codex, over MCP." },
-    { "id": "views", "est": 7.4, "pad": 0.6, "text": "And the graph is not the end product. Views turn outputs into custom interfaces: React files that only read, with no back end to write." },
-    { "id": "history", "est": 16.0, "pad": 0.6, "text": "And there is no git required. Exuvia takes a different approach to version control: every save is kept, yours or the agent's, with nothing to stage, commit or push. Every output remembers the exact code that made it, so your agent spends its time on the analysis, not on commits and branches." },
-    { "id": "scale", "est": 6.0, "pad": 0.6, "text": "Start on your laptop with one command. Move to a hub when the team shows up." },
-    { "id": "end", "est": 5.0, "pad": 2.6, "text": "Exuvia. Notebooks, for the AI era." }
+    { "id": "hook", "est": 7.6, "pad": 0.9, "text": "Notebooks made exploring data fast. But they mix the processing and the interface in the same cells, so it's hard to do either well." },
+    { "id": "title", "est": 8.2, "pad": 0.8, "text": "Exuvia is the notebook for the AI era. It keeps the two apart: a graph of steps that process the data, and views that present it." },
+    { "id": "nodes", "est": 9.98, "pad": 0.6, "text": "Every step is a plain Python or SQL file. Its inputs are just function parameters and table names, so the steps wire themselves into a graph." },
+    { "id": "run", "est": 9.03, "pad": 0.6, "text": "Edit a node, run it, and see the data. Only what's stale runs again, and every output is kept: cached, and content-addressed." },
+    { "id": "data", "est": 8.6, "pad": 0.6, "text": "Every output opens as data. Filter it, sort it, query it with SQL, or just say which rows you want, and drag across a chart to pick them." },
+    { "id": "notebook", "est": 7.0, "pad": 0.6, "text": "When you'd rather read it top to bottom, the same graph opens as a notebook: one cell per node, with its chart and its rows." },
+    { "id": "schedule", "est": 7.6, "pad": 0.6, "text": "Unlike a notebook, any step can run on its own schedule. When its output changes, everything downstream follows." },
+    { "id": "agent", "est": 12.0, "pad": 0.6, "text": "And you're not working alone. An AI agent reads, writes, runs and debugs nodes with the same tools you have. Use the built-in one, or bring Claude Code, Cursor or Codex, over MCP." },
+    { "id": "views", "est": 9.7, "pad": 0.6, "text": "And the graph is not the end product. Views turn outputs into custom interfaces: React files that only read, with no back end to write." },
+    { "id": "storage", "est": 7.2, "pad": 0.6, "text": "Every run's output is kept as Parquet, on your disk or in your own bucket, and all of it can be queried with SQL." },
+    { "id": "history", "est": 8.4, "pad": 0.6, "text": "And there's no git required. Every save is kept, yours or the agent's, and every output remembers the exact code that made it." },
+    { "id": "scale", "est": 6.4, "pad": 0.6, "text": "Start on your laptop with one command. Move to a hub when the team shows up, and share your projects." },
+    { "id": "api", "est": 11.0, "pad": 0.6, "text": "Want exuvia's data outside exuvia, in a dashboard, an app or a script? Make a read-only key, and your code can query every output it's allowed to read, with SQL, over HTTP." },
+    { "id": "end", "est": 3.83, "pad": 2.6, "text": "Exuvia. Notebooks, for the AI era." }
   ]
 }

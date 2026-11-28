@@ -1,14 +1,15 @@
 """Push nodes: output uploaded from another machine instead of computed.
 
-Some data can only be read from one person's machine: a Bloomberg
-Terminal's Desktop API answers on that machine's ``localhost``, logged in as
-that person, so no hub or executor can pull from it. A node marked
+Some data can only be read from one person's machine: a licensed data
+terminal's API answers on that machine's ``localhost``, logged in as that
+person, or another analysis process writes its results to local disk, so no
+hub or executor can pull from it. A node marked
 ``@exuvia.node(push=True)`` stands for that data in the graph, and a script
 on the machine that has it uploads each new version:
 
-    exuvia push bbg_prices prices.parquet --url https://hub.example.com/p/research
+    exuvia push model_scores scores.parquet --url https://hub.example.com/p/research
 
-or, from Python there, ``exuvia.push(url, "bbg_prices", df)``. The hub
+or, from Python there, ``exuvia.push(url, "model_scores", df)``. The hub
 records each push as a run of the node (trigger ``push``), so freshness, the
 cascade downstream, run history and views work as for any other node.
 

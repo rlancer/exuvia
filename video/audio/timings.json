@@ -1,35 +1,44 @@
 {
  "hook": {
-  "duration": 9.946
+  "duration": 9.43
  },
  "title": {
-  "duration": 11.561
+  "duration": 9.273
  },
  "nodes": {
-  "duration": 9.976
+  "duration": 10.005
  },
  "run": {
-  "duration": 9.032
+  "duration": 9.247
+ },
+ "data": {
+  "duration": 9.953
+ },
+ "notebook": {
+  "duration": 8.072
  },
  "schedule": {
-  "duration": 7.596
+  "duration": 7.706
  },
  "agent": {
-  "duration": 9.23
- },
- "mcp": {
-  "duration": 5.653
+  "duration": 13.401
  },
  "views": {
-  "duration": 9.696
+  "duration": 9.848
+ },
+ "storage": {
+  "duration": 7.837
  },
  "history": {
-  "duration": 19.976
+  "duration": 8.803
  },
  "scale": {
-  "duration": 4.864
+  "duration": 6.348
+ },
+ "api": {
+  "duration": 13.166
  },
  "end": {
-  "duration": 3.828
+  "duration": 3.892
  }
 }

@@ -58,6 +58,29 @@
         <div class="cap" id="run-cap-b"><div class="kicker">content-addressed outputs</div><div class="head">Only what's stale runs again</div></div>
       </section>
 
+      <section class="scene canvas" id="data">
+        <div class="window" id="data-shot">
+          <img src="../../site/src/assets/shots/workbench.png" alt="" />
+          <img id="data-after" src="../../site/src/assets/shots/data.png" alt="" />
+          <i class="ring box" id="data-ring"></i>
+          <i class="brush" id="data-brush"></i>
+        </div>
+        <div class="prompt" id="data-prompt"><span class="who">filter, in words</span><span id="data-typed"></span></div>
+        <div class="tools" id="data-tools"></div>
+        <div class="scrim"></div>
+        <div class="cap"><div class="kicker">every output is a table</div><div class="head">Filter, sort, query, ask</div></div>
+      </section>
+
+      <section class="scene canvas" id="notebook">
+        <div class="window" id="notebook-shot">
+          <img src="../../site/src/assets/shots/workbench.png" alt="" />
+          <img id="notebook-after" src="../../site/src/assets/shots/notebook.png" alt="" />
+          <i class="ring box" id="notebook-ring"></i>
+        </div>
+        <div class="scrim"></div>
+        <div class="cap"><div class="kicker">the same graph, read top to bottom</div><div class="head">Canvas or notebook</div></div>
+      </section>
+
       <section class="scene canvas" id="schedule">
         <div class="graph-slot" id="schedule-graph"></div>
         <div class="side" id="schedule-side">
@@ -72,19 +95,17 @@
       </section>
 
       <section class="scene canvas" id="agent">
-        <div class="window" id="agent-shot">
-          <img src="../../site/src/assets/shots/workbench.png" alt="" />
-          <img id="agent-after" src="../../site/src/assets/shots/agent.png" alt="" />
-          <i class="ring box" id="agent-ring"></i>
+        <div class="part" id="agent-a">
+          <div class="window" id="agent-shot">
+            <img src="../../site/src/assets/shots/workbench.png" alt="" />
+            <img id="agent-after" src="../../site/src/assets/shots/agent.png" alt="" />
+            <i class="ring box" id="agent-ring"></i>
+          </div>
+          <div class="prompt" id="agent-prompt"><span class="who">you</span><span id="agent-typed"></span></div>
+          <div class="tools" id="agent-tools"></div>
+          <div class="scrim"></div>
         </div>
-        <div class="prompt" id="agent-prompt"><span class="who">you</span><span id="agent-typed"></span></div>
-        <div class="tools" id="agent-tools"></div>
-        <div class="scrim"></div>
-        <div class="cap"><div class="kicker">not a chat box beside your work</div><div class="head">An agent with tools over the graph</div></div>
-      </section>
-
-      <section class="scene canvas" id="mcp">
-        <div class="mcp">
+        <div class="part mcp" id="agent-b">
           <div class="clients" id="mcp-clients">
             <div class="pill own">built-in agent</div>
             <div class="pill">Claude Code</div>
@@ -97,9 +118,10 @@
             <div><b>exuvia</b><small>MCP server</small></div>
           </div>
           <div class="toolgrid" id="mcp-tools"></div>
+          <div class="terminal slim" id="mcp-term"><pre id="mcp-cmd"></pre></div>
         </div>
-        <div class="terminal slim" id="mcp-term"><pre id="mcp-cmd"></pre></div>
-        <div class="cap"><div class="kicker">bring the agent you already use</div><div class="head">The same tools, over MCP</div></div>
+        <div class="cap" id="agent-cap-a"><div class="kicker">not a chat box beside your work</div><div class="head">An agent with tools over the graph</div></div>
+        <div class="cap" id="agent-cap-b"><div class="kicker">bring the agent you already use</div><div class="head">The same tools, over MCP</div></div>
       </section>
 
       <section class="scene canvas" id="views">
@@ -109,6 +131,20 @@
         </div>
         <div class="scrim"></div>
         <div class="cap"><div class="kicker">no back end to write</div><div class="head">Views: React over stored outputs</div></div>
+      </section>
+
+      <section class="scene canvas" id="storage">
+        <div class="window" id="storage-shot"><img src="../../site/src/assets/shots/storage.png" alt="" /></div>
+        <div class="scrim"></div>
+        <div class="side" id="storage-side">
+          <div class="side-title">s3://your-bucket/exuvia/markets/</div>
+          <div class="artifacts" id="storage-files"></div>
+        </div>
+        <div class="terminal slim" id="storage-term">
+          <div class="editor-bar"><span class="dots"><i></i><i></i><i></i></span><span class="file">SQL over every output</span></div>
+          <pre class="code" id="storage-sql"></pre>
+        </div>
+        <div class="cap"><div class="kicker">a data lake, with nothing to set up</div><div class="head">Every run kept, as Parquet</div></div>
       </section>
 
       <section class="scene canvas" id="history">
@@ -137,9 +173,20 @@
         </div>
         <div class="window wide" id="scale-hub"><img src="../../site/src/assets/shots/hub.png" alt="" /></div>
         <div class="chips" id="scale-chips">
-          <span>Docker Compose</span><span>Swarm</span><span>Kubernetes</span><span>Postgres</span><span>S3 outputs</span><span>remote executors</span>
+          <span>sharing</span><span>Docker Compose</span><span>Kubernetes</span><span>Postgres</span><span>S3 outputs</span><span>remote executors</span>
         </div>
         <div class="cap"><div class="kicker" id="scale-kicker">from a laptop</div><div class="head">Start with one command</div></div>
+      </section>
+
+      <section class="scene canvas" id="api">
+        <div class="window" id="api-shot"><img src="../../site/src/assets/shots/data-keys.png" alt="" /><i class="ring box" id="api-ring"></i></div>
+        <div class="shade" id="api-shade"></div>
+        <div class="terminal" id="api-term">
+          <div class="editor-bar"><span class="dots"><i></i><i></i><i></i></span><span class="file">your app, a script, a dashboard</span></div>
+          <pre id="api-cmd"></pre>
+        </div>
+        <div class="scrim"></div>
+        <div class="cap"><div class="kicker">exuvia's data, outside exuvia</div><div class="head">A key for your own apps</div></div>
       </section>
 
       <section class="scene" id="end">

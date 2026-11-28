@@ -603,19 +603,26 @@ select sector, avg(vol_20d) as avg_vol from rolling_vol join universe using (tic
 
 ## Push nodes: data from someone's desktop
 
-Some data can only be read on one person's machine. A Bloomberg
-Terminal's Desktop API answers on that machine's `localhost`, signed in as
-that person, so neither the hub nor an executor can pull from it. A **push
-node** stands for that data in the graph, and a script on the machine that
-has it uploads each new version:
+Some data only exists on one person's machine, or can only be read
+there:
+
+- a licensed data terminal or desktop app whose API answers on that
+  machine's `localhost`, signed in as that person;
+- the output of another analysis process that runs on a desktop (a model,
+  a spreadsheet, a vendor tool) and writes its results locally;
+- a file share or database only the office network reaches.
+
+Neither the hub nor an executor can pull from it. A **push node** stands for
+that data in the graph, and a script on the machine that has it uploads each
+new version:
 
 ```python
-"""Daily closes from the Bloomberg Terminal on the trading desk."""
+"""Overnight scores from the risk model on the quant desk's workstation."""
 import exuvia
 
 
 @exuvia.node(push=True)
-def bbg_closes():
+def model_scores():
     ...  # never run: the output is pushed
 ```
 
@@ -624,14 +631,14 @@ On the desktop, from Python:
 ```python
 import exuvia
 
-df = ...  # read it with blpapi, xbbg, Excel, whatever that machine has
-exuvia.push("https://exuvia.example.com/p/research", "bbg_closes", df, note="desk 4")
+df = ...  # read it with the vendor's SDK, Excel, whatever that machine has
+exuvia.push("https://exuvia.example.com/p/research", "model_scores", df, note="desk 4")
 ```
 
 or with the CLI, from a `.parquet`, `.csv` or `.json` file:
 
 ```bash
-exuvia push bbg_closes closes.csv --url https://exuvia.example.com/p/research --note "desk 4"
+exuvia push model_scores scores.csv --url https://exuvia.example.com/p/research --note "desk 4"
 ```
 
 - **Each push is a run** of the node, triggered `push`, with who pushed it
@@ -665,7 +672,7 @@ exuvia push bbg_closes closes.csv --url https://exuvia.example.com/p/research --
   line for the log. Another content type needs `?format=parquet|json`; a
   body sent as a form or as `text/plain`, which any web page can send, is
   refused (415).
-- **Licences.** Terminal data usually comes with limits on who else may see
+- **Licences.** Licensed data usually comes with limits on who else may see
   it. A hub that others can read, or a share link, may take it past them:
   check the terms before pushing it somewhere shared.
 
@@ -676,31 +683,35 @@ run it, use a runner instead (below).
 
 A push node needs a script of your own on the desktop. A **runner** runs
 the node itself there: the hub keeps its code, schedule, history and the
-graph around it, and hands each run to the desktop.
+graph around it, and hands each run to the desktop. Use one to read data
+only that desktop has, or to spread heavy runs over people's workstations
+instead of the hub's own executors.
 
 ```python
-"""Daily closes from the Bloomberg Terminal on the trading desk."""
-import blpapi  # listed in the project's pyproject.toml
+"""Daily closes from the licensed data terminal on the trading desk."""
+import vendor_feed  # the vendor's SDK, listed in the project's pyproject.toml
 import exuvia
 
 
-@exuvia.node(runs_on="bloomberg", schedule="15 17 * * 1-5")
-def bbg_closes():
+@exuvia.node(runs_on="desk", schedule="15 17 * * 1-5")
+def desk_closes():
     ...  # runs on the desktop, against that person's terminal login
 ```
 
-(SQL: `-- runs_on: bloomberg`.) On the desktop, signed in with your own agent
+(SQL: `-- runs_on: desk`.) On the desktop, signed in with your own agent
 token from the workbench's account menu:
 
 ```bash
-EXUVIA_API_TOKEN=... exuvia runner --url https://exuvia.example.com --label bloomberg
+EXUVIA_API_TOKEN=... exuvia runner --url https://exuvia.example.com --label desk
 ```
 
 - **It dials out.** The runner long-polls the hub over HTTPS for runs of
   nodes with its labels (`--label`, repeatable), runs each one with the
   usual subprocess runner, streams the log back and uploads the output,
   which the hub checks by its hash. Nothing has to reach the desktop, so it
-  works behind NAT or a corporate firewall.
+  works behind NAT or a corporate firewall. Runners on several machines
+  can share a label: each run goes to whichever of them claims it first, so
+  starting more of them spreads the load.
 - **Bound to a person.** A runner takes runs only from projects its owner
   (the agent token's person) can edit, and only it can answer for a run it
   took. `GET /api/runners` lists your runners, online or not, and the runs
@@ -716,13 +727,13 @@ EXUVIA_API_TOKEN=... exuvia runner --url https://exuvia.example.com --label bloo
   the next schedule) goes ahead. Approvals live on the desktop
   (`EXUVIA_RUNNER_HOME`, default `~/.exuvia/runner`): the hub can't grant one.
 - **Only what it needs.** The runner gets that node's code, not the whole
-  project, and only the project variables its files name (`BBG_KEY` in
-  `os.environ["BBG_KEY"]`), not every secret. The hub's and the runner's
+  project, and only the project variables its files name (`FEED_KEY` in
+  `os.environ["FEED_KEY"]`), not every secret. The hub's and the runner's
   own settings (`EXUVIA_*`) never reach the node. Packages in the
   project's `pyproject.toml` are installed on the desktop with `uv`, as the
   hub's installer does.
 - **Offline desktops.** A run waits ("waiting for a runner labelled
-  bloomberg", and whether one is online) until a runner takes it, for
+  desk", and whether one is online) until a runner takes it, for
   `EXUVIA_RUNNER_WAIT` seconds (default 3600), then fails; a runner that goes
   quiet for `EXUVIA_RUNNER_SILENCE` seconds (default 120) fails the run it
   held. Nodes downstream keep reading the last good output, as after any
@@ -2679,8 +2690,9 @@ to `HOSTS` to check the tunnel: `dns`, `proxy refused` and `timeout` mean
 what they mean above, while an error past the tunnel may only be a gRPC
 server declining a plain GET.
 
-**Data only one desktop can read** (a Bloomberg Terminal, a licensed
-desktop app, a file share only the office reaches) is no route to fix: make
+**Data only one desktop can read** (a licensed data terminal or desktop
+app, results another process writes on that machine, a file share only the
+office reaches) is no route to fix: make
 it a [push node](#push-nodes-data-from-someones-desktop) and push it from
 that machine.
 

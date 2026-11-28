@@ -87,13 +87,13 @@ def node(
             ``retries``) instead of holding the node's queue.
         push: the node's output is uploaded from another machine
             (``exuvia push``, or :func:`exuvia.push` in a script there) and
-            never computed by exuvia: for data only that machine can read,
-            such as a Bloomberg Terminal's. A push node takes no upstream
+            never computed by exuvia: for data only that machine has or can
+            read, such as a licensed terminal's or another process's results. A push node takes no upstream
             nodes and has no schedule; its function is not run.
         runs_on: the label of the runners that run this node, instead of the
             project's executor: ``exuvia runner --label <label>`` on a
-            person's own machine (a desktop logged in to a Bloomberg
-            Terminal, say), signed in as someone who can edit the project.
+            person's own machine (a desktop logged in to a licensed data
+            terminal, say), signed in as someone who can edit the project.
             It runs there only once that person has approved its code, and
             its output is sent back here. A ``runs_on`` node takes no
             upstream nodes and can't be live.

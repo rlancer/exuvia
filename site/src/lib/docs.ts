@@ -94,7 +94,7 @@ const PAGES: PageSpec[] = [
     group: "Build",
     source: { heading: "Push nodes: data from someone's desktop" },
     title: "Push nodes",
-    summary: "Data only one desktop can read, such as a Bloomberg Terminal's: pushed to the hub from that machine, then cascaded like any output.",
+    summary: "Data only one desktop has, such as a licensed terminal's or another process's results: pushed to the hub from that machine, then cascaded like any output.",
   },
   {
     slug: "views",

@@ -95,7 +95,7 @@ class Node:
     # the partitions they hold, and the stored rows they don't name stay.
     merge: bool = False
     # Its output is uploaded (``exuvia push``), never computed here: for data
-    # only another machine can read, such as a Bloomberg Terminal's.
+    # only another machine has or can read, such as a licensed terminal's.
     push: bool = False
     # The label of the runners (``exuvia runner --label``) that run it on
     # someone's own machine instead of the project's executor (runners.py).
@@ -965,12 +965,12 @@ RUNS_ON = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 def runs_on_label(value: Any) -> str | None:
     """``runs_on``: the label of the runners that run the node, such as
-    ``"bloomberg"``; None or empty: the project's executor."""
+    ``"desk"``; None or empty: the project's executor."""
     if value is None or value == "":
         return None
     if not isinstance(value, str) or not RUNS_ON.fullmatch(value.strip()):
         raise ValueError(
-            f"`runs_on` names the label of the runners that run the node (`exuvia runner --label bloomberg`): "
+            f"`runs_on` names the label of the runners that run the node (`exuvia runner --label desk`): "
             f"letters, digits, `.`, `_` and `-`, up to 64 of them, not {value!r}."
         )
     return value.strip()

@@ -31,8 +31,18 @@ for (const segment of script.segments) {
   T[segment.id] = { start: total, dur, end: total + dur, voiceAt: total + LEAD, voice };
   total += dur;
 }
+/**
+ * When, in seconds into its scene, the narration of `id` reaches `phrase`, by
+ * its share of the line's characters: close enough to put a picture on a word.
+ */
+function said(id, phrase) {
+  const text = script.segments.find((s) => s.id === id).text;
+  const at = text.indexOf(phrase);
+  if (at < 0) throw new Error(`"${phrase}" is not in the ${id} line of script.json`);
+  return LEAD + T[id].voice * (at / text.length);
+}
 /** Scenes with nothing behind them but the sea fade out; the rest are covered by the next one. */
-const FADES_OUT = new Set(["hook", "scale"]);
+const FADES_OUT = new Set(["hook", "api"]);
 
 // ---- pieces ----------------------------------------------------------------
 
@@ -273,6 +283,44 @@ const TOOLS = [
 ];
 $("#agent-tools").innerHTML = TOOLS.map(([tool, arg]) => `<div class="tool"><i></i>${tool}<span>${arg}</span></div>`).join("");
 
+const DATA_PROMPT = "AAPL, MSFT and NVDA since July 2026";
+/** What the Data tab does, each shown as the narration names it. */
+const DATA_TOOLS = [
+  ["filter", "a column", "Filter it"],
+  ["sort", "any column", "sort it"],
+  ["query", "in SQL", "query it"],
+  ["ask", "in words", "or just say"],
+  ["brush", "a chart", "drag across"],
+];
+$("#data-tools").innerHTML = DATA_TOOLS.map(([tool, arg]) => `<div class="tool"><i></i>${tool}<span>${arg}</span></div>`).join("");
+
+// Where outputs land in a bucket: <prefix>/<project>/<node>/<digest>.parquet (README, "Storage").
+const BUCKET = [
+  ["rolling_vol", "3fa9c1d8", "current"],
+  ["rolling_vol", "8e21b04c", "kept"],
+  ["returns", "9c41e07b", "current"],
+  ["sector_summary", "e20b6a95", "current"],
+  ["sector_summary", "71c0d3aa", "kept"],
+];
+$("#storage-files").innerHTML = BUCKET.map(
+  ([node, sha, tag]) =>
+    `<div class="artifact"><span class="path">${node}/${sha}<span>….parquet</span></span><span class="tag${tag === "current" ? " new" : ""}">${tag}</span></div>`,
+).join("");
+const CODE_STORAGE = `select ticker, max(vol_20d) as peak
+from rolling_vol
+group by 1 order by 2 desc`;
+
+// A request made with a data key, and its answer, as the hub gives them (tested against a hub; README, "Data API").
+const API_LINES = [
+  `<span class="dollar">$</span> curl -G https://hub.example.com/api/data/query \\`,
+  `    <span class="flag">-H</span> <span class="str">"Authorization: Bearer $EXUVIA_DATA_KEY"</span> \\`,
+  `    <span class="flag">--data-urlencode</span> <span class="str">'sql=select sector, round(avg_vol, 2) as vol</span>`,
+  `<span class="str">        from markets.sector_summary order by 2 desc limit 3'</span>`,
+  `<span class="outp">{"columns": [{"name": "sector", "type": "VARCHAR"}, {"name": "vol", "type": "DOUBLE"}],</span>`,
+  `<span class="outp"> "rows": [["Health", 0.43], ["Staples", 0.42], ["Industrials", 0.32]]}</span>`,
+];
+$("#api-cmd").innerHTML = API_LINES.map((line) => `<span class="line">${line}</span>`).join("\n");
+
 const MCP_TOOLS = "list_nodes read_node write_node run_node query_data write_view list_revisions restore_node request_packages docs".split(" ");
 $("#mcp-tools").innerHTML = MCP_TOOLS.map((tool) => `<span>${tool}</span>`).join("");
 const MCP_CMD = "uvx exuvia mcp --url http://127.0.0.1:7420";
@@ -314,10 +362,10 @@ const SCENES = {
     $("#title-line").childNodes.forEach((word, i) => show(word, prog(lt, 1.0 + i * 0.13, 1.5 + i * 0.13, out), 18));
     // The two halves, as the narration names them.
     const [graph, rule, views] = $("#title-split").children;
-    const at = LEAD + T.title.voice * 0.42;
+    const [at, viewsAt] = [said("title", "a graph"), said("title", "and views")];
     show(graph, prog(lt, at, at + 0.6, out));
     rule.style.opacity = prog(lt, at + 0.2, at + 0.8);
-    show(views, prog(lt, at + T.title.voice * 0.2, at + T.title.voice * 0.2 + 0.6, out));
+    show(views, prog(lt, viewsAt, viewsAt + 0.6, out));
   },
 
   nodes(lt, d) {
@@ -420,37 +468,92 @@ const SCENES = {
     document.querySelectorAll("#schedule-triggers .trigger").forEach((row, i) => show(row, prog(k, TRIGGERS[i][2], TRIGGERS[i][2] + 0.05, out)));
   },
 
-  agent(lt, d) {
-    camera($("#agent-shot"), lt, [
+  data(lt, d) {
+    // The unfiltered table, a filter asked for in words, the rows it leaves, then a drag across the chart.
+    const ask = said("data", "or just say");
+    const brush = said("data", "drag across");
+    const typing = said("data", "query it");
+    const swap = Math.min(ask + 0.6, brush - 1.2);
+    camera($("#data-shot"), lt, [
       [0, 0.5, 0.47, 1.02],
-      [0.3 * d, 0.66, 0.52, 1.16],
-      [0.42 * d, 0.66, 0.52, 1.16],
-      [0.6 * d, 0.36, 0.5, 1.62],
-      [d, 0.37, 0.51, 1.72],
+      [typing, 0.64, 0.5, 1.3],
+      [swap + 0.3, 0.63, 0.58, 1.3],
+      [brush, 0.62, 0.38, 1.42],
+      [d, 0.62, 0.37, 1.48],
     ]);
-    $("#agent-after").style.opacity = prog(lt, 0.4 * d, 0.47 * d, linear);
-    const prompt = $("#agent-prompt");
-    show(prompt, prog(lt, 0.05 * d, 0.05 * d + 0.5, out) * (1 - prog(lt, 0.52 * d, 0.57 * d)));
-    const k = prog(lt, 0.09 * d, 0.3 * d, linear);
-    $("#agent-typed").innerHTML = escape(PROMPT.slice(0, Math.floor(PROMPT.length * k))) + (k < 1 ? '<span class="caret"></span>' : "");
-    const tools = $("#agent-tools");
-    tools.childNodes.forEach((chip, i) => show(chip, prog(lt, (0.33 + i * 0.045) * d, (0.33 + i * 0.045) * d + 0.4, out)));
-    const ring = $("#agent-ring");
-    ring.style.cssText = "left:2.6%;top:48.8%;width:16.6%;height:11.8%";
-    ring.style.opacity = prog(lt, 0.62 * d, 0.68 * d) * (0.65 + 0.35 * Math.sin((lt - 0.62 * d) * 5));
+    show($("#data-prompt"), prog(lt, typing - 0.4, typing, out) * (1 - prog(lt, swap + 0.2, swap + 0.5)));
+    const k = prog(lt, typing, swap - 0.2, linear);
+    $("#data-typed").innerHTML = escape(DATA_PROMPT.slice(0, Math.floor(DATA_PROMPT.length * k))) + (k < 1 ? '<span class="caret"></span>' : "");
+    $("#data-after").style.opacity = prog(lt, swap - 0.2, swap + 0.2, linear);
+    // The condition the model wrote, under the box (data.png).
+    const ring = $("#data-ring");
+    ring.style.cssText = "left:45%;top:62.4%;width:30.5%;height:5.2%";
+    ring.style.opacity = prog(lt, swap + 0.2, swap + 0.5) * (1 - prog(lt, brush - 0.3, brush)) * (0.65 + 0.35 * Math.sin((lt - swap) * 5));
+    // August to October, dragged across the chart.
+    const band = $("#data-brush");
+    const b = prog(lt, brush, brush + 1.1, out);
+    band.style.cssText = `left:53.5%;top:27.6%;height:18.8%;width:${8.75 * b}%`;
+    band.style.opacity = prog(lt, brush - 0.1, brush + 0.1);
+    $("#data-tools").childNodes.forEach((chip, i) => {
+      const at = said("data", DATA_TOOLS[i][2]);
+      show(chip, prog(lt, at, at + 0.4, out));
+    });
   },
 
-  mcp(lt, d) {
-    const pills = [...$("#mcp-clients").children];
-    const at = [0.08, 0.36, 0.48, 0.6].map((k) => k * d);
-    pills.forEach((pill, i) => show(pill, prog(lt, at[i], at[i] + 0.45, out)));
-    wires.forEach((wire, i) => (wire.style.strokeDashoffset = 1 - prog(lt, at[i] + 0.25, at[i] + 0.85)));
-    show($("#mcp-server"), prog(lt, 0.1, 0.7, out));
-    trunk.style.strokeDashoffset = 1 - prog(lt, 0.66 * d, 0.74 * d);
-    $("#mcp-tools").childNodes.forEach((tool, i) => show(tool, prog(lt, (0.7 + i * 0.02) * d, (0.7 + i * 0.02) * d + 0.35, out), 12));
-    show($("#mcp-term"), prog(lt, 0.3 * d, 0.3 * d + 0.5, out));
-    const k = prog(lt, 0.34 * d, 0.62 * d, linear);
-    $("#mcp-cmd").innerHTML = `<span class="dollar">$</span> ${MCP_CMD.slice(0, Math.floor(MCP_CMD.length * k))}${k < 1 ? '<span class="caret"></span>' : ""}`;
+  notebook(lt, d) {
+    // Canvas, the toggle, and the same graph as a notebook: down the contents, into rolling_vol's cell.
+    const swap = 0.3 * d;
+    camera($("#notebook-shot"), lt, [
+      [0, 0.5, 0.47, 1.02],
+      [0.18 * d, 0.32, 0.22, 1.38],
+      [swap + 0.5, 0.32, 0.26, 1.34],
+      [0.66 * d, 0.32, 0.4, 1.3],
+      [d, 0.3, 0.46, 1.36],
+    ]);
+    $("#notebook-after").style.opacity = prog(lt, swap - 0.2, swap + 0.25, linear);
+    const ring = $("#notebook-ring");
+    ring.style.cssText = "left:12.2%;top:5.4%;width:12.6%;height:3.6%";
+    ring.style.opacity = prog(lt, 0.12 * d, 0.2 * d) * (1 - prog(lt, swap + 0.6, swap + 1.1));
+  },
+
+  agent(lt, d) {
+    // First the built-in agent at work on the canvas, then everything else that can use its tools.
+    const cut = said("agent", "Use the built-in") - 0.2;
+    const b = prog(lt, cut - 0.25, cut + 0.25, linear);
+    $("#agent-a").style.opacity = 1 - b;
+    $("#agent-b").style.opacity = b;
+    show($("#agent-cap-a"), 1 - b, 0);
+    show($("#agent-cap-b"), prog(lt, cut, cut + 0.5, out));
+
+    const a = cut + 0.3; // how long the first part has
+    camera($("#agent-shot"), lt, [
+      [0, 0.5, 0.47, 1.02],
+      [0.3 * a, 0.66, 0.52, 1.16],
+      [0.42 * a, 0.66, 0.52, 1.16],
+      [0.62 * a, 0.36, 0.5, 1.62],
+      [a, 0.37, 0.51, 1.72],
+    ]);
+    $("#agent-after").style.opacity = prog(lt, 0.4 * a, 0.47 * a, linear);
+    show($("#agent-prompt"), prog(lt, 0.04 * a, 0.04 * a + 0.5, out) * (1 - prog(lt, 0.52 * a, 0.57 * a)));
+    const k = prog(lt, 0.08 * a, 0.3 * a, linear);
+    $("#agent-typed").innerHTML = escape(PROMPT.slice(0, Math.floor(PROMPT.length * k))) + (k < 1 ? '<span class="caret"></span>' : "");
+    $("#agent-tools").childNodes.forEach((chip, i) => show(chip, prog(lt, (0.33 + i * 0.045) * a, (0.33 + i * 0.045) * a + 0.4, out)));
+    // The drawdown node the agent made, on the canvas (agent.png: x 223-504, y 845-946 of 2880x1800).
+    const ring = $("#agent-ring");
+    ring.style.cssText = "left:7.3%;top:46.3%;width:10.6%;height:6.9%";
+    ring.style.opacity = prog(lt, 0.64 * a, 0.7 * a) * (0.65 + 0.35 * Math.sin((lt - 0.64 * a) * 5));
+
+    const u = lt - cut;
+    const at = ["built-in", "Claude Code", "Cursor", "Codex"].map((name) => said("agent", name) - cut - 0.15);
+    [...$("#mcp-clients").children].forEach((pill, i) => show(pill, prog(u, at[i], at[i] + 0.45, out)));
+    wires.forEach((wire, i) => (wire.style.strokeDashoffset = 1 - prog(u, at[i] + 0.25, at[i] + 0.85)));
+    show($("#mcp-server"), prog(u, 0.1, 0.7, out));
+    const tools = at[2] + 0.3;
+    trunk.style.strokeDashoffset = 1 - prog(u, tools, tools + 0.6);
+    $("#mcp-tools").childNodes.forEach((tool, i) => show(tool, prog(u, tools + 0.3 + i * 0.1, tools + 0.65 + i * 0.1, out), 12));
+    show($("#mcp-term"), prog(u, at[1], at[1] + 0.5, out));
+    const typedK = prog(u, at[1] + 0.2, d - cut - 1.2, linear);
+    $("#mcp-cmd").innerHTML = `<span class="dollar">$</span> ${MCP_CMD.slice(0, Math.floor(MCP_CMD.length * typedK))}${typedK < 1 ? '<span class="caret"></span>' : ""}`;
   },
 
   views(lt, d) {
@@ -462,6 +565,22 @@ const SCENES = {
       [d, 0.48, 0.4, 1.22],
     ]);
     $("#views-code").style.opacity = prog(lt, 0.6 * d, 0.67 * d, linear);
+  },
+
+  storage(lt, d) {
+    // The Storage page, then where the files are and the SQL that reads them.
+    camera($("#storage-shot"), lt, [
+      [0, 0.5, 0.47, 1.02],
+      [0.4 * d, 0.3, 0.3, 1.2],
+      [d, 0.28, 0.36, 1.26],
+    ], { cx: 640 });
+    const bucket = said("storage", "on your disk");
+    show($("#storage-side"), prog(lt, bucket - 0.3, bucket + 0.3, out));
+    document.querySelectorAll("#storage-files .artifact").forEach((row, i) => show(row, prog(lt, bucket + i * 0.22, bucket + i * 0.22 + 0.4, out), 14));
+    const sql = said("storage", "and all of it");
+    show($("#storage-term"), prog(lt, sql - 0.3, sql + 0.2, out));
+    const k = prog(lt, sql, sql + 1.8, linear);
+    $("#storage-sql").innerHTML = typed(CODE_STORAGE, k).html + (lt > sql + 2.1 ? `\n<span class="outp">→ 8 rows</span>` : "");
   },
 
   history(lt, d) {
@@ -492,23 +611,45 @@ const SCENES = {
   },
 
   scale(lt, d) {
-    show($("#scale-term"), prog(lt, 0, 0.6, out));
+    const hubAt = said("scale", "Move to a hub") - 0.2;
+    const hub = prog(lt, hubAt, hubAt + 0.8, out);
+    // The terminal steps aside for the hub, which needs the height of the stage.
+    show($("#scale-term"), prog(lt, 0, 0.6, out) * (1 - prog(lt, hubAt - 0.1, hubAt + 0.4)));
     const lines = ["uvx exuvia init my-research", "uvx exuvia serve my-research"];
-    const [one, two] = [prog(lt, 0.05 * d, 0.2 * d, linear), prog(lt, 0.23 * d, 0.38 * d, linear)];
+    const [one, two] = [prog(lt, 0.1 * hubAt, 0.45 * hubAt, linear), prog(lt, 0.5 * hubAt, 0.85 * hubAt, linear)];
     const caret = '<span class="caret"></span>';
     let html = `<span class="dollar">$</span> ${lines[0].slice(0, Math.floor(lines[0].length * one))}${one < 1 ? caret : ""}`;
     if (one >= 1) html += `\n<span class="dollar">$</span> ${lines[1].slice(0, Math.floor(lines[1].length * two))}${two < 1 ? caret : ""}`;
-    if (lt > 0.41 * d) html += `\n<span class="outp">→ http://127.0.0.1:7420</span>`;
+    if (lt > 0.9 * hubAt) html += `\n<span class="outp">→ http://127.0.0.1:7420</span>`;
     $("#scale-cmd").innerHTML = html;
 
-    const hub = prog(lt, 0.5 * d, 0.5 * d + 0.8, out);
-    $("#scale-hub").style.transform = `translate(64px, ${388 + (1 - hub) * 60}px) scale(1.12)`;
+    $("#scale-hub").style.transform = `translate(80px, ${64 + (1 - hub) * 60}px) scale(1.1)`;
     $("#scale-hub").style.opacity = hub;
-    $("#scale-chips").childNodes.forEach((chip, i) => chip.nodeType === 1 && show(chip, prog(lt, 0.6 * d + i * 0.05, 0.6 * d + i * 0.05 + 0.4, out), 14));
-    const later = lt > 0.5 * d;
+    $("#scale-chips").childNodes.forEach((chip, i) => chip.nodeType === 1 && show(chip, prog(lt, hubAt + 0.6 + i * 0.12, hubAt + 1 + i * 0.12, out), 14));
+    const later = lt > hubAt;
     $("#scale-kicker").textContent = later ? "to a hub for the team" : "from a laptop";
     $("#scale .head").textContent = later ? "Grow into a hub" : "Start with one command";
-    show($("#scale .cap"), 1 - prog(lt, 0.5 * d - 0.3, 0.5 * d) + prog(lt, 0.5 * d, 0.5 * d + 0.4), 0);
+    show($("#scale .cap"), 1 - prog(lt, hubAt - 0.3, hubAt) + prog(lt, hubAt, hubAt + 0.4), 0);
+  },
+
+  api(lt, d) {
+    // A key made on the hub, then a request made with it from outside exuvia, and the rows it answers.
+    const key = said("api", "Make a read-only key");
+    const code = said("api", "and your code");
+    camera($("#api-shot"), lt, [
+      [0, 0.5, 0.45, 1.05],
+      [key, 0.5, 0.36, 1.3],
+      [d, 0.5, 0.4, 1.36],
+    ]);
+    const ring = $("#api-ring");
+    ring.style.cssText = "left:28.6%;top:31%;width:42.8%;height:4.6%";
+    ring.style.opacity = prog(lt, key, key + 0.4) * (1 - prog(lt, code - 0.3, code)) * (0.65 + 0.35 * Math.sin((lt - key) * 5));
+    $("#api-shade").style.opacity = prog(lt, code - 0.3, code + 0.2);
+    show($("#api-term"), prog(lt, code - 0.2, code + 0.3, out));
+    document.querySelectorAll("#api-cmd .line").forEach((line, i) => {
+      const at = code + (i < 4 ? i * 0.35 : 1.9 + (i - 4) * 0.2);
+      line.style.opacity = prog(lt, at, at + 0.25);
+    });
   },
 
   end(lt, d) {
@@ -541,7 +682,7 @@ function seek(t) {
     if (opacity > 0) SCENES[id](t - scene.start, scene.dur);
   }
 
-  const sea = t < T.title.end + FADE || t > T.scale.end - FADE;
+  const sea = t < T.title.end + FADE || t > T.api.end - FADE;
   $("#sea").style.opacity = sea ? 1 : 0;
   if (sea) {
     const dive = t < T.title.end + FADE ? t / T.title.end : 1 + (t - T.end.start) / T.end.dur;
