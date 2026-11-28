@@ -86,8 +86,9 @@ exuvia serve my-research
 ```
 
 Go to [http://127.0.0.1:7420](http://127.0.0.1:7420). You see one node on the
-canvas, marked `new` because it has never run. Select it and run it. Its
-output appears beside the code: the rows, the column types, and the log.
+canvas, marked `new` because it has never run. Select it and click **Run**.
+When the run finishes, the inspector opens the node's **Data** tab: the
+rows and their column types. The log of each run is in the **Runs** tab.
 
 Leave the server running. It watches the project folder, so files you add or
 change in an editor show up on the canvas by themselves.

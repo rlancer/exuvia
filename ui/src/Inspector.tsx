@@ -104,8 +104,25 @@ export function Inspector(props: {
     }
   }, [dirty, canEdit, node.name, source]);
 
+  // A node's first run, started here: once it succeeds, show what it made
+  // (the Data tab) rather than the code that was already on screen.
+  const firstRun = useRef<string | null>(null);
+  useEffect(() => {
+    if (firstRun.current !== node.name) {
+      firstRun.current = null;
+      return;
+    }
+    if (node.state === "fresh") {
+      firstRun.current = null;
+      setTab("data");
+    } else if (node.state === "failed" || node.state === "error") {
+      firstRun.current = null; // the error shows with the code
+    }
+  }, [node.name, node.state]);
+
   const run = async (fullRefresh = false) => {
     if (!canEdit) return;
+    if (!node.last_run) firstRun.current = node.name;
     setBusy(true);
     try {
       await save();

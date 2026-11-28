@@ -249,7 +249,8 @@ corner: save it as PNG or SVG, or open it full screen, where it fills the
 window and its rows fold away under it until asked for.
 
 **The Data tab** shows every row of a table output, whether it has ten or
-ten million. Only the rows in view are drawn, and they are read from the
+ten million. A node's first run, started with **Run** in its inspector,
+opens this tab once it succeeds; later runs leave the tab you are on. Only the rows in view are drawn, and they are read from the
 server 500 at a time as you scroll, each page from the same run as the
 first, so a run that finishes meanwhile never mixes two outputs on screen.
 A row that is still on its way shows as `…`. Past about 370,000 rows the
