@@ -182,7 +182,8 @@ async function app() {
   await page.goto(base);
   await node(page, "rolling_vol").click();
   await tab(page, "History").first().click();
-  await page.getByText("vs previous").waitFor();
+  // The compare picker shows its choice twice (its button, and the item picked in its list).
+  await page.getByText("vs previous").first().waitFor();
   await shot(page, "history");
 
   // Packages: the project's pyproject.toml, managed from the side panel's Settings tab.
@@ -316,7 +317,10 @@ async function hub() {
       await api("PUT", `/p/${project}/api/nodes/${name}`, { source, kind: ext === "sql" ? "sql" : "python" }, person(owner));
     }
   }
+  // Every project has run, so the data API and a hub shot's queries read all three.
   await runStale("/p/markets", person("ada"));
+  await runStale("/p/credit_risk", person("ada"));
+  await runStale("/p/churn", person("grace"));
 
   // Markets is ada's: private, shared with grace and an invited colleague, with a link and linus asking in.
   const sharing = "/api/projects/markets/sharing";

@@ -115,6 +115,12 @@ bun run doctor                     # Astryx's own checks of the setup and the co
 Look at it in both colour modes and at a narrow width (the workbench stacks
 under 1100px, and its bars lose their words under 900px).
 
+A change to what the workbench shows on every screen (its bars, the side
+panel's tabs, where a control lives) makes the website's screenshots wrong,
+and nothing checks them: recapture them in the same PR with
+`site/tools/capture.mjs` (its header says how: modes `app`, `hub` and
+`tutorial`, each against a scratch copy) and look at each one.
+
 ## Astryx's own guide
 
 Written by `bun run astryx init`; it rewrites this block on an upgrade.
