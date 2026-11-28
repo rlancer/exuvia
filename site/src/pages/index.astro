@@ -16,8 +16,10 @@ import agentPanel from "../assets/shots/agent-panel.png";
 import { DEPLOY_TARGETS, EXAMPLE_HOSTNAME, agentDeployPrompt, agentSetupPrompt } from "../lib/docs";
 import { codeFigure, copyButton, getHighlighter } from "../lib/highlight";
 import { url } from "../lib/paths";
+import { VIDEOS, videoPlayer } from "../lib/videos";
 
 const h = await getHighlighter();
+const film = await videoPlayer("exuvia-overview", "(max-width: 900px) 94vw, 52rem");
 const handoffs = [
   {
     id: "local",
@@ -227,6 +229,23 @@ const steps = [
     </div>
     <div class="wrap">
       <HeroGraph />
+    </div>
+  </section>
+
+  <section class="film" id="film">
+    <div class="wrap film-grid">
+      <header>
+        <h2>exuvia in two minutes</h2>
+        <p>
+          Why a graph of steps and views beats cells that do both, and what you get with it: plain Python and SQL
+          files, every output kept, schedules per node, and an agent that works in the graph with you.
+        </p>
+        <p class="film-next">
+          Ready to try it? <a href={url("/docs/getting-started/")}>Getting started</a> walks through it in a{" "}
+          {VIDEOS["getting-started"].length} video, recorded in the real app.
+        </p>
+      </header>
+      <Fragment set:html={film} />
     </div>
   </section>
 
@@ -564,6 +583,34 @@ const steps = [
     font-style: normal;
     font-weight: 700;
     letter-spacing: -0.04em;
+  }
+
+  /* ---- film --------------------------------------------------------------- */
+  .film {
+    padding: clamp(4rem, 9vw, 7rem) 0;
+    border-top: var(--border);
+    background: var(--band);
+  }
+  .film-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.55fr);
+    gap: clamp(1.75rem, 4vw, 3.5rem);
+    align-items: center;
+  }
+  .film header p {
+    color: var(--muted);
+  }
+  .film header .film-next {
+    font-size: var(--step-0);
+  }
+  .film-next a {
+    text-decoration-color: var(--accent);
+    text-decoration-thickness: 2px;
+  }
+  @media (max-width: 900px) {
+    .film-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 
   /* ---- shared section headers -------------------------------------------- */

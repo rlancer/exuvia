@@ -90,6 +90,23 @@ const picture = Astro.site ? new URL(url(card.src), Astro.site).href : url(card.
         }, 1600);
       });
 
+      // Videos (lib/videos.ts): a click on the poster puts YouTube's player in
+      // its place, playing. Ctrl- or middle-click still opens YouTube.
+      document.addEventListener("click", (event) => {
+        const poster = (event.target as HTMLElement).closest<HTMLAnchorElement>(".video-poster");
+        const box = poster?.closest<HTMLElement>("[data-video]");
+        if (!poster || !box || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey) return;
+        event.preventDefault();
+        const frame = document.createElement("iframe");
+        frame.src = `https://www.youtube-nocookie.com/embed/${box.dataset.video}?autoplay=1&rel=0`;
+        frame.title = box.dataset.title ?? "Video";
+        frame.allow = "autoplay; encrypted-media; fullscreen; picture-in-picture";
+        frame.allowFullscreen = true;
+        frame.referrerPolicy = "strict-origin-when-cross-origin";
+        box.replaceChildren(frame);
+        frame.focus();
+      });
+
       // Tabs (`[data-tabs]`, on the landing page): click or arrow keys move the
       // selection, one panel shows.
       for (const root of document.querySelectorAll<HTMLElement>("[data-tabs]")) {

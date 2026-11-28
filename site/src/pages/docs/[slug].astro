@@ -3,6 +3,7 @@ import type { ImageMetadata } from "astro";
 import { getImage } from "astro:assets";
 import Docs from "../../layouts/Docs.astro";
 import { getDocs, type DocPage } from "../../lib/docs";
+import { videoPlayer, type VideoName } from "../../lib/videos";
 
 export async function getStaticPaths() {
   return (await getDocs()).map((page) => ({ params: { slug: page.slug }, props: { page } }));
@@ -37,6 +38,11 @@ async function shotImage(name: string, alt: string): Promise<string> {
 let html = page.html;
 for (const [tag, name, alt] of [...page.html.matchAll(SHOT)]) {
   html = html.replace(tag, await shotImage(name, alt));
+}
+// Its videos arrive as <div data-video-name="name"></div> (see videoFigure in
+// lib/docs.ts), and become the player from lib/videos.ts.
+for (const [tag, name] of [...page.html.matchAll(/<div data-video-name="([\w-]+)"><\/div>/g)]) {
+  html = html.replace(tag, await videoPlayer(name as VideoName, "(max-width: 900px) 94vw, 46rem"));
 }
 ---
 

@@ -8,7 +8,9 @@
  *
  * Screenshots of the app (`src/assets/shots/`, taken by `tools/capture.mjs`)
  * go into README pages through FIGURES, so the README itself stays text for
- * PyPI. The tutorial places its own as Markdown images with a `shot:` address.
+ * PyPI. The tutorial places its own as Markdown images with a `shot:` address,
+ * and its video (src/lib/videos.ts) as an image with a `video:` address:
+ * `![title](video:<name> "caption")`, in a paragraph of its own.
  */
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -17,6 +19,7 @@ import { codeFigure, escapeHtml, getHighlighter } from "./highlight";
 import { absolute, markdownPath, url } from "./paths";
 import { SITE } from "./project";
 import { DEPLOY_TARGETS, EXAMPLE_HOSTNAME } from "./targets";
+import { VIDEOS, isVideoName, watchUrl } from "./videos";
 
 export { DEPLOY_TARGETS, EXAMPLE_HOSTNAME };
 
@@ -328,6 +331,14 @@ function withFigures(slug: string, markdown: string): string {
   return lines.join("\n");
 }
 
+const VIDEO_IMAGE = /^!\[([^\]]*)\]\(video:([\w-]+) "([^"]*)"\)$/;
+
+/** A `video:` image as the docs page shows it. The page puts the player in place of the `data-video-name` div. */
+function videoFigure(slug: string, name: string, caption: string): string {
+  if (!isVideoName(name)) throw new Error(`"${slug}" shows the video ${name}, which is not in VIDEOS in src/lib/videos.ts.`);
+  return `<figure class="video-figure"><div data-video-name="${name}"></div><figcaption>${caption}</figcaption></figure>\n`;
+}
+
 /** A `shot:` image as the docs page shows it. The page puts the real image in place of the `data-shot` one. */
 function shotFigure(slug: string, name: string, alt: string, caption: string): string {
   if (!existsSync(path.join(SHOTS_DIR, `${name}.png`))) {
@@ -518,10 +529,14 @@ function stepsFor(steps: string, label: string): string {
  */
 function agentMarkdown(spec: PageSpec, title: string, markdown: string, anchors: Map<string, string>): string {
   const fromReadme = "heading" in spec.source;
-  // Screenshots are for the HTML page: an agent reading the Markdown gets the text.
+  // Screenshots are for the HTML page: an agent reading the Markdown gets the
+  // text. A video becomes a link to it on YouTube.
   markdown = markdown
     .replace(/\r\n/g, "\n")
-    .replace(/^!\[[^\]]*\]\(shot:.*\)\n\n?/gm, "");
+    .replace(/^!\[[^\]]*\]\(shot:.*\)\n\n?/gm, "")
+    .replace(/^!\[([^\]]*)\]\(video:([\w-]+) "[^"]*"\)$/gm, (line, title: string, name: string) =>
+      isVideoName(name) ? `Video: [${title}](${watchUrl(name)}) (${VIDEOS[name].length})` : line,
+    );
   let fenced = false;
   const body = markdown
     .replace(/\r\n/g, "\n")
@@ -615,14 +630,16 @@ async function build(): Promise<DocPage[]> {
           return `<h${token.depth} id="${id}"><a class="anchor" href="#${id}">${inner}</a></h${token.depth}>\n`;
         },
         paragraph(token) {
+          const video = VIDEO_IMAGE.exec(token.raw.trim());
+          if (video) return videoFigure(spec.slug, video[2], this.parser.parseInline(Lexer.lexInline(video[3])));
           const shot = SHOT_IMAGE.exec(token.raw.trim());
           if (!shot) return `<p>${this.parser.parseInline(token.tokens)}</p>\n`;
           const [, alt, name, caption] = shot;
           return shotFigure(spec.slug, name, escapeHtml(alt), this.parser.parseInline(Lexer.lexInline(caption)));
         },
         image(token) {
-          if (token.href.startsWith("shot:")) {
-            throw new Error(`"${spec.slug}" has a shot: image inside a paragraph. Give it a paragraph of its own.`);
+          if (token.href.startsWith("shot:") || token.href.startsWith("video:")) {
+            throw new Error(`"${spec.slug}" has a ${token.href.split(":")[0]}: image inside a paragraph. Give it a paragraph of its own.`);
           }
           return `<img src="${escapeHtml(token.href)}" alt="${escapeHtml(token.text)}">`;
         },

@@ -2,6 +2,8 @@ This page takes you from nothing to a small graph of three nodes, shows what
 exuvia does when you change one of them, puts a view on top, and turns on
 the agent. It takes about ten minutes.
 
+![Getting started with exuvia](video:getting-started "The steps on this page as a video, recorded in the real app.")
+
 ## Install
 
 exuvia is a Python package with the web UI inside, so it is the only thing

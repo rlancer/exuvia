@@ -76,6 +76,12 @@ nothing else) and what its hierarchy is: read it before changing `ui/`.
   asked. Save once the line at the foot of the dialog has moved on from
   "Uploading n%" to "Processing" or "Checks complete"; the processing can
   finish after the save.
+- **Thumbnail.** Until the owner verifies the channel's phone number,
+  Studio answers Thumbnail → Upload file with an "Unlock more on YouTube"
+  dialog: cancel it (the verification is the owner's) and pick the title
+  card under "Select from video". The intended 1280x720 picture is
+  `site/src/assets/videos/<name>.jpg`, the site's poster for the video, for
+  Upload file once custom thumbnails are allowed.
 - **Leave alone** the channel's settings, monetization, end screens, cards,
   playlists and every other video. Under the description Studio says
   external links need a one-time verification to be clickable: that is the
