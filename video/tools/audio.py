@@ -1,16 +1,23 @@
-"""The film's sound, through OpenRouter: the narration (ElevenLabs), the music (Lyria), and the mix.
+"""The film's sound, from ElevenLabs: the narration, the music, and the mix.
 
-    OPENROUTER_API_KEY=... python tools/audio.py            # whatever is missing, then the mix
-    python tools/audio.py voice [id ...]                     # the narration again (all of it, or these segments)
-    python tools/audio.py music                              # the music again
-    python tools/audio.py mix                                # only the mix, from the files in audio/
+    python tools/audio.py                    # the narration that is missing or whose text changed, music if missing, the mix
+    python tools/audio.py --dry-run          # what that would generate, and how many characters it costs
+    python tools/audio.py voice [id ...]     # the narration again (these segments, or every one)
+    python tools/audio.py music              # the music again
+    python tools/audio.py mix                # only the mix, from the files in audio/
 
-Writes audio/voice-<id>.mp3 per segment of script.json, audio/music.<ext>,
-audio/timings.json (each segment's length, which sets the length of its
-scene: src/main.js reads it), audio/mix.wav (what tools/render.mjs puts under
-the picture) and out/exuvia-overview.srt (captions to upload with the video).
+Writes audio/voice-<id>.mp3 per segment of script.json, audio/voices.json (the
+text each of those was made from, so a run only pays for lines that changed),
+audio/music.<ext>, audio/timings.json (each segment's length, which sets the
+length of its scene: src/main.js reads it), audio/mix.wav (what
+tools/render.mjs puts under the picture) and out/exuvia-overview.srt
+(captions to upload with the video).
 
-EXUVIA_VIDEO_VOICE picks one of the voice model's voices (default "matilda").
+The narration is ElevenLabs text to speech, the music its music endpoint
+(with OpenRouter's Lyria as the fallback when the account has no music). The
+API keys are not read here: the network proxy this runs behind adds them, so
+the requests carry a placeholder. EXUVIA_VIDEO_VOICE_ID picks the voice
+(default Matilda), EXUVIA_VIDEO_VOICE_MODEL the model (default eleven_v4).
 Standard library and ffmpeg only.
 """
 import base64
@@ -25,10 +32,14 @@ from pathlib import Path
 VIDEO = Path(__file__).resolve().parent.parent
 AUDIO = VIDEO / "audio"
 OUT = VIDEO / "out"
-API = "https://openrouter.ai/api/v1"
-VOICE = os.environ.get("EXUVIA_VIDEO_VOICE", "matilda")
-VOICE_MODEL = os.environ.get("EXUVIA_VIDEO_VOICE_MODEL", "elevenlabs/eleven-v4")
-MUSIC_MODEL = os.environ.get("EXUVIA_VIDEO_MUSIC_MODEL", "google/lyria-3-pro-preview")
+ELEVENLABS = "https://api.elevenlabs.io/v1"
+OPENROUTER = "https://openrouter.ai/api/v1"
+# The proxy replaces these with the real keys; nothing secret is in this file or its environment.
+ELEVENLABS_HEADERS = {"xi-api-key": "proxy-injected"}
+OPENROUTER_HEADERS = {"Authorization": "Bearer proxy-injected"}
+VOICE = os.environ.get("EXUVIA_VIDEO_VOICE_ID", "XrExE9yKIg1WjnnlVkGX")  # Matilda
+VOICE_MODEL = os.environ.get("EXUVIA_VIDEO_VOICE_MODEL", "eleven_v4")
+LYRIA = os.environ.get("EXUVIA_VIDEO_MUSIC_MODEL", "google/lyria-3-pro-preview")
 MUSIC_PROMPT = (
     "A {seconds} second instrumental underscore for a calm, confident software product film. "
     "Deep-sea atmosphere: warm analog synth pads and a soft sub bass open it; after about eight "
@@ -41,22 +52,21 @@ MUSIC_PROMPT = (
 
 script = json.loads((VIDEO / "script.json").read_text(encoding="utf-8"))
 segments = script["segments"]
+MADE_FROM = AUDIO / "voices.json"
 
 
-def request(path, body):
-    return urllib.request.Request(
-        f"{API}{path}",
-        data=json.dumps(body).encode(),
-        headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}", "Content-Type": "application/json"},
+class Refused(Exception):
+    """The service answered, but no: the status and what it said."""
+
+
+def post(url, body, headers, timeout=600):
+    request = urllib.request.Request(
+        url, data=json.dumps(body).encode(), headers={**headers, "Content-Type": "application/json"}
     )
-
-
-def call(path, body):
     try:
-        with urllib.request.urlopen(request(path, body), timeout=600) as response:
-            return response.read()
+        return urllib.request.urlopen(request, timeout=timeout)
     except urllib.error.HTTPError as error:
-        sys.exit(f"{path} answered {error.code}: {error.read().decode()[:1500]}")
+        raise Refused(f"{url} answered {error.code}: {error.read().decode(errors='replace')[:1500]}") from None
 
 
 def seconds(path):
@@ -67,16 +77,29 @@ def seconds(path):
     return float(out.stdout.strip())
 
 
-def voice(only):
-    for segment in segments:
+def made_from():
+    return json.loads(MADE_FROM.read_text(encoding="utf-8")) if MADE_FROM.exists() else {}
+
+
+def stale(only):
+    """The segments to voice: `only` if given, else those with no file or whose text changed since theirs was made."""
+    have = made_from()
+    if only:
+        return [s for s in segments if s["id"] in only]
+    return [s for s in segments if not (AUDIO / f"voice-{s['id']}.mp3").exists() or have.get(s["id"]) != s["text"]]
+
+
+def voice(todo):
+    have = made_from()
+    for segment in todo:
         target = AUDIO / f"voice-{segment['id']}.mp3"
-        if only is not None and segment["id"] not in only and target.exists():
-            continue
-        if only is None and target.exists():
-            continue
-        body = {"model": VOICE_MODEL, "input": segment["text"], "voice": VOICE, "response_format": "mp3"}
         raw = AUDIO / f"raw-{segment['id']}.mp3"
-        raw.write_bytes(call("/audio/speech", body))
+        url = f"{ELEVENLABS}/text-to-speech/{VOICE}?output_format=mp3_44100_192"
+        try:
+            with post(url, {"text": segment["text"], "model_id": VOICE_MODEL}, ELEVENLABS_HEADERS) as response:
+                raw.write_bytes(response.read())
+        except Refused as error:
+            sys.exit(f"voice {segment['id']}: {error}")
         # Trim the silence the model leaves at either end, so a scene's length is the line's.
         trim = "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.03"
         subprocess.run(
@@ -84,7 +107,9 @@ def voice(only):
             check=True,
         )
         raw.unlink()
-        print(f"{target.name}: {seconds(target):.2f} s")
+        have[segment["id"]] = segment["text"]
+        MADE_FROM.write_text(json.dumps(have, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+        print(f"{target.name}: {seconds(target):.2f} s ({len(segment['text'])} characters)")
 
 
 def timeline():
@@ -101,41 +126,61 @@ def music_file():
     return next(iter(sorted(AUDIO.glob("music.*"))), None)
 
 
-def music(total):
-    """Audio comes back as a stream of base64 pieces, with the transcript (the model's notes) beside it."""
-    body = {
-        "model": MUSIC_MODEL,
-        "modalities": ["text", "audio"],
-        "stream": True,
-        "messages": [{"role": "user", "content": MUSIC_PROMPT.format(seconds=round(total + 4))}],
-    }
-    pieces, kind = [], None
-    try:
-        with urllib.request.urlopen(request("/chat/completions", body), timeout=900) as response:
-            for line in response:
-                line = line.decode().strip()
-                if not line.startswith("data: ") or line == "data: [DONE]":
-                    continue
-                event = json.loads(line[6:])
-                if "error" in event:
-                    sys.exit(f"music: {json.dumps(event['error'])[:1500]}")
-                for choice in event.get("choices", []):
-                    audio = (choice.get("delta") or {}).get("audio") or {}
-                    if audio.get("data"):
-                        pieces.append(audio["data"])
-                    kind = audio.get("format") or kind
-    except urllib.error.HTTPError as error:
-        sys.exit(f"music answered {error.code}: {error.read().decode()[:1500]}")
-    if not pieces:
-        sys.exit("music: the answer held no audio")
-    data = b"".join(base64.b64decode(piece) for piece in pieces)
-    if kind is None:
-        kind = "wav" if data[:4] == b"RIFF" else "mp3"
+def keep_music(data, kind):
     for old in AUDIO.glob("music.*"):
         old.unlink()
     target = AUDIO / f"music.{kind}"
     target.write_bytes(data)
     print(f"{target.name}: {seconds(target):.2f} s")
+
+
+def music_elevenlabs(total):
+    body = {
+        "prompt": MUSIC_PROMPT.format(seconds=round(total + 4)),
+        "music_length_ms": round((total + 4) * 1000),
+        "force_instrumental": True,
+    }
+    with post(f"{ELEVENLABS}/music?output_format=mp3_44100_192", body, ELEVENLABS_HEADERS, timeout=900) as response:
+        keep_music(response.read(), "mp3")
+
+
+def music_lyria(total):
+    """Lyria through OpenRouter: audio comes back as a stream of base64 pieces, beside the model's notes."""
+    body = {
+        "model": LYRIA,
+        "modalities": ["text", "audio"],
+        "stream": True,
+        "messages": [{"role": "user", "content": MUSIC_PROMPT.format(seconds=round(total + 4))}],
+    }
+    pieces, kind = [], None
+    with post(f"{OPENROUTER}/chat/completions", body, OPENROUTER_HEADERS, timeout=900) as response:
+        for line in response:
+            line = line.decode().strip()
+            if not line.startswith("data: ") or line == "data: [DONE]":
+                continue
+            event = json.loads(line[6:])
+            if "error" in event:
+                raise Refused(f"music: {json.dumps(event['error'])[:1500]}")
+            for choice in event.get("choices", []):
+                audio = (choice.get("delta") or {}).get("audio") or {}
+                if audio.get("data"):
+                    pieces.append(audio["data"])
+                kind = audio.get("format") or kind
+    if not pieces:
+        raise Refused("music: the answer held no audio")
+    data = b"".join(base64.b64decode(piece) for piece in pieces)
+    keep_music(data, kind or ("wav" if data[:4] == b"RIFF" else "mp3"))
+
+
+def music(total):
+    try:
+        music_elevenlabs(total)
+    except Refused as error:
+        print(f"ElevenLabs music: {error}\nfalling back to {LYRIA} through OpenRouter", file=sys.stderr)
+        try:
+            music_lyria(total)
+        except Refused as again:
+            sys.exit(str(again))
 
 
 def stamp(t):
@@ -181,9 +226,20 @@ def mix(rows, total):
 
 
 AUDIO.mkdir(exist_ok=True)
-step, *ids = sys.argv[1:] or ["all"]
-if step in ("all", "voice"):
-    voice(None if step == "all" else set(ids) or {segment["id"] for segment in segments})
+argv = sys.argv[1:]
+dry = "--dry-run" in argv
+step, *ids = [a for a in argv if a != "--dry-run"] or ["all"]
+if step not in ("all", "voice", "music", "mix"):
+    sys.exit(__doc__)
+todo = stale(set(ids) or {s["id"] for s in segments}) if step == "voice" else stale(None) if step == "all" else []
+if dry:
+    for segment in todo:
+        print(f"voice {segment['id']}: {len(segment['text'])} characters")
+    print(f"{sum(len(s['text']) for s in todo)} characters of narration in all")
+    if step == "music" or (step == "all" and not music_file()):
+        print("and the music")
+    sys.exit(0)
+voice(todo)
 rows, total = timeline()
 if step == "music" or (step == "all" and not music_file()):
     music(total)

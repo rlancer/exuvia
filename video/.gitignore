@@ -4,3 +4,4 @@ out/
 # the page lays its scenes out to the narration without it.
 audio/*.mp3
 audio/*.wav
+audio/voices.json

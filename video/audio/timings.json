@@ -1,10 +1,4 @@
 {
- "hook": {
-  "duration": 9.946
- },
- "title": {
-  "duration": 11.561
- },
  "nodes": {
   "duration": 9.976
  },
@@ -14,20 +8,8 @@
  "schedule": {
   "duration": 7.596
  },
- "agent": {
-  "duration": 9.23
- },
- "mcp": {
-  "duration": 5.653
- },
  "views": {
   "duration": 9.696
- },
- "history": {
-  "duration": 19.976
- },
- "scale": {
-  "duration": 4.864
  },
  "end": {
   "duration": 3.828

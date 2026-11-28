@@ -12,9 +12,9 @@
  *       -> workbench, downloads, data, history, packages, files, views, view-code, notebook, storage,
  *          agent, agent-panel
  *
- *   # a hub on an empty directory, with sign-in from headers
- *   EXUVIA_AUTH=headers uv run exuvia hub /tmp/hub --port 7432
- *   node tools/capture.mjs hub http://127.0.0.1:7432           -> hub, share
+ *   # a hub on an empty directory, with sign-in from headers, ada as admin, and an agent key set
+ *   EXUVIA_AUTH=headers EXUVIA_ADMINS=ada uv run exuvia hub /tmp/hub --port 7432
+ *   node tools/capture.mjs hub http://127.0.0.1:7432           -> hub, share, data-keys, admin-keys
  *
  *   # the getting-started project, from `exuvia init`
  *   uv run exuvia init /tmp/my-research && uv run exuvia serve /tmp/my-research --port 7433
@@ -31,7 +31,8 @@
  * Its model shots send two real prompts (a Data tab filter in words, and the
  * agent writing a node), which spend a few cents of model credit; pass
  * --no-agent to skip them. `hub`
- * signs in as three made-up people, creates three projects and shares one.
+ * signs in as three made-up people, creates three projects, shares one, and
+ * makes data API keys (ada, the admin, makes one in the dialog).
  * `tutorial` writes every `file=` block of src/docs/getting-started.md.
  */
 import fs from "node:fs/promises";
@@ -182,7 +183,7 @@ async function app() {
   await page.goto(base);
   await node(page, "rolling_vol").click();
   await tab(page, "History").first().click();
-  await page.getByText("vs previous").waitFor();
+  await page.getByText("vs previous").first().waitFor();
   await shot(page, "history");
 
   // Packages: the project's pyproject.toml, managed from the side panel's Settings tab.
@@ -216,6 +217,8 @@ async function app() {
   await nb.getByRole("button", { name: "Collapse the side panel" }).click();
   const contents = nb.getByRole("button", { name: "Show the contents" });
   if (await contents.count()) await contents.click();
+  // Charts keep the width they mounted with when Contents narrows the cells (#237): load again at the new width.
+  await nb.reload();
   await nb.locator(".vega-embed canvas, .vega-embed svg").first().waitFor();
   // A pick in the contents keeps the cell at the top while the ones above it load.
   await nb.getByRole("tree").getByText("rolling_vol", { exact: true }).click();
@@ -317,6 +320,8 @@ async function hub() {
     }
   }
   await runStale("/p/markets", person("ada"));
+  await runStale("/p/credit_risk", person("ada"));
+  await runStale("/p/churn", person("grace"));
 
   // Markets is ada's: private, shared with grace and an invited colleague, with a link and linus asking in.
   const sharing = "/api/projects/markets/sharing";
@@ -342,6 +347,41 @@ async function hub() {
   await page.getByRole("button", { name: "Share" }).first().click();
   await page.getByText("Asking for access", { exact: false }).waitFor();
   await shot(page, "share");
+
+  // Data API keys: two apps' keys with some use behind them, so the admin page has numbers to show.
+  const { keys } = await api("GET", "/api/data-keys", undefined, person("ada"));
+  if (!keys.some((k) => k.name === "risk dashboard")) {
+    const made = [
+      await api("POST", "/api/data-keys", { name: "risk dashboard", projects: ["markets", "credit_risk"] }, person("ada")),
+      await api("POST", "/api/data-keys", { name: "churn alerts", projects: ["churn"] }, person("grace")),
+    ];
+    const queries = [
+      ['select * from "markets".sector_summary', 'select count(*) from "credit_risk".loans', 'select * from "markets".universe'],
+      ['select * from "churn".churn_by_plan'],
+    ];
+    for (const [i, { key }] of made.entries()) {
+      for (let n = 0; n < 6 + 5 * (1 - i); n++) {
+        await api("POST", "/api/data/query", { sql: queries[i][n % queries[i].length] }, { authorization: `Bearer ${key}` });
+      }
+    }
+  }
+
+  // A new key from the account menu, with the prompt that hands it to a coding agent.
+  const keysPage = await workbench({ headers: person("ada") });
+  await keysPage.goto(base);
+  await keysPage.getByRole("button", { name: "Account" }).click();
+  await keysPage.getByText("Data API keys…").click();
+  const dialog = keysPage.getByRole("dialog");
+  await dialog.getByLabel("What the key is for").fill("sales dashboard");
+  await dialog.getByLabel(/^Markets/).check();
+  await dialog.getByRole("button", { name: "Create key" }).click();
+  await dialog.getByText("Your new key").waitFor();
+  await shot(keysPage, "data-keys");
+
+  // The admin page's API keys section: every key on the hub, whose it is and how much it is used.
+  await keysPage.goto(`${base}/admin?section=keys`);
+  await keysPage.getByText("risk dashboard").first().waitFor();
+  await shot(keysPage, "admin-keys");
 }
 
 // -- tutorial: the getting-started project -----------------------------------------
