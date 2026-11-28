@@ -1,3 +1,5 @@
+import { parseInline, type MathInlineNode } from "@astryxdesign/core/Markdown";
+
 export function ago(ts?: number | null): string {
   if (!ts) return "";
   const s = Date.now() / 1000 - ts;
@@ -71,27 +73,54 @@ export function pressable(fn: () => void) {
 /** How much of a description `summary` reads, in characters. */
 const SUMMARY_READ = 2000;
 
+/** The inline maths in a line of Markdown, as written (`$…$`), by the same
+ * rules the app typesets it with (Astryx's parser): a price ("$5 to $10"), a
+ * SQL parameter ("$as_of") and a code span are not maths. */
+function mathSpans(line: string): string[] {
+  if (!line.includes("$")) return [];
+  return parseInline(line, { math: true })
+    .filter((n): n is MathInlineNode => n.type === "math")
+    .map((n) => `$${n.value}$`);
+}
+
 /**
  * A Markdown text's first paragraph as one line of plain text: what a node's
  * card shows of its docstring, where there is no room to render it. The marks
  * go (`code`, **bold**, _emphasis_, [links](…), a heading's #, a list's -) and
  * their words stay; an underscore inside a name (rolling_vol) is not emphasis.
+ * Maths would read as raw TeX, so it does not: the summary stops at a formula
+ * on its own line, as at a code fence, and a formula inside a sentence
+ * becomes "…".
  */
 export function summary(md: string): string {
   const lines: string[] = [];
+  let inMath = false;
   // A card shows two lines of it: no more is read than could be shown, so a
   // very long first paragraph costs nothing to draw.
   for (const raw of md.trim().slice(0, SUMMARY_READ).split("\n")) {
     const line = raw.trim();
+    if (inMath) {
+      if (line.endsWith("$$")) inMath = false;
+      continue;
+    }
     if (line.startsWith("```") || line.startsWith("~~~")) {
       if (lines.length) break;
+      continue;
+    }
+    // A formula on its own line: a `$$` block (perhaps over several lines)
+    // or a line that is nothing but `$…$`.
+    const spans = mathSpans(line);
+    if (line.startsWith("$$") || (spans.length > 0 && !spans.reduce((rest, m) => rest.replace(m, ""), line).trim())) {
+      if (lines.length) break;
+      inMath = line.startsWith("$$") && (line === "$$" || !line.slice(2).endsWith("$$"));
       continue;
     }
     if (!line) {
       if (lines.length) break;
       continue;
     }
-    lines.push(line.replace(/^#{1,6}\s+/, "").replace(/^>\s?/, "").replace(/^([-*+]|\d+[.)])\s+/, ""));
+    const text = spans.reduce((rest, m) => rest.replace(m, "…"), line);
+    lines.push(text.replace(/^#{1,6}\s+/, "").replace(/^>\s?/, "").replace(/^([-*+]|\d+[.)])\s+/, ""));
   }
   // Code spans keep their text as written; the marks are taken off around them.
   return lines
