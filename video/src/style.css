@@ -648,6 +648,59 @@ mark {
   color: var(--muted);
 }
 
+/* ---- the Data tab --------------------------------------------------------- */
+/* A drag across the chart: the band the Data tab draws while rows are picked. */
+.brush {
+  position: absolute;
+  border-radius: 4px;
+  background: rgb(111 155 255 / 0.2);
+  box-shadow: inset 0 0 0 2px var(--accent-hover);
+  opacity: 0;
+}
+#data-prompt {
+  top: auto;
+  bottom: 330px;
+  left: 96px;
+}
+
+/* ---- storage -------------------------------------------------------------- */
+#storage-side {
+  left: auto;
+  right: 72px;
+  top: 72px;
+  width: 860px;
+  padding: 30px 30px 14px;
+  border-radius: 18px;
+  background: rgb(11 14 22 / 0.95);
+  box-shadow:
+    0 0 0 1.5px var(--line-strong),
+    0 30px 90px rgb(0 0 0 / 0.65);
+}
+#storage-side .artifact {
+  height: 64px;
+  margin-bottom: 12px;
+  font-size: 23px;
+}
+#storage-term {
+  left: auto;
+  right: 72px;
+  top: 560px;
+  width: 860px;
+  padding: 0;
+  overflow: hidden;
+}
+#storage-term pre {
+  margin: 0;
+  padding: 24px 30px 28px;
+  font-size: 28px;
+  line-height: 1.5;
+}
+
+/* ---- scale: the hub's data API keys ---------------------------------------- */
+#scale-keys {
+  opacity: 0;
+}
+
 /* ---- MCP ---------------------------------------------------------------- */
 .mcp,
 #mcp-wires {
