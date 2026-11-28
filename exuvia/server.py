@@ -34,7 +34,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import _STARTED, __version__, about as about_mod, auth, dataapi, llm, mcp_http, rowfilter
+from . import _STARTED, __version__, about as about_mod, auth, dataapi, llm, mcp_http, rowfilter, serving
 from .activity import ActivityStore
 from .datakeys import DataKeyStore
 from .agent import READ_TOOLS, TOOLS, Agent
@@ -1356,23 +1356,32 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         ws = ctx.ws
         q = ws.bus.subscribe()
 
+        # Ends when the server shuts down: uvicorn waits for every open
+        # response, and this one is open for as long as a tab is (serving.py).
+        closing = serving.closing(request.app) or asyncio.Event()
+
         async def gen():
+            stop = asyncio.ensure_future(closing.wait())
             try:
                 yield _sse({"type": "hello"})
-                while not await request.is_disconnected():
-                    try:
-                        ev = await asyncio.wait_for(q.get(), timeout=15)
-                        yield _sse(ev)
-                    except asyncio.TimeoutError:
-                        yield ": ping\n\n"
+                while not closing.is_set() and not await request.is_disconnected():
+                    get = asyncio.ensure_future(q.get())
+                    await asyncio.wait({get, stop}, timeout=15, return_when=asyncio.FIRST_COMPLETED)
+                    if get.done():
+                        yield _sse(get.result())
+                    else:
+                        get.cancel()
+                        if not closing.is_set():
+                            yield ": ping\n\n"
             finally:
+                stop.cancel()
                 ws.bus.unsubscribe(q)
 
         return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
     # -- agent -----------------------------------------------------------------
     @r.post("/agent")
-    async def agent_chat(body: AgentReq, ctx: Ctx = Depends(get_ctx)) -> StreamingResponse:
+    async def agent_chat(body: AgentReq, request: Request, ctx: Ctx = Depends(get_ctx)) -> StreamingResponse:
         agent = ctx.agent
         if not agent.enabled:
             raise HTTPException(400, "Set ANTHROPIC_API_KEY or OPENROUTER_API_KEY (or PORTKEY_API_KEY with EXUVIA_MODEL) to enable the agent.")
@@ -1383,12 +1392,24 @@ def project_router(get_ctx: Callable[..., Any]) -> APIRouter:
         except RuntimeError as e:
             raise HTTPException(409, str(e)) from e
 
+        closing = serving.closing(request.app) or asyncio.Event()
+
         async def gen():
-            while True:
-                ev = await queue.get()
-                if ev is None:
-                    break
-                yield _sse(ev)
+            # Like /events, it ends when the server shuts down.
+            stop = asyncio.ensure_future(closing.wait())
+            try:
+                while True:
+                    get = asyncio.ensure_future(queue.get())
+                    await asyncio.wait({get, stop}, return_when=asyncio.FIRST_COMPLETED)
+                    if not get.done():
+                        get.cancel()
+                        break
+                    ev = get.result()
+                    if ev is None:
+                        break
+                    yield _sse(ev)
+            finally:
+                stop.cancel()
 
         return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 

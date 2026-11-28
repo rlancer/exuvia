@@ -138,8 +138,6 @@ def cmd_init(args: argparse.Namespace) -> None:
 
 
 def cmd_serve(args: argparse.Namespace) -> None:
-    import uvicorn
-
     root = Path(args.dir).resolve()
     _load_dotenv(root)
     import os
@@ -148,17 +146,16 @@ def cmd_serve(args: argparse.Namespace) -> None:
         os.environ["EXUVIA_EXECUTOR_URL"] = args.executor
     if args.scheduler:
         os.environ["EXUVIA_SCHEDULER"] = args.scheduler
+    from . import serving
     from .server import create_app
 
     app = create_app(root)
     print(f"exuvia · {root.name} · http://{args.host}:{args.port}")
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    serving.run(app, args.host, args.port)
 
 
 def cmd_hub(args: argparse.Namespace) -> None:
     import os
-
-    import uvicorn
 
     root = Path(args.dir).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -167,11 +164,12 @@ def cmd_hub(args: argparse.Namespace) -> None:
         os.environ["EXUVIA_EXECUTOR_URL"] = args.executor
     if args.scheduler:
         os.environ["EXUVIA_SCHEDULER"] = args.scheduler
+    from . import serving
     from .server import create_hub_app
 
     app = create_hub_app(root, args.templates or os.environ.get("EXUVIA_TEMPLATES_DIR"))
     print(f"exuvia hub · {root} · http://{args.host}:{args.port}")
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    serving.run(app, args.host, args.port)
 
 
 def cmd_run(args: argparse.Namespace) -> None:
