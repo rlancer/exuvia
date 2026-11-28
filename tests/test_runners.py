@@ -1,5 +1,5 @@
 """Runners: runs_on nodes run on a person's own machine (a desktop with a
-Bloomberg Terminal, say), which takes them from the hub over HTTPS, runs
+licensed data terminal, say), which takes them from the hub over HTTPS, runs
 only code its owner approved there, and sends the output back."""
 
 import socket
@@ -21,7 +21,7 @@ from exuvia.workspace import Workspace
 from test_engine import run, write
 
 TOKEN = "runner-test-token"
-BBG = '''import os
+FEED = '''import os
 
 import pandas as pd
 
@@ -30,21 +30,21 @@ from lib.fx import RATE
 
 
 @exuvia.node(runs_on="desk")
-def bbg():
-    return pd.DataFrame({{"px": [1.0, 2.0], "rate": [RATE, RATE], "key": [os.environ["BBG_KEY"]] * 2,
+def feed():
+    return pd.DataFrame({{"px": [1.0, 2.0], "rate": [RATE, RATE], "key": [os.environ["FEED_KEY"]] * 2,
                          "other": [os.environ.get("OTH" + "ER")] * 2, "v": [{v}] * 2}})
 '''
 DOUBLED = '''import exuvia
 
 
 @exuvia.node()
-def doubled(bbg):
-    return bbg.assign(px=bbg.px * 2)
+def doubled(feed):
+    return feed.assign(px=feed.px * 2)
 '''
 
 
 def project(root: Path, v: int = 1) -> None:
-    write(root, "bbg.py", BBG.format(v=v))
+    write(root, "feed.py", FEED.format(v=v))
     write(root, "doubled.py", DOUBLED)
     (root / "lib").mkdir(exist_ok=True)
     (root / "lib" / "fx.py").write_text("RATE = 1.5\n", encoding="utf-8")
@@ -59,8 +59,8 @@ def test_runs_on_parses_and_takes_no_upstreams(tmp_path):
     write(tmp_path, "lively.py", "import exuvia\n\n\n@exuvia.node(runs_on='desk', live=True)\ndef lively():\n    pass\n")
     write(tmp_path, "label.py", "import exuvia\n\n\n@exuvia.node(runs_on='a b')\ndef label():\n    pass\n")
     g = Project(tmp_path).load()
-    assert g.nodes["bbg"].runs_on == "desk" and g.nodes["bbg"].parse_error is None
-    assert g.nodes["bbg"].helpers == ["lib/fx.py"]
+    assert g.nodes["feed"].runs_on == "desk" and g.nodes["feed"].parse_error is None
+    assert g.nodes["feed"].helpers == ["lib/fx.py"]
     assert g.nodes["sq"].runs_on == "desk" and g.nodes["sq"].description == "from the desk"
     assert "takes no upstream nodes" in g.nodes["bad"].parse_error
     assert "push node can't have `runs_on`" in g.nodes["pushed"].parse_error
@@ -72,7 +72,7 @@ def test_runs_on_parses_and_takes_no_upstreams(tmp_path):
 def test_a_project_nothing_serves_cannot_hand_it_to_a_runner(tmp_path):
     project(tmp_path)
     ws = Workspace(tmp_path)
-    done = run(ws, ["bbg"])["bbg"]
+    done = run(ws, ["feed"])["feed"]
     assert done["status"] == "failed" and "only a served project" in done["error"]
 
 
@@ -140,7 +140,7 @@ def served(tmp_path, monkeypatch):
     project(root)
     app = create_app(root)
     ws = app.state.ws
-    ws.set_env_var("BBG_KEY", "k-123", True)
+    ws.set_env_var("FEED_KEY", "k-123", True)
     ws.set_env_var("OTHER", "not for the runner", False)
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -188,24 +188,24 @@ def test_a_runner_runs_approved_code_and_sends_the_output_back(served, tmp_path)
         }
 
         # New code: not run, kept for its owner to approve.
-        assert api.post("/api/nodes/bbg/run", json={}).json()["ok"]
+        assert api.post("/api/nodes/feed/run", json={}).json()["ok"]
         res = runner.run_once(wait=10)
         assert not res["ok"] and "exuvia runner approve" in res["error"]
-        first = _latest(ws, "bbg")
+        first = _latest(ws, "feed")
         assert first["status"] == "failed" and "exuvia runner approve" in first["error"]
         assert "taken by the runner laptop (operator)" in first["log"]
         approvals = Approvals(tmp_path / "home")
         [(_, item)] = approvals.pending()
-        assert sorted(item["files"]) == ["lib/fx.py", "nodes/bbg.py"]
+        assert sorted(item["files"]) == ["lib/fx.py", "nodes/feed.py"]
         shown: list[str] = []
         assert approve_pending(approvals, shown.append, lambda _: True) == 1
-        assert "+def bbg():" in "".join(shown) and approvals.pending() == []
+        assert "+def feed():" in "".join(shown) and approvals.pending() == []
 
         # Approved: it runs here, the output goes back and cascades downstream.
-        assert api.post("/api/nodes/bbg/run", json={}).json()["ok"]
+        assert api.post("/api/nodes/feed/run", json={}).json()["ok"]
         res = runner.run_once(wait=10)
         assert res["ok"], res
-        run_ = _latest(ws, "bbg")
+        run_ = _latest(ws, "feed")
         assert run_["status"] == "success" and run_["trigger"] != "push"
         df = pd.read_parquet(ws.project.root / run_["artifact_path"])
         assert df.px.tolist() == [1.0, 2.0] and df.rate.tolist() == [1.5, 1.5]
@@ -220,25 +220,25 @@ def test_a_runner_runs_approved_code_and_sends_the_output_back(served, tmp_path)
         ws.reload()
         runner.interactive = True
         runner.confirm = lambda _: False
-        assert api.post("/api/nodes/bbg/run", json={}).json()["ok"]
+        assert api.post("/api/nodes/feed/run", json={}).json()["ok"]
         assert "not approved" in runner.run_once(wait=10)["error"]
         shown_diff = "".join(lines)
         assert '-                         "other": [os.environ.get("OTH" + "ER")] * 2, "v": [1] * 2})' in shown_diff
         assert '+                         "other": [os.environ.get("OTH" + "ER")] * 2, "v": [2] * 2})' in shown_diff
         runner.confirm = lambda _: True
-        assert api.post("/api/nodes/bbg/run", json={}).json()["ok"]
+        assert api.post("/api/nodes/feed/run", json={}).json()["ok"]
         assert runner.run_once(wait=10)["ok"]
-        assert pd.read_parquet(ws.project.root / _latest(ws, "bbg")["artifact_path"]).v.tolist() == [2, 2]
+        assert pd.read_parquet(ws.project.root / _latest(ws, "feed")["artifact_path"]).v.tolist() == [2, 2]
 
         # A run cancelled on the hub while it waits for a runner ends at once.
-        assert api.post("/api/nodes/bbg/run", json={}).json()["ok"]
-        waiting = _latest(ws, "bbg", done=False)
+        assert api.post("/api/nodes/feed/run", json={}).json()["ok"]
+        waiting = _latest(ws, "feed", done=False)
         deadline = time.monotonic() + 10
         while not api.get("/api/runners").json()["runs"] and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert api.get("/api/runners").json()["runs"][0]["node"] == "bbg"
+        assert api.get("/api/runners").json()["runs"][0]["node"] == "feed"
         assert api.post(f"/api/runs/{waiting['id']}/cancel").json()["ok"]
-        assert _latest(ws, "bbg")["error"] == "cancelled"
+        assert _latest(ws, "feed")["error"] == "cancelled"
         assert runner.run_once(wait=0) is None
     finally:
         runner.close()
@@ -265,13 +265,13 @@ def test_on_a_hub_a_runner_takes_only_its_owners_projects(tmp_path, monkeypatch)
         with TestClient(create_hub_app(tmp_path / "hub")) as c:
             c.get("/api/me", headers=bob)
             assert c.post("/api/projects", json={"id": "desk"}, headers=alice).status_code == 200
-            src = BBG.format(v=1).replace("from lib.fx import RATE\n", "RATE = 1.5\n")
-            assert c.put("/p/desk/api/nodes/bbg", json={"source": src}, headers=alice).status_code == 200
-            assert c.post("/p/desk/api/nodes/bbg/run", json={}, headers=alice).json()["ok"]
+            src = FEED.format(v=1).replace("from lib.fx import RATE\n", "RATE = 1.5\n")
+            assert c.put("/p/desk/api/nodes/feed", json={"source": src}, headers=alice).status_code == 200
+            assert c.post("/p/desk/api/nodes/feed/run", json={}, headers=alice).json()["ok"]
             claim = {"labels": ["desk"], "name": "box", "wait": 2}
             assert c.post("/api/runners/claim", json=claim, headers=bob).json()["job"] is None
             job = c.post("/api/runners/claim", json=claim, headers=alice).json()["job"]
-            assert job["project"] == "desk" and job["node"] == "bbg" and job["env"] == {}
+            assert job["project"] == "desk" and job["node"] == "feed" and job["env"] == {}
             box = {"X-Exuvia-Runner": "box"}
             log = {"token": job["token"], "text": "hello from the desk\n"}
             assert c.post(f"/api/runners/jobs/{job['id']}/log", json=log, headers=bob | box).status_code == 403
