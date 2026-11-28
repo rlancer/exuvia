@@ -70,3 +70,27 @@ def test_ctrl_c_stops_the_server_with_a_tab_open(tmp_path, signals):
         stream.close()
         if proc.poll() is None:
             proc.kill()
+
+
+def test_a_signal_after_shutdown_is_ignored_until_the_process_ends():
+    """uvicorn puts back the handlers it found when it stops. A second copy of
+    a forwarded Ctrl+C that arrives after that, before the process has ended
+    itself by the first, must not raise a KeyboardInterrupt (which exited 1)."""
+    import threading
+
+    import uvicorn
+
+    from exuvia import serving
+
+    if threading.current_thread() is not threading.main_thread():
+        pytest.skip("signal handlers are set from the main thread")
+    saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        server = serving._Server(uvicorn.Config(lambda *a: None), app=None)
+        with server.capture_signals():
+            assert signal.getsignal(signal.SIGINT) == server.handle_exit
+        assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
+        assert signal.getsignal(signal.SIGTERM) == signal.SIG_IGN
+    finally:
+        for sig, handler in saved.items():
+            signal.signal(sig, handler)
