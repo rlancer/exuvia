@@ -64,7 +64,7 @@ from .arrowstream import ArrowStream
 from .artifacts import artifact_key, artifact_store
 from .events import EventBus
 from . import runners as runners_mod
-from .executor import ExecRequest, ExecResult, LocalExecutor, make_executor
+from .executor import CappedLog, ExecRequest, ExecResult, LocalExecutor, make_executor
 from .pool import WarmPool
 from .notify import failure_webhook, payload, send
 from .npm import Npm, bare_imports
@@ -1635,10 +1635,21 @@ class Workspace:
             return self._finish(run_id, name, key, status="failed", error=error)
         redact = envvars.Redactor(secret_rows)
 
-        def on_log(text: str) -> None:
-            text = redact(text) or ""
+        def emit(text: str) -> None:
             self.store.append_log(run_id, text)
             self.bus.publish({"type": "log", "run_id": run_id, "node": name, "text": text})
+
+        def on_log(text: str) -> None:
+            """exuvia's own lines: short, and never capped (some come after the node's output is closed)."""
+            emit(redact(text) or "")
+
+        # The node's output is capped (EXUVIA_MAX_LOG_KB), so the store and the
+        # UI get the same bounded text; redacted first, so a cut never keeps
+        # part of a secret.
+        capped = CappedLog(emit)
+
+        def node_log(text: str) -> None:
+            capped(redact(text) or "")
 
         for r in env_rows:
             if not r["readable"]:
@@ -1665,10 +1676,13 @@ class Workspace:
             on_log("exuvia: full refresh: what this run returns becomes the whole output\n")
         # Executors block (subprocess pipes / HTTP streams); keep them off the loop.
         try:
-            if node.runs_on:
-                res = await asyncio.to_thread(self._on_runner, node, req, on_log)
-            else:
-                res = await asyncio.to_thread(self.executor.execute, req, on_log)
+            try:
+                if node.runs_on:
+                    res = await asyncio.to_thread(self._on_runner, node, req, node_log)
+                else:
+                    res = await asyncio.to_thread(self.executor.execute, req, node_log)
+            finally:
+                capped.close()  # the kept tail, where a traceback lands, before anything exuvia adds
             if node.partition_by and res.ok:
                 staged = res.artifact_path if res.kind == "table" else None
                 try:

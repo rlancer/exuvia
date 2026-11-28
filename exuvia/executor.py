@@ -24,6 +24,7 @@ import re
 import tempfile
 import threading
 import zipfile
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -36,7 +37,98 @@ RUN_TIMEOUT_S = int(os.environ.get("EXUVIA_RUN_TIMEOUT", "1800"))
 BUNDLE_MAX_BYTES = int(os.environ.get("EXUVIA_BUNDLE_MAX_MB", "50")) * 1024 * 1024
 SKIP_DIRS = {"__pycache__", "node_modules"}
 
+# Per-run cap on stored/streamed log text; 0 turns the cap off.
+MAX_LOG_BYTES = int(os.environ.get("EXUVIA_MAX_LOG_KB", "1024")) * 1024
+
 LogFn = Callable[[str], None]
+
+
+def _kb(n: int) -> str:
+    return f"{n / 1024:,.0f} KB" if n < 10 * 1024 * 1024 else f"{n / 1024 / 1024:,.1f} MB"
+
+
+class CappedLog:
+    """A ``LogFn`` that passes at most about ``limit`` bytes of one run's
+    output on to ``sink``: the first three quarters as they arrive, then the
+    last quarter when ``close()`` is called, with a marker line at the cut and
+    another saying how much was dropped from the middle. The tail matters
+    because a failing node's traceback is written last.
+
+    Sizes are tracked here, so the sink (the run store, the event bus, an
+    NDJSON stream) never needs to re-read what it already has. Calls are
+    serialized: a runner's output arrives on the threads of its HTTP
+    requests. ``close()`` goes after the executor returns, and what comes
+    after it on a truncated log is not kept."""
+
+    def __init__(self, sink: LogFn, limit: int | None = None):
+        self.sink = sink
+        self.limit = MAX_LOG_BYTES if limit is None else limit
+        self.tail_limit = self.limit // 4
+        self.head_limit = self.limit - self.tail_limit
+        self.size = 0  # bytes passed through as the head
+        self.dropped = 0  # bytes that will appear in neither head nor tail
+        self.truncated = False
+        self._tail: deque[bytes] = deque()
+        self._tail_size = 0
+        self._lock = threading.Lock()
+
+    def __call__(self, text: str) -> None:
+        with self._lock:
+            self._take(text)
+
+    def _take(self, text: str) -> None:
+        if self.limit <= 0:
+            self.sink(text)
+            return
+        data = text.encode("utf-8", errors="replace")
+        if not self.truncated:
+            room = self.head_limit - self.size
+            if len(data) <= room:
+                self.size += len(data)
+                self.sink(text)
+                return
+            head, data = data[:room], data[room:]
+            if head:
+                self.sink(head.decode("utf-8", errors="ignore"))
+            self.size = self.head_limit
+            self.truncated = True
+            self.sink(
+                f"\n[exuvia] log truncated: output reached {_kb(self.head_limit)}; from here on only the last "
+                f"{_kb(self.tail_limit)} is kept, added when the run ends (EXUVIA_MAX_LOG_KB)\n"
+            )
+        self._tail.append(data)
+        self._tail_size += len(data)
+        while self._tail_size > self.tail_limit:
+            excess = self._tail_size - self.tail_limit
+            first = self._tail[0]
+            if len(first) <= excess:
+                self._tail.popleft()
+                cut = len(first)
+            else:
+                self._tail[0] = first[excess:]
+                cut = excess
+            self._tail_size -= cut
+            self.dropped += cut
+
+    def close(self) -> None:
+        """Write the kept tail. Safe to call more than once."""
+        with self._lock:
+            self._close()
+
+    def _close(self) -> None:
+        if not self.truncated or not self._tail:
+            return
+        tail = b"".join(self._tail)
+        self._tail.clear()
+        self._tail_size = 0
+        if self.dropped:
+            # start the kept tail on a line boundary when there is one
+            nl = tail.find(b"\n")
+            if 0 <= nl < len(tail) - 1:
+                self.dropped += nl + 1
+                tail = tail[nl + 1 :]
+            self.sink(f"[exuvia] log truncated: {_kb(self.dropped)} dropped; the last part follows\n")
+        self.sink(tail.decode("utf-8", errors="ignore"))
 
 
 @dataclass
