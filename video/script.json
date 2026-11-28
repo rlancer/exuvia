@@ -13,7 +13,8 @@
     { "id": "views", "est": 9.7, "pad": 0.6, "text": "And the graph is not the end product. Views turn outputs into custom interfaces: React files that only read, with no back end to write." },
     { "id": "storage", "est": 7.2, "pad": 0.6, "text": "Every run's output is kept as Parquet, on your disk or in your own bucket, and all of it can be queried with SQL." },
     { "id": "history", "est": 8.4, "pad": 0.6, "text": "And there's no git required. Every save is kept, yours or the agent's, and every output remembers the exact code that made it." },
-    { "id": "scale", "est": 9.6, "pad": 0.6, "text": "Start on your laptop with one command. Move to a hub when the team shows up: share your projects, and give your own apps a read-only key to the data." },
+    { "id": "scale", "est": 6.4, "pad": 0.6, "text": "Start on your laptop with one command. Move to a hub when the team shows up, and share your projects." },
+    { "id": "api", "est": 11.0, "pad": 0.6, "text": "Want exuvia's data outside exuvia, in a dashboard, an app or a script? Make a read-only key, and your code can query every output it's allowed to read, with SQL, over HTTP." },
     { "id": "end", "est": 3.83, "pad": 2.6, "text": "Exuvia. Notebooks, for the AI era." }
   ]
 }

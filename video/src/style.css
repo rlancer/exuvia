@@ -697,9 +697,30 @@ mark {
   line-height: 1.5;
 }
 
-/* ---- scale: the hub's data API keys ---------------------------------------- */
-#scale-keys {
+/* ---- the data API: a key, and a request made with it ------------------------- */
+.shade {
+  position: absolute;
+  inset: 0;
+  background: rgb(7 9 15 / 0.72);
   opacity: 0;
+}
+#api-term {
+  left: 160px;
+  top: 110px;
+  width: 1600px;
+  overflow: hidden;
+}
+#api-term pre {
+  margin: 0;
+  padding: 26px 34px 30px;
+  font-size: 29px;
+  line-height: 1.6;
+}
+#api-cmd .flag {
+  color: var(--muted);
+}
+#api-cmd .str {
+  color: #e6c07b;
 }
 
 /* ---- MCP ---------------------------------------------------------------- */
