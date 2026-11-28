@@ -23,9 +23,9 @@ the requests carry a placeholder. EXUVIA_VIDEO_VOICE_ID picks the voice
 (default Matilda), EXUVIA_VIDEO_VOICE_MODEL the model (default eleven_v4).
 A help video (help/<name>/script.json, see help/tools/record.mjs) uses the
 same voice: --script names its script, its audio/ folder sits beside it, its
-captions go to out/help/<name>.srt, and it has no music. --timeline gives the
-moment each line starts in the recording (record.mjs writes it), in place of
-laying the lines end to end.
+captions go to out/help/<name>.srt (or wherever --captions says), and it has
+no music. --timeline gives the moment each line starts in the recording
+(record.mjs writes it), in place of laying the lines end to end.
 
 Standard library and ffmpeg only.
 """
@@ -57,7 +57,10 @@ TIMELINE = option("timeline")
 AUDIO = SCRIPT.parent / "audio"
 HELP = SCRIPT != VIDEO / "script.json"
 OUT = VIDEO / "out" / "help" if HELP else VIDEO / "out"
-CAPTIONS = OUT / (f"{SCRIPT.parent.name}.srt" if HELP else "exuvia-overview.srt")
+# --captions names the file: a help video's take at another size (record.mjs
+# --scale) has its own, beside its own video, so a 4K take never replaces
+# the 1080p take's captions, which are timed from that take's beats.
+CAPTIONS = option("captions") or OUT / (f"{SCRIPT.parent.name}.srt" if HELP else "exuvia-overview.srt")
 ELEVENLABS = "https://api.elevenlabs.io/v1"
 OPENROUTER = "https://openrouter.ai/api/v1"
 # The proxy replaces these with the real keys; nothing secret is in this file or its environment.

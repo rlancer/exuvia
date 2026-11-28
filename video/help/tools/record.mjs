@@ -113,9 +113,9 @@ if (draft || failed) {
   fs.copyFileSync(silent, target);
   console.log(`${target}: ${end.toFixed(1)} s, silent`);
 } else {
-  execFileSync("python3", [path.join(VIDEO, "tools", "audio.py"), "--script", scriptPath, "--timeline", path.join(work, "timeline.json"), "mix"], { stdio: "inherit" });
-  // audio.py writes the captions under the video's name; this size's file carries the suffix.
-  if (suffix) fs.renameSync(path.join(out, `${name}.srt`), path.join(out, `${base}.srt`));
+  // The captions are timed from this take's beats, so each size's take has its own file beside its video.
+  const captions = path.join(out, `${base}.srt`);
+  execFileSync("python3", [path.join(VIDEO, "tools", "audio.py"), "--script", scriptPath, "--timeline", path.join(work, "timeline.json"), "--captions", captions, "mix"], { stdio: "inherit" });
   const target = path.join(out, `${base}.mp4`);
   execFileSync("ffmpeg", [
     "-v", "error", "-y", "-i", silent, "-i", path.join(dir, "audio", "mix.wav"),
