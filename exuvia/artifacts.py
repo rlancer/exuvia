@@ -22,6 +22,8 @@ Objects are keyed ``<prefix><project>/<node>/<digest>.<ext>``. Configuration:
     EXUVIA_S3_REGION        default AWS_REGION, then us-east-1 (R2: auto)
     EXUVIA_S3_ADDRESSING    path (default) or virtual (bucket in the host name)
     AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
+    EXUVIA_ARTIFACT_CACHE_MB  how much of each project's outputs the local
+                            cache keeps (default: all of them); see trim_cache
 
 Requests are signed with AWS Signature Version 4 over httpx; only
 GetObject, HeadObject, PutObject, DeleteObject and ListObjectsV2 are used.
@@ -35,6 +37,7 @@ import hmac
 import os
 import tempfile
 import threading
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Iterator
@@ -310,3 +313,62 @@ def artifact_key(project_id: str, rel_path: str) -> str | None:
     if not rest or any(part in ("", ".", "..") for part in rest.split("/")):
         return None
     return f"{project_id}/{rest}"
+
+
+# -- the local cache's size ----------------------------------------------------
+# A file read this recently is left alone however full the cache is: a run or
+# a download may be about to open it.
+CACHE_GRACE_S = 15 * 60
+
+
+def cache_limit() -> int | None:
+    """``EXUVIA_ARTIFACT_CACHE_MB`` in bytes: how much of a project's outputs
+    its local folder keeps when a remote store holds the durable copy. None
+    when unset (keep everything) or when there is no remote store, where the
+    local folder is the only copy and nothing may go."""
+    raw = os.environ.get("EXUVIA_ARTIFACT_CACHE_MB", "").strip()
+    if not raw or artifact_store() is None:
+        return None
+    try:
+        mb = float(raw)
+    except ValueError:
+        raise ValueError(f"EXUVIA_ARTIFACT_CACHE_MB must be a number of megabytes, got {raw!r}") from None
+    return max(0, int(mb * 1024 * 1024))
+
+
+def trim_cache(root: Path, stored: set[str], limit: int, *, now: float | None = None) -> tuple[int, int]:
+    """Delete the least recently read outputs under ``root``'s artifacts
+    folder until it holds ``limit`` bytes or less. Only files the remote
+    store is recorded to have (``stored``, paths relative to ``root``) go,
+    and none read in the last ``CACHE_GRACE_S``: a later read downloads one
+    again (``Workspace._local_file``), as a fresh container does. Reads mark
+    a file used by setting its modification time, since access times are
+    often not kept. Returns (files, bytes) deleted."""
+    folder = root / ARTIFACTS_DIR
+    if not folder.is_dir():
+        return 0, 0
+    now = time.time() if now is None else now
+    total, candidates = 0, []
+    for path in folder.rglob("*"):
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        if not path.is_file():
+            continue
+        total += st.st_size
+        rel = path.relative_to(root).as_posix()
+        if rel in stored and st.st_mtime < now - CACHE_GRACE_S:
+            candidates.append((st.st_mtime, st.st_size, path))
+    files = freed = 0
+    for _, size, path in sorted(candidates, key=lambda c: c[0]):
+        if total <= limit:
+            break
+        try:
+            path.unlink()
+        except OSError:  # open on Windows, or gone already: try the next one
+            continue
+        total -= size
+        files += 1
+        freed += size
+    return files, freed

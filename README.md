@@ -1590,6 +1590,13 @@ it at start.
   outputs out. Outputs recorded before the store was set (or whose upload
   failed) are uploaded in the background when the project loads, and stay in
   exports until they are. Deleting a project deletes its objects.
+  `EXUVIA_ARTIFACT_CACHE_MB` caps how much of each project's outputs that
+  local cache keeps (by default, all of them). Every 10 minutes it drops the
+  files the bucket has that were read longest ago, never one read in the last
+  15 minutes, and a later read downloads them again. Nothing is lost:
+  outputs not yet uploaded are never dropped, and without a bucket the
+  setting does nothing, because the local folder is then the only copy. The
+  Storage page shows the limit.
 - **Freshness is derived, not flagged.** A node is *fresh* when its code
   (descriptions aside) matches its last successful run's and each upstream's
   current artifact is the one that run consumed. Otherwise it is *stale*, and the reason says why.
@@ -2925,6 +2932,7 @@ empty file, stops exuvia with an error.
 | `EXUVIA_S3_ENDPOINT` | AWS | e.g. `https://<account>.r2.cloudflarestorage.com` or a MinIO URL |
 | `EXUVIA_S3_REGION` | `AWS_REGION`, then `us-east-1` | signing region (`auto` for R2) |
 | `EXUVIA_S3_ADDRESSING` | `path` | `virtual` puts the bucket in the host name |
+| `EXUVIA_ARTIFACT_CACHE_MB` | unset (keep all) | with a bucket, how many megabytes of each project's outputs the local cache keeps, the least recently read going first |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` | — | bucket credentials (requests are SigV4-signed) |
 
 ### Outputs in an existing bucket

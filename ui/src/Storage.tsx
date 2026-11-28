@@ -386,6 +386,11 @@ export function Storage(props: {
                   <Text hasTabularNumbers>{files(data.remote.uploaded)} uploaded</Text>
                 </MetadataListItem>
               )}
+              {data.remote.cache_limit != null && (
+                <MetadataListItem label="Local copy">
+                  <Text hasTabularNumbers>up to {fmtBytes(data.remote.cache_limit)}, least recently read first to go</Text>
+                </MetadataListItem>
+              )}
             </MetadataList>
 
             {data.remote.missing > 0 && (

@@ -87,4 +87,4 @@ def test_outputs_by_node_parquet_and_compaction(tmp_path, monkeypatch):
         assert s["database"]["kind"] == "sqlite" and s["database"]["in_project"]
         assert s["database"]["bytes"] == keys["exuvia.db"]["bytes"] > 0
         assert s["database"]["rows"]["runs"] == 9
-        assert s["remote"] == {"configured": False, "uploaded": 0, "missing": 0}
+        assert s["remote"] == {"configured": False, "cache_limit": None, "uploaded": 0, "missing": 0}
