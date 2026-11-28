@@ -1,10 +1,10 @@
 """``exuvia runner``: run ``runs_on`` nodes on this machine (the runner's half).
 
-    exuvia runner --url https://hub.example.com --label bloomberg
+    exuvia runner --url https://hub.example.com --label desk
 
 signs in with ``EXUVIA_API_TOKEN`` (your own agent token from the
 workbench's account menu), long-polls the hub for runs of nodes marked
-``runs_on="bloomberg"`` in projects you can edit, runs each one here with
+``runs_on="desk"`` in projects you can edit, runs each one here with
 the usual subprocess runner, streams its log back and uploads its output,
 which the hub checks by hash. Only outbound HTTPS: nothing has to reach
 this machine. See runners.py for the hub's half.

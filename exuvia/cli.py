@@ -407,7 +407,7 @@ def main() -> None:
                    help="approve: show the code runs brought that waits for approval here, and approve it")
     p.add_argument("--url", metavar="URL", help="the hub (or an `exuvia serve` address); sends EXUVIA_API_TOKEN")
     p.add_argument("--label", action="append", metavar="LABEL",
-                   help="run nodes with this runs_on, repeatable (e.g. --label bloomberg)")
+                   help="run nodes with this runs_on, repeatable (e.g. --label desk)")
     p.add_argument("--name", help="this runner's name on the hub (default: the machine's name)")
     p.add_argument("--once", action="store_true", help="wait for one run (up to 25 s), run it and stop")
     p.add_argument("--allow-http", action="store_true", help="talk to a plain-http address on another machine anyway")

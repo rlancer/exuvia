@@ -1,12 +1,13 @@
 """Runners: nodes that run on a person's own machine (the hub's half).
 
-Some data can only be read from one person's desktop: a Bloomberg
-Terminal's Desktop API answers on that machine's ``localhost``, logged in as
-that person. A node marked ``@exuvia.node(runs_on="bloomberg")`` (SQL:
-``-- runs_on: bloomberg``) is not run by the project's executor. Its runs
+Some data can only be read from one person's desktop: a licensed data
+terminal's API answers on that machine's ``localhost``, logged in as that
+person, and other analysis processes leave their results on local disk.
+Heavy runs can also be spread over people's workstations. A node marked
+``@exuvia.node(runs_on="desk")`` (SQL: ``-- runs_on: desk``) is not run by the project's executor. Its runs
 wait here until a runner with that label takes them:
 
-    exuvia runner --url https://hub.example.com --label bloomberg
+    exuvia runner --url https://hub.example.com --label desk
 
 on that desktop (desktop.py). The runner dials out over HTTPS only, so a
 machine behind NAT or a corporate firewall works:

@@ -1,5 +1,5 @@
-"""Push nodes: output uploaded from another machine (a Bloomberg Terminal's
-desktop, say) rather than computed, recorded as a run that cascades."""
+"""Push nodes: output uploaded from another machine (a licensed data
+terminal's desktop, say) rather than computed, recorded as a run that cascades."""
 
 import asyncio
 import io
