@@ -6,6 +6,9 @@
     python tools/audio.py music              # the music again
     python tools/audio.py mix                # only the mix, from the files in audio/
 
+    python tools/audio.py --script help/getting-started/script.json voice     # a help video's narration
+    python tools/audio.py --script help/getting-started/script.json --timeline out/help/getting-started/timeline.json mix
+
 Writes audio/voice-<id>.mp3 per segment of script.json, audio/voices.json (the
 text each of those was made from, so a run only pays for lines that changed),
 audio/music.<ext>, audio/timings.json (each segment's length, which sets the
@@ -18,6 +21,12 @@ The narration is ElevenLabs text to speech, the music its music endpoint
 API keys are not read here: the network proxy this runs behind adds them, so
 the requests carry a placeholder. EXUVIA_VIDEO_VOICE_ID picks the voice
 (default Matilda), EXUVIA_VIDEO_VOICE_MODEL the model (default eleven_v4).
+A help video (help/<name>/script.json, see help/tools/record.mjs) uses the
+same voice: --script names its script, its audio/ folder sits beside it, its
+captions go to out/help/<name>.srt, and it has no music. --timeline gives the
+moment each line starts in the recording (record.mjs writes it), in place of
+laying the lines end to end.
+
 Standard library and ffmpeg only.
 """
 import base64
@@ -30,8 +39,25 @@ import urllib.request
 from pathlib import Path
 
 VIDEO = Path(__file__).resolve().parent.parent
-AUDIO = VIDEO / "audio"
-OUT = VIDEO / "out"
+argv = sys.argv[1:]
+
+
+def option(name):
+    """Takes `--name value` out of argv and returns the value (None when absent)."""
+    if f"--{name}" not in argv:
+        return None
+    i = argv.index(f"--{name}")
+    value = argv[i + 1]
+    del argv[i : i + 2]
+    return Path(value).resolve()
+
+
+SCRIPT = option("script") or VIDEO / "script.json"
+TIMELINE = option("timeline")
+AUDIO = SCRIPT.parent / "audio"
+HELP = SCRIPT != VIDEO / "script.json"
+OUT = VIDEO / "out" / "help" if HELP else VIDEO / "out"
+CAPTIONS = OUT / (f"{SCRIPT.parent.name}.srt" if HELP else "exuvia-overview.srt")
 ELEVENLABS = "https://api.elevenlabs.io/v1"
 OPENROUTER = "https://openrouter.ai/api/v1"
 # The proxy replaces these with the real keys; nothing secret is in this file or its environment.
@@ -50,7 +76,8 @@ MUSIC_PROMPT = (
     "only, no vocals."
 )
 
-script = json.loads((VIDEO / "script.json").read_text(encoding="utf-8"))
+script = json.loads(SCRIPT.read_text(encoding="utf-8"))
+WANTS_MUSIC = script.get("music", True)
 segments = script["segments"]
 MADE_FROM = AUDIO / "voices.json"
 
@@ -113,7 +140,16 @@ def voice(todo):
 
 
 def timeline():
-    """Each segment's start and length, as src/main.js lays the scenes out."""
+    """Each segment's start and length: where the recording started it (--timeline), else as src/main.js lays the scenes out."""
+    if TIMELINE:
+        recorded = json.loads(TIMELINE.read_text(encoding="utf-8"))
+        starts = {beat["id"]: beat["at"] for beat in recorded["beats"]}
+        rows = [
+            {"id": s["id"], "at": starts[s["id"]], "duration": seconds(AUDIO / f"voice-{s['id']}.mp3"), "text": s["text"]}
+            for s in segments
+            if s["id"] in starts
+        ]
+        return rows, recorded["duration"]
     at, rows = 0.0, []
     for segment in segments:
         length = seconds(AUDIO / f"voice-{segment['id']}.mp3")
@@ -192,8 +228,8 @@ def mix(rows, total):
     (AUDIO / "timings.json").write_text(
         json.dumps({row["id"]: {"duration": round(row["duration"], 3)} for row in rows}, indent=1) + "\n", encoding="utf-8"
     )
-    OUT.mkdir(exist_ok=True)
-    (OUT / "exuvia-overview.srt").write_text(
+    OUT.mkdir(parents=True, exist_ok=True)
+    CAPTIONS.write_text(
         "\n".join(f"{i}\n{stamp(row['at'])} --> {stamp(row['at'] + row['duration'])}\n{row['text']}\n" for i, row in enumerate(rows, 1)),
         encoding="utf-8",
     )
@@ -204,7 +240,7 @@ def mix(rows, total):
     n = len(rows)
     voices = "".join(f"[v{i}]" for i in range(n))
     graph = ";".join(chains) + f";{voices}amix=inputs={n}:normalize=0,apad=whole_dur={total:.3f},asplit=2[voice][key]"
-    if music_file():
+    if WANTS_MUSIC and music_file():
         inputs += ["-i", str(music_file())]
         # Slowed or sped up by a few percent at most, so that its last chord rings out as the picture fades.
         tempo = max(0.94, min(1.06, seconds(music_file()) / (total + 1.5)))
@@ -226,7 +262,6 @@ def mix(rows, total):
 
 
 AUDIO.mkdir(exist_ok=True)
-argv = sys.argv[1:]
 dry = "--dry-run" in argv
 step, *ids = [a for a in argv if a != "--dry-run"] or ["all"]
 if step not in ("all", "voice", "music", "mix"):
@@ -236,11 +271,11 @@ if dry:
     for segment in todo:
         print(f"voice {segment['id']}: {len(segment['text'])} characters")
     print(f"{sum(len(s['text']) for s in todo)} characters of narration in all")
-    if step == "music" or (step == "all" and not music_file()):
+    if step == "music" or (step == "all" and WANTS_MUSIC and not music_file()):
         print("and the music")
     sys.exit(0)
 voice(todo)
 rows, total = timeline()
-if step == "music" or (step == "all" and not music_file()):
+if step == "music" or (step == "all" and WANTS_MUSIC and not music_file()):
     music(total)
 mix(rows, total)

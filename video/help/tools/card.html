@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>exuvia help</title>
+<!-- The title card a help video opens and closes on: ?kicker=…&title=…&url=… -->
+<style>
+  @font-face {
+    font-family: "Inter Variable";
+    font-weight: 100 900;
+    src: url("../../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2") format("woff2-variations");
+  }
+  @font-face {
+    font-family: "JetBrains Mono Variable";
+    font-weight: 100 800;
+    src: url("../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2") format("woff2-variations");
+  }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    display: grid; place-items: center;
+    background: #0a0d14 url("../../assets/sea.jpg") center / cover no-repeat;
+    color: #e8eaf0; font-family: "Inter Variable", system-ui, sans-serif;
+  }
+  body::before { content: ""; position: fixed; inset: 0; background: linear-gradient(180deg, rgba(10, 13, 20, 0.55), rgba(10, 13, 20, 0.85)); }
+  main { position: relative; text-align: center; animation: rise 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  .brand { display: inline-flex; align-items: center; gap: 12px; font: 600 26px "JetBrains Mono Variable", monospace; letter-spacing: -0.01em; }
+  .brand img { width: 40px; height: 40px; }
+  .kicker { margin-top: 44px; font-size: 20px; font-weight: 500; color: #a3a9b8; }
+  h1 { margin: 10px 0 0; font-size: 76px; font-weight: 700; letter-spacing: -0.03em; }
+  .url { margin-top: 36px; font: 500 19px "JetBrains Mono Variable", monospace; color: #9ab8ff; }
+  @keyframes rise { from { opacity: 0; transform: translateY(14px); } }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand"><img src="../../assets/exuvia-mark.svg" alt="" />exuvia</div>
+  <div class="kicker" id="kicker"></div>
+  <h1 id="title"></h1>
+  <div class="url" id="url"></div>
+</main>
+<script>
+  const q = new URLSearchParams(location.search);
+  for (const id of ["kicker", "title", "url"]) document.getElementById(id).textContent = q.get(id) ?? "";
+</script>
+</body>
+</html>
