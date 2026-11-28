@@ -603,7 +603,9 @@ const SCENES = {
     const hubAt = said("scale", "Move to a hub") - 0.2;
     const keysAt = said("scale", "and give your own apps") - 0.2;
     const keys = prog(lt, keysAt, keysAt + 0.6, out);
-    show($("#scale-term"), prog(lt, 0, 0.6, out) * (1 - keys));
+    const hub = prog(lt, hubAt, hubAt + 0.8, out);
+    // The terminal steps aside for the hub, which needs the height of the stage.
+    show($("#scale-term"), prog(lt, 0, 0.6, out) * (1 - prog(lt, hubAt - 0.1, hubAt + 0.4)));
     const lines = ["uvx exuvia init my-research", "uvx exuvia serve my-research"];
     const [one, two] = [prog(lt, 0.1 * hubAt, 0.45 * hubAt, linear), prog(lt, 0.5 * hubAt, 0.85 * hubAt, linear)];
     const caret = '<span class="caret"></span>';
@@ -612,8 +614,7 @@ const SCENES = {
     if (lt > 0.9 * hubAt) html += `\n<span class="outp">→ http://127.0.0.1:7420</span>`;
     $("#scale-cmd").innerHTML = html;
 
-    const hub = prog(lt, hubAt, hubAt + 0.8, out);
-    $("#scale-hub").style.transform = `translate(64px, ${388 + (1 - hub) * 60}px) scale(1.12)`;
+    $("#scale-hub").style.transform = `translate(80px, ${64 + (1 - hub) * 60}px) scale(1.1)`;
     $("#scale-hub").style.opacity = hub * (1 - keys);
     $("#scale-chips").childNodes.forEach((chip, i) => chip.nodeType === 1 && show(chip, prog(lt, hubAt + 0.6 + i * 0.12, hubAt + 1 + i * 0.12, out) * (1 - keys), 14));
 

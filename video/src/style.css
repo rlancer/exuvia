@@ -270,8 +270,9 @@ body {
     0 40px 120px rgb(0 0 0 / 0.65);
   background: #111214;
 }
+/* hub.png's own proportions (2880x1280), so it is never squeezed. */
 .window.wide {
-  height: 400px;
+  height: 711px;
 }
 .window img {
   position: absolute;
