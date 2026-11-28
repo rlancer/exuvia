@@ -1,7 +1,13 @@
-# The overview video
+# The videos
+
+This folder makes exuvia's videos: the overview film, below, and the help
+videos, short tutorials recorded from the real app ([Help videos](#help-videos)).
+Nothing here is part of the package or the website.
+
+## The overview film
 
 The source of exuvia's overview film: about two minutes, 1920x1080, made for
-YouTube. Nothing here is part of the package or the website.
+YouTube.
 
 The picture is a web page, `src/index.html`, that is a pure function of time:
 `seek(t)` in `src/main.js` puts every element where it belongs at second `t`.
@@ -19,7 +25,7 @@ lasts as long as its line takes to say, so the narration is generated first
 and the picture follows it. `said(id, phrase)` in `main.js` puts a moment of
 a scene on a word of its line.
 
-## Making it
+### Making it
 
 Needs ffmpeg on the PATH and Chrome or Edge (or `CHROME_PATH` naming a
 Chromium). The sound needs network access to `api.elevenlabs.io` (and
@@ -50,7 +56,7 @@ node tools/render.mjs --fps 60           # out/exuvia-overview.mp4
   (`site/src/assets/shots/`); one that doesn't exist yet is added to
   `site/tools/capture.mjs` and captured, never drawn by hand.
 
-## What is where
+### What is where
 
 | | |
 |---|---|
@@ -62,7 +68,73 @@ node tools/render.mjs --fps 60           # out/exuvia-overview.mp4
 | `tools/` | `audio.py`, `render.mjs`, `gen_image.py` |
 | `out/` | what the tools write; not in git |
 
-## Uploading
+### Uploading
 
 Upload `out/exuvia-overview.mp4` and add `out/exuvia-overview.srt` as its
 English captions.
+
+## Help videos
+
+A help video is one task, shown in the real app, tied to the docs page it
+explains (`help/<name>/script.json` names it under `docs`). It is not
+animated from screenshots: Playwright drives a real `exuvia` and a real
+shell while the camera films them, so when the UI changes, the video is
+recorded again by running its script, not by hand.
+
+| | |
+|---|---|
+| `help/<name>/script.json` | the narration: one segment per beat, in order, with the pause after each |
+| `help/<name>/video.mjs` | the actions: `beat(id, fn)` per segment, the clicks and typing that line describes |
+| `help/<name>/audio/timings.json` | each line's length as last voiced; the voices themselves are not in git |
+| `help/tools/record.mjs` | records a video: runs `video.mjs`, films it, and puts the narration under it |
+| `help/tools/studio.mjs` | the camera (Chrome's screencast, one page at a time), the pointer, typing, the beat clock |
+| `help/tools/terminal.py`, `terminal.html` | a real terminal: bash in a pseudo-terminal, drawn with xterm.js |
+| `help/tools/cursor.js` | the pointer, click rings and keycaps drawn into each page (headless Chrome draws none) |
+| `help/tools/card.html` | the title card a video opens and closes on |
+
+How the picture keeps to the voice: `beat(id, fn)` starts a line, runs its
+actions while it is said, and ends when both the line (and its pause) and
+the actions are done. A run or the agent may take longer than the line; the
+picture goes on and the next line waits for it. The moment each beat started
+is written to `out/help/<name>/timeline.json`, and `tools/audio.py` lays each
+voice file there, so the sound follows the picture. `said(phrase)` waits for
+a word of the current line (estimated from where it sits in the text), and
+`fast(4, fn)` plays a long wait four times faster, with a badge saying so.
+
+Everything on screen is real. Commands run in bash with a fresh home folder
+(`/tmp/exuvia-<name>`, so the paths exuvia prints stay short) and uv's own
+cache; `uvx exuvia` there is the release on PyPI, which every merge to
+`main` that touches the package publishes. The browser is 1280x720 at 1.5x,
+so the recording is 1920x1080 with text that reads on a phone, and dark, as
+every help video is. A bug that shows on camera is filed as an issue and
+left showing, not hidden by the script.
+
+### Recording one
+
+Needs ffmpeg, a Chrome (or `CHROME_PATH`), `uv` and Python 3, and network
+access to PyPI. A video that turns the agent on uses OpenRouter, and the
+voice uses ElevenLabs, both through a proxy that adds the keys, as for the
+overview.
+
+```bash
+cd video
+bun install
+node help/tools/record.mjs getting-started --draft --stills    # silent, timed from estimates: out/help/getting-started-draft.mp4
+python tools/audio.py --script help/getting-started/script.json --dry-run   # the characters the voice would cost
+python tools/audio.py --script help/getting-started/script.json voice       # voices the lines that changed
+node help/tools/record.mjs getting-started                     # out/help/getting-started.mp4 and .srt
+```
+
+`--draft` needs no voice, so the wording and the actions can be settled
+before any is paid for. `--stills` also writes a frame per beat to
+`out/help/<name>-stills/`. As with the overview, `audio.py voice` only voices
+the lines whose text changed.
+
+A new video is a folder in `help/` with a `script.json` and a `video.mjs`
+that exports `async function film(studio, { stage })`; `getting-started`
+shows the pieces.
+
+### Uploading
+
+Upload `out/help/<name>.mp4` with `out/help/<name>.srt` as its English
+captions.

@@ -13,7 +13,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright-core";
+import { launch } from "./browser.mjs";
 
 const VIDEO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = path.resolve(VIDEO, "..");
@@ -36,18 +36,6 @@ const page_url = `http://127.0.0.1:${server.address().port}/video/src/index.html
 if (args.includes("--serve")) {
   console.log(page_url);
   await new Promise(() => {});
-}
-
-async function launch() {
-  if (process.env.CHROME_PATH) return chromium.launch({ executablePath: process.env.CHROME_PATH });
-  for (const channel of ["chrome", "msedge"]) {
-    try {
-      return await chromium.launch({ channel });
-    } catch {
-      /* try the next installed browser */
-    }
-  }
-  throw new Error("Neither Chrome nor Edge is installed. Set CHROME_PATH to a Chromium binary.");
 }
 
 const browser = await launch();

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>{{title}}</title>
+<link rel="stylesheet" href="/node_modules/@xterm/xterm/css/xterm.css" />
+<style>
+  @font-face {
+    font-family: "JetBrains Mono Variable";
+    font-weight: 100 800;
+    src: url("/node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2") format("woff2-variations");
+  }
+  @font-face {
+    font-family: "Inter Variable";
+    font-weight: 100 900;
+    src: url("/node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2") format("woff2-variations");
+  }
+  /* The overview film's palette (video/src/style.css). */
+  html, body { margin: 0; height: 100%; background: #0a0d14; overflow: hidden; }
+  body { display: grid; place-items: center; }
+  .window {
+    width: calc(100vw - 64px); height: calc(100vh - 56px);
+    display: grid; grid-template-rows: 38px 1fr;
+    background: #0f131c; border: 1px solid #262d3f; border-radius: 12px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); overflow: hidden;
+  }
+  .bar {
+    display: flex; align-items: center; gap: 8px; padding: 0 14px;
+    background: #151a26; border-bottom: 1px solid #262d3f;
+    font: 500 14px "Inter Variable", system-ui, sans-serif; color: #a3a9b8;
+  }
+  .bar i { width: 12px; height: 12px; border-radius: 50%; background: #364058; }
+  .bar span { flex: 1; text-align: center; margin-right: 52px; }
+  #term { padding: 14px 18px; min-height: 0; }
+  .xterm-viewport { overflow: hidden !important; }
+</style>
+</head>
+<body>
+<div class="window">
+  <div class="bar"><i></i><i></i><i></i><span>{{title}}</span></div>
+  <div id="term"></div>
+</div>
+<script src="/node_modules/@xterm/xterm/lib/xterm.js"></script>
+<script src="/node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+<script>
+  const term = new Terminal({
+    fontFamily: '"JetBrains Mono Variable", monospace',
+    fontSize: 19,
+    lineHeight: 1.25,
+    cursorBlink: false,
+    scrollback: 5000,
+    theme: {
+      background: "#0f131c", foreground: "#e8eaf0", cursor: "#7aa2f7", selectionBackground: "#364058",
+      black: "#1b2130", brightBlack: "#5c6478", red: "#f7768e", brightRed: "#ff8fa3", green: "#9ece6a", brightGreen: "#b5e08a",
+      yellow: "#e0af68", brightYellow: "#f0c88a", blue: "#7aa2f7", brightBlue: "#9ab8ff", magenta: "#bb9af7", brightMagenta: "#d0b8ff",
+      cyan: "#7dcfff", brightCyan: "#a5deff", white: "#c0c6d4", brightWhite: "#ffffff",
+    },
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  window.term = term;
+  // What the recording waits on: the lines on screen, as text.
+  window.screenText = () => {
+    const b = term.buffer.active, lines = [];
+    for (let i = 0; i < b.length; i++) lines.push(b.getLine(i).translateToString(true));
+    return lines.join("\n").replace(/\n+$/, "");
+  };
+  const send = (path, body) => fetch(path, { method: "POST", body });
+  document.fonts.load('19px "JetBrains Mono Variable"').then(() => {
+    term.open(document.getElementById("term"));
+    fit.fit();
+    send("/resize", JSON.stringify({ cols: term.cols, rows: term.rows }));
+    term.onData((data) => send("/input", data));
+    const source = new EventSource("/stream");
+    source.onmessage = (event) => term.write(Uint8Array.from(atob(event.data), (c) => c.charCodeAt(0)));
+    term.focus();
+    window.READY = true;
+  });
+</script>
+</body>
+</html>
