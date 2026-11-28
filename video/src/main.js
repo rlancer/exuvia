@@ -19,6 +19,15 @@ const show = (el, k, rise = 24) => {
 
 // ---- the timeline ----------------------------------------------------------
 
+// The product shots are the site's (2880x1800). A 4K render wants more pixels than that, so where
+// video/shots/ holds a shot of the same name (captured at 3x, see README), the page uses that one.
+await Promise.all(
+  [...document.querySelectorAll('img[src*="site/src/assets/shots/"]')].map(async (img) => {
+    const big = `../shots/${img.getAttribute("src").split("/").pop()}`;
+    if ((await fetch(big, { method: "HEAD" }).catch(() => null))?.ok) img.src = big;
+  }),
+);
+
 const FADE = 0.4;
 const script = await (await fetch("../script.json")).json();
 const LEAD = script.lead; // the picture starts this long before its line is spoken

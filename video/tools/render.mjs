@@ -5,6 +5,7 @@
  *
  *   node tools/render.mjs                    -> out/exuvia-overview.mp4 (with out/../audio/mix.wav if it exists)
  *   node tools/render.mjs --fps 60 --workers 6
+ *   node tools/render.mjs --fps 60 --scale 2 -> 3840x2160: the same 1920x1080 layout at twice the pixels
  *   node tools/render.mjs --stills 2,8.5,31  -> out/stills/<t>.png, to look at single frames (--dir names another folder in out/)
  *   node tools/render.mjs --serve            -> serves the page to open in a browser (it plays itself; ?t=12 holds a frame)
  */
@@ -22,6 +23,8 @@ const args = process.argv.slice(2);
 const flag = (name, fallback) => (args.includes(`--${name}`) ? args[args.indexOf(`--${name}`) + 1] : fallback);
 const fps = +flag("fps", 30);
 const workers = +flag("workers", 4);
+// The page is laid out at 1920x1080 whatever the output: --scale 2 renders it at 3840x2160.
+const scale = +flag("scale", 1);
 
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".woff2": "font/woff2", ".mp3": "audio/mpeg", ".wav": "audio/wav" };
 const server = http.createServer((request, response) => {
@@ -40,7 +43,7 @@ if (args.includes("--serve")) {
 
 const browser = await launch();
 async function open() {
-  const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
+  const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: scale });
   const page = await context.newPage();
   page.on("pageerror", (error) => console.error("page error:", error.message));
   await page.goto(`${page_url}?render`);
@@ -48,7 +51,9 @@ async function open() {
   const cdp = await context.newCDPSession(page);
   const shot = async (t) => {
     await page.evaluate((at) => window.seek(at), t);
-    const { data } = await cdp.send("Page.captureScreenshot", { format: "png", optimizeForSpeed: true });
+    // Without a clip, the screenshot is taken at CSS pixels whatever the device scale: the clip's scale asks for every pixel.
+    const clip = { x: 0, y: 0, width: 1920, height: 1080, scale };
+    const { data } = await cdp.send("Page.captureScreenshot", { format: "png", optimizeForSpeed: true, clip });
     return Buffer.from(data, "base64");
   };
   return { page, shot };
@@ -80,7 +85,7 @@ if (args.includes("--stills")) {
 const first = await open();
 const film = await first.page.evaluate(() => window.FILM);
 const frames = Math.ceil(film.total * fps);
-console.log(`${film.total.toFixed(2)} s, ${frames} frames at ${fps} fps, ${workers} workers`);
+console.log(`${film.total.toFixed(2)} s, ${frames} frames at ${fps} fps, ${1920 * scale}x${1080 * scale}, ${workers} workers`);
 
 const started = Date.now();
 let done = 0;

@@ -56,6 +56,33 @@ node tools/render.mjs --fps 60           # out/exuvia-overview.mp4
   (`site/src/assets/shots/`); one that doesn't exist yet is added to
   `site/tools/capture.mjs` and captured, never drawn by hand.
 
+#### In 4K
+
+`--scale 2` renders the same 1920x1080 layout at 3840x2160 (with
+`--stills` too, to check frames at full size). The type, lines and
+artwork are drawn at that size; the product shots are pictures, and the
+site's (2880x1800) are smaller than a 1600x1000 window at twice the
+pixels. So, for 4K, capture the shots the film uses at 3x into
+`video/shots/`, beside the site's and not over them. The page uses a shot
+from there wherever one of the same name exists, and the site's otherwise:
+
+```bash
+# serve the example and a hub as site/tools/capture.mjs describes, then, in site/:
+node tools/capture.mjs app http://127.0.0.1:7431 --scale 3 --out ../video/shots
+node tools/capture.mjs hub http://127.0.0.1:7432 --scale 3 --out ../video/shots
+# in video/:
+node tools/render.mjs --fps 60 --scale 2 --workers 2 # out/exuvia-overview.mp4, 3840x2160
+```
+
+Each worker is a page and an encoder, and a 4K encoder takes about 2.5 GB:
+keep `--workers` to what the memory holds (two on a 16 GB machine; six
+were killed for memory there).
+
+`app` mode sends the agent a real prompt, and what the agent builds varies.
+Check that the highlight rings still sit on what they point at (`main.js`
+gives each one's position as a share of its shot). If a take doesn't fit, delete that one
+shot from `video/shots/`, and the site's is used for it.
+
 ### What is where
 
 | | |
@@ -66,6 +93,7 @@ node tools/render.mjs --fps 60           # out/exuvia-overview.mp4
 | `assets/` | the mark, the lobster and its shell, exported from `site/src/lib/brand.ts` and `polysvg.ts`; `sea.jpg`, the backdrop, generated with `tools/gen_image.py` from the site's home card |
 | `audio/timings.json` | the length of each narration segment as last generated. The audio itself is not in git |
 | `tools/` | `audio.py`, `render.mjs`, `gen_image.py` |
+| `shots/` | the product shots at 3x, for a 4K render; not in git |
 | `out/` | what the tools write; not in git |
 
 ### Uploading
